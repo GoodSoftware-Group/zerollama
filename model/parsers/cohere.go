@@ -278,7 +278,28 @@ func parseCohereActions(payload string) []api.ToolCall {
 		}
 		calls = append(calls, c.toolCall())
 	}
-	return calls
+	if len(calls) > 0 {
+		return calls
+	}
+	if call, ok := salvageCohereToolCall(payload); ok {
+		return []api.ToolCall{call}
+	}
+	return nil
+}
+
+func salvageCohereToolCall(payload string) (api.ToolCall, bool) {
+	name := jsonStringField(payload, "tool_name")
+	if name == "" || strings.Contains(name, "<|") {
+		return api.ToolCall{}, false
+	}
+	call := api.ToolCall{
+		ID: jsonStringField(payload, "tool_call_id"),
+		Function: api.ToolCallFunction{
+			Name:      name,
+			Arguments: api.NewToolCallFunctionArguments(),
+		},
+	}
+	return call, true
 }
 
 // scanJSONObjects returns the balanced top-level {...} chunks of s, tracking

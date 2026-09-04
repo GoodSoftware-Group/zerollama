@@ -89,6 +89,7 @@ type Recurrent struct {
 	curSlots      []int
 	curSlotsInput ml.Tensor
 	curSeqTokens  int
+	batchMinPos   map[int]int32
 
 	// track if EnsureWritable has been called for this forward pass
 	writableEnsured bool
@@ -114,6 +115,7 @@ func NewRecurrentCache(config RecurrentConfig) *Recurrent {
 		checkpoints:         make(map[int]*slotCheckpointStore),
 		pendingRestore:      make(map[int]checkpointRestore),
 		curCheckpointSlots:  make(map[int]int),
+		batchMinPos:         make(map[int]int32),
 		checkpointConvCtxs:  make(map[int]ml.Context),
 		checkpointRecurCtxs: make(map[int]ml.Context),
 		checkpointReserved:  make(map[int]struct{}),
@@ -129,6 +131,7 @@ func (c *Recurrent) Init(backend ml.Backend, dtype ml.DType, maxSequences, capac
 	c.curCheckpointPos = c.curCheckpointPos[:0]
 	c.curCheckpointSlots = make(map[int]int)
 	c.checkpointReserved = make(map[int]struct{})
+	c.batchMinPos = make(map[int]int32)
 	c.checkpointCtxSize = c.checkpointCount * c.maxSequences
 	if c.checkpointCtxSize < 8 {
 		c.checkpointCtxSize = 8
@@ -301,7 +304,56 @@ func (c *Recurrent) finalizeStartForward(ctx ml.Context, batch input.Batch, rese
 	c.writableEnsured = false
 	c.writableError = nil
 	c.reserveCheckpoints = reserve
+	c.recordBatchMinPos(batch)
 	c.planCheckpoints(batch)
+}
+
+func (c *Recurrent) recordBatchMinPos(batch input.Batch) {
+	if c.batchMinPos == nil {
+		c.batchMinPos = make(map[int]int32)
+	}
+	for k := range c.batchMinPos {
+		delete(c.batchMinPos, k)
+	}
+	for i, seq := range batch.Sequences {
+		if i >= len(batch.Positions) {
+			break
+		}
+		pos := batch.Positions[i]
+		if cur, ok := c.batchMinPos[seq]; !ok || pos < cur {
+			c.batchMinPos[seq] = pos
+		}
+	}
+}
+
+// PlanBoundaryCheckpoint captures GDN/conv state after the first token of a
+// multi-token decode batch so a rejected speculative tail can Restore.
+func (c *Recurrent) PlanBoundaryCheckpoint() {
+	if c.checkpointCount == 0 || len(c.curSeqs) == 0 {
+		return
+	}
+	if cap(c.curCheckpointPos) < len(c.curSeqs) {
+		c.curCheckpointPos = make([]int32, len(c.curSeqs))
+	} else {
+		c.curCheckpointPos = c.curCheckpointPos[:len(c.curSeqs)]
+	}
+	for k := range c.curCheckpointSlots {
+		delete(c.curCheckpointSlots, k)
+	}
+	for i, seq := range c.curSeqs {
+		pos, ok := c.batchMinPos[seq]
+		if !ok {
+			c.curCheckpointPos[i] = -1
+			continue
+		}
+		c.curCheckpointPos[i] = pos
+	}
+}
+
+func (c *Recurrent) FreezeCheckpoints() {
+	for i := range c.curCheckpointPos {
+		c.curCheckpointPos[i] = -1
+	}
 }
 
 func (c *Recurrent) setCurSlotsInput(ctx ml.Context) {
@@ -451,6 +503,15 @@ func (c *Recurrent) CanResume(seq int, pos int32) bool {
 		return true
 	}
 	return c.hasCheckpoint(seq, pos)
+}
+
+// RemoveKVTail drops causal KV in [beginIndex, +inf) without restoring GDN/SSM
+// state. Only safe when the model has no recurrent trunk layers.
+func (c *Recurrent) RemoveKVTail(seq int, beginIndex int32) error {
+	if c == nil || c.kv == nil {
+		return ErrNotSupported
+	}
+	return c.kv.Remove(seq, beginIndex, math.MaxInt32)
 }
 
 func (c *Recurrent) Remove(seq int, beginIndex, endIndex int32) error {

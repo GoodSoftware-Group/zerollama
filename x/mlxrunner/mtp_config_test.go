@@ -91,3 +91,36 @@ func TestMTPHistoryLastWindowWriteCursor(t *testing.T) {
 		t.Fatalf("start at pos 4 = %d want 2", start)
 	}
 }
+
+func TestGreedyTrioFence(t *testing.T) {
+	t.Setenv("ZEROLLAMA_MLX_GREEDY_DRAFT_CHAIN", "")
+	t.Setenv("ZEROLLAMA_MLX_BATCHED_GREEDY_ACCEPT", "")
+	t.Setenv("ZEROLLAMA_MLX_GREEDY_TRIO_MAX_CONTEXT", "")
+
+	if !greedyDraftChainEnabled(100) || !batchedGreedyAcceptEnabled(100) {
+		t.Fatal("default on below fence")
+	}
+	if greedyDraftChainEnabled(12288) || batchedGreedyAcceptEnabled(20000) {
+		t.Fatal("at/above 12288 fence must disable")
+	}
+
+	t.Setenv("ZEROLLAMA_MLX_GREEDY_DRAFT_CHAIN", "off")
+	if greedyDraftChainEnabled(100) {
+		t.Fatal("off must disable chain")
+	}
+	t.Setenv("ZEROLLAMA_MLX_GREEDY_DRAFT_CHAIN", "")
+	t.Setenv("ZEROLLAMA_MLX_BATCHED_GREEDY_ACCEPT", "0")
+	if batchedGreedyAcceptEnabled(100) {
+		t.Fatal("0 must disable accept")
+	}
+
+	t.Setenv("ZEROLLAMA_MLX_BATCHED_GREEDY_ACCEPT", "")
+	t.Setenv("ZEROLLAMA_MLX_GREEDY_TRIO_MAX_CONTEXT", "0")
+	if !greedyDraftChainEnabled(99_000) {
+		t.Fatal("fence 0 is unlimited")
+	}
+	t.Setenv("ZEROLLAMA_MLX_GREEDY_TRIO_MAX_CONTEXT", "4096")
+	if greedyDraftChainEnabled(4096) || !greedyDraftChainEnabled(4095) {
+		t.Fatal("custom fence is exclusive")
+	}
+}

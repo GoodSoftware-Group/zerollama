@@ -70,25 +70,31 @@ type registryOptions struct {
 }
 
 type Model struct {
-	Name           string `json:"name"`
-	Config         model.ConfigV2
-	ShortName      string
-	ModelPath      string
-	DraftPath      string
-	EmbeddedMTP    bool
-	ParentModel    string
+	Name               string `json:"name"`
+	Config             model.ConfigV2
+	ShortName          string
+	ModelPath          string
+	DraftPath          string
+	EmbeddedMTP        bool
+	HasMTPCompanion    bool
+	ParentModel        string
 	HasChatTemplate    bool
 	HasGoTemplate      bool
 	PreferChatTemplate bool
-	AdapterPaths   []string
-	ProjectorPaths []string
-	System         string
-	License        []string
-	Digest         string
-	Options        map[string]any
-	Messages       []api.Message
+	AdapterPaths       []string
+	ProjectorPaths     []string
+	System             string
+	License            []string
+	Digest             string
+	Options            map[string]any
+	Messages           []api.Message
 
 	Template *template.Template
+
+	// GenSampling is HF generation_config.json sampling for MLX (mlx-serve).
+	// Applied after server defaults and before Modelfile PARAMETER / request options.
+	GenSampling       map[string]any `json:"-"`
+	genSamplingLoaded bool
 
 	// BlobDigests are content-addressed layer digests (sha256-…) collected during
 	// GetModel. Why: scheduler Pin/Unpin needs digests without re-parsing the
@@ -123,7 +129,11 @@ func (m *Model) Capabilities() []model.Capability {
 				capabilities = append(capabilities, model.CapabilityAudio)
 			}
 		} else {
-			slog.Error("couldn't open model file", "error", err)
+			if errors.Is(err, os.ErrNotExist) {
+				slog.Warn("couldn't open model file", "model", m.Name, "error", err)
+			} else {
+				slog.Error("couldn't open model file", "model", m.Name, "error", err)
+			}
 		}
 	}
 
@@ -177,7 +187,7 @@ func (m *Model) Capabilities() []model.Capability {
 	}
 
 	// Check for insert capability
-	if slices.Contains(v, "suffix") {
+	if slices.Contains(v, "suffix") || m.IsMLX() {
 		capabilities = append(capabilities, model.CapabilityInsert)
 	}
 
@@ -260,6 +270,32 @@ func (m *Model) CheckCapabilities(want ...model.Capability) error {
 	}
 
 	return err
+}
+
+// textSurfaceWrongModalityMessage is mlx-serve's named 400: a non-text model on
+// chat/generate names the kind and the endpoint that does serve it.
+func textSurfaceWrongModalityMessage(m *Model, name, surface string) string {
+	fallback := fmt.Sprintf("%q does not support %s", name, surface)
+	if m == nil {
+		return fallback
+	}
+	caps := m.Capabilities()
+	if slices.Contains(caps, model.CapabilityCompletion) {
+		return fallback
+	}
+	if slices.Contains(caps, model.CapabilityEmbedding) {
+		return fmt.Sprintf("%q is an embedding model; use POST /api/embed or POST /v1/embeddings", name)
+	}
+	if slices.Contains(caps, model.CapabilityImage) {
+		return fmt.Sprintf("%q is an image model; use POST /v1/images/generations or POST /api/generate", name)
+	}
+	if slices.Contains(caps, model.CapabilitySpeech) {
+		return fmt.Sprintf("%q is a speech model; use POST /v1/audio/speech", name)
+	}
+	if slices.Contains(caps, model.CapabilityVideoGen) {
+		return fmt.Sprintf("%q is a video model; use POST /v1/videos", name)
+	}
+	return fallback
 }
 
 func (m *Model) String() string {
@@ -476,6 +512,14 @@ func loadModelUncached(name string) (*Model, error) {
 				return nil, err
 			}
 			m.License = append(m.License, string(bts))
+		case manifest.MediaTypeImageTensor:
+			if TensorNameHasInCheckpointMTP(layer.Name) {
+				m.EmbeddedMTP = true
+			}
+		case "application/vnd.ollama.image.json":
+			if layer.Name == "mtp/config.json" {
+				m.HasMTPCompanion = true
+			}
 		}
 	}
 

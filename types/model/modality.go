@@ -27,7 +27,7 @@ const (
 	BackendSGLang           = "sglang"            // forward OpenAI chat to SGLang HTTP API
 	BackendZerollamaRuntime = "zerollama-runtime" // Python GGUF runtime sidecar (see runtime/)
 	BackendWan              = "wan"               // Wan2.x: Python generate.py, or video-cli when backend_paths.video_cli / ZEROLLAMA_VIDEO_CLI is set
-	// BackendLTX is Wan2GP LTXV (first: distilled 13B quanto) via scripts/video/ltx_video_generate.py.
+	// BackendLTX is Wan2GP LTXV (13B distilled quanto or 2B distilled FP8) via scripts/video/ltx_video_generate.py.
 	// See docs/ltx-t2v.md — not LTX-2/Gemma on ≤24 GiB hosts.
 	BackendLTX = "ltx"
 	// BackendH3 is Darwin video-c MiniMax-H3 (`--family h3 --generate`). Tiny T2VA

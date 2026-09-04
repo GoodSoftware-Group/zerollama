@@ -34,24 +34,37 @@ import (
 )
 
 const (
-	wanProfile21T2V13B   = "wan2.1-t2v-1.3b"
-	wanProfile22TI2V5B   = "wan2.2-ti2v-5b"
-	ltxProfile13BDistill = "ltxv-13b-distilled"
-	h3ProfileTinyT2VA    = "h3-tiny-t2va"
-	h3Profile768T2VA     = "h3-768-t2va"
-	wan22MaxFrames16g    = 81
-	ltx16gDefaultFrames  = 17
-	h3TinyFrames         = 5
-	h3TinyDefaultSteps   = 2
-	h3768DefaultSteps    = 8
-	h3DefaultDitLayers   = 50
-	h3MaxDitLayers       = 50
-	h3TinySize           = "32x32"
-	h3768Size            = "768x768"
-	ltxDefaultTimeoutSec = 2700
-	h3DefaultTimeoutSec  = 900
-	h3768TimeoutSec      = 14400
-	ltxDefaultMinHostGiB = 12 // Wan mmgp+GPU-VAE class; see docs/ltx-t2v.md
+	wanProfile21T2V13B     = "wan2.1-t2v-1.3b"
+	wanProfile22TI2V5B     = "wan2.2-ti2v-5b"
+	ltxProfile13BDistill   = "ltxv-13b-distilled"
+	ltxProfile2BDistill    = "ltxv-2b-distilled"
+	ltxProfile2BMlx        = "ltxv-2b-mlx"
+	ltxProfile13BMlx       = "ltxv-13b-mlx"
+	h3ProfileTinyT2VA      = "h3-tiny-t2va"
+	h3Profile768T2VA       = "h3-768-t2va"
+	wan22MaxFrames16g      = 81
+	ltx16gDefaultFrames    = 17
+	ltx2bDefaultSize       = "512x512"
+	ltx2bDefaultSteps      = 8
+	ltxMlxDefaultSize      = "768x480"
+	ltxMlxDefaultSteps     = 4
+	ltxMlx13BDefaultSize   = "1280x720" // ltx-mlx --resolution 720p is height 720, width 1280
+	ltxMlx13BDefaultSteps  = 8
+	ltxMlx13BDefaultFrames = 41
+	ltxMlx13BTimeoutSec    = 1800
+	ltxMlxTimeoutSec       = 600
+	ltx2bMinHostGiB        = 8 // 2B fp8 + T5; see docs/ltx-t2v.md
+	h3TinyFrames           = 5
+	h3TinyDefaultSteps     = 2
+	h3768DefaultSteps      = 8
+	h3DefaultDitLayers     = 50
+	h3MaxDitLayers         = 50
+	h3TinySize             = "32x32"
+	h3768Size              = "768x768"
+	ltxDefaultTimeoutSec   = 2700
+	h3DefaultTimeoutSec    = 900
+	h3768TimeoutSec        = 14400
+	ltxDefaultMinHostGiB   = 12 // Wan mmgp+GPU-VAE class; see docs/ltx-t2v.md
 )
 
 type wanVideoJobPayload struct {
@@ -139,13 +152,22 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 		return
 	}
-	if err := validateWanKeyframes(cfg.Profile, keyframeLabels); err != nil {
-		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+	if backend == model.BackendWan {
+		if err := validateWanKeyframes(cfg.Profile, keyframeLabels); err != nil {
+			c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+	}
+	// Darwin ltx-mlx I2V: first still is --image (line lock for anime). Wan2GP LTXV remains T2V-only.
+	if backend == model.BackendLTX && len(keyframeLabels) > 0 && !isLtxMLXJob(cfg) {
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "ltx Wan2GP LTXV distilled T2V does not support keyframes yet"))
 		return
 	}
-	if backend == model.BackendLTX && len(keyframeLabels) > 0 {
-		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "ltx LTXV distilled T2V does not support keyframes yet"))
-		return
+	if backend == model.BackendLTX && isLtxMLXJob(cfg) {
+		if err := validateLtxMLXLastFrame(req.Options, keyframeLabels); err != nil {
+			c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
 	}
 	if backend == model.BackendH3 && len(keyframeLabels) > 0 {
 		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "h3 T2VA does not support keyframes yet"))
@@ -224,7 +246,7 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 
 	// WHY before payload/submit: refuse plans that will thrash host RAM into killing serve.
 	// Exclusive GPU only coordinates VRAM/chat — host admission is the missing half.
-	if backend == model.BackendLTX {
+	if backend == model.BackendLTX && !isLtxMLXJob(cfg) {
 		if err := admitLtxHostRAM(cfg); err != nil {
 			if keyframeDir != "" {
 				_ = os.RemoveAll(keyframeDir)
@@ -295,6 +317,19 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 	c.JSON(http.StatusAccepted, video)
 }
 
+// errLtxLastFrame matches mlx-serve #260: do not silently drop last-frame pins.
+var errLtxLastFrame = errors.New("ltx-mlx cannot honor last_frame_image: community CLI is first-frame --image only (no last-frame VAE). Use one still via keyframes[0] or first_frame_image")
+
+func validateLtxMLXLastFrame(opts map[string]any, labels []string) error {
+	if media.OptionString(opts, "last_frame_image") != "" {
+		return errLtxLastFrame
+	}
+	if len(labels) > 1 {
+		return errLtxLastFrame
+	}
+	return nil
+}
+
 func validateWanKeyframes(profile string, labels []string) error {
 	if len(labels) == 0 {
 		return nil
@@ -313,7 +348,7 @@ func buildVideoJobPayload(backend string, cfg model.ConfigV2, vcfg model.VideoGe
 	case model.BackendWan:
 		return buildWanVideoPayload(cfg, vcfg, modelName, prompt, seed, submittedAt, keyframeDir)
 	case model.BackendLTX:
-		return buildLtxVideoPayload(cfg, vcfg, modelName, prompt, seed, submittedAt)
+		return buildLtxVideoPayload(cfg, vcfg, modelName, prompt, seed, submittedAt, keyframeDir)
 	case model.BackendH3:
 		return buildH3VideoPayload(cfg, vcfg, modelName, prompt, seed, submittedAt)
 	case model.BackendRIFE:
@@ -458,7 +493,9 @@ func resolveVideoGenerationConfig(m *Model, req openai.VideoCreateRequest) (mode
 		}
 	}
 	if cfg.Frames <= 0 {
-		if isLtxProfile(cfg.Profile) {
+		if isLtxMLX13BProfile(cfg.Profile) {
+			cfg.Frames = ltxMlx13BDefaultFrames
+		} else if isLtxProfile(cfg.Profile) {
 			cfg.Frames = ltx16gDefaultFrames
 		} else if isH3Profile(cfg.Profile) {
 			cfg.Frames = h3TinyFrames
@@ -467,8 +504,16 @@ func resolveVideoGenerationConfig(m *Model, req openai.VideoCreateRequest) (mode
 		}
 	}
 	if cfg.Steps <= 0 {
-		if isLtxProfile(cfg.Profile) {
-			cfg.Steps = 6
+		if isLtxMLX13BProfile(cfg.Profile) {
+			cfg.Steps = ltxMlx13BDefaultSteps
+		} else if isLtxMLXProfile(cfg.Profile) {
+			cfg.Steps = ltxMlxDefaultSteps
+		} else if isLtxProfile(cfg.Profile) {
+			if isLtx2BProfile(cfg.Profile) {
+				cfg.Steps = ltx2bDefaultSteps
+			} else {
+				cfg.Steps = 6
+			}
 		} else if isH3Profile(cfg.Profile) {
 			if isH3Canvas768(cfg.Profile) {
 				cfg.Steps = h3768DefaultSteps
@@ -480,8 +525,16 @@ func resolveVideoGenerationConfig(m *Model, req openai.VideoCreateRequest) (mode
 		}
 	}
 	if cfg.Size == "" {
-		if isLtxProfile(cfg.Profile) {
-			cfg.Size = "768x512"
+		if isLtxMLX13BProfile(cfg.Profile) {
+			cfg.Size = ltxMlx13BDefaultSize
+		} else if isLtxMLXProfile(cfg.Profile) {
+			cfg.Size = ltxMlxDefaultSize
+		} else if isLtxProfile(cfg.Profile) {
+			if isLtx2BProfile(cfg.Profile) {
+				cfg.Size = ltx2bDefaultSize
+			} else {
+				cfg.Size = "768x512"
+			}
 		} else if isH3Profile(cfg.Profile) {
 			if isH3Canvas768(cfg.Profile) {
 				cfg.Size = h3768Size
@@ -565,6 +618,27 @@ func wanMMGPQuantize(cfg model.VideoGenerationConfig) string {
 	return "0"
 }
 
+func firstStillInDir(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return ""
+	}
+	return filepath.Join(dir, names[0])
+}
+
 func isWanTI2VProfile(profile string) bool {
 	p := strings.ToLower(strings.TrimSpace(profile))
 	return p == wanProfile22TI2V5B || strings.Contains(p, "ti2v")
@@ -572,7 +646,35 @@ func isWanTI2VProfile(profile string) bool {
 
 func isLtxProfile(profile string) bool {
 	p := strings.ToLower(strings.TrimSpace(profile))
-	return p == ltxProfile13BDistill || strings.HasPrefix(p, "ltxv") || strings.HasPrefix(p, "ltx")
+	return p == ltxProfile13BDistill || p == ltxProfile2BDistill || strings.HasPrefix(p, "ltxv") || strings.HasPrefix(p, "ltx")
+}
+
+func isLtxMLXProfile(profile string) bool {
+	p := strings.ToLower(strings.TrimSpace(profile))
+	return p == ltxProfile2BMlx || p == ltxProfile13BMlx || strings.Contains(p, "mlx")
+}
+
+func isLtxMLX13BProfile(profile string) bool {
+	p := strings.ToLower(strings.TrimSpace(profile))
+	if !isLtxMLXProfile(p) {
+		return false
+	}
+	return p == ltxProfile13BMlx || strings.Contains(p, "13b")
+}
+
+func isLtxMLXJob(vcfg model.VideoGenerationConfig) bool {
+	if strings.EqualFold(strings.TrimSpace(vcfg.Runner), "ltx-mlx") {
+		return true
+	}
+	return isLtxMLXProfile(vcfg.Profile)
+}
+
+func isLtx2BProfile(profile string) bool {
+	if isLtxMLXProfile(profile) {
+		return false
+	}
+	p := strings.ToLower(strings.TrimSpace(profile))
+	return p == ltxProfile2BDistill || strings.Contains(p, "2b")
 }
 
 func isH3Profile(profile string) bool {
@@ -809,21 +911,10 @@ func buildWanVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 	if keyframeDir != "" {
 		env["VIDEO_KEYFRAME_DIR"] = keyframeDir
 		env["WAN_KEYFRAME_DIR"] = keyframeDir
-		// Wrapper removes the staging dir after success or failure.
 		env["VIDEO_CLEANUP_KEYFRAME_DIR"] = "1"
-		if entries, err := os.ReadDir(keyframeDir); err == nil {
-			names := make([]string, 0, len(entries))
-			for _, e := range entries {
-				if !e.IsDir() {
-					names = append(names, e.Name())
-				}
-			}
-			sort.Strings(names)
-			if len(names) > 0 {
-				first := filepath.Join(keyframeDir, names[0])
-				env["WAN_IMAGE"] = first
-				env["VIDEO_IMAGE"] = first
-			}
+		if first := firstStillInDir(keyframeDir); first != "" {
+			env["WAN_IMAGE"] = first
+			env["VIDEO_IMAGE"] = first
 		}
 	}
 
@@ -865,7 +956,7 @@ func applyWanCJobEnv(env map[string]string, cfg model.ConfigV2, wanCLI string) {
 }
 
 // buildLtxVideoPayload turns a manifest + request into run_script data for Wan2GP LTXV.
-func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, modelName, prompt string, seed *int64, submittedAt time.Time) (wanVideoJobPayload, error) {
+func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, modelName, prompt string, seed *int64, submittedAt time.Time, keyframeDir string) (wanVideoJobPayload, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return wanVideoJobPayload{}, errors.New("prompt is required")
 	}
@@ -873,6 +964,10 @@ func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 	repoRoot, err := trainingworker.RepoRoot()
 	if err != nil || repoRoot == "" {
 		return wanVideoJobPayload{}, errors.New("cannot locate repository root (set ZEROLLAMA_REPO or OLLAMA_TRAINING_PYTHONPATH)")
+	}
+
+	if isLtxMLXJob(vcfg) {
+		return buildLtxMlxVideoPayload(cfg, vcfg, modelName, prompt, seed, submittedAt, keyframeDir)
 	}
 
 	scriptPath := filepath.Join(repoRoot, "scripts", "video", "ltx_video_generate.py")
@@ -894,8 +989,12 @@ func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 	if st, err := os.Stat(wan2gpCkpt); err != nil || !st.IsDir() {
 		return wanVideoJobPayload{}, fmt.Errorf("Wan2GP checkpoint dir missing at %s — run ./scripts/video/install_ltx_wan2gp.sh --weights-only", wan2gpCkpt)
 	}
-	if !ltxCkptLooksPopulated(wan2gpCkpt) {
-		return wanVideoJobPayload{}, fmt.Errorf("LTXV weights missing under %s — run ./scripts/video/install_ltx_wan2gp.sh --weights-only", wan2gpCkpt)
+	if !ltxCkptLooksPopulated(wan2gpCkpt, vcfg.Profile) {
+		hint := "./scripts/video/install_ltx_wan2gp.sh --weights-only"
+		if isLtx2BProfile(vcfg.Profile) {
+			hint = "./scripts/video/install_ltx_wan2gp.sh --2b-only"
+		}
+		return wanVideoJobPayload{}, fmt.Errorf("LTXV weights missing under %s — run %s", wan2gpCkpt, hint)
 	}
 
 	wan2gpVenv := expandUserPath(modality.PathFor(cfg, "wan2gp_venv"))
@@ -916,10 +1015,14 @@ func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		timeout = t
 	}
 	if timeout <= 0 {
-		timeout = ltxDefaultTimeoutSec
+		if isLtx2BProfile(vcfg.Profile) {
+			timeout = 900
+		} else {
+			timeout = ltxDefaultTimeoutSec
+		}
 	}
 
-	modelType := "ltxv_distilled"
+	modelType := ltxWan2GPModelType(vcfg.Profile)
 	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_MODEL_TYPE")); v != "" {
 		modelType = v
 	}
@@ -961,6 +1064,170 @@ func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		VideoModel:  modelName,
 		VideoSize:   vcfg.Size,
 	}, nil
+}
+
+func buildLtxMlxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, modelName, prompt string, seed *int64, submittedAt time.Time, keyframeDir string) (wanVideoJobPayload, error) {
+	repoRoot, err := trainingworker.RepoRoot()
+	if err != nil || repoRoot == "" {
+		return wanVideoJobPayload{}, errors.New("cannot locate repository root (set ZEROLLAMA_REPO or OLLAMA_TRAINING_PYTHONPATH)")
+	}
+	scriptPath := filepath.Join(repoRoot, "scripts", "video", "ltx_mlx_generate.py")
+	if _, err := os.Stat(scriptPath); err != nil {
+		return wanVideoJobPayload{}, fmt.Errorf("ltx-mlx wrapper not found at %s", scriptPath)
+	}
+	modelDir := expandUserPath(modality.PathFor(cfg, "ltx_mlx_model_dir"))
+	if modelDir == "" {
+		modelDir = expandUserPath("~/.zerollama/third_party/ltx-mlx/models/LTX")
+	}
+	if st, err := os.Stat(modelDir); err != nil || !st.IsDir() {
+		return wanVideoJobPayload{}, fmt.Errorf("ltx-mlx model dir missing at %s — run ./scripts/video/install_ltx_mlx.sh", modelDir)
+	}
+	need13B := isLtxMLX13BProfile(vcfg.Profile)
+	if !ltxMlxModelDirLooksPopulated(modelDir) {
+		return wanVideoJobPayload{}, fmt.Errorf("ltx-mlx weights missing under %s — run ./scripts/video/install_ltx_mlx.sh", modelDir)
+	}
+	if need13B && !ltxMlx13BLooksPopulated(modelDir) {
+		return wanVideoJobPayload{}, fmt.Errorf("ltx-mlx 13B weights missing under %s — run ./scripts/video/install_ltx_mlx.sh --13b-only", modelDir)
+	}
+	pythonBin := resolveLtxMlxPython(cfg, repoRoot)
+	if _, err := os.Stat(pythonBin); err != nil {
+		return wanVideoJobPayload{}, fmt.Errorf("ltx-mlx python missing at %s — run ./scripts/video/install_ltx_mlx.sh --venv-only", pythonBin)
+	}
+	outputPath := videoArtifactPath("{job_id}")
+	timeout := vcfg.TimeoutSec
+	if t := envconfig.WanVideoTimeoutSec(); t > 0 {
+		timeout = t
+	}
+	if timeout <= 0 {
+		if need13B {
+			timeout = ltxMlx13BTimeoutSec
+		} else {
+			timeout = ltxMlxTimeoutSec
+		}
+	}
+	size := strings.TrimSpace(vcfg.Size)
+	if size == "" {
+		if need13B {
+			size = ltxMlx13BDefaultSize
+		} else {
+			size = ltxMlxDefaultSize
+		}
+	}
+	frames := vcfg.Frames
+	if frames <= 0 {
+		if need13B {
+			frames = ltxMlx13BDefaultFrames
+		} else {
+			frames = ltx16gDefaultFrames
+		}
+	}
+	steps := vcfg.Steps
+	if steps <= 0 {
+		if need13B {
+			steps = ltxMlx13BDefaultSteps
+		} else {
+			steps = ltxMlxDefaultSteps
+		}
+	}
+	ditModel := "2b"
+	if need13B {
+		ditModel = "13b"
+	}
+	env := map[string]string{
+		"LTX_PROFILE":            vcfg.Profile,
+		"LTX_PROMPT":             prompt,
+		"LTX_SIZE":               size,
+		"LTX_FRAMES":             strconv.Itoa(frames),
+		"LTX_STEPS":              strconv.Itoa(steps),
+		"LTX_MODEL":              ditModel,
+		"LTX_OUTPUT_PATH":        outputPath,
+		"LTX_MLX_MODEL_DIR":      modelDir,
+		"LTX_MLX_PYTHON":         pythonBin,
+		"WAN_SUBPROCESS_TIMEOUT": strconv.Itoa(timeout),
+		"VIDEO_OUTPUT_PATH":      outputPath,
+		"VIDEO_FRAMES":           strconv.Itoa(frames),
+		"VIDEO_SIZE":             size,
+	}
+	if dry := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_DRY_RUN")); dry != "" {
+		env["LTX_DRY_RUN"] = dry
+	}
+	if seed != nil {
+		env["LTX_SEED"] = strconv.FormatInt(*seed, 10)
+		env["VIDEO_SEED"] = strconv.FormatInt(*seed, 10)
+	}
+	if keyframeDir != "" {
+		env["VIDEO_KEYFRAME_DIR"] = keyframeDir
+		env["VIDEO_CLEANUP_KEYFRAME_DIR"] = "1"
+		if first := firstStillInDir(keyframeDir); first != "" {
+			env["LTX_IMAGE"] = first
+			env["VIDEO_IMAGE"] = first
+		}
+	}
+	return wanVideoJobPayload{
+		ScriptPath:  scriptPath,
+		PythonBin:   pythonBin,
+		WorkingDir:  repoRoot,
+		Env:         env,
+		Timeout:     timeout,
+		OutputPath:  outputPath,
+		SubmittedAt: submittedAt.UTC().Format(time.RFC3339),
+		VideoModel:  modelName,
+		VideoSize:   size,
+	}, nil
+}
+
+func resolveLtxMlxPython(cfg model.ConfigV2, repoRoot string) string {
+	if p := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_MLX_PYTHON")); p != "" {
+		return p
+	}
+	if p := expandUserPath(modality.PathFor(cfg, "ltx_mlx_venv")); p != "" {
+		for _, name := range []string{"python3", "python"} {
+			cand := filepath.Join(p, "bin", name)
+			if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+				return cand
+			}
+		}
+	}
+	home := expandUserPath("~/.zerollama/third_party/ltx-mlx/venv/bin/python3")
+	if st, err := os.Stat(home); err == nil && !st.IsDir() {
+		return home
+	}
+	sibling := filepath.Join(filepath.Dir(repoRoot), "ltx-mlx", ".venv", "bin", "python3")
+	if st, err := os.Stat(sibling); err == nil && !st.IsDir() {
+		return sibling
+	}
+	if p, err := exec.LookPath("python3"); err == nil {
+		return p
+	}
+	return "/usr/bin/python3"
+}
+
+func ltxMlxModelDirLooksPopulated(dir string) bool {
+	if st, err := os.Stat(filepath.Join(dir, "tokenizer", "spiece.model")); err != nil || st.IsDir() {
+		return false
+	}
+	if st, err := os.Stat(filepath.Join(dir, "text_encoder", "config.json")); err != nil || st.IsDir() {
+		return false
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*.safetensors"))
+	if err != nil || len(matches) == 0 {
+		matches, err = filepath.Glob(filepath.Join(dir, "ltxv-2b-0.9.8-distilled*.safetensors"))
+	}
+	return err == nil && len(matches) > 0
+}
+
+func ltxMlx13BLooksPopulated(dir string) bool {
+	cands := []string{
+		filepath.Join(dir, "LTX 13B", "ltxv-13b-0.9.8-distilled.safetensors"),
+		filepath.Join(dir, "ltxv-13b-0.9.8-distilled.safetensors"),
+	}
+	for _, p := range cands {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Size() > 0 {
+			return true
+		}
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "**", "ltxv-13b-0.9.8-distilled*.safetensors"))
+	return err == nil && len(matches) > 0
 }
 
 func buildH3VideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, modelName, prompt string, seed *int64, submittedAt time.Time) (wanVideoJobPayload, error) {
@@ -1094,6 +1361,13 @@ func h3CkptLooksPopulated(dir string) bool {
 	return false
 }
 
+func ltxWan2GPModelType(profile string) string {
+	if isLtx2BProfile(profile) {
+		return "ltxv_2b_distilled"
+	}
+	return "ltxv_distilled"
+}
+
 func ltxMMGPProfile(cfg model.VideoGenerationConfig) string {
 	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_MMGP_PROFILE")); v != "" {
 		return v
@@ -1101,13 +1375,22 @@ func ltxMMGPProfile(cfg model.VideoGenerationConfig) string {
 	if cfg.VRAMTier == "16g" {
 		return "5"
 	}
+	if isLtx2BProfile(cfg.Profile) {
+		return "4"
+	}
 	return "4"
 }
 
-func ltxCkptLooksPopulated(dir string) bool {
+func ltxCkptLooksPopulated(dir, profile string) bool {
 	need := []string{
 		"ltxv_0.9.8_13B_distilled_quanto_bf16_int8.safetensors",
 		"ltxv_0.9.7_VAE.safetensors",
+	}
+	if isLtx2BProfile(profile) {
+		need = []string{
+			"ltxv-2b-0.9.8-distilled-fp8.safetensors",
+			"ltxv_0.9.7_VAE.safetensors",
+		}
 	}
 	for _, n := range need {
 		if st, err := os.Stat(filepath.Join(dir, n)); err != nil || st.IsDir() || st.Size() < 1024 {
@@ -1263,4 +1546,3 @@ func completedVideoOutputFromJob(jobJSON json.RawMessage) (path string, httpStat
 		return "", http.StatusBadRequest, fmt.Errorf("video job status %q", job.Status)
 	}
 }
-

@@ -101,6 +101,23 @@ func TestParseKeyframeRefs(t *testing.T) {
 	if err != nil || session != "anim-1" || labels[0] != "kf0" {
 		t.Fatalf("composite: %q %v err=%v", session, labels, err)
 	}
+
+	session, labels, err = ParseKeyframeRefs(map[string]any{
+		"media_session":     "anim-1",
+		"first_frame_image": "kf0",
+	})
+	if err != nil || session != "anim-1" || len(labels) != 1 || labels[0] != "kf0" {
+		t.Fatalf("first_frame: %q %v err=%v", session, labels, err)
+	}
+
+	session, labels, err = ParseKeyframeRefs(map[string]any{
+		"media_session":    "anim-1",
+		"first_frame_image": "kf0",
+		"last_frame_image":  "final",
+	})
+	if err != nil || len(labels) != 2 || labels[1] != "final" {
+		t.Fatalf("first+last: %q %v err=%v", session, labels, err)
+	}
 }
 
 func TestMaterialize(t *testing.T) {

@@ -45,6 +45,17 @@ func TestExtractThinking(t *testing.T) {
 			wantThink:   "need a tool",
 			wantContent: "<tool_call>{\"name\":\"get_time\"}</tool_call>",
 		},
+		{
+			// </think> inside an open tool arg is payload (mlx-serve thinkCloseIsToolCallPayload)
+			in:          "<think>need a tool\n<tool_call>{\"note\":\"see </think> later\",\"name\":\"get_time\"}</tool_call>",
+			wantThink:   "need a tool",
+			wantContent: "<tool_call>{\"note\":\"see </think> later\",\"name\":\"get_time\"}</tool_call>",
+		},
+		{
+			in:          "<think>plan </think>answer",
+			wantThink:   "plan ",
+			wantContent: "answer",
+		},
 	}
 	for i, tt := range tests {
 		parser := Parser{

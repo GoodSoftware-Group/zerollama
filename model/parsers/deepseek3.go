@@ -92,7 +92,7 @@ func (deepseekEventToolCall) isDeepSeekEvent()        {}
 
 func (p *DeepSeek3Parser) Add(s string, done bool) (content string, thinking string, calls []api.ToolCall, err error) {
 	p.buffer.WriteString(s)
-	events := p.parseEvents()
+	events := p.parseEvents(done)
 
 	var toolCalls []api.ToolCall
 	var contentSb strings.Builder
@@ -116,13 +116,13 @@ func (p *DeepSeek3Parser) Add(s string, done bool) (content string, thinking str
 	return contentSb.String(), thinkingSb.String(), toolCalls, nil
 }
 
-func (p *DeepSeek3Parser) parseEvents() []deepseekEvent {
+func (p *DeepSeek3Parser) parseEvents(done bool) []deepseekEvent {
 	var all []deepseekEvent
 
 	keepLooping := true
 	for keepLooping {
 		var events []deepseekEvent
-		events, keepLooping = p.eat()
+		events, keepLooping = p.eat(done)
 		if len(events) > 0 {
 			all = append(all, events...)
 		}
@@ -131,7 +131,7 @@ func (p *DeepSeek3Parser) parseEvents() []deepseekEvent {
 	return all
 }
 
-func (p *DeepSeek3Parser) eat() ([]deepseekEvent, bool) {
+func (p *DeepSeek3Parser) eat(done bool) ([]deepseekEvent, bool) {
 	var events []deepseekEvent
 	bufStr := p.buffer.String()
 	if bufStr == "" {
@@ -241,14 +241,53 @@ func (p *DeepSeek3Parser) eat() ([]deepseekEvent, bool) {
 		}
 
 		if idx := strings.Index(bufStr, deepseekToolCallsEndTag); idx != -1 {
+			prefix := bufStr[:idx]
 			remaining := bufStr[idx+len(deepseekToolCallsEndTag):]
 			remaining = strings.TrimLeftFunc(remaining, unicode.IsSpace)
+
+			if begin := strings.Index(prefix, deepseekToolCallBeginTag); begin != -1 {
+				inner := prefix[begin+len(deepseekToolCallBeginTag):]
+				if strings.Index(inner, deepseekToolCallEndTag) == -1 {
+					p.buffer.Reset()
+					p.buffer.WriteString(remaining)
+					p.state = DeepSeekCollectingContent
+					if tc, ok := salvageDeepSeekToolCall(inner); ok {
+						events = append(events, deepseekEventToolCall{toolCall: tc})
+					}
+					return events, remaining != ""
+				}
+			}
 
 			p.buffer.Reset()
 			p.buffer.WriteString(remaining)
 			p.state = DeepSeekCollectingContent
 
-			return events, true
+			return events, remaining != ""
+		}
+
+		if done {
+			if idx := strings.Index(bufStr, deepseekToolCallBeginTag); idx != -1 {
+				startIdx := idx + len(deepseekToolCallBeginTag)
+				rest := bufStr[startIdx:]
+				if next := strings.Index(rest, deepseekToolCallBeginTag); next != -1 {
+					rest = rest[:next]
+				}
+				if end := strings.Index(rest, deepseekToolCallsEndTag); end != -1 {
+					rest = rest[:end]
+				}
+				if end := strings.Index(rest, deepseekToolCallEndTag); end != -1 {
+					rest = rest[:end]
+				}
+				p.buffer.Reset()
+				p.state = DeepSeekCollectingContent
+				if tc, ok := salvageDeepSeekToolCall(rest); ok {
+					events = append(events, deepseekEventToolCall{toolCall: tc})
+				}
+				return events, false
+			}
+			p.buffer.Reset()
+			p.state = DeepSeekCollectingContent
+			return events, false
 		}
 
 		return events, false
@@ -296,4 +335,27 @@ func (p *DeepSeek3Parser) parseToolCallContent(content string) (api.ToolCall, er
 			Arguments: args,
 		},
 	}, nil
+}
+
+func salvageDeepSeekToolCall(content string) (api.ToolCall, bool) {
+	parts := strings.SplitN(content, deepseekToolSepTag, 2)
+	name := strings.TrimSpace(parts[0])
+	if name == "" {
+		return api.ToolCall{}, false
+	}
+	args := api.ToolCallFunctionArguments{}
+	if len(parts) == 2 {
+		raw := strings.TrimSpace(parts[1])
+		if raw != "" {
+			if err := json.Unmarshal([]byte(raw), &args); err != nil {
+				args = api.ToolCallFunctionArguments{}
+			}
+		}
+	}
+	return api.ToolCall{
+		Function: api.ToolCallFunction{
+			Name:      name,
+			Arguments: args,
+		},
+	}, true
 }

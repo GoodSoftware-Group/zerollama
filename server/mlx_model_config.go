@@ -12,6 +12,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/types/model"
 	xserver "github.com/ollama/ollama/x/server"
 )
@@ -24,6 +25,7 @@ func enrichMLXModelConfig(m *Model) {
 	if m == nil || !m.IsMLX() {
 		return
 	}
+	loadMLXGenerationSampling(m)
 	n := model.ParseName(m.Name)
 	info, err := xserver.GetSafetensorsLLMInfo(n)
 	if err != nil {
@@ -65,6 +67,29 @@ func enrichMLXModelConfig(m *Model) {
 	}
 	if m.Config.ContextLen == 0 && arch == "gemma4" {
 		m.Config.ContextLen = 131072
+	}
+	if v, ok := info["general.supports_mtp"].(bool); ok && v {
+		m.EmbeddedMTP = true
+	}
+}
+
+func loadMLXGenerationSampling(m *Model) {
+	if m == nil || !m.IsMLX() || m.genSamplingLoaded {
+		return
+	}
+	m.genSamplingLoaded = true
+	n := model.ParseName(m.Name)
+	mf, err := manifest.ParseNamedManifest(n)
+	if err != nil {
+		return
+	}
+	var raw map[string]any
+	if err := mf.ReadConfigJSON("generation_config.json", &raw); err != nil {
+		return
+	}
+	m.GenSampling = api.SamplingMapFromGenerationConfigMap(raw)
+	if len(m.GenSampling) > 0 {
+		slog.Debug("mlx generation_config sampling", "model", m.ShortName, "keys", len(m.GenSampling))
 	}
 }
 

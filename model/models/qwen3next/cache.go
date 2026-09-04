@@ -15,6 +15,28 @@ var (
 // HybridCache adapts the shared recurrent cache base for Qwen3-Next naming.
 type HybridCache struct {
 	*kvcache.Recurrent
+	mtpPair    bool
+	serialGDN  bool
+}
+
+func (c *HybridCache) SetMTPPair(v bool) {
+	if c != nil {
+		c.mtpPair = v
+	}
+}
+
+func (c *HybridCache) MTPPair() bool {
+	return c != nil && c.mtpPair
+}
+
+func (c *HybridCache) SetSerialGDN(v bool) {
+	if c != nil {
+		c.serialGDN = v
+	}
+}
+
+func (c *HybridCache) SerialGDN() bool {
+	return c != nil && c.serialGDN
 }
 
 func NewHybridCache(

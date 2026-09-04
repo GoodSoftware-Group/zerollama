@@ -76,7 +76,8 @@ func rendererForName(name string) Renderer {
 	case "cogito":
 		renderer := &CogitoRenderer{isThinking: true}
 		return renderer
-	case "deepseek3.1":
+	case "deepseek3", "deepseek3.1":
+		// create --link stored parser name "deepseek3" on renderer; registry key is 3.1.
 		renderer := &DeepSeek3Renderer{IsThinking: true, Variant: Deepseek31}
 		return renderer
 	case "olmo3":

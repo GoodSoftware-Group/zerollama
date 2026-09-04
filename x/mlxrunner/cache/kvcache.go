@@ -136,6 +136,10 @@ type kvSnapshot struct {
 	fromOffset, toOffset int
 	cache                *KVCache // issuer while lazy; nil once copied out
 
+	// packed is set when copyOut stored FP8; elem is the live SDPA dtype.
+	packed bool
+	elem   mlx.DType
+
 	// onMaterialize, if set, is fired once from copyOut with the newly-owned
 	// byte count so an owner (e.g. the trie's pagedOutBytes counter) can pick
 	// up bytes that were free while the snapshot was lazy.
@@ -176,6 +180,7 @@ func (s *kvSnapshot) copyOut() {
 	vCopy := mlx.Contiguous(vSlice, false)
 	mlx.Pin(kCopy, vCopy)
 	mlx.AsyncEval(kCopy, vCopy)
+	kCopy, vCopy, s.packed, s.elem = packOwnedKV(kCopy, vCopy)
 
 	s.keys, s.values = kCopy, vCopy
 	c.dropLazySnapshot(s)
@@ -249,7 +254,8 @@ func (c *KVCache) Restore(snapshot Snapshot, target int) bool {
 
 	// Rewind to snapshot start, then feed snapshot.
 	c.offset = snap.fromOffset
-	c.appendKV(snap.keys, snap.values)
+	rk, rv := unpackOwnedKV(snap.keys, snap.values, snap.packed, snap.elem)
+	c.appendKV(rk, rv)
 
 	// Clamp to target if needed (target may be less than full snapshot).
 	if target < c.offset {
@@ -287,10 +293,13 @@ func (c *KVCache) Merge(parent, child Snapshot) Snapshot {
 	p.copyOut()
 	ch.copyOut()
 
-	mk := p.keys.Concatenate(2, ch.keys)
-	mv := p.values.Concatenate(2, ch.values)
+	pk, pv := unpackOwnedKV(p.keys, p.values, p.packed, p.elem)
+	ck, cv := unpackOwnedKV(ch.keys, ch.values, ch.packed, ch.elem)
+	mk := pk.Concatenate(2, ck)
+	mv := pv.Concatenate(2, cv)
 	mlx.Pin(mk, mv)
 	mlx.AsyncEval(mk, mv)
+	mk, mv, packed, elem := packOwnedKV(mk, mv)
 
 	p.Close()
 	ch.Close()
@@ -300,6 +309,8 @@ func (c *KVCache) Merge(parent, child Snapshot) Snapshot {
 		values:     mv,
 		fromOffset: p.fromOffset,
 		toOffset:   ch.toOffset,
+		packed:     packed,
+		elem:       elem,
 	}
 }
 
@@ -327,12 +338,15 @@ func (c *KVCache) Split(snapshot Snapshot, at int) (Snapshot, Snapshot) {
 		return p, ch
 	}
 
-	pk := mlx.Contiguous(snap.keys.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(0, splitIdx), mlx.Slice()), false)
-	pv := mlx.Contiguous(snap.values.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(0, splitIdx), mlx.Slice()), false)
-	ck := mlx.Contiguous(snap.keys.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(splitIdx, seqLen), mlx.Slice()), false)
-	cv := mlx.Contiguous(snap.values.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(splitIdx, seqLen), mlx.Slice()), false)
+	dk, dv := unpackOwnedKV(snap.keys, snap.values, snap.packed, snap.elem)
+	pk := mlx.Contiguous(dk.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(0, splitIdx), mlx.Slice()), false)
+	pv := mlx.Contiguous(dv.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(0, splitIdx), mlx.Slice()), false)
+	ck := mlx.Contiguous(dk.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(splitIdx, seqLen), mlx.Slice()), false)
+	cv := mlx.Contiguous(dv.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(splitIdx, seqLen), mlx.Slice()), false)
 	mlx.Pin(pk, pv, ck, cv)
 	mlx.AsyncEval(pk, pv, ck, cv)
+	pk, pv, pPacked, pElem := packOwnedKV(pk, pv)
+	ck, cv, cPacked, cElem := packOwnedKV(ck, cv)
 
 	snap.Close()
 
@@ -341,12 +355,16 @@ func (c *KVCache) Split(snapshot Snapshot, at int) (Snapshot, Snapshot) {
 		values:     pv,
 		fromOffset: snap.fromOffset,
 		toOffset:   at,
+		packed:     pPacked,
+		elem:       pElem,
 	}
 	ch := &kvSnapshot{
 		keys:       ck,
 		values:     cv,
 		fromOffset: at,
 		toOffset:   snap.toOffset,
+		packed:     cPacked,
+		elem:       cElem,
 	}
 	return p, ch
 }

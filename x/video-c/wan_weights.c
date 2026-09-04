@@ -1,4 +1,5 @@
 #include "wan_internal.h"
+#include "wan_lora.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,17 +12,33 @@ static const char *strip_prefix(const char *name, const char *prefix) {
   return NULL;
 }
 
+int wan_ctx_set_lora(wan_ctx *ctx, const char *path, float scale) {
+  if (!ctx || !path || !path[0])
+    return -1;
+  if (ctx->lora) {
+    fprintf(stderr, "wan-c: lora already set — one adapter per run\n");
+    return -1;
+  }
+  ctx->lora = wan_lora_open(path);
+  if (!ctx->lora)
+    return -1;
+  ctx->lora_scale = scale;
+  return 0;
+}
+
 float *wan_load_tensor_f32(wan_ctx *ctx, const char *name, size_t *nelems_out) {
   if (nelems_out)
     *nelems_out = 0;
   if (!ctx || !name)
     return NULL;
+  const char *raw_key = strip_prefix(name, "dit.");
+  if (!raw_key)
+    raw_key = name;
 
   /* Prefer on-disk safetensors for dit.* (no GGUF copy). */
   if (ctx->st) {
-    const char *raw = strip_prefix(name, "dit.");
     const st_tensor_t *t =
-        st_find_tensor(ctx->st, raw ? raw : name);
+        st_find_tensor(ctx->st, raw_key);
     if (t) {
       size_t n = st_tensor_nelems(t);
       float *buf = calloc(n, sizeof(float));
@@ -31,6 +48,10 @@ float *wan_load_tensor_f32(wan_ctx *ctx, const char *name, size_t *nelems_out) {
         free(buf);
         return NULL;
       }
+      if (ctx->lora &&
+          wan_lora_apply((const wan_lora *)ctx->lora, raw_key, buf, n,
+                         ctx->lora_scale) < 0)
+        fprintf(stderr, "wan-c: lora apply failed on %s (using base)\n", name);
       if (nelems_out)
         *nelems_out = n;
       return buf;
@@ -84,6 +105,10 @@ float *wan_load_tensor_f32(wan_ctx *ctx, const char *name, size_t *nelems_out) {
         free(buf);
         return NULL;
       }
+      if (ctx->lora &&
+          wan_lora_apply((const wan_lora *)ctx->lora, raw_key, buf, n,
+                         ctx->lora_scale) < 0)
+        fprintf(stderr, "wan-c: lora apply failed on %s (using base)\n", name);
       if (nelems_out)
         *nelems_out = n;
       return buf;

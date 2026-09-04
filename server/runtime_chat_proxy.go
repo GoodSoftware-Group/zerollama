@@ -85,6 +85,9 @@ func (s *Server) runtimeChatProxy() gin.HandlerFunc {
 
 		nPredict, limited := numPredictFromOptions(req.Options)
 		rtOpts := runtimeProxyOptions(req.Model, nPredict, limited, req.Options)
+		if limited {
+			req.Messages = api.AppendOutputBudgetGuidance(req.Messages, nPredict)
+		}
 		gguf, _ := rtOpts["gguf"].(string)
 		if s.abortIfPrepareRuntimeVRAMFailed(c, s.prepareRuntimeVRAM(c.Request.Context(), gguf, runtimeForceUnload(s, req.Options))) {
 			return
@@ -94,6 +97,20 @@ func (s *Server) runtimeChatProxy() gin.HandlerFunc {
 		}
 
 		stream := ollamaWantsStream(req.Stream)
+		nctx := numCtxFromChatOptions(rtOpts)
+		if nctx <= 0 {
+			nctx = numCtxFromChatOptions(req.Options)
+		}
+		msgs, compressionMeta, cerr := applyChatCompressionForRequest(c.Request.Context(), &req, req.Messages, nctx, req.Model, 0, s.summarizeChatHead)
+		if isChatCompressOverflow(cerr) {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": cerr.Error()})
+			return
+		}
+		if cerr != nil {
+			writeRuntimeProxyError(c, cerr)
+			return
+		}
+		req.Messages = msgs
 		payload := runtimeChatPayload(req, rtOpts, stream)
 		if stream {
 			if err := writeRuntimeStreamAccepted(c, req.Model, true); err != nil {
@@ -102,12 +119,12 @@ func (s *Server) runtimeChatProxy() gin.HandlerFunc {
 			}
 		}
 		if stream {
-			if err := forwardRuntimeNDJSON(c, "/api/chat", payload); err != nil {
+			if err := forwardRuntimeNDJSON(c, "/api/chat", payload, compressionMeta); err != nil {
 				writeRuntimeProxyError(c, err)
 			}
 			return
 		}
-		if err := forwardRuntimeChatJSON(c, payload); err != nil {
+		if err := forwardRuntimeChatJSON(c, payload, compressionMeta); err != nil {
 			writeRuntimeProxyError(c, err)
 		}
 	}

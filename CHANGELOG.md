@@ -4,11 +4,53 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Metal FA on `Library=MTL` + m4-prefill borrowings closed — Sep 2026
+
+**Why:** Discovery reports Apple GPUs as `Library=MTL`, but `FlashAttentionSupported` only matched `Metal`, so FA stayed off and quantized KV was cleared. m4-prefill-engine kernels looked like free TTFT wins; lab A/B on M4 Max showed otherwise.
+
+**Shipped:** `ml.MetalLikeLibrary` (`Metal`/`MTL`) for FA support and min-memory; discover reuses it for UMA skip. Staged `m4-prefill-shipped/` + opt-in `ZEROLLAMA_M4_PREFILL_SWIGLU` / `ZEROLLAMA_M4_PREFILL_Q8_KV` (default **off** — both regress vs stock on M4 Max). Useful product path: **FA + `OLLAMA_KV_CACHE_TYPE=q8_0`** with stock Q8→F16 FA. Lab: `scripts/phase/m4_prefill_lab_serve.sh` (`:11435`). Docs: [m4-prefill-borrowings.md](docs/m4-prefill-borrowings.md) · [findings](docs/m4-prefill-borrowings-findings.md). ROADMAP **M27**.
+
+### MLX in-place directory load (`create --link`) — Aug 2026
+
+**Why:** `create --experimental` copied every safetensors shard into blobs (~one extra model). A 90 GiB Flash pack cannot import on a full disk; GGUF already symlinks.
+
+**Shipped:** `zerollama create --experimental --link NAME` copies only JSON/tokenizer sidecars, writes `source_dir` on the config blob, and mlxrunner `mlx.Load`s the original shards (`file:` digests). Affine remap keeps HC `*.scale` (not `*.weight.scale`). Renderer alias `deepseek3` → same as `deepseek3.1` (linked tags stored the parser name). Do **not** run a non-`--link` create on that directory (create can reclaim/delete sources). Lab port only. Docs: [mlx-deepseek-v4-flash.md](docs/mlx-deepseek-v4-flash.md) · [lmstudio-import.md](docs/lmstudio-import.md).
+
+### MLX DeepSeek-V4-Flash (CSA/HCA) — Aug 2026
+
+**Why:** Local `mlx-DeepSeek-V4-Flash-2bit-DQ` (~90 GiB) is already MLX affine safetensors (`DeepseekV4ForCausalLM`). The first graph stubbed CSA/HCA as full MHA and had wrong hash-MoE weights, biased top-k mix, fake inverse RoPE, 2-D `wo_a`, and nil per-tensor quant.
+
+**Shipped:** `x/models/deepseekv4` for mlx-lm Flash. CSA/HCA + hash MoE. YaRN freqs on compress layers with **`attention_factor=1`** (not llama `attn_factor` / not HF mscale). Compressed RoPE **`k*ratio`**; SWA oldest-first; **mHC Sinkhorn + `comb.T`** as HuggingFace. **PLD parked**. `--link` create. Docs: [mlx-deepseek-v4-flash.md](docs/mlx-deepseek-v4-flash.md) · [findings](docs/mlx-deepseek-v4-flash-findings.md). ROADMAP **M26**.
+
+### MLX T=0 greedy trio + MTP norm detect (mtplx) — Aug 2026
+
+**Why:** MTPLX 2.9.2 chained greedy drafting and batched greedy accept at temperature 0 (+2.5–9.8% below 12k; worse at 16k/32k). Blind `+1.0` on any `mtp.*` pack double-shifted absolute sidecars and collapsed draft accept.
+
+**Shipped:** T=0 draft uses on-device argmax (`ZEROLLAMA_MLX_GREEDY_DRAFT_CHAIN`); accept is token equality (`ZEROLLAMA_MLX_BATCHED_GREEDY_ACCEPT`); fence `ZEROLLAMA_MLX_GREEDY_TRIO_MAX_CONTEXT` (12288). MTP RMSNorm `+1.0` is a two-signal mean detect (qk max < 1.25 and low min < 0.5), not "any mtp tensor". Prefill still leaves one seed token so spec and AR share the T=0 partition. Youssofal in-checkpoint packs can import without a blind MTP `+1`. Doctor last-run stamps `greedy_coupled` when the T=0 trio actually ran.
+
+### ggml MTP 2-token verify (causal + GDN) — Aug 2026
+
+**Why:** qwen3next binds `mtp.*` / `DraftForward`. A 2-token verify graph is only safe if a rejected draft can leave KV and GDN state as they were after the first token.
+
+**Shipped:** `ZEROLLAMA_GGML_MTP=1` (default off) drafts the next id after each decode. 2-token verify: causal trunks `RemoveKVTail` on reject; hybrid GDN serializes the pair and Restore+Remove from a first-token checkpoint. Lab only; do not load `qwen3.6-mtp` on `:11434`.
+
 ### MLX Qwen 3.6 27B MTP companion — Aug 2026
 
 **Why:** Library `qwen3.6:27b-mlx` is dense int4 with no `mtp*` tensors. mlxrunner only registered Gemma draft arches, so a Modelfile `DRAFT` of `qwen3_5_mtp` failed closed. Affine packs use `.scales`/`.biases`; unexported MTP fields were dropped by `Sweep`.
 
 **Shipped:** `RegisterDraft("qwen3_5_mtp")`, remap mlx-lm affine names, export MTP weights for pin/sweep. Local tag `qwen3.6:27b-mlx-mtp`. Counting decode 48/48 accept; prose is lower. Do not load `qwen3.6-mtp` GGUF on `:11434`.
+
+### Qwen3Next 6-bit loads without fusing gate/up — Aug 2026
+
+**Why:** `qwen3-coder-next:6bit` (~60 GiB tensors) died in `LoadWeights` (`signal: killed`) on 128 GiB UMA. Concatenating gate+up expert stacks doubled resident weights. Hermes 64k ctx was not the killer.
+
+**Shipped:** keep separate gather_qmm for gate and up when the checkpoint is not packed; materialize pinned weights in 32-array `mlx.Eval` slices. Lab solo load peaked 60.3 GiB and decoded.
+
+### Chunk Qwen3.5 expert fuse Evals — Aug 2026
+
+**Why:** Loading `qwen3-coder-next:6bit` while other MLX models were already resident hit `kIOGPUCommandBufferCallbackErrorTimeout` in `fuseGateUpProjections`. Unified RAM still looked free (~74 GiB); the watchdog killed one giant concat+Eval.
+
+**Shipped:** fuse/stack/transpose expert stacks in batches of 8 experts, then merge. Same tensors, smaller Metal command buffers.
 
 ### CUDA plugin discovery from `run/zerollama` — Aug 2026
 
@@ -16,6 +58,86 @@ All notable changes to this project are documented in this file. The format is b
 
 **Shipped:** honor `OLLAMA_LIBRARY_PATH` and Linux package dirs (`/usr/lib/ollama`, `/usr/local/lib/ollama`); prefer a root that actually has `cuda_v*` (etc.); glob those roots in GPU bootstrap; INFO when `OLLAMA_LLM_LIBRARY` is set but that plugin dir was not searched. The `~/zerollama/lib/ollama → /usr/lib/ollama` symlink is no longer required.
 
+### GGUF MTP on ggml Metal (M24 partial) — Aug 2026
+
+**Why:** Darwin `draft-mtp` goes to llama-server, which is disabled for Qwen 3.5/3.6 (hybrid SWA/GDN desync). The Go Metal engine ignored `mtp.*`, so GGUF never speculated on Metal.
+
+**Shipped:** `qwen3next` binds `mtp.fc` / `pre_fc_norm_*` / one full-attn layer (MoE or dense) and `DraftForward`. Empty heads (e.g. `eliza-1-2b`) stay AR. Speculative accept loop and llama-server re-enable are still open. Do not load `qwen3.6-mtp` on production `:11434`.
+
+### MLX tip bump + CUDA VRAM patch refresh — Aug 2026
+
+**Why:** Pin lagged `ml-explore/mlx` main by 21 commits; the CUDA allocator patch no longer matched tip (`CHECK_CUDA_ERROR` / `mem_pools_` shape), so rebuilds silently skipped VRAM fixes.
+
+**Shipped:** `MLX_VERSION` → `1f8e74e3f` (Hold GIL in AttachedData destructor). Rewrote `scripts/mlx/patch_mlx_cuda_vram.sh` (+ `_patch_mlx_cuda_vram.py`) for tip: sync `cudaMalloc`/`cudaFree`, 90% limit, disable recycle; accepts sibling/`OLLAMA_MLX_*` paths. mlx-c pin unchanged (`fba4470b`); array detach/export patches still apply (upstream [#119](https://github.com/ml-explore/mlx-c/pull/119) still open). Rebuild dylibs after pull.
+
+### FreeToken Flash-MoE advice — Aug 2026
+
+**Why:** The lab had numbers; serve still had no mapping to knobs operators can set.
+
+**Shipped:** `AdviseProfileFor` / `AdviseSlotBankK`; `zerollama freetoken` (+ `--chat` agent KV/prefill lab); `--print-env` commented if sidecar missing. Not auto `--moe-slot-bank`. Mac: no CPU miss-split, prefetch off.
+
+
+### Metal per-kind shader embed (b10615) — Aug 2026
+
+**Why:** ggml split `ggml-metal.metal` into `kernels/*.metal` and expects `_ggml_metallib_<kind>_{start,end}`. The old single MTLB `.incbin` no longer linked (`undefined _ggml_metallib_fa_start`).
+
+**Shipped:** `scripts/build/gen_ggml_metal_embed.sh` inlines CMake-equivalent UTF-8 embeds. Official `kernels/*.metal` plus each `eliza-shipped/*.metal` as its own embed kind (`GGML_METAL_LIBS`). Concatenating Eliza onto `misc` redefined QJL/Polar types and failed JIT. Invoked from `build_zerollama_mac.sh` / `go generate`. Loader JIT remains `initWithBytes` UTF-8.
+
+### Chat placeholder peel — Aug 2026
+
+**Why:** Default `keep_tail_tokens` (2048) left tool output in the unelided tail, so auto-placeholder still 413'd on small `num_ctx`.
+
+**Shipped:** placeholder keeps system prefix + last turn; **elides newest fat tools/thinking first** so the thread start stays byte-identical (FreeToken prefix KV), then peels oldest head messages only if still over `num_ctx`. Lab (`num_ctx=4096`): placeholder reuse **3017** / recompute **15** (was ~23/44 when eliding from the head). Response `elide_from` + request `compression.elide_from` stick that cut on the next append-only turn (restored tool bodies will not split prefix KV if `num_ctx` grows). Same cut is remembered **per model + `prompt_cache_key`** (256 keys, 30m) when the client omits `elide_from`; `cache_reset` or a shorter history drops it. Sticky still runs when the new prompt is under `trigger_at_ratio` (the `num_ctx` grew case), placeholder only. Native `/api/chat` reports `elide_from` relative to the client messages (Modelfile prepend is an origin offset). `/v1/responses` and `/v1/messages` fold `extra_body.prompt_cache_key` (and `cache_reset`) into that map (gin rewrite tested). Responses echo `prompt_cache_key` on the completed object. Runtime `/v1` chat proxy keeps the cut across turns from `extra_body.prompt_cache_key` alone. Expired sticky keys are pruned on write (30m). Native `zerollama run` / `--experimental` agent loop echo that cut. Go SDK: `api.ChatThread` (sticky `elide_from` on each `Chat`). OpenAPI types `ChatCompletion` / `ChatCompletionChunk` / `ChatCompletionUsage.compression_meta`. OpenAPI documents `/v1/responses` and `/v1/messages` with `compression` / `usage.compression_meta`. Native `/api/chat` stream (runtime NDJSON) puts `compression` on the done line.
+
+### MLX PLD speculative decode — Aug 2026
+
+**Why:** mlxrunner only speculated when a checkpoint shipped an MTP/draft head. Agent/code loops on plain MLX weights paid full AR. mlx-serve’s Prompt Lookup Decoding is model-agnostic.
+
+**Also:** `{% include 'chat_template.jinja' %}` is a sidecar pointer (transformers ≥5); context-overflow 400s name both token counts; `POST /api/load` + LocalAI `POST /backend/load`; `POST /api/unload`; MLX omitted sampling uses HF `generation_config.json` (`/v1` chat, completions, Responses no longer inject temp/top_p 1.0); `/v1` `top_k` / `min_p` / `typical_p` / `repetition_penalty`; MLX locally typical sampling (llama-server `typ_p`); `max_completion_tokens` alias; **`enable_pld` / `enable_mtp` per request**; MoE parks MTP unless `enable_mtp`; Qwen 3.8 omitted think is **low**; `format`/`grammar` park MLX spec; `/v1/completions` `n>1` / **`best_of>1` 400**; **`echo` prepends prompt**; **`logit_bias`** on chat/completions/Responses (MLX + llama-server); stream holds all-whitespace first chunk then prepends (FIM indent); `/v1/responses` **`background:true` 400** plus **`previous_response_id` / `conversation` / `truncation=auto` 400**; Responses **`include` 400** and **`max_tool_calls=1` keeps one tool**; Responses streams **`data: [DONE]`**; leaked **`<tool_call>` / LFM2 / Gemma / FunctionGemma / ATEM markup** is cut from assistant text; Responses usage **`cached_tokens`**; embedding **`dimensions` larger than the vector 400**; `parallel_tool_calls: false` keeps one tool call; **named `tool_choice`** keeps that function (unknown name 400; Anthropic `none` / `type:tool` too); legacy OpenAI **`functions` / `function_call`** map onto tools; truncated Qwen tool JSON salvages **name + `{}`**; OpenAI empty tool **`arguments` are `{}`**; **`finish_reason=length` wins over `tool_calls`** (Responses `incomplete` / `max_output_tokens`); leaked **`</think>` / pos-0 `<think>`** stripped from content and thinking; Qwen **`<function=` XML is parsed before JSON** (parameter values never pick the tool name); **tool-arg schema coerce + buried-key hoist** (`ZEROLLAMA_TOOL_AUTOCORRECT=0` off); `/v1/responses` **`json_object`** + nested/flat **json_schema**; `/v1/models` **`supports_mtp`** (GGUF nextn, `mtp/` sidecar, or in-weight `mtp.*`); MLX honors `stop`; FIM/reserved ids are not sampled (`ZEROLLAMA_MLX_SUPPRESS_RESERVED=0` to allow); `/v1/completions` **`suffix` FIM** on prompt-only templates; `/v1/models` `model_max_tokens` + **`capabilities` / `input_modalities` / `meta.architecture`**; in-manifest `mtp/` companion; **Qwen 3.5/3.6 in-checkpoint `mtp.*` drafts**; loop-stop 10× periods 9–64; family top_p 0.95; content-array text parts concatenate; SSE keepalive default 5s; non-stream loop-stop trims the repeated cycle; LTX MLX **`last_frame_image` 400** (first-frame `--image` only) + `first_frame_image` alias; `/v1/messages` **stop_sequence echo** (matched string + `stop_reason`); embedding/image on **chat/generate names the right endpoint**; image gen/edits **`mask` / `n>1` / `response_format=url` / `stream:true` 400**; **`reasoning_budget_tokens`** (0 off / &gt;0 on) outranks `reasoning_effort` / `enable_thinking`; think-off **closes an open `<think>`** / Muse **`to=user`**; Muse drops prior-turn **`to=self`** reasoning; **`service_tier` flex/scale/priority 400**; **`store:true` 400**; **`tool_choice` required/any/named appends a last-user must-call-tool hint**; **tight `max_tokens`/`num_predict` (&lt;12288) appends a concise-reply hint**; **`</think>` inside an open tool arg is payload**; **LFM2 truncated pythonic calls ship name + `{}`**; **missing `</tool_call>` on done still parses the body**; **`<tool_calls:` (colon) is a Qwen XML wrapper**; **Laguna bare JSON tools must name a declared function**; **Gemma dropped `<|"|>` values keep inner commas/braces**; **Gemma truncated `call:name{` ships name + `{}`**; **Laguna truncated tagged JSON ships name + `{}`**; **Glimmer truncated ATEM keeps completed params** (recipient + `{}` if not ATEM); **Harmony truncated tool JSON ships name + `{}`**; **FunctionGemma missing `<end_function_call>` still parses on done**; **DeepSeek missing tool▁call▁end still parses on done** (truncated JSON is name + `{}`); **Cogito missing tool▁call▁end still parses on done**; **Ministral truncated `[ARGS]` ships name + `{}`**; **Olmo3 missing `</function_calls>` still parses on done**; **GLM missing `</tool_call>` still parses on done** (truncated XML is name + `{}`); **Cohere truncated START_ACTION ships name + `{}`**; **empty history tool-call ids become stable `call_N`**; **stream logprobs ride the content chunk** (not reasoning); completions use four-array `tokens`/`token_logprobs`; **logprob `id` travels with each token**; completions **`logprobs:0` still returns chosen tokens** (cap 0–5). **ATEM invoke names keep the trailing identifier** (error-echo prefixes dropped).
+
+**Shipped:** default-on n-gram PLD in `x/mlxrunner` (key 3 / draft 5); host reads of lazy token arrays Eval first (park `ExpandDims` no longer SIGSEGV in `Ints`); **Qwen2/Granite/LFM2 blank-imported** so MLX tags like `tiny-agent-a-0.5b` load; `/v1`+`/api/chat` **continue_final_message** (mlx-serve mid-turn prefill; `/v1/messages` infers when last turn is assistant text); `/v1/models` **top-level `context_length`/`max_model_len`**; `/v1/messages` **`output_config.effort` + `format: json_schema`**; **`n>1` 400**; usage always has **`cached_tokens`**; loop-stop **`finish_details.repetition_loop`** (exact cycle or near-repeat); prompt + runtime gates; stacked in front of MTP/assistant; mid-request re-enable when the tail echoes the prompt; decode-only 4-bit copy of dense attention projections (L=1); **load-time 4-bit draft-head** linears (target still verifies); spec EV search **two past** the trusted frontier; sliding-window **read** of `window+L-1` on fused/prefill; fused-verify SDPA **splits** when MLX would unfuse (qL>8 @ hd 192/256, or qL×GQA>32); FP8 pack of large **paged-out** trie snapshots; auto-detect `draft/` / `drafter/` / `assistant/` / `mtp/` companions; persist spec-width tables **per context size** across restarts; persist last-8-request spec stats (`*.last.json`) for doctor / `/v1/status`; repetition loop-stop; warn (don’t abort) on a broken draft companion unless `ZEROLLAMA_MLX_MTP=require`; vision tower **1536²** pixel cap; prefill chunks shrink when unified memory is already tight (and log `mlx tune`); **`zerollama doctor` MLX knob sheet** + `mlx tune` log hints. Only `ZEROLLAMA_MLX_PLD=off` for AR benches. Borrowings: [mlx-serve-borrowings.md](docs/mlx-serve-borrowings.md).
+
+### LTXV 13B MLX + I2V (Darwin anime quality) — Aug 2026
+
+**Why:** `ltxv-2b-mlx:lab` (4-step T2V) is a prompt-iteration toy; line weight and identity drift to western cartoon. Community ltx-mlx already has 13B distilled + first-frame I2V.
+
+**Shipped:** tag `ltxv-13b-mlx:lab` (1280×720 / 41f / 8 steps); `./scripts/video/install_ltx_mlx.sh --13b-only`; MLX jobs accept `options.keyframes` as `--image`; post `LTX_LOOK=eva`. 2B tag unchanged for cheap iteration.
+
+### LTXV 2B MLX (fast Darwin) — Aug 2026
+
+**Why:** Wan2GP LTX is CUDA/PyTorch. Prompt iteration on M4 Max needs community **ltx-mlx** (4 steps, ~seconds, no torch).
+
+**Shipped:** tag `ltxv-2b-mlx:lab` → `scripts/video/ltx_mlx_generate.py` → `python -m ltx_mlx.cli`. Install `./scripts/video/install_ltx_mlx.sh`. Defaults 768×480 / 17 frames / 4 steps.
+
+### LTXV 2B distilled FP8 tag — Aug 2026
+
+**Why:** Prompt iteration and cartoon/anime prototypes do not need the 13B distilled DiT (~13 GiB quanto). Official `ltxv-2b-0.9.8-distilled-fp8.safetensors` is ~4.5 GiB.
+
+**Shipped:** tag `ltxv-2b-distilled:lab` (`POST /v1/videos`); install `--2b-only`; Wan2GP finetune `ltxv_2b_distilled` (Wan2GP has no native 2B type). Defaults 512×512 / 17 frames / 8 steps. 13B tag unchanged.
+
+### LocalAI LA14 resumable storage PUT — Aug 2026
+
+**Why:** Peer GGUF push truncated `.partial` on every PUT, so a dropped transfer restarted from byte 0.
+
+**Shipped:** `Content-Range` on `PUT /v1/blob/{digest}`; incomplete **202** + `X-Zerollama-Partial`; HEAD of a partial is not “complete” (push resumes); `PushBlob` sends the remainder.
+
+### LocalAI LA21 explicit prewarm — Aug 2026
+
+**Why:** Paying cold-start via dummy generate hid load failures inside a token loop.
+
+**Shipped:** `POST /api/load` (LocalAI `POST /backend/load`); blocks until resident; `keep_alive` / `options`; `already_loaded` from `/api/ps`. Cloud rejected.
+
+### LocalAI LA22 chat compression — Aug 2026
+
+**Why:** Long agent threads hit `num_ctx` and either 400 or silently truncate; LocalAI v4.9 compresses older turns with a small local model before infer.
+
+**Shipped:** Opt-in `compression` on `/api/chat` and `/v1/chat/completions` (or `ZEROLLAMA_CHAT_COMPRESSION=1`). Byte-estimate trigger; newest tail + system prefix kept; overflow **413** or `drop_oldest_summary`. Meta on `compression` / OpenAI `usage.compression_meta`. Cloud chat still rejected.
+
+### LocalAI LA16 rerank — Aug 2026
+
+**Why:** llama.cpp already implements Jina `/v1/rerank` but zerollama never forwarded it, so RAG clients and LocalAI-style ColBERT routing had no control-plane path.
+
+**Shipped:** `POST /v1/rerank` (aliases `/v1/reranking`, `/rerank`, `/api/rerank`) via `llm.Reranker` on llama-server. RANK-pooling GGUFs get `--reranking`. Router `classifier: rerank` / `colbert` scores policy *descriptions* against the user prompt (`reranker:` or `embedder:` is the GGUF).
 
 ### OpenAPI LocalAI control plane — Aug 2026
 

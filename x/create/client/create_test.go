@@ -75,6 +75,39 @@ PARAMETER stop ASSISTANT:
 	}
 }
 
+func TestConfigFromModelfileGenerationConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "generation_config.json"), []byte(`{"temperature":0.6,"top_k":20}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modelfile, err := parser.ParseFile(strings.NewReader("FROM " + dir + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, mfConfig, err := ConfigFromModelfile(modelfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mfConfig.Parameters["temperature"] != 0.6 {
+		t.Fatalf("temperature=%v", mfConfig.Parameters["temperature"])
+	}
+	if mfConfig.Parameters["top_k"] != 20 {
+		t.Fatalf("top_k=%v", mfConfig.Parameters["top_k"])
+	}
+
+	modelfile, err = parser.ParseFile(strings.NewReader("FROM " + dir + "\nPARAMETER temperature 0.1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, mfConfig, err = ConfigFromModelfile(modelfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mfConfig.Parameters["temperature"] != float32(0.1) {
+		t.Fatalf("PARAMETER should win, got %#v", mfConfig.Parameters["temperature"])
+	}
+}
+
 func TestModelfileConfig_Empty(t *testing.T) {
 	config := &ModelfileConfig{}
 
@@ -658,7 +691,7 @@ func TestGetRendererName(t *testing.T) {
 		{
 			name:       "deepseek model",
 			configJSON: `{"architectures": ["DeepseekV3ForCausalLM"]}`,
-			want:       "deepseek3",
+			want:       "deepseek3.1",
 		},
 		{
 			name:       "glm4 model",

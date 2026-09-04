@@ -1,0 +1,17 @@
+# CLOSED 0123/0124: Q8 KV + native FA opt-in — speed track done 2026-09-01
+#
+# Shipped (higher value than wiring PoC D=64 kernels):
+# - ZEROLLAMA_M4_PREFILL_Q8_KV=auto|always → skip Metal FA kv_f16 for Q8_0
+#   (auto: only when head_dim ≤ MAX_HEAD default 64; always/force: unconditional)
+# - Pair with OLLAMA_FLASH_ATTENTION=1 + OLLAMA_KV_CACHE_TYPE=q8_0
+# - Durable prerequisite: ml.MetalLikeLibrary (Library=MTL) so FA actually enables
+# - SET_ROWS already writes Q8_0; staged quantize_kv_to_q8_0.metal not needed
+#
+# Lab A/B (M4 Max, FA+q8 paired): native Q8 FA slower than stock kv_f16
+# (−5…−10% median on 0.5B). Default OFF. Lab serve: FA+q8, Q8_KV unset.
+#
+# Deferred forever (unless new kernel wins): staged flash_attn_q8_0_causal.metal
+# (D=64 PoC; no ggml mask/sinks/kargs).
+#
+# Docs: docs/m4-prefill-borrowings.md + findings
+# Upstream: mohamedhossammohamed/m4-prefill-engine

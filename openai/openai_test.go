@@ -12,6 +12,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/types/model"
 )
 
 // testArgs creates ToolCallFunctionArguments from a map (convenience function for tests)
@@ -59,6 +60,49 @@ func TestFromChatRequest_Basic(t *testing.T) {
 	}
 }
 
+func TestFromCompleteRequest_NGreaterThanOne(t *testing.T) {
+	n := 2
+	_, err := FromCompleteRequest(CompletionRequest{Model: "m", Prompt: "hi", N: &n})
+	if err == nil || !strings.Contains(err.Error(), "n=2") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestFromCompleteRequest_BestOfGreaterThanOne(t *testing.T) {
+	n := 2
+	_, err := FromCompleteRequest(CompletionRequest{Model: "m", Prompt: "hi", BestOf: &n})
+	if err == nil || !strings.Contains(err.Error(), "best_of=2") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestFromChatRequest_StoreTrue(t *testing.T) {
+	on := true
+	_, err := FromChatRequest(ChatCompletionRequest{
+		Model:    "m",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Store:    &on,
+	})
+	if err == nil || !strings.Contains(err.Error(), "store:true") {
+		t.Fatalf("err = %v", err)
+	}
+	off := false
+	if _, err := FromChatRequest(ChatCompletionRequest{
+		Model:    "m",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Store:    &off,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFromCompleteRequest_ServiceTierFlex(t *testing.T) {
+	_, err := FromCompleteRequest(CompletionRequest{Model: "m", Prompt: "hi", ServiceTier: "flex"})
+	if err == nil || !strings.Contains(err.Error(), "service_tier") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestFromChatRequest_WithImage(t *testing.T) {
 	imgData, _ := base64.StdEncoding.DecodeString(image)
 
@@ -97,6 +141,31 @@ func TestFromChatRequest_WithImage(t *testing.T) {
 
 	if string(result.Messages[0].Images[0]) != string(imgData) {
 		t.Error("image data mismatch")
+	}
+}
+
+func TestFromChatRequest_JoinsTextParts(t *testing.T) {
+	req := ChatCompletionRequest{
+		Model: "test-model",
+		Messages: []Message{
+			{
+				Role: "user",
+				Content: []any{
+					map[string]any{"type": "text", "text": "plan:"},
+					map[string]any{"type": "text", "text": " do the thing"},
+				},
+			},
+		},
+	}
+	result, err := FromChatRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[0].Content != "plan: do the thing" {
+		t.Fatalf("joined content = %q", result.Messages[0].Content)
+	}
+	if _, ok := result.Options["temperature"]; ok {
+		t.Fatal("omitted temperature must not be injected so generation_config can apply")
 	}
 }
 
@@ -458,8 +527,221 @@ func TestFromCompleteRequest_Basic(t *testing.T) {
 		t.Errorf("expected prompt 'Hello', got %q", result.Prompt)
 	}
 
-	if tempVal, ok := result.Options["temperature"].(float32); !ok || tempVal != 0.8 {
+	if tempVal, ok := result.Options["temperature"].(float64); !ok || tempVal < 0.799 || tempVal > 0.801 {
 		t.Errorf("expected temperature 0.8, got %v", result.Options["temperature"])
+	}
+}
+
+func TestFromCompleteRequest_OmittedSamplingDoesNotInject(t *testing.T) {
+	result, err := FromCompleteRequest(CompletionRequest{
+		Model:  "test-model",
+		Prompt: "Hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"temperature", "top_p", "top_k", "min_p", "typical_p", "frequency_penalty", "presence_penalty", "repeat_penalty"} {
+		if _, ok := result.Options[key]; ok {
+			t.Fatalf("omitted %s must not be injected so generation_config can apply", key)
+		}
+	}
+}
+
+func TestFromChatRequest_TopKAndRepetitionPenalty(t *testing.T) {
+	k := 40
+	rp := 1.1
+	result, err := FromChatRequest(ChatCompletionRequest{
+		Model: "test-model",
+		Messages: []Message{
+			{Role: "user", Content: "hi"},
+		},
+		TopK:              &k,
+		RepetitionPenalty: &rp,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := result.Options["top_k"].(int); !ok || v != 40 {
+		t.Fatalf("top_k = %v", result.Options["top_k"])
+	}
+	if v, ok := result.Options["repeat_penalty"].(float64); !ok || v != 1.1 {
+		t.Fatalf("repeat_penalty = %v", result.Options["repeat_penalty"])
+	}
+}
+
+func TestFromChatRequest_LogitBias(t *testing.T) {
+	result, err := FromChatRequest(ChatCompletionRequest{
+		Model: "test-model",
+		Messages: []Message{
+			{Role: "user", Content: "hi"},
+		},
+		LogitBias: map[string]float64{"13": -100},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := result.Options["logit_bias"].(map[int32]float32)
+	if !ok || got[13] != -100 {
+		t.Fatalf("logit_bias = %v", result.Options["logit_bias"])
+	}
+}
+
+func TestFromCompleteRequest_ExplicitZeroTopP(t *testing.T) {
+	zero := float32(0)
+	result, err := FromCompleteRequest(CompletionRequest{
+		Model:  "test-model",
+		Prompt: "Hello",
+		TopP:   &zero,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := result.Options["top_p"].(float64); !ok || v != 0 {
+		t.Fatalf("top_p = %v want 0", result.Options["top_p"])
+	}
+}
+
+func TestFromCompleteRequest_TopKAndRepetitionPenalty(t *testing.T) {
+	k := 20
+	rp := float32(1.05)
+	result, err := FromCompleteRequest(CompletionRequest{
+		Model:             "test-model",
+		Prompt:            "Hello",
+		TopK:              &k,
+		RepetitionPenalty: &rp,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := result.Options["top_k"].(int); !ok || v != 20 {
+		t.Fatalf("top_k = %v", result.Options["top_k"])
+	}
+	if v, ok := result.Options["repeat_penalty"].(float64); !ok || v < 1.049 || v > 1.051 {
+		t.Fatalf("repeat_penalty = %v", result.Options["repeat_penalty"])
+	}
+}
+
+func TestFromChatRequest_MaxCompletionTokensAlias(t *testing.T) {
+	n := 77
+	result, err := FromChatRequest(ChatCompletionRequest{
+		Model:               "test-model",
+		Messages:            []Message{{Role: "user", Content: "hi"}},
+		MaxCompletionTokens: &n,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := result.Options["num_predict"].(int); !ok || v != 77 {
+		t.Fatalf("num_predict = %v", result.Options["num_predict"])
+	}
+	if !strings.Contains(result.Messages[0].Content, api.OutputBudgetGuidance) {
+		t.Fatalf("tight max_completion_tokens should hint, got %q", result.Messages[0].Content)
+	}
+}
+
+func TestFromChatRequest_MaxTokensWinsOverCompletionTokens(t *testing.T) {
+	maxTok, maxComp := 10, 99
+	result, err := FromChatRequest(ChatCompletionRequest{
+		Model:               "test-model",
+		Messages:            []Message{{Role: "user", Content: "hi"}},
+		MaxTokens:           &maxTok,
+		MaxCompletionTokens: &maxComp,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := result.Options["num_predict"].(int); !ok || v != 10 {
+		t.Fatalf("num_predict = %v want 10", result.Options["num_predict"])
+	}
+}
+
+func TestFromChatRequest_OutputBudgetRoom(t *testing.T) {
+	n := api.OutputBudgetTightThreshold
+	result, err := FromChatRequest(ChatCompletionRequest{
+		Model:     "test-model",
+		Messages:  []Message{{Role: "user", Content: "hi"}},
+		MaxTokens: &n,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result.Messages[0].Content, api.OutputBudgetGuidance) {
+		t.Fatalf("budget at threshold must not hint, got %q", result.Messages[0].Content)
+	}
+}
+
+func TestFromChatRequest_MinPTypicalPRepeatPenalty(t *testing.T) {
+	minP, typ, rp := 0.05, 0.9, 1.15
+	k := 0
+	result, err := FromChatRequest(ChatCompletionRequest{
+		Model:         "test-model",
+		Messages:      []Message{{Role: "user", Content: "hi"}},
+		MinP:          &minP,
+		TypicalP:      &typ,
+		RepeatPenalty: &rp,
+		TopK:          &k,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := result.Options["min_p"].(float64); !ok || v != 0.05 {
+		t.Fatalf("min_p = %v", result.Options["min_p"])
+	}
+	if v, ok := result.Options["typical_p"].(float64); !ok || v != 0.9 {
+		t.Fatalf("typical_p = %v", result.Options["typical_p"])
+	}
+	if v, ok := result.Options["repeat_penalty"].(float64); !ok || v != 1.15 {
+		t.Fatalf("repeat_penalty = %v", result.Options["repeat_penalty"])
+	}
+	if v, ok := result.Options["top_k"].(int); !ok || v != 0 {
+		t.Fatalf("top_k = %v want explicit 0", result.Options["top_k"])
+	}
+}
+
+func TestFromChatRequest_EnablePLD(t *testing.T) {
+	off := false
+	result, err := FromChatRequest(ChatCompletionRequest{
+		Model:     "test-model",
+		Messages:  []Message{{Role: "user", Content: "hi"}},
+		EnablePLD: &off,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.EnablePLD == nil || *result.EnablePLD {
+		t.Fatalf("EnablePLD = %v", result.EnablePLD)
+	}
+	if v, ok := result.Options["enable_pld"].(bool); !ok || v {
+		t.Fatalf("options enable_pld = %v", result.Options["enable_pld"])
+	}
+}
+
+func TestFromChatRequest_ParallelToolCallsFalse(t *testing.T) {
+	off := false
+	result, err := FromChatRequest(ChatCompletionRequest{
+		Model:             "test-model",
+		Messages:          []Message{{Role: "user", Content: "hi"}},
+		ParallelToolCalls: &off,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ParallelToolCalls == nil || *result.ParallelToolCalls {
+		t.Fatalf("ParallelToolCalls = %v", result.ParallelToolCalls)
+	}
+}
+
+func TestChatFinishReasonLengthWinsOverTools(t *testing.T) {
+	got := chatFinishReason("length", true)
+	if got == nil || *got != "length" {
+		t.Fatalf("got %v", got)
+	}
+	got = chatFinishReason("stop", true)
+	if got == nil || *got != finishReasonToolCalls {
+		t.Fatalf("got %v", got)
+	}
+	if chatFinishReason("", true) != nil {
+		t.Fatal("empty done_reason stays nil on stream deltas")
 	}
 }
 
@@ -483,6 +765,20 @@ func TestToUsage(t *testing.T) {
 
 	if usage.TotalTokens != 30 {
 		t.Errorf("expected TotalTokens 30, got %d", usage.TotalTokens)
+	}
+	if usage.Compression != nil {
+		t.Fatal("expected nil compression_meta")
+	}
+}
+
+func TestToUsage_compressionMeta(t *testing.T) {
+	resp := api.ChatResponse{
+		Metrics:     api.Metrics{PromptEvalCount: 10, EvalCount: 2},
+		Compression: &api.ChatCompressionMeta{Mode: "placeholder", ElideFrom: 4},
+	}
+	usage := ToUsage(resp)
+	if usage.Compression == nil || usage.Compression.Mode != "placeholder" || usage.Compression.ElideFrom != 4 {
+		t.Fatalf("%+v", usage.Compression)
 	}
 }
 
@@ -524,6 +820,16 @@ func TestToUsage_cachedPromptTokens(t *testing.T) {
 	}
 	if *usage.PromptTokensDetails.CachedTokens != 150 {
 		t.Fatalf("cached_tokens=%d, want 150", *usage.PromptTokensDetails.CachedTokens)
+	}
+}
+
+func TestToUsage_alwaysCachedTokens(t *testing.T) {
+	usage := ToUsage(api.ChatResponse{Metrics: api.Metrics{PromptEvalCount: 10, EvalCount: 2}})
+	if usage.PromptTokensDetails == nil || usage.PromptTokensDetails.CachedTokens == nil {
+		t.Fatal("mlx-serve always emits cached_tokens")
+	}
+	if *usage.PromptTokensDetails.CachedTokens != 0 {
+		t.Fatalf("cached_tokens=%d want 0", *usage.PromptTokensDetails.CachedTokens)
 	}
 }
 
@@ -641,10 +947,6 @@ func TestToToolCallsPreservesIDs(t *testing.T) {
 	copy(toolCalls, original)
 	got := ToToolCalls(toolCalls)
 
-	if len(got) != len(original) {
-		t.Fatalf("expected %d tool calls, got %d", len(original), len(got))
-	}
-
 	expected := []ToolCall{
 		{
 			ID:    "call_abc123",
@@ -678,6 +980,42 @@ func TestToToolCallsPreservesIDs(t *testing.T) {
 
 	if diff := cmp.Diff(original, toolCalls, argsComparer); diff != "" {
 		t.Errorf("input tool calls mutated (-want +got):\n%s", diff)
+	}
+}
+
+func TestToToolCallsFillsEmptyIDs(t *testing.T) {
+	got := ToToolCalls([]api.ToolCall{{
+		Function: api.ToolCallFunction{Name: "ping"},
+	}})
+	if len(got) != 1 || got[0].ID != "call_0" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestToToolCallsEmptyArgumentsAreObject(t *testing.T) {
+	got := ToToolCalls([]api.ToolCall{{
+		ID:       "call_1",
+		Function: api.ToolCallFunction{Name: "ping"},
+	}})
+	if len(got) != 1 || got[0].Function.Arguments != "{}" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestFromCompletionToolCallEmptyArguments(t *testing.T) {
+	got, err := FromCompletionToolCall([]ToolCall{{
+		ID:   "call_1",
+		Type: "function",
+		Function: struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{Name: "ping", Arguments: ""},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Function.Name != "ping" || got[0].Function.Arguments.Len() != 0 {
+		t.Fatalf("%+v", got[0].Function)
 	}
 }
 
@@ -752,6 +1090,31 @@ func TestFromCompleteRequest_WithLogprobs(t *testing.T) {
 	}
 }
 
+func TestFromCompleteRequest_LogprobsZero(t *testing.T) {
+	zero := 0
+	result, err := FromCompleteRequest(CompletionRequest{Model: "m", Prompt: "Hello", Logprobs: &zero})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Logprobs {
+		t.Fatal("logprobs:0 should still enable chosen-token logprobs")
+	}
+	if result.TopLogprobs != 0 {
+		t.Fatalf("TopLogprobs=%d", result.TopLogprobs)
+	}
+}
+
+func TestFromCompleteRequest_LogprobsOutOfRange(t *testing.T) {
+	six := 6
+	if _, err := FromCompleteRequest(CompletionRequest{Model: "m", Prompt: "Hello", Logprobs: &six}); err == nil {
+		t.Fatal("expected error for logprobs=6")
+	}
+	neg := -1
+	if _, err := FromCompleteRequest(CompletionRequest{Model: "m", Prompt: "Hello", Logprobs: &neg}); err == nil {
+		t.Fatal("expected error for logprobs=-1")
+	}
+}
+
 func TestToListCompletionUsesModelIdentity(t *testing.T) {
 	modified := time.Unix(1234567890, 0).UTC()
 
@@ -791,6 +1154,108 @@ func TestToListCompletionUsesModelIdentity(t *testing.T) {
 	}
 	if result.Data[1].OwnedBy != "library" {
 		t.Fatalf("fallback owned_by = %q, want library", result.Data[1].OwnedBy)
+	}
+}
+
+func TestToListCompletionAdvertisesContextLength(t *testing.T) {
+	modified := time.Unix(1234567890, 0).UTC()
+	result := ToListCompletion(api.ListResponse{
+		Models: []api.ListModelResponse{{
+			Name:           "gemma4:e4b",
+			Model:          "gemma4:e4b",
+			ModifiedAt:     modified,
+			Details:        api.ModelDetails{ContextLength: 131072},
+			HostMaxContext: 65536,
+		}},
+	})
+	if result.Data[0].ContextLength != 131072 || result.Data[0].MaxModelLen != 131072 {
+		t.Fatalf("top-level ctx = %d/%d", result.Data[0].ContextLength, result.Data[0].MaxModelLen)
+	}
+	if result.Data[0].ModelMaxTokens != 131072 {
+		t.Fatalf("model_max_tokens = %d", result.Data[0].ModelMaxTokens)
+	}
+	if result.Data[0].Meta == nil || result.Data[0].Meta.ContextLength != 131072 {
+		t.Fatalf("meta ctx = %+v", result.Data[0].Meta)
+	}
+	if result.Data[0].SupportsMTP {
+		t.Fatal("supports_mtp should be omitted/false")
+	}
+}
+
+func TestToListCompletionAdvertisesSupportsMTP(t *testing.T) {
+	result := ToListCompletion(api.ListResponse{
+		Models: []api.ListModelResponse{{
+			Name:        "qwen3:4b",
+			Model:       "qwen3:4b",
+			SupportsMTP: true,
+			Details:     api.ModelDetails{ContextLength: 4096},
+		}},
+	})
+	if !result.Data[0].SupportsMTP {
+		t.Fatal("supports_mtp")
+	}
+	if result.Data[0].Meta == nil || !result.Data[0].Meta.SupportsMTP {
+		t.Fatalf("meta=%+v", result.Data[0].Meta)
+	}
+}
+
+func TestToListCompletionAdvertisesCapabilities(t *testing.T) {
+	result := ToListCompletion(api.ListResponse{
+		Models: []api.ListModelResponse{{
+			Name:  "qwen3:4b",
+			Model: "qwen3:4b",
+			Details: api.ModelDetails{
+				Family:           "qwen3",
+				ArchitectureType: "qwen3",
+				ContextLength:    40960,
+			},
+			Capabilities: []model.Capability{
+				model.CapabilityCompletion,
+				model.CapabilityTools,
+				model.CapabilityThinking,
+				model.CapabilityVision,
+			},
+		}},
+	})
+	row := result.Data[0]
+	want := []string{"chat", "tool_use", "streaming", "vision", "reasoning", "json_schema"}
+	if len(row.Capabilities) != len(want) {
+		t.Fatalf("capabilities=%v", row.Capabilities)
+	}
+	for i, s := range want {
+		if row.Capabilities[i] != s {
+			t.Fatalf("capabilities=%v", row.Capabilities)
+		}
+	}
+	if len(row.InputModalities) != 2 || row.InputModalities[0] != "text" || row.InputModalities[1] != "image" {
+		t.Fatalf("input_modalities=%v", row.InputModalities)
+	}
+	if row.Meta == nil || row.Meta.Architecture != "qwen3" {
+		t.Fatalf("meta=%+v", row.Meta)
+	}
+}
+
+func TestToModelAdvertisesContextFromModelInfo(t *testing.T) {
+	got := ToModel(api.ShowResponse{
+		ModifiedAt: time.Unix(1, 0),
+		ModelInfo:  map[string]any{"qwen3.context_length": float64(40960)},
+		Details:    api.ModelDetails{Family: "qwen3"},
+		Capabilities: []model.Capability{
+			model.CapabilityCompletion,
+			model.CapabilityEmbedding,
+		},
+	}, "qwen3:4b")
+	if got.ContextLength != 40960 || got.MaxModelLen != 40960 {
+		t.Fatalf("ctx=%d max=%d", got.ContextLength, got.MaxModelLen)
+	}
+	if got.ModelMaxTokens != 40960 {
+		t.Fatalf("model_max_tokens=%d", got.ModelMaxTokens)
+	}
+	if got.Meta == nil || got.Meta.ContextLength != 40960 || got.Meta.Architecture != "qwen3" {
+		t.Fatalf("meta=%+v", got.Meta)
+	}
+	if got.Capabilities[len(got.Capabilities)-1] != "embeddings" {
+		t.Fatalf("capabilities=%v", got.Capabilities)
 	}
 }
 
@@ -899,6 +1364,27 @@ func TestToChatCompletion_WithoutLogprobs(t *testing.T) {
 	// When no logprobs, Logprobs should be nil
 	if result.Choices[0].Logprobs != nil {
 		t.Error("expected Logprobs to be nil when not requested")
+	}
+}
+
+func TestToCompletion_WithLogprobs(t *testing.T) {
+	resp := api.GenerateResponse{
+		Model:    "test-model",
+		Response: "Hi",
+		Logprobs: []api.Logprob{{
+			TokenLogprob: api.TokenLogprob{Token: "Hi", Logprob: -0.1},
+		}},
+	}
+	got := ToCompletion("id", resp)
+	if got.Choices[0].Logprobs == nil || len(got.Choices[0].Logprobs.Tokens) != 1 || got.Choices[0].Logprobs.Tokens[0] != "Hi" {
+		t.Fatalf("got %+v", got.Choices[0].Logprobs)
+	}
+	if got.Choices[0].Logprobs.TextOffset[0] != 0 {
+		t.Fatalf("offset %+v", got.Choices[0].Logprobs.TextOffset)
+	}
+	chunk := ToCompleteChunk("id", resp)
+	if chunk.Choices[0].Logprobs == nil || chunk.Choices[0].Logprobs.Tokens[0] != "Hi" {
+		t.Fatalf("chunk %+v", chunk.Choices[0].Logprobs)
 	}
 }
 
@@ -1138,7 +1624,7 @@ func TestToChunks_SplitsThinkingAndContentWhenNotDone(t *testing.T) {
 	}
 }
 
-func TestToChunks_SplitSendsLogprobsOnlyOnFirstChunk(t *testing.T) {
+func TestToChunks_SplitSendsLogprobsOnContentChunk(t *testing.T) {
 	resp := api.ChatResponse{
 		Model: "test-model",
 		Message: api.Message{
@@ -1163,16 +1649,39 @@ func TestToChunks_SplitSendsLogprobsOnlyOnFirstChunk(t *testing.T) {
 	}
 
 	first := chunks[0].Choices[0]
-	if first.Logprobs == nil {
-		t.Fatal("expected first chunk to include logprobs")
-	}
-	if len(first.Logprobs.Content) != 1 || first.Logprobs.Content[0].Token != "tok" {
-		t.Fatalf("unexpected first chunk logprobs: %+v", first.Logprobs.Content)
+	if first.Logprobs != nil {
+		t.Fatalf("expected reasoning chunk logprobs nil, got %+v", first.Logprobs)
 	}
 
 	second := chunks[1].Choices[0]
-	if second.Logprobs != nil {
-		t.Fatalf("expected second chunk logprobs to be nil, got %+v", second.Logprobs)
+	if second.Logprobs == nil {
+		t.Fatal("expected content chunk to include logprobs")
+	}
+	if len(second.Logprobs.Content) != 1 || second.Logprobs.Content[0].Token != "tok" {
+		t.Fatalf("unexpected content chunk logprobs: %+v", second.Logprobs.Content)
+	}
+}
+
+func TestToChunks_ThinkingOnlyDropsLogprobs(t *testing.T) {
+	resp := api.ChatResponse{
+		Model: "test-model",
+		Message: api.Message{
+			Thinking: "reasoning",
+		},
+		Logprobs: []api.Logprob{{
+			TokenLogprob: api.TokenLogprob{Token: "tok", Logprob: -0.25},
+		}},
+	}
+	chunks := ToChunks("test-id", resp, false)
+	if len(chunks) != 1 {
+		t.Fatalf("got %d chunks", len(chunks))
+	}
+	if chunks[0].Choices[0].Logprobs != nil {
+		t.Fatalf("reasoning-only logprobs = %+v", chunks[0].Choices[0].Logprobs)
+	}
+	nonstream := ToChatCompletion("id", resp)
+	if nonstream.Choices[0].Logprobs != nil {
+		t.Fatalf("non-stream reasoning-only logprobs = %+v", nonstream.Choices[0].Logprobs)
 	}
 }
 
@@ -1317,5 +1826,29 @@ func TestFromImageEditRequest_InvalidImage(t *testing.T) {
 	_, err := FromImageEditRequest(req)
 	if err == nil {
 		t.Error("expected error for invalid image")
+	}
+}
+
+func TestRejectUnsupportedImageOpenAI(t *testing.T) {
+	n := 2
+	_, err := FromImageEditRequest(ImageEditRequest{Model: "m", Prompt: "p", Image: prefix + image, N: &n})
+	if err == nil || !strings.Contains(err.Error(), "n=2") {
+		t.Fatalf("n: %v", err)
+	}
+	_, err = FromImageEditRequest(ImageEditRequest{Model: "m", Prompt: "p", Image: prefix + image, Mask: "data:image/png;base64,xx"})
+	if err == nil || !strings.Contains(err.Error(), "mask") {
+		t.Fatalf("mask: %v", err)
+	}
+	st := true
+	_, err = FromImageEditRequest(ImageEditRequest{Model: "m", Prompt: "p", Image: prefix + image, Stream: &st})
+	if err == nil || !strings.Contains(err.Error(), "stream") {
+		t.Fatalf("stream: %v", err)
+	}
+	_, err = FromImageGenerationRequest(ImageGenerationRequest{Model: "m", Prompt: "p", ResponseFormat: "url"})
+	if err == nil || !strings.Contains(err.Error(), "response_format") {
+		t.Fatalf("url: %v", err)
+	}
+	if _, err := FromImageGenerationRequest(ImageGenerationRequest{Model: "m", Prompt: "p", N: 1}); err != nil {
+		t.Fatal(err)
 	}
 }

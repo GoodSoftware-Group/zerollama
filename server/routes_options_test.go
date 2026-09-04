@@ -2,6 +2,8 @@ package server
 
 import (
 	"testing"
+
+	"github.com/ollama/ollama/types/model"
 )
 
 func TestModelOptionsNumCtxPriority(t *testing.T) {
@@ -179,5 +181,106 @@ func TestModelOptionsDraftNumPredictDefault(t *testing.T) {
 				t.Fatalf("DraftNumPredict = %d, want %d", opts.DraftNumPredict, tt.want)
 			}
 		})
+	}
+}
+
+func TestModelOptionsGenerationConfig(t *testing.T) {
+	s := &Server{defaultNumCtx: 4096}
+	m := &Model{
+		Config: model.ConfigV2{ModelFormat: "safetensors"},
+		GenSampling: map[string]any{
+			"temperature": 0.6,
+			"top_k":       20,
+		},
+	}
+	opts, err := s.modelOptions(m, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Temperature != 0.6 {
+		t.Fatalf("temperature=%v want 0.6 from generation_config", opts.Temperature)
+	}
+	if opts.TopK != 20 {
+		t.Fatalf("top_k=%d want 20", opts.TopK)
+	}
+
+	opts, err = s.modelOptions(m, map[string]any{"temperature": 0.2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Temperature != 0.2 {
+		t.Fatalf("request temperature should win, got %v", opts.Temperature)
+	}
+
+	m.Options = map[string]any{"temperature": 0.3}
+	opts, err = s.modelOptions(m, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Temperature != 0.3 {
+		t.Fatalf("PARAMETER should win over generation_config, got %v", opts.Temperature)
+	}
+}
+
+func TestModelOptionsMLXFamilyTopP(t *testing.T) {
+	s := &Server{defaultNumCtx: 4096}
+	m := &Model{Config: model.ConfigV2{ModelFormat: "safetensors"}}
+	opts, err := s.modelOptions(m, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.TopP != 0.95 {
+		t.Fatalf("MLX family top_p=%v want 0.95 when generation_config omits it", opts.TopP)
+	}
+	opts, err = s.modelOptions(m, map[string]any{"top_p": 0.5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.TopP != 0.5 {
+		t.Fatalf("request top_p should win, got %v", opts.TopP)
+	}
+}
+
+func TestModelOptionsDropsHFIdentitySampling(t *testing.T) {
+	s := &Server{defaultNumCtx: 4096}
+	m := &Model{
+		Config:  model.ConfigV2{ModelFormat: "safetensors"},
+		Options: map[string]any{"temperature": 1.0, "top_p": 1.0},
+	}
+	opts, err := s.modelOptions(m, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Temperature != 0.8 {
+		t.Fatalf("identity temperature 1.0 should not override default 0.8, got %v", opts.Temperature)
+	}
+	if opts.TopP != 0.95 {
+		t.Fatalf("identity top_p 1.0 should get MLX family 0.95, got %v", opts.TopP)
+	}
+	opts, err = s.modelOptions(m, map[string]any{"temperature": 1.0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Temperature != 1.0 {
+		t.Fatalf("request temperature 1.0 must still apply, got %v", opts.Temperature)
+	}
+}
+
+func TestModelOptionsDeepseekV4GreedyDefault(t *testing.T) {
+	s := &Server{defaultNumCtx: 4096}
+	m := &Model{Config: model.ConfigV2{ModelFormat: "safetensors", ModelFamily: "DeepseekV4ForCausalLM"}}
+	opts, err := s.modelOptions(m, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Temperature != 0 {
+		t.Fatalf("DSv4 default temperature=%v want 0 (mlx-lm greedy)", opts.Temperature)
+	}
+	opts, err = s.modelOptions(m, map[string]any{"temperature": 0.8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Temperature != 0.8 {
+		t.Fatalf("request temperature should win, got %v", opts.Temperature)
 	}
 }

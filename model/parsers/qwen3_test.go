@@ -146,6 +146,35 @@ func TestQwen3ParserToolCall(t *testing.T) {
 	}
 }
 
+func TestQwen3ParserMissingToolCloseOnDone(t *testing.T) {
+	parser := &Qwen3Parser{hasThinkingSupport: false, defaultThinking: false}
+	parser.Init(nil, nil, &api.ThinkValue{Value: false})
+
+	input := `{"name":"get_weather","arguments":{"location":"San Francisco"}}`
+	content, thinking, calls, err := parser.Add("<tool_call>"+input, false)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if content != "" || thinking != "" || len(calls) != 0 {
+		t.Fatalf("expected no emit before done, got content=%q thinking=%q calls=%d", content, thinking, len(calls))
+	}
+
+	content, thinking, calls, err = parser.Add("", true)
+	if err != nil {
+		t.Fatalf("parse failed on done: %v", err)
+	}
+	if content != "" || thinking != "" {
+		t.Fatalf("expected empty content/thinking, got %q / %q", content, thinking)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "get_weather" {
+		t.Fatalf("expected get_weather, got %#v", calls)
+	}
+	location, ok := calls[0].Function.Arguments.Get("location")
+	if !ok || location != "San Francisco" {
+		t.Fatalf("expected location San Francisco, got %v", location)
+	}
+}
+
 func TestQwen3ParserThinkingWithToolCallBeforeThinkingClose(t *testing.T) {
 	parser := &Qwen3Parser{hasThinkingSupport: true, defaultThinking: true}
 	parser.Init(nil, nil, &api.ThinkValue{Value: true})

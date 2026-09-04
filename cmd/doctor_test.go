@@ -189,7 +189,7 @@ func TestBuildDoctorReportJSON(t *testing.T) {
 
 func TestDoctorEnsureLlamaCppSiblingScript(t *testing.T) {
 	repo := doctorRepoRoot()
-	script := filepath.Join(repo, "scripts", "ensure_llama_cpp_sibling.sh")
+	script := filepath.Join(repo, "scripts", "vendor", "ensure_llama_cpp_sibling.sh")
 	if _, err := os.Stat(script); err != nil {
 		t.Fatalf("missing ensure script: %v", err)
 	}
@@ -212,6 +212,16 @@ func TestDoctorCheckFlashMoE(t *testing.T) {
 	}
 	if c.Status != "ok" && c.Status != "warn" {
 		t.Fatalf("unexpected status %q detail=%q", c.Status, c.Detail)
+	}
+}
+
+func TestDoctorCheckFreeToken(t *testing.T) {
+	c := doctorCheckFreeToken()
+	if c.Name == "" || c.Detail == "" {
+		t.Fatal(c)
+	}
+	if c.Status != "ok" && c.Status != "warn" {
+		t.Fatalf("status %q", c.Status)
 	}
 }
 

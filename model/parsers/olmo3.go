@@ -63,17 +63,10 @@ func (olmo3ParserEventToolCalls) isOlmo3ParserEvent() {}
 func (p *Olmo3Parser) Add(s string, done bool) (content string, thinking string, calls []api.ToolCall, err error) {
 	p.buffer.WriteString(s)
 
-	if done {
-		// Drain any remaining content
-		bufStr := p.buffer.String()
-		p.buffer.Reset()
-		if p.state == olmo3StateContent && len(bufStr) > 0 {
-			return bufStr, "", nil, nil
-		}
-		return "", "", nil, nil
-	}
-
 	events := p.parseEvents()
+	if done {
+		events = append(events, p.flushOnDone()...)
+	}
 
 	var contentSb strings.Builder
 	var allCalls []api.ToolCall
@@ -92,6 +85,33 @@ func (p *Olmo3Parser) Add(s string, done bool) (content string, thinking string,
 	}
 
 	return contentSb.String(), "", allCalls, nil
+}
+
+func (p *Olmo3Parser) flushOnDone() []olmo3ParserEvent {
+	var events []olmo3ParserEvent
+	bufStr := p.buffer.String()
+	switch p.state {
+	case olmo3StateToolCalls:
+		if overlapLen := overlap(bufStr, olmo3FuncCallsCloseTag); overlapLen > 0 {
+			bufStr = bufStr[:len(bufStr)-overlapLen]
+		}
+		p.buffer.Reset()
+		p.state = olmo3StateToolCallsDone
+		if calls := salvageOlmo3FunctionCalls(bufStr); len(calls) > 0 {
+			events = append(events, olmo3ParserEventToolCalls{calls: calls})
+		}
+	case olmo3StateContent:
+		p.buffer.Reset()
+		if len(bufStr) > 0 {
+			events = append(events, olmo3ParserEventContent{content: bufStr})
+		}
+	default:
+		p.buffer.Reset()
+		if len(bufStr) > 0 {
+			events = append(events, olmo3ParserEventContent{content: bufStr})
+		}
+	}
+	return events
 }
 
 func (p *Olmo3Parser) parseEvents() []olmo3ParserEvent {
@@ -170,7 +190,9 @@ func (p *Olmo3Parser) eat() ([]olmo3ParserEvent, bool) {
 			calls, err := parseOlmo3FunctionCalls(toolCallsStr)
 			if err != nil {
 				slog.Log(context.TODO(), logutil.LevelTrace, "failed to parse olmo3 function calls", "error", err, "content", toolCallsStr)
-			} else if len(calls) > 0 {
+				calls = salvageOlmo3FunctionCalls(toolCallsStr)
+			}
+			if len(calls) > 0 {
 				events = append(events, olmo3ParserEventToolCalls{calls: calls})
 			}
 			return events, true
@@ -220,6 +242,44 @@ func parseOlmo3FunctionCalls(s string) ([]api.ToolCall, error) {
 	}
 
 	return calls, nil
+}
+
+func salvageOlmo3FunctionCalls(s string) []api.ToolCall {
+	var calls []api.ToolCall
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return calls
+	}
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		call, err := parseOlmo3SingleFunctionCall(line)
+		if err == nil {
+			calls = append(calls, call)
+			continue
+		}
+		if name, ok := olmo3TruncatedCallName(line); ok {
+			calls = append(calls, api.ToolCall{
+				Function: api.ToolCallFunction{
+					Name:      name,
+					Arguments: api.NewToolCallFunctionArguments(),
+				},
+			})
+		}
+	}
+	return calls
+}
+
+var olmo3TruncatedCallNameRe = regexp.MustCompile(`^(\w+)\(`)
+
+func olmo3TruncatedCallName(s string) (string, bool) {
+	m := olmo3TruncatedCallNameRe.FindStringSubmatch(s)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
 }
 
 // Regex to match function call: func_name(args)

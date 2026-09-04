@@ -62,6 +62,50 @@ func TestCogitoParser(t *testing.T) {
 			},
 		},
 		{
+			name: "missing_tool_call_end_on_done",
+			input: `<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>get_weather
+` + "```json\n" + `{"location":"Paris"}
+` + "```",
+			expectedToolCalls: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Index: 0,
+						Name:  "get_weather",
+						Arguments: testArgs(map[string]any{
+							"location": "Paris",
+						}),
+					},
+				},
+			},
+			tools: []api.Tool{
+				{
+					Type: "function",
+					Function: api.ToolFunction{
+						Name: "get_weather",
+						Parameters: api.ToolFunctionParameters{
+							Properties: testPropsMap(map[string]api.ToolProperty{
+								"location": {Type: api.PropertyType{"string"}},
+							}),
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "truncated_tool_json_on_done",
+			input: `<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>get_weather
+` + "```json\n" + `{"location":"Par`,
+			expectedToolCalls: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Index:     0,
+						Name:      "get_weather",
+						Arguments: testArgs(map[string]any{}),
+					},
+				},
+			},
+		},
+		{
 			name: "thinking_with_tool_call",
 			input: `I need to check the weather.</think><｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>get_weather
 ` + "```json\n" + `{"location":"Paris"}

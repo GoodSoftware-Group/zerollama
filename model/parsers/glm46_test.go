@@ -3,7 +3,6 @@ package parsers
 import (
 	"encoding/xml"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/ollama/ollama/api"
@@ -517,51 +516,110 @@ func TestGLM46ParserFinalizesCompleteToolCallOnDone(t *testing.T) {
 	}
 }
 
-func TestGLM46ParserRejectsIncompleteToolCallOnDone(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-	}{
-		{name: "empty body", input: "<tool_call>"},
-		{name: "partial tool name", input: "<tool_call>gr"},
-		{
-			name: "incomplete argument value",
-			input: `<tool_call>write
+func TestGLM46ParserSalvagesIncompleteToolCallOnDone(t *testing.T) {
+	tools := glm46FinalizationTestTools()
+
+	t.Run("empty body", func(t *testing.T) {
+		parser := GLM46Parser{}
+		parser.Init(tools, nil, nil)
+		content, thinking, calls, err := parser.Add("<tool_call>", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if content != "" || thinking != "" || len(calls) != 0 {
+			t.Fatalf("content=%q thinking=%q calls=%v", content, thinking, calls)
+		}
+	})
+
+	t.Run("partial tool name", func(t *testing.T) {
+		parser := GLM46Parser{}
+		parser.Init(tools, nil, nil)
+		_, _, calls, err := parser.Add("<tool_call>gr", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(calls) != 1 || calls[0].Function.Name != "gr" {
+			t.Fatalf("calls=%v", calls)
+		}
+		if calls[0].Function.Arguments.Len() != 0 {
+			t.Fatalf("want empty args, got %#v", calls[0].Function.Arguments)
+		}
+	})
+
+	t.Run("incomplete argument value", func(t *testing.T) {
+		parser := GLM46Parser{}
+		parser.Init(tools, nil, nil)
+		_, _, calls, err := parser.Add(`<tool_call>write
 <arg_key>path</arg_key>
 <arg_value>out.txt</arg_value>
 <arg_key>content</arg_key>
-<arg_value>partial`,
-		},
-		{
-			name: "undeclared tool",
-			input: `<tool_call>shell
+<arg_value>partial`, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(calls) != 1 || calls[0].Function.Name != "write" {
+			t.Fatalf("calls=%v", calls)
+		}
+		if calls[0].Function.Arguments.Len() != 0 {
+			t.Fatalf("must not ship partial arg_value, got %#v", calls[0].Function.Arguments)
+		}
+	})
+
+	t.Run("undeclared tool", func(t *testing.T) {
+		parser := GLM46Parser{}
+		parser.Init(tools, nil, nil)
+		_, _, calls, err := parser.Add(`<tool_call>shell
 <arg_key>command</arg_key>
-<arg_value>echo unsafe</arg_value>`,
-		},
-		{
-			name: "missing required argument",
-			input: `<tool_call>write
+<arg_value>echo unsafe</arg_value>`, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(calls) != 1 || calls[0].Function.Name != "shell" {
+			t.Fatalf("calls=%v", calls)
+		}
+		if calls[0].Function.Arguments.Len() != 0 {
+			t.Fatalf("want empty args, got %#v", calls[0].Function.Arguments)
+		}
+	})
+
+	t.Run("missing required argument", func(t *testing.T) {
+		parser := GLM46Parser{}
+		parser.Init(tools, nil, nil)
+		_, _, calls, err := parser.Add(`<tool_call>write
 <arg_key>path</arg_key>
-<arg_value>out.txt</arg_value>`,
-		},
-	}
+<arg_value>out.txt</arg_value>`, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(calls) != 1 || calls[0].Function.Name != "write" {
+			t.Fatalf("calls=%v", calls)
+		}
+		if calls[0].Function.Arguments.Len() != 0 {
+			t.Fatalf("want empty args (schema incomplete), got %#v", calls[0].Function.Arguments)
+		}
+	})
 
-	tools := glm46FinalizationTestTools()
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			parser := GLM46Parser{}
-			parser.Init(tools, nil, nil)
-
-			content, thinking, calls, err := parser.Add(tt.input, true)
-			if err == nil || !strings.Contains(err.Error(), "incomplete GLM tool call") {
-				t.Fatalf("error=%v, want incomplete GLM tool call", err)
-			}
-			if content != "" || thinking != "" || len(calls) != 0 {
-				t.Fatalf("content=%q thinking=%q calls=%v, want no output", content, thinking, calls)
-			}
-		})
-	}
+	t.Run("complete args missing closer", func(t *testing.T) {
+		parser := GLM46Parser{}
+		parser.Init(tools, nil, nil)
+		_, _, calls, err := parser.Add(`<tool_call>grep
+<arg_key>pattern</arg_key>
+<arg_value>needle</arg_value>
+<arg_key>path</arg_key>
+<arg_value>.</arg_value>`, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(calls) != 1 || calls[0].Function.Name != "grep" {
+			t.Fatalf("calls=%v", calls)
+		}
+		if pattern, ok := calls[0].Function.Arguments.Get("pattern"); !ok || pattern != "needle" {
+			t.Fatalf("pattern=%#v", pattern)
+		}
+		if path, ok := calls[0].Function.Arguments.Get("path"); !ok || path != "." {
+			t.Fatalf("path=%#v", path)
+		}
+	})
 }
 
 func glm46FinalizationTestTools() []api.Tool {

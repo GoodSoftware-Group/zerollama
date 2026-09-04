@@ -9,6 +9,18 @@ import (
 	"github.com/ollama/ollama/fs/ggml"
 )
 
+func TestMoeExpertTensorBytes(t *testing.T) {
+	ex := &ggml.Tensor{Name: "blk.0.ffn_gate_exps.weight", Kind: uint32(ggml.TensorTypeF16), Shape: []uint64{256, 128}}
+	attn := &ggml.Tensor{Name: "blk.0.attn_q.weight", Kind: uint32(ggml.TensorTypeF16), Shape: []uint64{128, 128}}
+	got := moeExpertTensorBytes([]*ggml.Tensor{ex, attn})
+	if got != int64(ex.Size()) {
+		t.Fatalf("got %d want %d (attn must not count)", got, ex.Size())
+	}
+	if moeExpertTensorBytes(nil) != 0 {
+		t.Fatal("nil tensors")
+	}
+}
+
 func TestIsMoEGGUF(t *testing.T) {
 	kv := ggml.KV{
 		"general.architecture": "qwen35moe",

@@ -3,6 +3,8 @@ package qwen25vl
 import (
 	"image"
 	"testing"
+
+	"github.com/ollama/ollama/model/imageproc"
 )
 
 func TestResizeFromGridHint(t *testing.T) {
@@ -37,5 +39,28 @@ func TestProcessImage_gridHint(t *testing.T) {
 	}
 	if grid.Height != 4 || grid.Width != 6 {
 		t.Fatalf("grid=%+v want H=4 W=6", grid)
+	}
+}
+
+func TestProcessImage_gridHintOverEngineCap(t *testing.T) {
+	p := ImageProcessor{
+		numChannels:       3,
+		patchSize:         14,
+		temporalPatchSize: 2,
+		mergeSize:         2,
+		minPixels:         56 * 56,
+		maxPixels:         imageproc.EngineMaxPixels,
+		factor:            28,
+		imageMean:         [3]float32{0.5, 0.5, 0.5},
+		imageStd:          [3]float32{0.5, 0.5, 0.5},
+	}
+	img := image.NewRGBA(image.Rect(0, 0, 200, 150))
+	// 400×400 patches × 14px >> 1536²
+	_, grid, err := p.ProcessImage(img, []int{1, 400, 400})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grid.Height*p.patchSize*grid.Width*p.patchSize > imageproc.EngineMaxPixels {
+		t.Fatalf("tower input %dx%d over engine cap", grid.Height*p.patchSize, grid.Width*p.patchSize)
 	}
 }

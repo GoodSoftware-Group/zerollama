@@ -13,6 +13,14 @@ ggml_add_backend_library(ggml-metal
                          ggml-metal-context.m
                          ggml-metal-ops.cpp
                          ggml-metal-tuning.cpp
+                         ane_ffn_policy.c
+                         ane_ffn_force_pack.c
+                         ane_ffn_force_tensors.c
+                         ane_ffn_force_swiglu_tensors.c
+                         ane_ffn_swiglu_names.c
+                         ane_ffn_swiglu_fuse.c
+                         ane_ffn_metal_hook.cpp
+                         m4_prefill_metal_hook.cpp
                         )
 
 target_link_libraries(ggml-metal PRIVATE
@@ -178,6 +186,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/polar_preht.metal
         ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/fused_attn_qjl_tbq.metal
         ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/fused_attn_qjl_polar.metal
+        ${CMAKE_CURRENT_SOURCE_DIR}/m4-prefill-shipped/m4_fused_swiglu.metal
     )
     foreach(src ${ELIZA_METAL_SOURCES})
         get_filename_component(name ${src} NAME_WE)

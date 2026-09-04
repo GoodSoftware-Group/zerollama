@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+
+	"github.com/ollama/ollama/api"
 )
 
 func TestHeaderParsing(t *testing.T) {
@@ -550,5 +552,21 @@ func TestHarmonyParserFlushRemainderMalformedAssistant(t *testing.T) {
 	}
 	if content != ", the" {
 		t.Fatalf("content = %q, want %q", content, ", the")
+	}
+}
+
+func TestHarmonyTruncatedToolJSONOnDone(t *testing.T) {
+	h := NewHarmonyMessageHandler()
+	weather := api.Tool{Type: "function", Function: api.ToolFunction{Name: "get_weather"}}
+	h.Init([]api.Tool{weather}, nil, nil)
+	_, _, calls, err := h.Add(`<|channel|>commentary to=functions.get_weather <|constrain|>json<|message|>{"location":"SF"`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "get_weather" {
+		t.Fatalf("calls=%v", calls)
+	}
+	if calls[0].Function.Arguments.Len() != 0 {
+		t.Fatalf("truncated JSON must ship {}, got %#v", calls[0].Function.Arguments)
 	}
 }

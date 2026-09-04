@@ -36,6 +36,10 @@ DRAFT /Users/user1/Sites/inference/hf/Qwen3.6-27B-MTP-4bit
 
 Skip `--draft-quantize`. Binary must include `RegisterDraft("qwen3_5_mtp")`. Accept stats: `~/.ollama/mlx-round-cost/qwen3.6_27b-mlx-mtp.last.json`. Do **not** load the 22 GiB `qwen3.6-mtp` GGUF on `:11434`.
 
+**Youssofal MTPLX packs (in-checkpoint MTP):** `Qwen3.8-27B-MTPLX-Optimized-Speed` (and Bare / Quality / FP16) are trunk+heads in one safetensors tree. Import with `zerollama create` — MTP RMSNorm `+1.0` is detected at load (not at import). Lab only (`OLLAMA_HOST=127.0.0.1:11435`). Do not attach their MTP sidecar to a different trunk.
+
+**GGUF / ollamarunner:** `ZEROLLAMA_GGML_MTP=1` (default off). 2-token verify with GDN first-token checkpoint Restore on reject. llama-server `draft-mtp` stays off for `qwen35*`.
+
 ```bash
 ./scripts/build/build_zerollama_mac.sh
 ./zerollama serve

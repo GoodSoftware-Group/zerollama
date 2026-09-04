@@ -1,0 +1,26 @@
+{
+  "capabilities": ["video_gen"],
+  "modality_backends": { "video_generation": "ltx" },
+  "video_generation": {
+    "runner": "ltx-wan2gp",
+    "profile": "ltxv-2b-distilled",
+    "vram_tier": "uma",
+    "size": "512x512",
+    "frames": 17,
+    "steps": 8,
+    "precision": "fp8",
+    "quant": "fp8",
+    "offload_model": true,
+    "t5_cpu": true,
+    "vae_tiling": false,
+    "timeout_sec": 900
+  },
+  "backend_paths": {
+    "wan2gp_repo": "~/.zerollama/third_party/wan2gp/repo",
+    "wan2gp_ckpt_dir": "~/.zerollama/third_party/wan2gp/ckpts",
+    "wan2gp_venv": "~/.zerollama/third_party/wan2gp/venv"
+  },
+  "architecture": "arm64",
+  "os": "darwin",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

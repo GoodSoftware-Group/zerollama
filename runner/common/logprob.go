@@ -44,6 +44,7 @@ func CalculateLogprobs(logits []float32, selectedToken int, topK int, decoder To
 		TokenLogprob: llm.TokenLogprob{
 			Token:   selectedText,
 			Logprob: float64(selectedLogprob),
+			ID:      llm.IntPtr(selectedToken),
 		},
 	}
 
@@ -70,6 +71,7 @@ func CalculateLogprobs(logits []float32, selectedToken int, topK int, decoder To
 			topLogprobs[i] = llm.TokenLogprob{
 				Token:   tokenText,
 				Logprob: float64(pairs[i].logprob),
+				ID:      llm.IntPtr(pairs[i].tokenID),
 			}
 		}
 		result.TopLogprobs = topLogprobs

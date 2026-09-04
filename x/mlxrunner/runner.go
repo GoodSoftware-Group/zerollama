@@ -221,7 +221,7 @@ func loadTensorsFromManifest(root *model.Root) (map[string]*mlx.Array, error) {
 	}
 
 	allTensors := remapLoadedTensors(rawTensors)
-	slog.Info("Loaded tensors from manifest", "count", len(allTensors))
+	slog.Info("Loaded tensors from manifest", "count", len(allTensors), "source_dir", root.Manifest.SourceDir)
 	return allTensors, nil
 }
 
@@ -239,9 +239,15 @@ func remapLoadedTensors(rawTensors map[string]*mlx.Array) map[string]*mlx.Array 
 			continue
 		}
 		if strings.HasSuffix(name, ".scale") {
-			baseName := strings.TrimSuffix(name, ".scale")
-			allTensors[baseName+"_scale"] = arr
-			scaleBaseNames[baseName] = true
+			// Affine quant companions are `*.weight.scale`. DeepSeek-V4 HC mix
+			// tensors are literally named `attn_hc.scale` / `hc_head.scale`.
+			if strings.HasSuffix(name, ".weight.scale") {
+				baseName := strings.TrimSuffix(name, ".scale")
+				allTensors[baseName+"_scale"] = arr
+				scaleBaseNames[baseName] = true
+			} else {
+				allTensors[name] = arr
+			}
 		}
 	}
 

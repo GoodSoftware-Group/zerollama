@@ -1026,15 +1026,35 @@ func TestNormalize(t *testing.T) {
 				if err == nil {
 					t.Errorf("Expected error for input %v, but got none", tc.input)
 				}
-			} else {
-				if err != nil {
-					t.Errorf("Unexpected error for input %v: %v", tc.input, err)
-				}
-				if !isNormalized(normalized) {
-					t.Errorf("Vector %v is not normalized", tc.input)
-				}
+				return
+			}
+			if err != nil {
+				t.Errorf("Unexpected error for input %v: %v", tc.input, err)
+				return
+			}
+			if !isNormalized(normalized) {
+				t.Errorf("Result %v is not normalized", normalized)
 			}
 		})
+	}
+}
+
+func TestApplyEmbeddingDimensions(t *testing.T) {
+	vec := []float32{3, 4} // already will be normalized by caller in handler
+	got, err := applyEmbeddingDimensions(vec, 0)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("dims 0: %v %v", got, err)
+	}
+	_, err = applyEmbeddingDimensions(vec, 8)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("want exceeds, got %v", err)
+	}
+	got, err = applyEmbeddingDimensions([]float32{3, 4, 0}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len=%d", len(got))
 	}
 }
 

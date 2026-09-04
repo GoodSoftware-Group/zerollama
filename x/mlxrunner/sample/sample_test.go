@@ -118,6 +118,18 @@ func TestSampleSingleSlotOptions(t *testing.T) {
 			want:   0, // threshold 0.5*0.7=0.35 drops all but the top token
 		},
 		{
+			name:   "typical-p keeps the locally typical token",
+			opts:   Options{Temperature: 1, TypicalP: 0.3},
+			logits: []float32{logOf(0.4), logOf(0.35), logOf(0.25)},
+			want:   1, // |−log p − H| ranks token 1 first; mass 0.35 exceeds 0.3
+		},
+		{
+			name:   "typical-p 1.0 is off",
+			opts:   Options{Temperature: 0, TypicalP: 1},
+			logits: []float32{logOf(0.4), logOf(0.35), logOf(0.25)},
+			want:   0, // greedy argmax
+		},
+		{
 			name:   "RepeatLastN=0 disables penalties",
 			opts:   Options{RepeatLastN: 0, RepeatPenalty: 2, PresencePenalty: 10},
 			priors: []int32{1},
@@ -516,5 +528,60 @@ func TestRemoveDoesNotLeakHistory(t *testing.T) {
 	}
 	if tokens[1] != 1 {
 		t.Errorf("slot 3 = %d, want 1 (token 0 penalized, no slot-1 carryover)", tokens[1])
+	}
+}
+
+func TestBannedIDsGreedy(t *testing.T) {
+	skipIfNoMLX(t)
+
+	s := New(128)
+	t.Cleanup(func() {
+		s.Free()
+		mlx.Sweep()
+	})
+	s.SetBannedIDs([]int32{0})
+	s.Add(0, Options{}, nil)
+	got := s.Sample([]int{0}, slotLogits([]float32{10, 5, 4})).Token
+	mlx.Eval(got)
+	if id := got.Int(); id != 1 {
+		t.Fatalf("got %d, want 1 (id 0 banned)", id)
+	}
+}
+
+func TestLogitBiasGreedy(t *testing.T) {
+	skipIfNoMLX(t)
+
+	s := New(128)
+	t.Cleanup(func() {
+		s.Free()
+		mlx.Sweep()
+	})
+	s.Add(0, Options{}, nil)
+	s.SetSlotLogitBias(0, map[int32]float32{2: 20})
+	got := s.Sample([]int{0}, slotLogits([]float32{10, 5, 4})).Token
+	mlx.Eval(got)
+	if id := got.Int(); id != 2 {
+		t.Fatalf("got %d, want 2 (id 2 biased)", id)
+	}
+}
+
+func TestGreedyTokenMatchesArgmax(t *testing.T) {
+	skipIfNoMLX(t)
+
+	s := New(128)
+	t.Cleanup(func() {
+		s.Free()
+		mlx.Sweep()
+	})
+	s.Add(0, Options{}, nil)
+	logits := slotLogits([]float32{1, 9, 3})
+	dist := s.Distribution(0, logits, nil)
+	got := dist.GreedyToken()
+	mlx.Eval(got)
+	if id := got.Int(); id != 1 {
+		t.Fatalf("GreedyToken = %d want 1", id)
+	}
+	if !s.Greedy(0) {
+		t.Fatal("temperature 0 must report Greedy")
 	}
 }

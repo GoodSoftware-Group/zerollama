@@ -180,6 +180,17 @@ func TestBuildModelInfo(t *testing.T) {
 	}
 }
 
+func TestBuildModelInfo_SupportsMTP(t *testing.T) {
+	info := buildModelInfo(modelConfig{ModelType: "qwen3", NumNextnPredictLayers: 1}, 0, 0)
+	if v, ok := info["general.supports_mtp"].(bool); !ok || !v {
+		t.Fatalf("nextn: %+v", info["general.supports_mtp"])
+	}
+	info = buildModelInfo(modelConfig{ModelType: "qwen3"}, 0, 0)
+	if _, ok := info["general.supports_mtp"]; ok {
+		t.Fatal("plain qwen should omit supports_mtp")
+	}
+}
+
 func TestBuildModelInfo_ArchitectureConversion(t *testing.T) {
 	tests := []struct {
 		name          string

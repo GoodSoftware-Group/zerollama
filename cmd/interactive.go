@@ -223,6 +223,7 @@ func generateInteractive(cmd *cobra.Command, opts runOptions) error {
 			opts.Model = args[1]
 			opts.Messages = []api.Message{}
 			opts.LoadedMessages = nil
+			opts.ElideFrom = nil
 			fmt.Printf("Loading model '%s'\n", opts.Model)
 			info, err := client.Show(cmd.Context(), &api.ShowRequest{Model: opts.Model})
 			if err != nil {
@@ -278,6 +279,7 @@ func generateInteractive(cmd *cobra.Command, opts runOptions) error {
 			continue
 		case strings.HasPrefix(line, "/clear"):
 			opts.Messages = []api.Message{}
+			opts.ElideFrom = nil
 			if opts.System != "" {
 				newMessage := api.Message{Role: "system", Content: opts.System}
 				opts.Messages = append(opts.Messages, newMessage)
@@ -526,7 +528,7 @@ func generateInteractive(cmd *cobra.Command, opts runOptions) error {
 
 			opts.Messages = append(opts.Messages, newMessage)
 
-			assistant, err := chat(cmd, opts)
+			assistant, err := chat(cmd, &opts)
 			if err != nil {
 				if strings.Contains(err.Error(), "does not support thinking") ||
 					strings.Contains(err.Error(), "invalid think value") {

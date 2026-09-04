@@ -399,11 +399,23 @@ func (d DeviceInfo) Driver() string {
 	return strconv.Itoa(d.DriverMajor) + "." + strconv.Itoa(d.DriverMinor)
 }
 
+// MetalLikeLibrary is true for ggml Metal backends. Discovery may report
+// Library as "Metal" or "MTL" (device id prefix MTL0); treat them the same.
+func MetalLikeLibrary(lib string) bool {
+	s := strings.ToLower(strings.TrimSpace(lib))
+	switch s {
+	case "metal", "mtl":
+		return true
+	default:
+		return strings.Contains(s, "metal")
+	}
+}
+
 // MinimumMemory reports the amount of memory that should be set aside
 // on the device for overhead (e.g. VRAM consumed by context structures independent
 // of model allocations)
 func (d DeviceInfo) MinimumMemory() uint64 {
-	if d.Library == "Metal" {
+	if MetalLikeLibrary(d.Library) {
 		return 512 * format.MebiByte
 	}
 	return 457 * format.MebiByte
@@ -537,7 +549,7 @@ func (a DeviceInfo) IsBetter(b DeviceInfo) bool {
 func FlashAttentionSupported(l []DeviceInfo) bool {
 	for _, gpu := range l {
 		supportsFA := gpu.Library == "cpu" ||
-			gpu.Name == "Metal" || gpu.Library == "Metal" ||
+			gpu.Name == "Metal" || MetalLikeLibrary(gpu.Library) ||
 			cudaFlashAttentionSupported(gpu) ||
 			gpu.Library == "ROCm" ||
 			gpu.Library == "Vulkan"

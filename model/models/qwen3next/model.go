@@ -234,6 +234,7 @@ type Model struct {
 	Output         *nn.Linear    `gguf:"output,alt:token_embd"`
 
 	Layers []Layer              `gguf:"blk"`
+	MTP    *mtpHead             `gguf:"mtp"`
 	Vision *qwen3vl.VisionModel `gguf:"v"`
 
 	ImageProcessor *qwen3vl.ImageProcessor
@@ -245,6 +246,7 @@ type Model struct {
 	visionStart      int32
 	visionEnd        int32
 	spatialMergeSize uint32
+	lastHidden       ml.Tensor
 }
 
 func (m *Model) mapPosition(id int32) int32 {
@@ -415,6 +417,7 @@ func (m *Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
 			}
 		}
 
+		m.lastHidden = hiddenStates
 		hiddenStates = m.OutputNorm.Forward(ctx, hiddenStates, m.eps)
 		return m.Output.Forward(ctx, hiddenStates), nil
 	}
@@ -439,11 +442,51 @@ func (m *Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
 		}
 	}
 
+	m.lastHidden = hiddenStates
 	hiddenStates = m.OutputNorm.Forward(ctx, hiddenStates, m.eps)
 	return m.Output.Forward(ctx, hiddenStates), nil
 }
 
+func (m *Model) HasMTP() bool {
+	return m != nil && m.MTP != nil && m.MTP.loaded()
+}
+
+func (m *Model) CausalTrunk() bool {
+	if m == nil || m.Options == nil {
+		return false
+	}
+	for _, rec := range m.isRecurrent {
+		if rec {
+			return false
+		}
+	}
+	return len(m.isRecurrent) > 0
+}
+
+func (m *Model) LastHidden() ml.Tensor {
+	if m == nil {
+		return nil
+	}
+	return m.lastHidden
+}
+
+func (m *Model) PostLoad() error {
+	if m.MTP != nil {
+		m.MTP.trim()
+		if !m.MTP.loaded() {
+			m.MTP = nil
+		}
+	}
+	return nil
+}
+
 func (m *Model) Validate() error {
+	if m.MTP != nil {
+		m.MTP.trim()
+		if !m.MTP.loaded() {
+			m.MTP = nil
+		}
+	}
 	if m.Options == nil {
 		return fmt.Errorf("qwen3next: missing model options")
 	}
@@ -680,6 +723,7 @@ func New(c fs.Config) (model.Model, error) {
 	}
 
 	m := Model{
+		MTP: newMTPHead(1, isMoE),
 		Tokenizer: tokenizer.NewBytePairEncoding(
 			&tokenizer.Vocabulary{
 				Values: c.Strings("tokenizer.ggml.tokens"),

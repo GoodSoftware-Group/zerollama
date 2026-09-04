@@ -68,7 +68,7 @@ client.chat.completions.create(
 
 **Learning:** Any path that synthesizes a new `options` map for another process must reuse the same fold helper (`proxyOptsFromV1Body` → `runtimeV1ProxyOptions`). “Parity with bind” means parity on the **wire out**, not only on in-process Go structs.
 
-**Fix:** `runtimeV1ProxyOptions` seeds client opts from `proxyOptsFromV1Body(body)` before GGUF/`num_predict` injection.
+**Fix:** `runtimeV1ProxyOptions` seeds client opts from `proxyOptsFromV1Body(body)` before GGUF/`num_predict` injection. Ingress uses `BindChatCompletionRequest` (same as ChatMiddleware) so `extra_body.compression` / `extra_body.stream_options` fold before placeholder elide — not raw `json.Unmarshal`.
 
 ---
 

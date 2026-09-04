@@ -154,7 +154,20 @@ int ggml_metal_pipeline_max_theads_per_threadgroup(struct ggml_metal_pipeline_wi
     X(UPSCALE,         upscale)        \
     X(ARGSORT,         argsort)        \
     X(POOL,            pool)           \
-    X(MISC,            misc)
+    X(MISC,            misc)           \
+    X(ELIZA_TURBO3,              turbo3)                 \
+    X(ELIZA_TURBO4,              turbo4)                 \
+    X(ELIZA_TURBO3_TCQ,          turbo3_tcq)             \
+    X(ELIZA_QJL,                 qjl)                    \
+    X(ELIZA_QJL_SET_ROWS,        qjl_set_rows)           \
+    X(ELIZA_TBQ_SET_ROWS,        tbq_set_rows)           \
+    X(ELIZA_POLAR_SET_ROWS,      polar_set_rows)         \
+    X(ELIZA_POLAR,               polar)                  \
+    X(ELIZA_POLAR_PREHT,         polar_preht)            \
+    X(ELIZA_FUSED_ATTN_QJL_TBQ,  fused_attn_qjl_tbq)     \
+    X(ELIZA_FUSED_ATTN_QJL_POLAR, fused_attn_qjl_polar)  \
+    X(ELIZA_ISTFT,               istft)                  \
+    X(M4_FUSED_SWIGLU,           m4_fused_swiglu)
 
 enum ggml_metal_lib_kind {
 #define X(e, s) GGML_METAL_LIB_##e,
@@ -784,6 +797,8 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_compile_pipeline(ggml_
 
 struct ggml_metal_encoder {
     id<MTLComputeCommandEncoder> obj;
+    id<MTLCommandBuffer>         cmd_buf; // weak to context ownership except after sync
+    bool concurrent;
 
     // latched when a required compute pipeline is nil. once set, every encode
     // call on this encoder becomes a no-op (never dispatch with unset/stale
@@ -796,6 +811,9 @@ ggml_metal_encoder_t ggml_metal_encoder_init(ggml_metal_cmd_buf_t cmd_buf_raw, b
     ggml_metal_encoder_t res = calloc(1, sizeof(struct ggml_metal_encoder));
 
     id<MTLCommandBuffer> cmd_buf = (id<MTLCommandBuffer>) cmd_buf_raw;
+
+    res->cmd_buf = cmd_buf;
+    res->concurrent = concurrent;
 
     if (concurrent) {
         res->obj = [cmd_buf computeCommandEncoderWithDispatchType: MTLDispatchTypeConcurrent];
@@ -885,11 +903,64 @@ void ggml_metal_encoder_memory_barrier(ggml_metal_encoder_t encoder) {
 }
 
 void ggml_metal_encoder_end_encoding(ggml_metal_encoder_t encoder) {
-    if (encoder->encode_failed) {
+    if (!encoder || !encoder->obj || encoder->encode_failed) {
         return;
     }
 
     [encoder->obj endEncoding];
+}
+
+ggml_metal_cmd_buf_t ggml_metal_encoder_cmd_buf(ggml_metal_encoder_t encoder) {
+    return encoder ? (ggml_metal_cmd_buf_t) encoder->cmd_buf : NULL;
+}
+
+ggml_metal_cmd_buf_t ggml_metal_encoder_sync_and_resume(
+    ggml_metal_encoder_t encoder,
+    ggml_metal_device_t  dev) {
+    if (!encoder || !encoder->obj || !encoder->cmd_buf || !dev) {
+        return NULL;
+    }
+    if (encoder->encode_failed) {
+        return NULL;
+    }
+
+    @autoreleasepool {
+        [encoder->obj endEncoding];
+        [encoder->obj release];
+        encoder->obj = nil;
+
+        id<MTLCommandBuffer> old = encoder->cmd_buf;
+        [old commit];
+        [old waitUntilCompleted];
+
+        id<MTLCommandQueue> queue = (id<MTLCommandQueue>) ggml_metal_device_get_queue(dev);
+        if (!queue) {
+            encoder->encode_failed = true;
+            return NULL;
+        }
+
+        id<MTLCommandBuffer> neu = [queue commandBufferWithUnretainedReferences];
+        if (!neu) {
+            encoder->encode_failed = true;
+            return NULL;
+        }
+        [neu retain]; // transferred to context via return value
+        [neu enqueue];
+        encoder->cmd_buf = neu;
+
+        if (encoder->concurrent) {
+            encoder->obj = [neu computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        } else {
+            encoder->obj = [neu computeCommandEncoder];
+        }
+        if (!encoder->obj) {
+            encoder->encode_failed = true;
+            return NULL;
+        }
+        [encoder->obj retain];
+
+        return (ggml_metal_cmd_buf_t) neu;
+    }
 }
 
 struct ggml_metal_device {

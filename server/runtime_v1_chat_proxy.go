@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/internal/runtimeclient"
 	"github.com/ollama/ollama/openai"
 )
@@ -30,15 +31,9 @@ func (s *Server) runtimeV1ChatCompletionsProxy() gin.HandlerFunc {
 		}
 		c.Request.Body = io.NopCloser(bytes.NewReader(body))
 
-		// Trap 77: reject unknown top-level fields before runtime forward (same floor as ChatMiddleware).
-		if err := openai.CheckUnknownChatCompletionFields(body); err != nil {
+		oreq, err := openai.BindChatCompletionRequest(body)
+		if err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
-
-		var oreq openai.ChatCompletionRequest
-		if err := json.Unmarshal(body, &oreq); err != nil {
-			c.Next()
 			return
 		}
 
@@ -82,6 +77,26 @@ func (s *Server) runtimeV1ChatCompletionsProxy() gin.HandlerFunc {
 		gguf, _ := rtOpts["gguf"].(string)
 		if s.abortIfPrepareRuntimeVRAMFailed(c, s.prepareRuntimeVRAM(c.Request.Context(), gguf, runtimeForceUnload(s, proxyOptsFromV1Body(bodyMap)))) {
 			return
+		}
+		var compressionMeta *api.ChatCompressionMeta
+		if apiReq, convErr := openai.FromChatRequest(oreq); convErr == nil && apiReq != nil {
+			nctx := numCtxFromChatOptions(rtOpts)
+			msgs, meta, cerr := applyChatCompressionForRequest(c.Request.Context(), apiReq, apiReq.Messages, nctx, oreq.Model, 0, s.summarizeChatHead)
+			if isChatCompressOverflow(cerr) {
+				c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, openai.NewError(http.StatusRequestEntityTooLarge, cerr.Error()))
+				return
+			}
+			if cerr != nil {
+				c.AbortWithStatusJSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, cerr.Error()))
+				return
+			}
+			if meta != nil {
+				compressionMeta = meta
+				c.Header("X-Zerollama-Compressed", "1")
+			}
+			if meta != nil || chatPromptHintsApplied(apiReq) {
+				bodyMap["messages"] = chatMessagesToMaps(msgs)
+			}
 		}
 		bodyMap["options"] = rtOpts
 		proxyBody, err := json.Marshal(bodyMap)
@@ -133,7 +148,8 @@ func (s *Server) runtimeV1ChatCompletionsProxy() gin.HandlerFunc {
 			}
 		}
 		c.Status(resp.StatusCode)
-		if err := copyRuntimeResponseBody(c.Writer, resp.Body); err != nil {
+		includeUsage := oreq.StreamOptions != nil && oreq.StreamOptions.IncludeUsage
+		if err := copyRuntimeV1ChatBody(c.Writer, resp, compressionMeta, includeUsage); err != nil {
 			slog.Warn("runtime v1 proxy: copy body", "error", err)
 		}
 		c.Abort()
@@ -177,6 +193,21 @@ func v1ChatNeedsLegacyRunner(oreq *openai.ChatCompletionRequest, body map[string
 			case "image_url", "input_image":
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func chatPromptHintsApplied(req *api.ChatRequest) bool {
+	if req == nil {
+		return false
+	}
+	if api.OutputBudgetIsTight(api.NumPredictFromMap(req.Options)) {
+		return true
+	}
+	for _, m := range req.Messages {
+		if strings.Contains(m.Content, api.RequiredToolCallHint) {
+			return true
 		}
 	}
 	return false

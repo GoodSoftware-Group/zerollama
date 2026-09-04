@@ -178,6 +178,7 @@ func (s *Server) renderChatPromptPrepared(
 	truncate bool,
 ) (prompt string, truncateMode string, droppedPrefix bool, hasToolSupport bool, err error) {
 	processedTools, _, hasToolSupport := prepareToolsForRender(m, tools, msgs, think)
+	msgs = api.AppendOutputBudgetGuidance(msgs, numPredict)
 
 	if !truncate || numCtx <= 0 {
 		p, err := renderPrompt(m, msgs, processedTools, think)

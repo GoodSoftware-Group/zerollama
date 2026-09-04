@@ -4,7 +4,7 @@ Zerollama can **discover**, **list**, and **pull** models already downloaded by 
 
 **Why this exists:** LM Studio and zerollama use different on-disk layouts and naming, but many operators install both on the same Mac. Re-fetching a 30–70 GB checkpoint wastes time and disk. Import-from-cache turns `zerollama pull <name>` into a local registration step when a matching directory is found.
 
-**Why not always “run in place”:** Zerollama’s blob store expects content-addressed layers under `OLLAMA_MODELS`. GGUF files can be **symlinked** into that store with near-zero extra space. MLX safetensors trees must be **repacked** into zerollama tensor blobs for the MLX runner — that costs roughly **one full model copy** plus headroom. See [Why MLX copies](#why-mlx-copies-instead-of-symlinks) below.
+**Why not always “run in place”:** Zerollama’s blob store expects content-addressed layers under `OLLAMA_MODELS`. GGUF files can be **symlinked** into that store with near-zero extra space. Default MLX create **repacks** tensors into blobs (~one full copy). Operators who already have an mlx-lm tree can skip that copy with `create --experimental --link` (manifest `source_dir`; shards stay on the original volume). See [Why MLX copies](#why-mlx-copies-instead-of-symlinks) below.
 
 ---
 
@@ -35,7 +35,7 @@ LM Studio entries in `zerollama list` show `remote_host=lmstudio` and `family=lm
 |--------------|-----------|-----------------|------------|
 | **GGUF** (`.gguf` weights) | Weight files in model dir | Symlink into blob store → GGUF convert/create | ~0 |
 | **Legacy safetensors** (`.safetensors`, no `config.json`) | Safetensors without HF layout | Symlink + safetensors→GGUF conversion | ~0 |
-| **MLX / HF safetensors** (`config.json` + `.safetensors`) | `IsSafetensorsModelDir` | Native `CreateSafetensorsModel` (no GGUF conversion) | ~model size + 512 MiB |
+| **MLX / HF safetensors** (`config.json` + `.safetensors`) | `IsSafetensorsModelDir` | Native `CreateSafetensorsModel` (no GGUF conversion), **or** `--link` in-place | ~model size + 512 MiB, or ~JSON only with `--link` |
 
 **Why two safetensors paths:** LM Studio MLX models use Hugging Face-style trees (`config.json`, sharded `.safetensors`). Converting those tensors to GGUF fails on MLX-specific dtypes (e.g. `U32`). Native import registers MLX tensor blobs instead. Older safetensors-only trees without `config.json` still go through the legacy conversion path.
 
@@ -47,9 +47,9 @@ LM Studio entries in `zerollama list` show `remote_host=lmstudio` and `family=lm
 
 1. **Blob layout:** MLX inference reads packed tensor layers in zerollama’s manifest format, not arbitrary LM Studio shard names on disk.
 2. **Integrity:** Content-addressed blobs dedupe and match what `mlxrunner` expects after create.
-3. **Tradeoff:** Import temporarily needs **~size(model) + 512 MiB** free on the filesystem that holds `OLLAMA_MODELS`. GGUF imports do not.
+3. **Tradeoff:** Default import temporarily needs **~size(model) + 512 MiB** free on the filesystem that holds `OLLAMA_MODELS`. GGUF imports do not. **`--link`:** skip the tensor copy when you accept a live path (tag breaks if the directory moves).
 
-**Future direction:** In-place or read-through loading from LM Studio paths would remove the copy requirement but needs manifest/runner changes. Tracked on [ROADMAP.md](./ROADMAP.md#lm-studio-integration).
+LM Studio pull still uses the copy path unless you `create --link` the cache directory yourself.
 
 ---
 

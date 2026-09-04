@@ -30,6 +30,7 @@ type modelTextConfig struct {
 	ExpertsPerToken       int `json:"experts_per_token"`
 	NumExpertsPerTok      int `json:"num_experts_per_tok"`
 	TopKExperts           int `json:"top_k_experts"`
+	NumNextnPredictLayers int `json:"num_nextn_predict_layers"`
 }
 
 // modelConfig represents the HuggingFace config.json structure
@@ -51,8 +52,10 @@ type modelConfig struct {
 	VocabSize             int              `json:"vocab_size"`
 	RMSNormEps            float64          `json:"rms_norm_eps"`
 	RopeTheta             float64          `json:"rope_theta"`
-	TorchDtype            string           `json:"torch_dtype"`
-	TextConfig            *modelTextConfig `json:"text_config"`
+	TorchDtype             string           `json:"torch_dtype"`
+	NumNextnPredictLayers  int              `json:"num_nextn_predict_layers"`
+	MTP                    json.RawMessage  `json:"mtp"`
+	TextConfig             *modelTextConfig `json:"text_config"`
 }
 
 // GetSafetensorsLLMInfo extracts model information from safetensors LLM models.
@@ -213,6 +216,17 @@ func buildModelInfo(config modelConfig, totalTensorBytes, tensorCount int64) map
 
 	if paramCount > 0 {
 		info["general.parameter_count"] = paramCount
+	}
+
+	nextn := config.NumNextnPredictLayers
+	if config.TextConfig != nil && config.TextConfig.NumNextnPredictLayers > 0 {
+		nextn = config.TextConfig.NumNextnPredictLayers
+	}
+	if nextn > 0 {
+		info["general.supports_mtp"] = true
+	}
+	if len(config.MTP) > 0 && string(config.MTP) != "null" && string(config.MTP) != "false" {
+		info["general.supports_mtp"] = true
 	}
 
 	return info

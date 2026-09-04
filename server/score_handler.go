@@ -102,7 +102,7 @@ func scoreCandidatesToAPI(in []llm.CandidateScore) []api.CandidateScore {
 		if len(c.Tokens) > 0 {
 			out[i].Tokens = make([]api.TokenLogprob, len(c.Tokens))
 			for j, t := range c.Tokens {
-				out[i].Tokens[j] = api.TokenLogprob{Token: t.Token, Logprob: t.Logprob}
+				out[i].Tokens[j] = api.TokenLogprob{Token: t.Token, Logprob: t.Logprob, ID: t.ID}
 			}
 		}
 	}

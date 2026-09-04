@@ -103,6 +103,22 @@ func TestAdmitLtxHostRAMOK(t *testing.T) {
 	}
 }
 
+func TestAdmitLtx2BHostRAMOKOnSmallerBox(t *testing.T) {
+	prev := wanReadHostMem
+	t.Cleanup(func() { wanReadHostMem = prev })
+	t.Setenv("ZEROLLAMA_LTX_MIN_HOST_RAM_GIB", "")
+	t.Setenv("ZEROLLAMA_LTX_MIN_HOST_RAM_FORCE", "")
+	wanReadHostMem = func() (wanHostMem, error) {
+		return wanHostMem{
+			TotalMemory: 16 * format.GibiByte,
+			FreeMemory:  12 * format.GibiByte,
+		}, nil
+	}
+	if err := admitLtxHostRAM(model.VideoGenerationConfig{Profile: ltxProfile2BDistill}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAdmitLtxHostRAMRejectsTinyBox(t *testing.T) {
 	prev := wanReadHostMem
 	t.Cleanup(func() { wanReadHostMem = prev })

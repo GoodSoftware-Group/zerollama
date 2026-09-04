@@ -1,0 +1,12 @@
+{
+  "model": {
+    "name": "LTX Video 0.9.8 Distilled 2B FP8",
+    "architecture": "ltxv_13B",
+    "description": "Official Lightricks 2B distilled FP8 for low-res prompt iteration. Wan2GP has no native 2B type — this finetune reuses the LTXV loader with the 2B checkpoint.",
+    "URLs": [
+      "https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltxv-2b-0.9.8-distilled-fp8.safetensors"
+    ],
+    "LTXV_config": "models/ltx_video/configs/ltxv-2b-0.9.8-distilled-fp8.yaml"
+  },
+  "num_inference_steps": 8
+}

@@ -100,6 +100,53 @@ func envIntDefault(key string, def int) int {
 	return n
 }
 
+// Greedy trio (mtplx 2.9.2 #313/#315/#318): at temperature 0, draft by
+// on-device argmax (no Categorical on a one-hot) and accept by token
+// equality (no Bernoulli p/q). Measured +2.5–9.8% below 12k tokens and a
+// small loss at 16k/32k, so a context fence keeps it off there.
+//
+//	ZEROLLAMA_MLX_GREEDY_DRAFT_CHAIN       default on
+//	ZEROLLAMA_MLX_BATCHED_GREEDY_ACCEPT    default on
+//	ZEROLLAMA_MLX_GREEDY_TRIO_MAX_CONTEXT  default 12288 (0 = no fence)
+const defaultGreedyTrioMaxContext = 12288
+
+func envEnabledDefaultOn(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+func greedyTrioMaxContext() int {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("ZEROLLAMA_MLX_GREEDY_TRIO_MAX_CONTEXT")))
+	if raw == "" {
+		return defaultGreedyTrioMaxContext
+	}
+	if raw == "0" || raw == "off" || raw == "none" || raw == "unlimited" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return defaultGreedyTrioMaxContext
+	}
+	return n
+}
+
+func greedyTrioContextOK(promptTokens int) bool {
+	fence := greedyTrioMaxContext()
+	return fence <= 0 || promptTokens < fence
+}
+
+func greedyDraftChainEnabled(promptTokens int) bool {
+	return envEnabledDefaultOn("ZEROLLAMA_MLX_GREEDY_DRAFT_CHAIN") && greedyTrioContextOK(promptTokens)
+}
+
+func batchedGreedyAcceptEnabled(promptTokens int) bool {
+	return envEnabledDefaultOn("ZEROLLAMA_MLX_BATCHED_GREEDY_ACCEPT") && greedyTrioContextOK(promptTokens)
+}
+
 // resolveMTPHistoryPolicy mirrors mtplx _resolve_mtp_history_policy.
 // requested is usually "auto" or "committed"; empty uses env or committed.
 func resolveMTPHistoryPolicy(requested string, promptTokens int) (mtpHistoryPlan, error) {

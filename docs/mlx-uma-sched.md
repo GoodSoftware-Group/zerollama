@@ -36,7 +36,8 @@ mlxrunner
 
 ## Build
 
-Mac production script links the client when the sibling toolkit exists:
+Mac production script links the client when the sibling toolkit exists
+(`src/uma_client.c` + `include/uma/client.h`; legacy root `uma_client.c` still works):
 
 ```bash
 ./scripts/build/build_zerollama_mac.sh          # BUILD_UMA=auto (default)
@@ -48,6 +49,8 @@ Manual:
 ```bash
 make -C x/uma
 CGO_ENABLED=1 go build -tags uma -o zerollama .
+# Optional in-process OptiQ GRAPH generate (needs toolkit src/libuma_optiq_graph_gen.dylib):
+# CGO_ENABLED=1 go build -tags uma,umaoptiq -o zerollama .
 ```
 
 Requires broker with `HOLD_GPU` (rebuild `UMAStatus.app` from bmtl `uma_toolkit`). Install the machine daemon once:

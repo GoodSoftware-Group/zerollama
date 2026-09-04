@@ -104,14 +104,20 @@ type CompletionRequest struct {
 	PromptCacheKey string      `json:"prompt_cache_key,omitempty"`
 	CacheReset     bool        `json:"cache_reset,omitempty"`
 	Options        api.Options `json:"options"`
-	Logprobs       bool        `json:"logprobs,omitempty"`
-	TopLogprobs    int         `json:"top_logprobs,omitempty"`
+	Logprobs       bool            `json:"logprobs,omitempty"`
+	TopLogprobs    int             `json:"top_logprobs,omitempty"`
+	Format         json.RawMessage `json:"format,omitempty"`
+	Grammar        string          `json:"grammar,omitempty"`
+	EnablePLD      *bool           `json:"enable_pld,omitempty"`
+	EnableMTP      *bool           `json:"enable_mtp,omitempty"`
 }
 
 type CompletionResponse struct {
 	Content          string `json:"content,omitempty"`
 	Done             bool   `json:"done,omitempty"`
 	DoneReason       int    `json:"done_reason,omitempty"`
+	FinishDetails    string `json:"finish_details,omitempty"`
+	StopSequence     string `json:"stop_sequence,omitempty"`
 	PrefillProcessed int    `json:"prefill_processed,omitempty"`
 	PrefillTotal     int    `json:"prefill_total,omitempty"`
 
@@ -157,6 +163,10 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 		CacheReset:     req.CacheReset,
 		Logprobs:       req.Logprobs,
 		TopLogprobs:    req.TopLogprobs,
+		Format:         req.Format,
+		Grammar:        req.Grammar,
+		EnablePLD:      req.EnablePLD,
+		EnableMTP:      req.EnableMTP,
 	}
 	if req.Options != nil {
 		creq.Options = *req.Options
@@ -209,6 +219,8 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 			Content:               raw.Content,
 			Done:                  raw.Done,
 			DoneReason:            llm.DoneReason(raw.DoneReason),
+			FinishDetails:         raw.FinishDetails,
+			StopSequence:          raw.StopSequence,
 			PromptEvalCount:       raw.PromptEvalCount,
 			PromptEvalCachedCount: raw.PromptEvalCachedCount,
 			PromptEvalDuration:    raw.PromptEvalDuration,
@@ -471,6 +483,8 @@ type statusResponse struct {
 	Progress      int
 	ContextLength int
 	Memory        uint64
+	Knobs         []Knob `json:"Knobs,omitempty"`
+	Tune          string `json:"Tune,omitempty"`
 }
 
 // Ping implements llm.LlamaServer.

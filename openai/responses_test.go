@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -1490,6 +1491,233 @@ func TestFromResponsesRequest_MaxOutputTokens(t *testing.T) {
 	if numPredict != 100 {
 		t.Errorf("num_predict = %v, want 100", numPredict)
 	}
+	if !strings.Contains(chatReq.Messages[0].Content, api.OutputBudgetGuidance) {
+		t.Fatalf("tight max_output_tokens should hint, got %q", chatReq.Messages[0].Content)
+	}
+}
+
+func TestFromResponsesRequest_StoreTrue(t *testing.T) {
+	on := true
+	_, err := FromResponsesRequest(ResponsesRequest{
+		Model: "m",
+		Input: ResponsesInput{Text: "hi"},
+		Store: &on,
+	})
+	if err == nil || !strings.Contains(err.Error(), "store:true") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestFromResponsesRequest_ToolChoiceRequiredHints(t *testing.T) {
+	desc := "time"
+	got, err := FromResponsesRequest(ResponsesRequest{
+		Model:      "m",
+		Input:      ResponsesInput{Text: "hi"},
+		Tools:      []ResponsesTool{{Type: "function", Name: "get_time", Description: &desc, Parameters: map[string]any{"type": "object"}}},
+		ToolChoice: "required",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Messages[len(got.Messages)-1].Content, api.RequiredToolCallHint) {
+		t.Fatalf("got %+v", got.Messages)
+	}
+}
+
+func TestFromResponsesRequest_BackgroundTrue(t *testing.T) {
+	_, err := FromResponsesRequest(ResponsesRequest{
+		Model:      "m",
+		Input:      ResponsesInput{Text: "hi"},
+		Background: true,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "background") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestFromResponsesRequest_ServiceTierFlex(t *testing.T) {
+	_, err := FromResponsesRequest(ResponsesRequest{
+		Model:       "m",
+		Input:       ResponsesInput{Text: "hi"},
+		ServiceTier: "flex",
+	})
+	if err == nil || !strings.Contains(err.Error(), "service_tier") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestFromResponsesRequest_PreviousResponseID(t *testing.T) {
+	id := "resp_1"
+	_, err := FromResponsesRequest(ResponsesRequest{
+		Model:              "m",
+		Input:              ResponsesInput{Text: "hi"},
+		PreviousResponseID: &id,
+	})
+	if err == nil || !strings.Contains(err.Error(), "previous_response_id") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestFromResponsesRequest_IncludeUnsupported(t *testing.T) {
+	_, err := FromResponsesRequest(ResponsesRequest{
+		Model:   "m",
+		Input:   ResponsesInput{Text: "hi"},
+		Include: []string{"reasoning.encrypted_content"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "include") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestFromResponsesRequest_MaxToolCalls(t *testing.T) {
+	zero := 0
+	_, err := FromResponsesRequest(ResponsesRequest{
+		Model:        "m",
+		Input:        ResponsesInput{Text: "hi"},
+		MaxToolCalls: &zero,
+	})
+	if err == nil || !strings.Contains(err.Error(), "max_tool_calls") {
+		t.Fatalf("err=%v", err)
+	}
+
+	one := 1
+	on := true
+	got, err := FromResponsesRequest(ResponsesRequest{
+		Model:             "m",
+		Input:             ResponsesInput{Text: "hi"},
+		MaxToolCalls:      &one,
+		ParallelToolCalls: &on,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ParallelToolCalls == nil || *got.ParallelToolCalls {
+		t.Fatalf("max_tool_calls=1 should keep one tool call, got %v", got.ParallelToolCalls)
+	}
+}
+
+func TestToResponse_LengthIncomplete(t *testing.T) {
+	response := ToResponse("m", "resp_1", "msg_1", api.ChatResponse{
+		Message: api.Message{
+			Role: "assistant",
+			ToolCalls: []api.ToolCall{{
+				Function: api.ToolCallFunction{Name: "ping", Arguments: testArgs(nil)},
+			}},
+		},
+		Done:       true,
+		DoneReason: "length",
+	}, ResponsesRequest{})
+	if response.Status != "incomplete" {
+		t.Fatalf("status=%q", response.Status)
+	}
+	if response.IncompleteDetails == nil || response.IncompleteDetails.Reason != "max_output_tokens" {
+		t.Fatalf("incomplete %+v", response.IncompleteDetails)
+	}
+}
+
+func TestToResponse_cachedTokens(t *testing.T) {
+	response := ToResponse("m", "resp_1", "msg_1", api.ChatResponse{
+		Message: api.Message{Role: "assistant", Content: "ok"},
+		Done:    true,
+		Metrics: api.Metrics{CachedPromptTokens: 12},
+	}, ResponsesRequest{})
+	if response.Usage == nil || response.Usage.InputTokensDetails.CachedTokens != 12 {
+		t.Fatalf("cached_tokens %+v", response.Usage)
+	}
+}
+
+func TestFromResponsesRequest_TruncationAuto(t *testing.T) {
+	auto := "auto"
+	_, err := FromResponsesRequest(ResponsesRequest{
+		Model:      "m",
+		Input:      ResponsesInput{Text: "hi"},
+		Truncation: &auto,
+	})
+	if err == nil || !strings.Contains(err.Error(), "truncation") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestFromResponsesRequest_ReasoningBudgetOutranksEffort(t *testing.T) {
+	zero := 0
+	got, err := FromResponsesRequest(ResponsesRequest{
+		Model:                 "m",
+		Input:                 ResponsesInput{Text: "hi"},
+		Reasoning:             ResponsesReasoning{Effort: "high"},
+		ReasoningBudgetTokens: &zero,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Think == nil || got.Think.Bool() {
+		t.Fatalf("budget 0 should disable, got %v", got.Think)
+	}
+
+	on := 64
+	got, err = FromResponsesRequest(ResponsesRequest{
+		Model:                 "m",
+		Input:                 ResponsesInput{Text: "hi"},
+		ReasoningBudgetTokens: &on,
+		ExtraBody:             json.RawMessage(`{"reasoning_budget_tokens": 0}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Think == nil || !got.Think.Bool() {
+		t.Fatalf("top-level budget wins over extra_body, got %v", got.Think)
+	}
+
+	got, err = FromResponsesRequest(ResponsesRequest{
+		Model:     "m",
+		Input:     ResponsesInput{Text: "hi"},
+		ExtraBody: json.RawMessage(`{"reasoning_budget_tokens": 0}`),
+		Reasoning: ResponsesReasoning{Effort: "high"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Think == nil || got.Think.Bool() {
+		t.Fatalf("extra_body budget 0 should disable effort, got %v", got.Think)
+	}
+
+	got, err = FromResponsesRequest(ResponsesRequest{
+		Model:     "m",
+		Input:     ResponsesInput{Text: "hi"},
+		Reasoning: ResponsesReasoning{Effort: "high"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Think == nil || !got.Think.Bool() {
+		t.Fatalf("effort high should enable think, got %v", got.Think)
+	}
+	if !got.ThinkFromAlias {
+		t.Fatal("expected ThinkFromAlias")
+	}
+}
+
+func TestFromResponsesRequest_Sampling(t *testing.T) {
+	k := 40
+	minP := 0.02
+	req := ResponsesRequest{
+		Model: "gpt-oss:20b",
+		Input: ResponsesInput{Text: "hi"},
+		TopK:  &k,
+		MinP:  &minP,
+	}
+	chatReq, err := FromResponsesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := chatReq.Options["top_k"].(int); !ok || v != 40 {
+		t.Fatalf("top_k = %v", chatReq.Options["top_k"])
+	}
+	if v, ok := chatReq.Options["min_p"].(float64); !ok || v != 0.02 {
+		t.Fatalf("min_p = %v", chatReq.Options["min_p"])
+	}
 }
 
 func TestFromResponsesRequest_TextFormatJsonSchema(t *testing.T) {
@@ -1553,6 +1781,45 @@ func TestFromResponsesRequest_TextFormatJsonSchema(t *testing.T) {
 	}
 	if _, ok := props["age"]; !ok {
 		t.Error("expected 'age' in schema properties")
+	}
+}
+
+func TestFromResponsesRequest_JsonObject(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "m",
+		Input: ResponsesInput{Text: "hi"},
+		Text:  &ResponsesText{Format: &ResponsesTextFormat{Type: "json_object"}},
+	}
+	chatReq, err := FromResponsesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(chatReq.Format) != `"json"` {
+		t.Fatalf("format=%s", chatReq.Format)
+	}
+}
+
+func TestFromResponsesRequest_NestedJsonSchema(t *testing.T) {
+	req := ResponsesRequest{
+		Model: "m",
+		Input: ResponsesInput{Text: "hi"},
+		Text: &ResponsesText{Format: &ResponsesTextFormat{
+			Type: "json_schema",
+			JsonSchema: &JsonSchema{
+				Schema: json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"}}}`),
+			},
+		}},
+	}
+	chatReq, err := FromResponsesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(chatReq.Format, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if schema["type"] != "object" {
+		t.Fatalf("schema=%v", schema)
 	}
 }
 
@@ -1967,5 +2234,81 @@ func TestResponsesStreamConverter_FunctionCallStatus(t *testing.T) {
 	}
 	if doneItem["status"] != "completed" {
 		t.Errorf("output_item.done status = %q, want %q", doneItem["status"], "completed")
+	}
+}
+
+func TestFromResponsesRequest_extraBodyCompression(t *testing.T) {
+	var req ResponsesRequest
+	if err := json.Unmarshal([]byte(`{
+		"model": "m",
+		"input": "hi",
+		"extra_body": {"compression": {"elide_from": 4, "mode": "placeholder"}}
+	}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	chatReq, err := FromResponsesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chatReq.Compression == nil || chatReq.Compression.ElideFrom == nil || *chatReq.Compression.ElideFrom != 4 {
+		t.Fatalf("compression %+v", chatReq.Compression)
+	}
+}
+
+func TestFromResponsesRequest_extraBodyPromptCacheKey(t *testing.T) {
+	var req ResponsesRequest
+	if err := json.Unmarshal([]byte(`{
+		"model": "m",
+		"input": "hi",
+		"extra_body": {"prompt_cache_key": "hermes:agent:1", "cache_reset": true}
+	}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	chatReq, err := FromResponsesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chatReq.Options["prompt_cache_key"] != "hermes:agent:1" {
+		t.Fatalf("options=%v", chatReq.Options)
+	}
+	if chatReq.Options["cache_reset"] != true {
+		t.Fatalf("cache_reset=%v", chatReq.Options["cache_reset"])
+	}
+}
+
+func TestToResponse_compressionMeta(t *testing.T) {
+	response := ToResponse("m", "resp_1", "msg_1", api.ChatResponse{
+		Message:     api.Message{Role: "assistant", Content: "ok"},
+		Done:        true,
+		Compression: &api.ChatCompressionMeta{Mode: "placeholder", ElideFrom: 2},
+	}, ResponsesRequest{})
+	if response.Usage == nil || response.Usage.Compression == nil || response.Usage.Compression.ElideFrom != 2 {
+		t.Fatalf("usage %+v", response.Usage)
+	}
+}
+
+func TestToResponse_promptCacheKey(t *testing.T) {
+	var req ResponsesRequest
+	if err := json.Unmarshal([]byte(`{"model":"m","input":"hi","extra_body":{"prompt_cache_key":"thread-1"}}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	response := ToResponse("m", "resp_1", "msg_1", api.ChatResponse{
+		Message: api.Message{Role: "assistant", Content: "ok"},
+		Done:    true,
+	}, req)
+	if response.PromptCacheKey == nil || *response.PromptCacheKey != "thread-1" {
+		t.Fatalf("prompt_cache_key %+v", response.PromptCacheKey)
+	}
+}
+
+func TestFromResponsesRequest_extraBodyStore(t *testing.T) {
+	var req ResponsesRequest
+	if err := json.Unmarshal([]byte(`{"model":"m","input":"hi","extra_body":{"store":true}}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	foldResponsesSessionCache(&req)
+	_, err := FromResponsesRequest(req)
+	if err == nil || !strings.Contains(err.Error(), "store:true") {
+		t.Fatalf("err = %v", err)
 	}
 }

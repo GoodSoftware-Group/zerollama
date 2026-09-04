@@ -22,6 +22,7 @@ Full operator guide: this file. Package: `server/remotestore/`. CLI: `zerollama 
 | Shared layers across models | Pin **refcount**, not a boolean set | Unloading model A must not unpin a digest still held by model B |
 | `--reclaim` after migration | Delete only after **all** referencing manifests pushed | Mid-walk delete of shared blobs leaves remote manifests without layers |
 | Corrupt transfer during download | Hash while writing `.partial`, rename only on match | A crash between rename and verify must not leave a “good-looking” bad file |
+| Interrupted multi-GB **push** | `Content-Range` PUT + HEAD `X-Zerollama-Partial` (LA14) | Restarting from byte 0 on a 20GiB GGUF wastes the fabric |
 | Concurrent `GetModel` for same digest | `singleflight` per digest | Two writers truncating the same `.partial` corrupt the cache |
 | Future stream / MoE / KV reuse | Catalog roles + `tensorproto` + payload-agnostic auth/transport | Spec the language now; do not ship llama.cpp patches in v1 |
 
@@ -124,8 +125,8 @@ Roadmap transports: raw Ethernet L2 (`AF_PACKET`), UDP/ARQ; ODP/file-backed MRs.
 | `GET /v1/capability` | Negotiate RDMA vs TCP (`verbs:true` when QP path is live) |
 | `POST /v1/rdma/session` | Exchange RC QP endpoints (HMAC JSON) |
 | `POST\|DELETE /v1/rdma/mr` | Lease / release a blob-range MR for RDMA READ |
-| `HEAD\|GET /v1/blob/{sha256-…}` | Content-addressed bulk; Range-GET fallback |
-| `PUT /v1/blob/{sha256-…}` | Migration / replication; stream + hash |
+| `HEAD\|GET /v1/blob/{sha256-…}` | Content-addressed bulk; Range-GET; HEAD on `.partial` sets `X-Zerollama-Partial` |
+| `PUT /v1/blob/{sha256-…}` | Full stream, or `Content-Range` resume (202 until complete, then 201) |
 | `GET\|PUT /v1/manifest/{host}/{ns}/{model}/{tag}` | Same layout as local manifests |
 | `GET /v1/tensor/{host}/{ns}/{model}/{tag}/{tensor_ref}` | Tensor-addressed convenience over byte ranges |
 

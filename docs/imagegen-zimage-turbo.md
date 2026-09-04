@@ -105,7 +105,7 @@ cmake --build build-mlx --target mlx --target mlxc --parallel
 |--------|-------------|-----|
 | `patch_mlx_c_array.sh` | `mlx-c-src/mlx/c/array.cpp` | Adds `mlx_array_detach` (break graph links before free) and `mlx_go_export_latents_bin_d2h` (direct `cudaMemcpy` D2H for latent export after denoise — bypasses `mlx::core::copy` which faults post-checkpoint on CUDA) |
 | `patch_mlx_c_debug_cleanup.sh` | same file | Strips `fprintf` debug instrumentation added during OOM diagnosis; not needed in production but must be removed before shipping |
-| `patch_mlx_cuda_vram.sh` | `mlx-src/mlx/backend/cuda/allocator.cpp` | `cudaMalloc` vs async pool (pool reserves virtual address space that counts against physical VRAM); 90% memory limit; disable buffer-cache recycle (caused heap corruption after checkpoint frees) |
+| `patch_mlx_cuda_vram.sh` | `mlx-src/mlx/backend/cuda/allocator.cpp` | Force sync `cudaMalloc`/`cudaFree` (async pools reserve VA that counts as VRAM); 90% memory limit; disable buffer-cache recycle (heap corruption after checkpoint frees). Helper: `_patch_mlx_cuda_vram.py`. |
 
 All three scripts are idempotent — safe to re-run if you're unsure whether a patch is already applied.
 

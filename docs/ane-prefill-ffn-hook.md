@@ -51,6 +51,7 @@ Single expert-up matmul @ SEQ=512: ~0.18 ms eval, cosine ≥0.999999. Map ~0.04 
 | `ZEROLLAMA_ANE_FFN_MODE` | `shadow` when on | `shadow` = log/count only; `force` = skip Metal when host replace succeeds |
 | `ZEROLLAMA_ANE_FFN_FORCE_ENABLE` | off | Extra latch for force (required) |
 | `ZEROLLAMA_ANE_FFN_FORCE_HOST` | off | Skip GPU sync (assume CPU-visible acts already) |
+| `ZEROLLAMA_ANE_FFN_OVERLAP` | off | Experimental shexp ANE∥MoE (early sync+async). **Quality broken on current pin — leave off** |
 | `ZEROLLAMA_ANE_FFN_REPLACE_DYLIB` | unset | Path to `libane_ffn_force.dylib` (dlopen register) |
 | `ZEROLLAMA_ANE_FFN_NAME` | unset (any) | Weight-name filter: `shexp`, `ffn`/`dense`, `any`, or comma substrings |
 | `ZEROLLAMA_ANE_FFN_SWIGLU` | off | Fuse up+gate+GLU+down into one ANE SwiGLU eval (force path) |
@@ -122,8 +123,10 @@ export ZEROLLAMA_ANE_FFN_LAB_PORT=11435
 28. **Done (lab):** profile (`ZEROLLAMA_ANE_FFN_PROFILE=1`) — warm per-replace ≈ sync **1.2 ms** + pack **0.06** + ANE eval **0.9** + unpack **0.1** ≈ **2.3 ms**; ×24 layers ≈ **55 ms/tok** FFN-only vs Metal **~11 ms/tok** full model. ANE eval alone already ~2× Metal’s whole forward; sync_and_resume every layer doubles it again. Cold dylib dominated by ANE session compile (~100 ms+/layer once).
 29. **Done (lab):** shexp A/B (`ane-ffn-lab-shexp` = `qwen3.6-mtp` blob + `spec_type=off`, ollama-engine; INT8_IN+NAME=shexp+IC=2048+OC=512). Same prompt, ~19→14 tok, temp 0 (discard cold). **Metal still wins, but close:** warm force eval ~**290–350 ms** vs Metal ~**254–258 ms** (~1.15–1.4×); warm total ~0.7 s both. Correct text in `thinking`. Decode hits `metal_layout_replaced` (sess_seq=64). Also many `bail reason=policy` (Metal fallback) — not a latency win. Micro: ane_only ~0.11 ms vs metal-layout wall ~0.5 ms (host tax). Do not use raw `qwen3.6-mtp` (draft-mtp → llama-server abort on this lab).
 30. **Done (lab):** holey **quality** — early write to `down` at gate ⇒ gibberish; **defer replace to down encode** + scache ggml weight ids; fp16/INT8_IN greedy exact match on short prompt (F0746). `HOLEY=0` disables replace.
-31. **Done (lab):** shexp sync floor (F0747) — `bail reason=policy` fixed by deferred `want_try(fuse.ic,hidden)`; `FORCE_HOST=1` and early staging+memcpy **fail quality**; sync~1.2 ms/layer remains the latency blocker. Next speed lever: async ANE∥MoE or finer waits — not skipping sync.
-32. **Never:** auto-enable on production serve; never intercept `MUL_MAT_ID` in v1.
+31. **Done (lab):** shexp sync floor (F0747) — `bail reason=policy` fixed by deferred `want_try(fuse.ic,hidden)`; `FORCE_HOST=1` and early staging+memcpy **fail quality**; sync~1.2 ms/layer remains the latency blocker.
+32. **Done (lab):** Metal ANE FFN hooks restored after b10488 pin wipe (`sync_and_resume`, holey fuse, CMake sources) in a **separate TU** (`ane_ffn_metal_hook.cpp`) — inlining the intercept into `ggml-metal-ops.cpp` regressed MoE quality even when ANE was off. Force shexp (`INT8_IN`+`NAME=shexp`) verified: coherent text + `metal_layout_replaced#`. Bryngelson (arXiv:2606.22283) alignment: dense decode force is anti-pattern; shexp is the fit.
+33. **Partial (lab):** `ZEROLLAMA_ANE_FFN_OVERLAP=1` (sync+`pack_eval_async` at holey stash, wait at down) — warm-only kick; finish falls back to sync replace. **Early mid-graph sync before MoE still breaks quality** in current pin; leave off until ANE∥MoE coherence is proven. Do not use `FORCE_HOST=1`.
+34. **Never:** auto-enable on production serve; never intercept `MUL_MAT_ID` in v1.
 
 ```bash
 # Shadow on lab serve (Metal package builds; full zerollama may need llama pin sync):

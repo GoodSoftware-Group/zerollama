@@ -9,37 +9,16 @@ metadata:
   hermes:
     tags: [zerollama, ollama, local, inference, qos, kv-cache, prompt-cache, provider]
     category: mlops
-    related_skills: [zerollama-integration]
+    related_skills: [zerollama-integration, batch, serving-llms-vllm]
 ---
 
 # Zerollama Integration (Hermes) Skill
 
-Wire this Hermes agent to a [zerollama](https://github.com/GoodSoftware-Group/zerollama)
+Wire this Hermes agent to a [zerollama](https://github.com/NousResearch/zerollama)
 server — an Ollama fork with fleet QoS scheduling, prompt/KV cache pinning,
 and batch inference. This is the Hermes-specific half of the integration; the
 harness-agnostic zerollama API contract, `num_ctx` sizing, and pitfalls live
 in the `zerollama-integration` generic skill (shipped in the zerollama repo).
-
-## Compatibility check
-
-This skill targets zerollama **tip/dev**, not a specific pinned
-release — not every server will have every endpoint/flag below yet.
-Verify before relying on this in an unattended flow, especially
-against a host you don't control:
-
-```bash
-zerollama --version                      # binary build
-curl -s http://localhost:11434/api/version | jq   # server build (if reachable)
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/tags   # 200/400 = route exists; 404 = missing on this build
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/version   # 200/400 = route exists; 404 = missing on this build
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/can-load   # 200/400 = route exists; 404 = missing on this build
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/cache/warm   # 200/400 = route exists; 404 = missing on this build
-```
-
-A **404** on an endpoint above (or an unrecognized flag/subcommand) means this build predates the feature this skill
-describes — check [`CHANGELOG.md`](../CHANGELOG.md) for when it
-landed, or upgrade (`git pull && ./scripts/build/build_zerollama_mac.sh`)
-rather than assuming the request shape is wrong.
 
 ## When to Use
 
@@ -103,7 +82,7 @@ curl -s -X POST http://localhost:11434/api/can-load \
 model:
   default: qwen3-coder-next:6bit
   provider: custom
-  context_length: 81920        # session budget, not model marketing max
+  context_length: 81920        # session budget, not model marketing max; Hermes floor is 64k (MINIMUM_CONTEXT_LENGTH)
   ollama_num_ctx: 81920        # matches context_length (KV allocation)
   max_tokens: 8192             # cap decode; do NOT leave at 65536
   keep_alive: 30m              # pin model in VRAM between turns
@@ -120,6 +99,14 @@ providers:
           qos_class: background   # interactive | auxiliary | background
           fulfillment: complete   # complete | benchmark
 ```
+
+80k Hermes budget ↔ 80k server window: verified on this 128 GiB box
+(`qwen3-coder-next:6bit` at 81920 `runner_ready` 12.2 s → `prompt_ready` →
+`first_token` 1.0 s; also verified at 65536). MLX KV grows with real
+tokens — no full 80k reservation at load — so the 80k budget is cheap
+server-side until you actually hold 80k tokens. A true large working set is
+a server-side concern (`ZEROLLAMA_CHAT_COMPRESSION` / thread compact), not a
+reason to shrink the Hermes cap below its 64k floor.
 
 Route side-LLM work to a cheaper model with an explicit budget:
 
@@ -157,6 +144,11 @@ zerollama ps
 
 ## Hermes-Specific Pitfalls
 
+- **Hermes has a 64k context floor** — `MINIMUM_CONTEXT_LENGTH = 64_000` in
+  `agent/model_metadata.py` is enforced by the compression preflight gate;
+  sizing a main model below it fails with "Compression failed ... below the
+  minimum 64,000". The bucket formula still applies, but clamp the result to
+  ≥65536 for any model Hermes compresses on.
 - **Aux models over-ask** — the auxiliary path (`_build_call_kwargs` in
   `auxiliary_client.py`) forwards `num_ctx` from the per-model
   `context_length` in `providers.custom.models.<model>`. Keep those caps in
@@ -174,6 +166,6 @@ zerollama ps
 
 ## Related
 
+- `batch` — parallel text generation via the batch endpoint
+  (`skills/productivity/batch`)
 - `zerollama-integration` generic skill — API contract, sizing, pitfalls
-- `batch` (external, `skills/productivity/batch`, not in this catalog) —
-  parallel text generation via the batch endpoint

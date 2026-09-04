@@ -21,7 +21,6 @@ const (
 const (
 	qwen35ThinkingOpenTag  = "<think>"
 	qwen35ThinkingCloseTag = "</think>"
-	qwen35ToolCallOpenTag  = "<tool_call>"
 )
 
 // Qwen35Parser handles qwen3.5 reasoning extraction and delegates post-thinking
@@ -50,7 +49,9 @@ func (p *Qwen35Parser) PreservedTokens() []string {
 		qwen35ThinkingOpenTag,
 		qwen35ThinkingCloseTag,
 		toolOpenTag,
+		toolOpenPluralPrefixed,
 		toolCloseTag,
+		toolClosePlural,
 	}
 }
 
@@ -103,7 +104,7 @@ func (p *Qwen35Parser) Add(s string, done bool) (content string, thinking string
 	for _, event := range events {
 		switch event := event.(type) {
 		case qwen35EventContent:
-			parsedContent, _, parsedCalls, err := p.toolParser.Add(event.content, done)
+			parsedContent, _, parsedCalls, err := p.toolParser.Add(event.content, false)
 			if err != nil {
 				slog.Warn("qwen3.5 tool call parsing failed", "error", err)
 				return "", "", nil, err
@@ -113,6 +114,16 @@ func (p *Qwen35Parser) Add(s string, done bool) (content string, thinking string
 		case qwen35EventThinkingContent:
 			thinkingSb.WriteString(event.content)
 		}
+	}
+
+	if done {
+		tailContent, _, tailCalls, err := p.toolParser.Add("", true)
+		if err != nil {
+			slog.Warn("qwen3.5 tool call parsing failed", "error", err)
+			return "", "", nil, err
+		}
+		contentSb.WriteString(tailContent)
+		calls = append(calls, tailCalls...)
 	}
 
 	return contentSb.String(), thinkingSb.String(), calls, nil
@@ -212,7 +223,7 @@ func (p *Qwen35Parser) eat() ([]qwen35Event, bool) {
 				p.state = qwen35ParserStateCollectingContent
 			}
 			return events, true
-		} else if overlapLen := max(overlap(acc, qwen35ThinkingCloseTag), overlap(acc, qwen35ToolCallOpenTag)); overlapLen > 0 {
+		} else if overlapLen := max(overlap(acc, qwen35ThinkingCloseTag), overlap(acc, toolOpenTag), overlap(acc, toolOpenPluralPrefixed)); overlapLen > 0 {
 			beforePartialTag := acc[:len(acc)-overlapLen]
 			trailingWsLen := trailingWhitespaceLen(beforePartialTag)
 			ambiguousStart := len(beforePartialTag) - trailingWsLen
@@ -225,13 +236,13 @@ func (p *Qwen35Parser) eat() ([]qwen35Event, bool) {
 				events = append(events, qwen35EventThinkingContent{content: unambiguous})
 			}
 			return events, false
-		} else if strings.Contains(acc, qwen35ToolCallOpenTag) {
+		} else if idx, tag := qwenXMLToolOpenIndex(acc); idx >= 0 {
 			// qwen3.5:9b model forgets sometimes to use </think> tag before the <tool_call> block starts
 			// this condition ends the Think block and continues with the <tool_call> when the tag
 			// is found
-			thinking, tooling := p.splitAtTag(qwen35ToolCallOpenTag, true)
+			thinking, tooling := p.splitAtTag(tag, true)
 			p.buffer.Reset()
-			p.buffer.WriteString(thinking + qwen35ThinkingCloseTag + qwen35ToolCallOpenTag + tooling)
+			p.buffer.WriteString(thinking + qwen35ThinkingCloseTag + tag + tooling)
 			return events, true
 		}
 

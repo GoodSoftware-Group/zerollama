@@ -122,8 +122,8 @@ func buildMTPHead(m *Model, tensors map[string]*mlx.Array, root string, linears 
 	if fc == nil {
 		return nil, fmt.Errorf("missing %sfc", root)
 	}
-	eW := maybeShiftNormWeight(root+"pre_fc_norm_embedding.weight", tensors[root+"pre_fc_norm_embedding.weight"], shouldShift)
-	hW := maybeShiftNormWeight(root+"pre_fc_norm_hidden.weight", tensors[root+"pre_fc_norm_hidden.weight"], shouldShift)
+	eW := maybeShiftMTPNormWeight(root+"pre_fc_norm_embedding.weight", tensors[root+"pre_fc_norm_embedding.weight"], shouldShift)
+	hW := maybeShiftMTPNormWeight(root+"pre_fc_norm_hidden.weight", tensors[root+"pre_fc_norm_hidden.weight"], shouldShift)
 	if eW == nil || hW == nil {
 		return nil, fmt.Errorf("missing %spre_fc_norm_{embedding,hidden}", root)
 	}
@@ -145,9 +145,9 @@ func buildMTPHead(m *Model, tensors map[string]*mlx.Array, root string, linears 
 	if lm := linears.Make(root + "shared_head.head"); lm != nil {
 		head.Head = lm
 	}
-	normW := maybeShiftNormWeight(root+"norm.weight", tensors[root+"norm.weight"], shouldShift)
+	normW := maybeShiftMTPNormWeight(root+"norm.weight", tensors[root+"norm.weight"], shouldShift)
 	if normW == nil {
-		normW = maybeShiftNormWeight(root+"shared_head.norm.weight", tensors[root+"shared_head.norm.weight"], shouldShift)
+		normW = maybeShiftMTPNormWeight(root+"shared_head.norm.weight", tensors[root+"shared_head.norm.weight"], shouldShift)
 	}
 	if normW != nil {
 		head.Norm = nn.NewRMSNorm(normW, cfg.RMSNormEps)
@@ -191,10 +191,10 @@ func (h *mtpHead) LoadWeights(tensors map[string]*mlx.Array) error {
 
 func loadMTPLayer(tensors map[string]*mlx.Array, linears model.LinearFactory, cfg *Config, layerPrefix string, shouldShift, useQuantizedExperts bool) (*Layer, error) {
 	layer := &Layer{IsLinear: false}
-	if w := maybeShiftNormWeight(layerPrefix+".input_layernorm.weight", tensors[layerPrefix+".input_layernorm.weight"], shouldShift); w != nil {
+	if w := maybeShiftMTPNormWeight(layerPrefix+".input_layernorm.weight", tensors[layerPrefix+".input_layernorm.weight"], shouldShift); w != nil {
 		layer.InputNorm = nn.NewRMSNorm(w, cfg.RMSNormEps)
 	}
-	if w := maybeShiftNormWeight(layerPrefix+".post_attention_layernorm.weight", tensors[layerPrefix+".post_attention_layernorm.weight"], shouldShift); w != nil {
+	if w := maybeShiftMTPNormWeight(layerPrefix+".post_attention_layernorm.weight", tensors[layerPrefix+".post_attention_layernorm.weight"], shouldShift); w != nil {
 		layer.PostAttentionNorm = nn.NewRMSNorm(w, cfg.RMSNormEps)
 	}
 	if layer.InputNorm == nil || layer.PostAttentionNorm == nil {
@@ -206,10 +206,10 @@ func loadMTPLayer(tensors map[string]*mlx.Array, linears model.LinearFactory, cf
 	attn.KProj = linears.Make(layerPrefix + ".self_attn.k_proj")
 	attn.VProj = linears.Make(layerPrefix + ".self_attn.v_proj")
 	attn.OProj = linears.Make(layerPrefix + ".self_attn.o_proj")
-	if w := maybeShiftNormWeight(layerPrefix+".self_attn.q_norm.weight", tensors[layerPrefix+".self_attn.q_norm.weight"], shouldShift); w != nil {
+	if w := maybeShiftMTPNormWeight(layerPrefix+".self_attn.q_norm.weight", tensors[layerPrefix+".self_attn.q_norm.weight"], shouldShift); w != nil {
 		attn.QNorm = nn.NewRMSNorm(w, cfg.RMSNormEps)
 	}
-	if w := maybeShiftNormWeight(layerPrefix+".self_attn.k_norm.weight", tensors[layerPrefix+".self_attn.k_norm.weight"], shouldShift); w != nil {
+	if w := maybeShiftMTPNormWeight(layerPrefix+".self_attn.k_norm.weight", tensors[layerPrefix+".self_attn.k_norm.weight"], shouldShift); w != nil {
 		attn.KNorm = nn.NewRMSNorm(w, cfg.RMSNormEps)
 	}
 	if attn.QProj == nil || attn.KProj == nil || attn.VProj == nil || attn.OProj == nil {

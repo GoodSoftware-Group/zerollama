@@ -188,13 +188,35 @@ func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Opt
 	draftNumPredictSet := hasOption(requestOpts, "draft_num_predict")
 	if model != nil {
 		draftNumPredictSet = draftNumPredictSet || hasOption(model.Options, "draft_num_predict")
-		if err := opts.FromMap(model.Options); err != nil {
+		if len(model.GenSampling) > 0 {
+			if err := opts.FromMap(api.WithoutHFIdentitySampling(model.GenSampling)); err != nil {
+				return api.Options{}, err
+			}
+		}
+		if err := opts.FromMap(api.WithoutHFIdentitySampling(model.Options)); err != nil {
 			return api.Options{}, err
 		}
 	}
 
 	if err := opts.FromMap(requestOpts); err != nil {
 		return api.Options{}, err
+	}
+
+	if model != nil && model.IsMLX() &&
+		!hasOption(requestOpts, "top_p") &&
+		!hasOption(api.WithoutHFIdentitySampling(model.Options), "top_p") &&
+		!hasOption(api.WithoutHFIdentitySampling(model.GenSampling), "top_p") {
+		opts.TopP = 0.95
+	}
+
+	// mlx-lm verified Flash V4 greedy. Family temp 0.8 + top_p 0.95 on this
+	// 2-bit pack answers an unrelated Chinese FAQ instead of a short English
+	// prompt. Request / PARAMETER still win.
+	if isDeepseekV4MLX(model) &&
+		!hasOption(requestOpts, "temperature") &&
+		!hasOption(api.WithoutHFIdentitySampling(model.Options), "temperature") &&
+		!hasOption(api.WithoutHFIdentitySampling(model.GenSampling), "temperature") {
+		opts.Temperature = 0
 	}
 
 	if model != nil && model.DraftPath == "" && !model.EmbeddedMTP && !draftNumPredictSet {
@@ -213,6 +235,14 @@ func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Opt
 func hasOption(opts map[string]any, name string) bool {
 	_, ok := opts[name]
 	return ok
+}
+
+func isDeepseekV4MLX(m *Model) bool {
+	if m == nil || !m.IsMLX() {
+		return false
+	}
+	s := strings.ToLower(m.PrimaryFamily() + " " + m.Config.ModelFamily)
+	return strings.Contains(s, "deepseek") && strings.Contains(s, "v4")
 }
 
 func llamaServerConfigForModel(m *Model, contextShift bool, opts api.Options) llm.LlamaServerConfig {
@@ -660,7 +690,9 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 	}
 
 	caps := []model.Capability{model.CapabilityCompletion}
-	if req.Suffix != "" {
+	// Prompt-only templates ignore .Suffix; WrapFIM still infills. Require
+	// insert only when the template itself implements FIM.
+	if req.Suffix != "" && m.Template != nil && m.Template.Contains("Suffix") {
 		caps = append(caps, model.CapabilityInsert)
 	}
 
@@ -789,7 +821,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 
 	r, m, opts, ggmlCtx, releaseQoS, err := s.scheduleRunner(schedCtx, name.String(), caps, req.Options, req.KeepAlive, req.Shift, streamCh, statusWriter)
 	if errors.Is(err, errCapabilityCompletion) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support generate", req.Model)})
+		c.JSON(http.StatusBadRequest, gin.H{"error": textSurfaceWrongModalityMessage(m, req.Model, "generate")})
 		return
 	} else if err != nil {
 		handleScheduleError(c, req.Model, err)
@@ -953,8 +985,11 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			}
 
 			prompt = b.String()
+			prompt = renderers.ApplyNoThinkTailSuffix(prompt, resolveRendererName(m), nil, req.Think)
 		}
 	}
+
+	prompt = renderers.ApplyNoThinkTailSuffix(prompt, resolveRendererName(m), nil, req.Think)
 
 	// If debug mode is enabled, return the rendered template instead of calling the model
 	if req.DebugRenderOnly {
@@ -982,10 +1017,10 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				OpeningTag: openingTag,
 				ClosingTag: closingTag,
 			}
-			if strings.HasSuffix(strings.TrimSpace(prompt), openingTag) {
-				thinkingState.AddContent(openingTag)
-			}
+			thinkingState.SeedFromPrompt(prompt)
 		}
+	} else {
+		parsers.SeedFromPrompt(builtinParser, prompt)
 	}
 
 	ch := streamCh
@@ -1016,7 +1051,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		}
 		ctx, cancel := context.WithCancel(inferCtx)
 		defer cancel()
-		if err := r.Completion(ctx, llm.CompletionRequest{
+		genCompletion := llm.CompletionRequest{
 			Prompt:            prompt,
 			PromptTokens:      mlxCompletionPromptTokens(m, promptTokens),
 			Images:            images,
@@ -1031,7 +1066,9 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			PromptCacheKey:    modality.ExtractPromptCacheKey(req.Options),
 			CacheReset:        mlxQoSFromOptions(req.Options).CacheReset,
 			SessionViTOverlay: modality.SessionViTOverlayEnabled(req.Options),
-		}, func(cr llm.CompletionResponse) {
+		}
+		applySpecFlags(&genCompletion, req.Options, req.EnablePLD, req.EnableMTP, req.EnableDrafter)
+		if err := r.Completion(ctx, genCompletion, func(cr llm.CompletionResponse) {
 			if emitMLXPrefillGenerateStatus(ch, req.Model, cr.PrefillProcessed, cr.PrefillTotal, cr.Content, cr.Done) {
 				return
 			}
@@ -1070,13 +1107,13 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 					return
 				}
 				res.Response = sanitizeAssistantContent(content)
-				res.Thinking = thinking
+				res.Thinking = sanitizeAssistantThinking(thinking)
 				if cr.Done && len(toolCalls) > 0 {
 					res.ToolCalls = toolCalls
 				}
 			} else if thinkingState != nil {
 				thinking, content := thinkingState.AddContent(cr.Content)
-				res.Thinking = thinking
+				res.Thinking = sanitizeAssistantThinking(thinking)
 				res.Response = sanitizeAssistantContent(content)
 			}
 
@@ -1089,6 +1126,12 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				res.DoneReason = cr.DoneReason.String()
 				if cr.PreemptedReason != "" {
 					res.PreemptedReason = cr.PreemptedReason
+				}
+				if cr.FinishDetails != "" {
+					res.FinishDetails = &api.FinishDetails{Type: cr.FinishDetails}
+				}
+				if cr.StopSequence != "" {
+					res.StopSequence = cr.StopSequence
 				}
 				res.TotalDuration = time.Since(checkpointStart)
 				res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
@@ -1190,8 +1233,8 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			}
 		}
 
-		r.Thinking = sbThinking.String()
-		r.Response = sanitizeAssistantContent(sbContent.String())
+		r.Thinking = sanitizeAssistantThinking(sbThinking.String())
+		r.Response = applyLoopTrim(sanitizeAssistantContent(sbContent.String()), r.FinishDetails)
 		r.Logprobs = allLogprobs
 
 		c.JSON(http.StatusOK, r)
@@ -1342,8 +1385,8 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 			if err != nil {
 				return err
 			}
-			if req.Dimensions > 0 && req.Dimensions < len(embedding) {
-				embedding, err = normalize(embedding[:req.Dimensions])
+			if req.Dimensions > 0 {
+				embedding, err = applyEmbeddingDimensions(embedding, req.Dimensions)
 				if err != nil {
 					return err
 				}
@@ -1377,6 +1420,19 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 		PromptEvalCount: int(totalTokens),
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+func applyEmbeddingDimensions(embedding []float32, dims int) ([]float32, error) {
+	if dims <= 0 {
+		return embedding, nil
+	}
+	if dims > len(embedding) {
+		return nil, fmt.Errorf("dimensions %d exceeds embedding size %d", dims, len(embedding))
+	}
+	if dims == len(embedding) {
+		return embedding, nil
+	}
+	return normalize(embedding[:dims])
 }
 
 func normalize(vec []float32) ([]float32, error) {
@@ -1871,6 +1927,7 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 		Details:      modelDetails,
 		Messages:     msgs,
 		Capabilities: m.Capabilities(),
+		SupportsMTP:  m.EmbeddedMTP || m.HasMTPCompanion,
 		ModifiedAt:   mf.FileInfo().ModTime(),
 		Requires:     m.Config.Requires,
 		// Several integrations crash on a nil/omitempty+empty ModelInfo, so by
@@ -2109,9 +2166,11 @@ func (s *Server) ListHandler(c *gin.Context) {
 				QuantizationLevel: cf.FileType,
 			}
 			var capabilities []model.Capability
+			var supportsMTP bool
 			if mdl, err := GetModel(loc.name.String()); err == nil {
 				enrichModelDetailsFromPath(&details, mdl.ModelPath)
 				capabilities = mdl.Capabilities()
+				supportsMTP = mdl.EmbeddedMTP || mdl.HasMTPCompanion
 			}
 			if cf.ModelFormat == "safetensors" && slices.Contains(cf.Capabilities, "completion") {
 				enrichModelDetailsFromSafetensors(&details, loc.name)
@@ -2130,6 +2189,7 @@ func (s *Server) ListHandler(c *gin.Context) {
 				ModifiedAt:   loc.modified,
 				Details:      details,
 				Capabilities: capabilities,
+				SupportsMTP:  supportsMTP,
 			}
 			return nil
 		})
@@ -2437,6 +2497,9 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.GET("/api/version", VersionHandler)
 	r.GET("/api/status", s.StatusHandler)
 	r.POST("/api/can-load", s.CanLoadHandler)
+	r.POST("/api/load", s.LoadHandler)
+	r.POST("/backend/load", s.LoadHandler)
+	r.POST("/api/unload", s.UnloadHandler)
 	r.POST("/api/propose-load", s.ProposeLoadHandler)
 	r.POST("/api/pin", s.PinHandler)
 	r.DELETE("/api/pin/:id", s.UnpinHandler)
@@ -3428,7 +3491,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			}
 		}
 		// truncate=false: tokenize/detokenize are never called, opts not needed.
-		prompt, images, _, _, _, err := chatPrompt(c.Request.Context(), m, nil, nil, debugMsgs, debugTools, req.Think, false, 0, nil)
+		prompt, images, _, _, _, err := chatPrompt(withContinueFinal(c.Request.Context(), req.ContinueFinalMessage), m, nil, nil, debugMsgs, debugTools, req.Think, false, 0, nil)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -3446,7 +3509,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 	r, m, opts, ggmlCtx, releaseQoS, err := s.scheduleRunner(schedCtx, name.String(), caps, req.Options, req.KeepAlive, req.Shift, streamCh, statusWriter)
 	if errors.Is(err, errCapabilityCompletion) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%q does not support chat", req.Model)})
+		c.JSON(http.StatusBadRequest, gin.H{"error": textSurfaceWrongModalityMessage(m, req.Model, "chat")})
 		return
 	} else if err != nil {
 		handleScheduleError(c, req.Model, err)
@@ -3478,8 +3541,28 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	if req.Messages[0].Role != "system" && m.System != "" {
 		msgs = append([]api.Message{{Role: "system", Content: m.System}}, msgs...)
 	}
+	origin := len(msgs) - len(req.Messages)
+	if origin < 0 {
+		origin = 0
+	}
 	msgs = filterThinkTags(msgs, m)
 	msgs = preservePriorThinkingForRender(msgs, req.Think)
+
+	var compressionMeta *api.ChatCompressionMeta
+	// elide_from is relative to req.Messages; origin is Modelfile/system prepend.
+	msgs, compressionMeta, cerr := applyChatCompressionForRequest(c.Request.Context(), &req, msgs, opts.NumCtx, name.String(), origin, s.summarizeChatHead)
+	if isChatCompressOverflow(cerr) {
+		abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusRequestEntityTooLarge, cerr.Error())
+		return
+	}
+	if cerr != nil {
+		slog.Error("chat compression error", "error", cerr)
+		abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, cerr.Error())
+		return
+	}
+	if compressionMeta != nil {
+		c.Header("X-Zerollama-Compressed", "1")
+	}
 
 	paddedLayoutPlan := modality.PaddedLayoutConsumePlanForChat(
 		resolveRendererName(m), m.Config.ModelFamilies, msgs, renderers.RenderImgTags,
@@ -3509,12 +3592,14 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	truncate := req.Truncate == nil || *req.Truncate
 	tokenBudget, detok := chatPromptLimits(m, opts, truncate, r.ContextLength(), r.Detokenize)
 	chatCtx := withPromptCacheKey(c.Request.Context(), modality.ExtractPromptCacheKey(req.Options))
+	chatCtx = withContinueFinal(chatCtx, req.ContinueFinalMessage)
 	prompt, images, messagesDropped, promptTokens, originalPromptTokens, err := chatPrompt(chatCtx, m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate, tokenBudget, detok)
 	if err != nil {
 		slog.Error("chat prompt error", "error", err)
 		abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
 		return
 	}
+	parsers.SeedFromPrompt(builtinParser, prompt)
 
 	completionPromptTokens := mlxCompletionPromptTokens(m, promptTokens)
 	paddedLayoutConsume := ""
@@ -3550,9 +3635,10 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			dbg.PaddedLayoutConsume = string(paddedLayoutPlan.Mode)
 		}
 		c.JSON(http.StatusOK, api.ChatResponse{
-			Model:     req.Model,
-			CreatedAt: time.Now().UTC(),
-			DebugInfo: dbg,
+			Model:       req.Model,
+			CreatedAt:   time.Now().UTC(),
+			DebugInfo:   dbg,
+			Compression: compressionMeta,
 		})
 		return
 	}
@@ -3564,10 +3650,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			OpeningTag: openingTag,
 			ClosingTag: closingTag,
 		}
-
-		if strings.HasSuffix(strings.TrimSpace(prompt), openingTag) {
-			thinkingState.AddContent(openingTag)
-		}
+		thinkingState.SeedFromPrompt(prompt)
 	}
 
 	var toolParser *tools.Parser
@@ -3608,6 +3691,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		structuredOutputsState := structuredOutputsState_None
 		firstToken := true
 		var firstTokenAt time.Time
+		parallelEmitted := 0
 
 		for {
 			var tb strings.Builder
@@ -3633,25 +3717,29 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			if s.sched != nil {
 				s.sched.mlxGate.bindPreemptCancel(schedulerModelKey(m), modality.ExtractPromptCacheKey(req.Options), cancel)
 			}
-			err := r.Completion(ctx, llm.CompletionRequest{
-				Prompt:              prompt,
-				PromptTokens:        completionPromptTokens,
-				PaddedLayoutConsume: paddedLayoutConsume,
-				Images:              images,
-				Format:              currentFormat,
-				Options:             opts,
-				Shift:               req.Shift == nil || *req.Shift,
-				Truncate:            truncate,
-				PreservedTokens:     preservedTokensForCompletion(builtinParser),
-				ToolCallTag:         toolCallTagForCompletion(toolParser),
-				LeadingBOS:          leadingBOSForModel(m),
-				Logprobs:            req.Logprobs,
-				TopLogprobs:         req.TopLogprobs,
-				PromptCacheKey:      modality.ExtractPromptCacheKey(req.Options),
-				CacheReset:          mlxQoSFromOptions(req.Options).CacheReset,
-				SessionViTOverlay:   modality.SessionViTOverlayEnabled(req.Options),
-				Gemma4PaddedMedia:   gemma4PaddedMedia,
-			}, func(r llm.CompletionResponse) {
+			err := r.Completion(ctx, func() llm.CompletionRequest {
+				chatCompletion := llm.CompletionRequest{
+					Prompt:              prompt,
+					PromptTokens:        completionPromptTokens,
+					PaddedLayoutConsume: paddedLayoutConsume,
+					Images:              images,
+					Format:              currentFormat,
+					Options:             opts,
+					Shift:               req.Shift == nil || *req.Shift,
+					Truncate:            truncate,
+					PreservedTokens:     preservedTokensForCompletion(builtinParser),
+					ToolCallTag:         toolCallTagForCompletion(toolParser),
+					LeadingBOS:          leadingBOSForModel(m),
+					Logprobs:            req.Logprobs,
+					TopLogprobs:         req.TopLogprobs,
+					PromptCacheKey:      modality.ExtractPromptCacheKey(req.Options),
+					CacheReset:          mlxQoSFromOptions(req.Options).CacheReset,
+					SessionViTOverlay:   modality.SessionViTOverlayEnabled(req.Options),
+					Gemma4PaddedMedia:   gemma4PaddedMedia,
+				}
+				applySpecFlags(&chatCompletion, req.Options, req.EnablePLD, req.EnableMTP, req.EnableDrafter)
+				return chatCompletion
+			}(), func(r llm.CompletionResponse) {
 				if emitMLXPrefillStatus(ch, req.Model, r.PrefillProcessed, r.PrefillTotal, r.Content, r.Done) {
 					return
 				}
@@ -3693,10 +3781,19 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					if r.PreemptedReason != "" {
 						res.PreemptedReason = r.PreemptedReason
 					}
+					if r.FinishDetails != "" {
+						res.FinishDetails = &api.FinishDetails{Type: r.FinishDetails}
+					}
+					if r.StopSequence != "" {
+						res.StopSequence = r.StopSequence
+					}
 					res.TotalDuration = time.Since(checkpointStart)
 					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 					applyPromptTruncation(&res, r, messagesDropped, originalPromptTokens)
 					applyGgmlNumCtxChatResponse(&res, ggmlCtx)
+					if compressionMeta != nil {
+						res.Compression = compressionMeta
+					}
 					rememberMLXPromptChain(m, req.Options, prompt, msgs, runnerTokenize)
 					recordInferenceCompletionDetails(c, res.DoneReason, r.PromptEvalCount, r.EvalCount, r.PromptEvalCachedCount, r.PromptEvalCachedHost, r.PromptEvalCachedStorage, r.PromptEvalCachedStorageBackend)
 					if r.OriginalPromptTokens > 0 {
@@ -3720,6 +3817,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 					for i := range toolCalls {
 						toolCalls[i].ID = toolCallId()
 					}
+					toolCalls = finishToolCalls(toolCalls, req, &parallelEmitted)
 					res.Message.ToolCalls = toolCalls
 
 					tb.WriteString(thinking)
@@ -3770,6 +3868,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 						for i := range toolCalls {
 							toolCalls[i].ID = toolCallId()
 						}
+						toolCalls = finishToolCalls(toolCalls, req, &parallelEmitted)
 						res.Message.ToolCalls = toolCalls
 						res.Message.Content = ""
 					} else if res.Message.Thinking != "" {
@@ -3793,6 +3892,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 
 				if r.Done && usesQwenStyleChat(m) {
 					res.Message.Content = sanitizeAssistantContent(res.Message.Content)
+					res.Message.Thinking = sanitizeAssistantThinking(res.Message.Thinking)
 				}
 
 				if r.Done {
@@ -3901,8 +4001,8 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			}
 		}
 
-		resp.Message.Content = sanitizeAssistantContent(sbContent.String())
-		resp.Message.Thinking = sbThinking.String()
+		resp.Message.Content = applyLoopTrim(sanitizeAssistantContent(sbContent.String()), resp.FinishDetails)
+		resp.Message.Thinking = sanitizeAssistantThinking(sbThinking.String())
 		resp.Logprobs = allLogprobs
 
 		if len(toolCalls) > 0 {
@@ -4391,6 +4491,12 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 
 		if cr.Done {
 			res.DoneReason = cr.DoneReason.String()
+			if cr.FinishDetails != "" {
+				res.FinishDetails = &api.FinishDetails{Type: cr.FinishDetails}
+			}
+			if cr.StopSequence != "" {
+				res.StopSequence = cr.StopSequence
+			}
 			res.Metrics.TotalDuration = time.Since(checkpointStart)
 			res.Metrics.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 			recordInferenceCompletionDetails(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount, cr.PromptEvalCachedCount, cr.PromptEvalCachedHost, cr.PromptEvalCachedStorage, cr.PromptEvalCachedStorageBackend)

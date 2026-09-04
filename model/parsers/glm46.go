@@ -79,12 +79,18 @@ func (p *GLM46Parser) Add(s string, done bool) (content string, thinking string,
 	p.buffer.WriteString(s)
 	events := p.parseEvents()
 
+	var salvaged []api.ToolCall
 	if done && (p.state == glm46ParserState_ToolStartedEatingWhitespace || p.state == glm46ParserState_CollectingToolContent) {
-		event, err := p.finalizeToolCall()
-		if err != nil {
-			return "", "", nil, fmt.Errorf("incomplete GLM tool call: %v", err)
+		if event, ferr := p.finalizeToolCall(); ferr == nil {
+			events = append(events, event)
+		} else if call, ok := salvageGLM46ToolCall(p.buffer.String()); ok {
+			p.buffer.Reset()
+			p.state = glm46ParserState_CollectingContent
+			salvaged = append(salvaged, call)
+		} else {
+			p.buffer.Reset()
+			p.state = glm46ParserState_CollectingContent
 		}
-		events = append(events, event)
 	}
 
 	var toolCalls []api.ToolCall
@@ -97,6 +103,14 @@ func (p *GLM46Parser) Add(s string, done bool) (content string, thinking string,
 			toolCall, err := parseGLM46ToolCall(event, p.tools)
 			if err != nil {
 				slog.Warn("glm-4.6 tool call parsing failed", "error", err)
+				if done {
+					if call, ok := salvageGLM46ToolCall(event.raw); ok {
+						call.Function.Index = p.callIndex
+						p.callIndex++
+						toolCalls = append(toolCalls, call)
+					}
+					continue
+				}
 				return "", "", nil, err
 			}
 			toolCall.Function.Index = p.callIndex
@@ -109,6 +123,12 @@ func (p *GLM46Parser) Add(s string, done bool) (content string, thinking string,
 			// events, we naively append them together here.
 			contentSb.WriteString(event.content)
 		}
+	}
+
+	for _, call := range salvaged {
+		call.Function.Index = p.callIndex
+		p.callIndex++
+		toolCalls = append(toolCalls, call)
 	}
 
 	return contentSb.String(), thinkingSb.String(), toolCalls, nil
@@ -134,9 +154,9 @@ func (p *GLM46Parser) finalizeToolCall() (glm46EventRawToolCall, error) {
 	return glm46EventRawToolCall{raw: raw}, nil
 }
 
-// validateFinalGLM46ToolCall is intentionally stricter than normal GLM parsing.
-// At end-of-stream only the outer closing tag may be missing; repairing a
-// truncated argument could turn partial model output into a mutating tool call.
+// validateFinalGLM46ToolCall requires a complete, schema-valid call when only
+// the outer closer is missing. Truncated args go through salvageGLM46ToolCall
+// (name + `{}`) instead of shipping partial values.
 func validateFinalGLM46ToolCall(parsed GLMToolCallXML, tools []api.Tool) error {
 	functionName := strings.TrimSpace(parsed.Content)
 	if functionName == "" {

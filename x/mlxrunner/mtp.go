@@ -34,7 +34,7 @@ func newMTPDrafter(s *speculation) *mtpDrafter {
 // synced to the draft caches' restored offset. promptTokens drives history
 // policy resolve (F0751 / mtplx auto @ 16k → last_window).
 func (d *mtpDrafter) open(promptTokens int) *mtpDraftSession {
-	s := &mtpDraftSession{drafter: d}
+	s := &mtpDraftSession{drafter: d, greedyChain: greedyDraftChainEnabled(promptTokens)}
 	if kv := d.spec.draftKV; len(kv) > 0 {
 		// A restored prefix arrives with the draft caches already written;
 		// pairing resumes from their absolute offset.
@@ -63,12 +63,14 @@ func (d *mtpDrafter) open(promptTokens int) *mtpDraftSession {
 			"window_tokens", plan.WindowTokens,
 			"history_start", plan.HistoryStart,
 			"prompt_tokens", promptTokens,
-			"draft_kv", len(d.spec.draftKV) > 0)
+			"draft_kv", len(d.spec.draftKV) > 0,
+			"greedy_chain", s.greedyChain)
 	} else {
 		slog.Debug("mtp history policy",
 			"policy", plan.Policy,
 			"prompt_tokens", promptTokens,
-			"draft_kv", len(d.spec.draftKV) > 0)
+			"draft_kv", len(d.spec.draftKV) > 0,
+			"greedy_chain", s.greedyChain)
 	}
 	return s
 }
@@ -78,8 +80,9 @@ func (d *mtpDrafter) open(promptTokens int) *mtpDraftSession {
 // look-ahead token at S+1 fused with the target hidden at S, so a pair
 // completes only when the next token arrives.
 type mtpDraftSession struct {
-	drafter *mtpDrafter
-	history mtpHistoryPlan
+	drafter     *mtpDrafter
+	history     mtpHistoryPlan
+	greedyChain bool // mtplx T=0 on-device argmax chain (fence + env)
 
 	// writeLookAheadAbs is the absolute look-ahead token index of the next
 	// pair that may enter draft KV (mtplx last_window may jump this past the
@@ -278,7 +281,13 @@ func (d *mtpDraftSession) propose(current *mlx.Array, maxTokens int) *draftCandi
 		// The chain's earlier drafts ride along as the row's history, so
 		// penalties shape proposals the same way they shape validation.
 		dist := r.Sampler.Distribution(pipelineSlot, stepLogits, prefix)
-		nextToken := r.Sampler.SampleDistribution(pipelineSlot, dist)
+		var nextToken *mlx.Array
+		if d.greedyChain && r.Sampler.Greedy(pipelineSlot) {
+			// Keep argmax on-device so later depths don't host-sync per step.
+			nextToken = dist.GreedyToken()
+		} else {
+			nextToken = r.Sampler.SampleDistribution(pipelineSlot, dist)
+		}
 
 		lastToken = nextToken.ExpandDims(-1)
 		draftDists = append(draftDists, dist)

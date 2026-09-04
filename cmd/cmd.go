@@ -163,6 +163,10 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 	// Check for --experimental flag for safetensors model creation
 	// This gates both safetensors LLM and imagegen model creation
 	experimental, _ := cmd.Flags().GetBool("experimental")
+	linkDir, _ := cmd.Flags().GetBool("link")
+	if linkDir && !experimental {
+		return errors.New("--link requires --experimental (writes a source_dir manifest, no HTTP create)")
+	}
 	if experimental {
 		if !isLocalhost() {
 			return errors.New("remote safetensor model creation not yet supported")
@@ -207,11 +211,24 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 
 		quantize, _ := cmd.Flags().GetString("quantize")
 		draftQuantize, _ := cmd.Flags().GetString("draft-quantize")
+		linkDir, _ := cmd.Flags().GetBool("link")
+		fromDir, _ := cmd.Flags().GetString("dir")
+		if fromDir != "" {
+			modelDir = fromDir
+		}
+		if modelDir != "" && !model.ParseName(modelDir).IsValid() {
+			abs, err := filepath.Abs(modelDir)
+			if err != nil {
+				return fmt.Errorf("resolve model dir %q: %w", modelDir, err)
+			}
+			modelDir = abs
+		}
 		return xcreateclient.CreateModel(xcreateclient.CreateOptions{
 			ModelName:     modelName,
 			ModelDir:      modelDir,
 			Quantize:      quantize,
 			DraftQuantize: draftQuantize,
+			LinkDir:       linkDir,
 			Modelfile:     mfConfig,
 		}, p)
 	}
@@ -1577,6 +1594,8 @@ type runOptions struct {
 	Think          *api.ThinkValue
 	HideThinking   bool
 	ShowConnect    bool
+	// ElideFrom is the sticky placeholder cut from the last ChatCompressionMeta.
+	ElideFrom *int
 }
 
 func (r runOptions) Copy() runOptions {
@@ -1612,6 +1631,12 @@ func (r runOptions) Copy() runOptions {
 		think = &cThink
 	}
 
+	var elideFrom *int
+	if r.ElideFrom != nil {
+		v := *r.ElideFrom
+		elideFrom = &v
+	}
+
 	return runOptions{
 		Model:          r.Model,
 		ParentModel:    r.ParentModel,
@@ -1628,6 +1653,7 @@ func (r runOptions) Copy() runOptions {
 		Think:          think,
 		HideThinking:   r.HideThinking,
 		ShowConnect:    r.ShowConnect,
+		ElideFrom:      elideFrom,
 	}
 }
 
@@ -1713,7 +1739,7 @@ func thinkingOutputClosingText(plainText bool) string {
 	return readline.ColorGrey + readline.ColorBold + text + readline.ColorDefault
 }
 
-func chat(cmd *cobra.Command, opts runOptions) (*api.Message, error) {
+func chat(cmd *cobra.Command, opts *runOptions) (*api.Message, error) {
 	client, err := api.ClientFromEnvironment()
 	if err != nil {
 		return nil, err
@@ -1802,6 +1828,9 @@ func chat(cmd *cobra.Command, opts runOptions) (*api.Message, error) {
 		Options:  opts.Options,
 		Think:    opts.Think,
 	}
+	if opts.ElideFrom != nil {
+		api.ApplyStickyChatCompression(req, &api.ChatCompressionMeta{Mode: "placeholder", ElideFrom: *opts.ElideFrom})
+	}
 
 	if opts.KeepAlive != nil {
 		req.KeepAlive = opts.KeepAlive
@@ -1822,6 +1851,11 @@ func chat(cmd *cobra.Command, opts runOptions) (*api.Message, error) {
 			return nil, nil
 		}
 		return nil, err
+	}
+
+	if latest.Compression != nil && latest.Compression.Mode != "" {
+		from := latest.Compression.ElideFrom
+		opts.ElideFrom = &from
 	}
 
 	if len(opts.Messages) > 0 {
@@ -2132,6 +2166,7 @@ func checkServerHeartbeat(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if err := client.Heartbeat(cmd.Context()); err != nil {
+		err = wrapHeartbeatPortHijack(err)
 		if !(strings.Contains(err.Error(), " refused") || strings.Contains(err.Error(), "could not connect")) {
 			return err
 		}
@@ -2370,6 +2405,8 @@ func NewCLI() *cobra.Command {
 	createCmd.Flags().StringP("quantize", "q", "", "Quantize model to this level (e.g. q4_K_M)")
 	createCmd.Flags().String("draft-quantize", "", "Quantize draft model to this level")
 	createCmd.Flags().Bool("experimental", false, "Enable experimental safetensors model creation")
+	createCmd.Flags().Bool("link", false, "Register MLX/HF safetensors in place (no tensor blob copy; requires --experimental)")
+	createCmd.Flags().String("dir", "", "HuggingFace/mlx-lm directory for --experimental create (overrides FROM .)")
 
 	showCmd := &cobra.Command{
 		Use:     "show MODEL",
@@ -2575,6 +2612,7 @@ func NewCLI() *cobra.Command {
 	anePrefillCrossoverCmd := NewANEPrefillCrossoverCommand()
 	aneLabStatusCmd := NewANELabStatusCommand()
 	flashMoEResolveCmd := NewFlashMoEResolveCommand()
+	freetokenCmd := NewFreetokenCommand()
 
 	doctorCmd := NewDoctorCommand()
 	benchCmd := NewBenchCommand()
@@ -2672,6 +2710,7 @@ func NewCLI() *cobra.Command {
 		anePrefillCrossoverCmd,
 		aneLabStatusCmd,
 		flashMoEResolveCmd,
+		freetokenCmd,
 		doctorCmd,
 		templateCmd,
 		benchCmd,

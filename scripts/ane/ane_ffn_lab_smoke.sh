@@ -43,6 +43,8 @@ export ZEROLLAMA_ANE_FFN_SEQ_MAX=512
 export ZEROLLAMA_ANE_FFN_LAB_PORT=11435
 export ZEROLLAMA_ANE_FFN_TELEMETRY=1
 export ZEROLLAMA_ANE_FFN_REPLACE_DYLIB=${OUT}/libane_ffn_force.dylib
+# OVERLAP is experimental — early sync before MoE breaks quality on current pin; leave unset.
+# export ZEROLLAMA_ANE_FFN_OVERLAP=1
 # Rebuild lab binary (Metal + ANE FFN hooks; does not replace production ./zerollama):
 #   BUILD_MLX=0 BUILD_LLAMA_SERVER=0 BUILD_RUNTIME_KV_EXT=0 \\
 #     ./scripts/build/build_zerollama_mac.sh ./zerollama-ane-ffn-lab

@@ -100,6 +100,7 @@ func (s *Server) scoreCandidateLocked(prompt, candidate string, lengthNormalize,
 			tokenLPs = append(tokenLPs, llm.TokenLogprob{
 				Token:   s.model.TokenToPiece(tok),
 				Logprob: lp,
+				ID:      llm.IntPtr(tok),
 			})
 		}
 		if err := s.decodeTokenLocked(slot, tok, true); err != nil {

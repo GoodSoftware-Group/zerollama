@@ -1,0 +1,6 @@
+# DEFERRED 0125: pipe_qkv_head_gemm_q4_0.metal — do not wire for speed (2026-09-01)
+#
+# Kernel staged only. No positive same-binary A/B; P0/P1 already regress on M4 Max.
+# Reopen only with a new measured win under FA-on baselines.
+# Docs: docs/m4-prefill-borrowings-findings.md (Closed)
+# Upstream: mohamedhossammohamed/m4-prefill-engine

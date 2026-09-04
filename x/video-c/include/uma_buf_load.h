@@ -15,6 +15,7 @@ typedef struct uma_buf_pool uma_buf_pool;
 
 uma_buf_pool *uma_buf_pool_create(UmaClient *c);
 void uma_buf_pool_destroy(uma_buf_pool *pool);
+void uma_buf_pool_destroy_keep_bank(uma_buf_pool *pool);
 
 int uma_buf_pool_alloc(uma_buf_pool *pool, const char *name, size_t nbytes);
 int uma_buf_pool_put(uma_buf_pool *pool, const char *name, const void *data,
@@ -35,6 +36,7 @@ int uma_buf_pool_bank_bind(uma_buf_pool *pool, const char *bank_key,
 int uma_buf_pool_bank_binds(uma_buf_pool *pool, const char *pairs);
 int uma_buf_pool_free(uma_buf_pool *pool, const char *name);
 void uma_buf_pool_free_all(uma_buf_pool *pool);
+int uma_buf_pool_ensure_bank_open(uma_buf_pool *pool);
 
 #ifdef __cplusplus
 }

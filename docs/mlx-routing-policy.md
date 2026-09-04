@@ -94,6 +94,10 @@ if m.IsMLX() {
 
 Code: `internal/lmstudio/lmstudio.go` (`ImportCopyBytes`), `server/lmstudio_catalog.go`, `server/lmstudio_import.go`.
 
+### Huge safetensors (`create` copies blobs)
+
+**Why call this out:** mlx-lm packs like DeepSeek-V4 Flash 2-bit DQ are ~90 GiB. Default `create` **copies** tensors. Use **`create --experimental --link`** so the tag points at the existing directory. Routing is still `IsMLX()` → mlxrunner — [mlx-deepseek-v4-flash.md](./mlx-deepseek-v4-flash.md).
+
 ---
 
 ## Mac operator checklist

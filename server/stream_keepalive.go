@@ -3,6 +3,7 @@ package server
 // SSE keepalive during long MLX prefill.
 // Why: agent HTTP clients (Mercury empty-stream guard) abort when no SSE data:
 // frames arrive for ~60s; MLX prefill on 65k+ tokens can exceed that before first token.
+// mlx-serve beats the socket on 5s byte-silence; we match that default.
 
 import (
 	"context"
@@ -18,7 +19,7 @@ import (
 	"github.com/ollama/ollama/api"
 )
 
-const defaultStreamKeepaliveInterval = 15 * time.Second
+const defaultStreamKeepaliveInterval = 5 * time.Second
 
 func streamKeepaliveInterval() time.Duration {
 	raw := os.Getenv("OLLAMA_STREAM_KEEPALIVE_INTERVAL")

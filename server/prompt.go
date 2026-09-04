@@ -19,6 +19,20 @@ import (
 type tokenizeFunc func(context.Context, string) ([]int, error)
 type detokenizeFunc func(context.Context, []int) (string, error)
 
+type ctxKeyContinueFinal struct{}
+
+func withContinueFinal(ctx context.Context, on bool) context.Context {
+	if !on {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyContinueFinal{}, true)
+}
+
+func continueFinalFrom(ctx context.Context) bool {
+	on, _ := ctx.Value(ctxKeyContinueFinal{}).(bool)
+	return on
+}
+
 // chatPrompt accepts a list of messages and returns the prompt and images that should be used for the next chat turn.
 // chatPrompt truncates any messages that exceed the context window of the model, making sure to always include 1) the
 // latest message and 2) system messages.
@@ -37,6 +51,10 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 	// TODO: Ideally we would compute this from the projector metadata but some pieces are implementation dependent
 	// Clip images are represented as 768 tokens, each an embedding
 	imageNumTokens := 768
+
+	if opts != nil {
+		msgs = api.AppendOutputBudgetGuidance(msgs, opts.NumPredict)
+	}
 
 	currMsgIdx := 0
 
@@ -116,9 +134,21 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 
 	// truncate any messages that do not fit into the context window
 	system := chatSystemPrefix(msgs, currMsgIdx)
-	p, err := renderPrompt(m, append(system, msgs[currMsgIdx:]...), tools, think)
+	renderMsgs := append(system, msgs[currMsgIdx:]...)
+	if continueFinalFrom(ctx) && template.ContinueFinalAllowed(renderMsgs) {
+		renderMsgs = slices.Clone(renderMsgs)
+		last := renderMsgs[len(renderMsgs)-1]
+		last.Content = strings.TrimRight(last.Content, " \t\r\n")
+		renderMsgs[len(renderMsgs)-1] = last
+	}
+	p, err := renderPrompt(m, renderMsgs, tools, think)
 	if err != nil {
 		return "", nil, 0, nil, 0, err
+	}
+	if continueFinalFrom(ctx) {
+		if p2, ok := template.ApplyContinueFinal(p, renderMsgs); ok {
+			p = p2
+		}
 	}
 
 	if truncate && tokenize != nil {
@@ -297,12 +327,13 @@ func findChatPromptStartIdx(
 }
 
 func renderPrompt(m *Model, msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (string, error) {
-	if rendererName := resolveRendererName(m); rendererName != "" {
+	rendererName := resolveRendererName(m)
+	if rendererName != "" {
 		rendered, err := renderers.RenderWithRenderer(rendererName, msgs, tools, think)
 		if err != nil {
 			return "", err
 		}
-		return rendered, nil
+		return renderers.ApplyNoThinkTailSuffix(rendered, rendererName, tools, think), nil
 	}
 
 	var b bytes.Buffer
@@ -315,7 +346,7 @@ func renderPrompt(m *Model, msgs []api.Message, tools []api.Tool, think *api.Thi
 	if err := m.Template.Execute(&b, template.Values{Messages: msgs, Tools: tools, Think: thinkVal, ThinkLevel: thinkLevel, IsThinkSet: think != nil}); err != nil {
 		return "", err
 	}
-	return b.String(), nil
+	return renderers.ApplyNoThinkTailSuffix(b.String(), rendererName, tools, think), nil
 }
 
 func imageTaggedMessages(m *Model, msgs []api.Message, start int, clearImages bool) ([]api.Message, []llm.ImageData, error) {

@@ -1,5 +1,6 @@
 #include "wan.h"
 #include "wan_internal.h"
+#include "wan_lora.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -129,6 +130,8 @@ void wan_ctx_close(wan_ctx *ctx) {
   if (!ctx)
     return;
   wan_weight_cache_clear(ctx);
+  wan_lora_close((wan_lora *)ctx->lora);
+  ctx->lora = NULL;
   for (int i = 0; i < 2; i++) {
     free(ctx->dit_tctx_pack[i]);
     ctx->dit_tctx_pack[i] = NULL;
@@ -137,7 +140,7 @@ void wan_ctx_close(wan_ctx *ctx) {
   zw_close(ctx->t5_zip);
   st_close(ctx->st);
   gguf_close(ctx->gguf);
-  uma_buf_pool_destroy(ctx->bufs);
+  uma_buf_pool_destroy_keep_bank(ctx->bufs);
   uma_client_close(ctx->uma);
   free(ctx);
 }

@@ -73,7 +73,7 @@ func (gdn *GatedDeltaNet) Forward(ctx ml.Context, hiddenStates, _ ml.Tensor, cac
 	layer := gdn.Layer
 	nSeqTokens := hiddenStates.Dim(1)
 	nSeqs := hiddenStates.Dim(2)
-	if cache != nil && cache.IsSupportedForBatch() {
+	if cache != nil && cache.IsSupportedForBatch() && !cache.SerialGDN() {
 		seqTokens := cache.seqTokens()
 		seqs := cache.numSeqs()
 		if seqTokens > 0 && seqs > 0 {
@@ -90,6 +90,10 @@ func (gdn *GatedDeltaNet) Forward(ctx ml.Context, hiddenStates, _ ml.Tensor, cac
 				nSeqs = seqs
 			}
 		}
+	}
+
+	if cache != nil && cache.MTPPair() && !cache.SerialGDN() && nSeqTokens == 2 {
+		return gdn.forwardMTPPair(ctx, hiddenStates, cache, opts)
 	}
 
 	headKDim := opts.ssmDState
@@ -257,6 +261,29 @@ func (gdn *GatedDeltaNet) Forward(ctx ml.Context, hiddenStates, _ ml.Tensor, cac
 
 	out := gdn.SSMOut.Forward(ctx, finalOutput)
 	return out.Reshape(ctx, out.Dim(0), nSeqTokens*nSeqs), nil
+}
+
+func (gdn *GatedDeltaNet) forwardMTPPair(ctx ml.Context, hiddenStates ml.Tensor, cache *HybridCache, opts *Options) (ml.Tensor, error) {
+	h := hiddenStates.Dim(0)
+	nSeqs := hiddenStates.Dim(2)
+	if nSeqs <= 0 {
+		nSeqs = 1
+	}
+	h0 := hiddenStates.Slice(ctx, 1, 0, 1, 1).Contiguous(ctx, h, 1, nSeqs)
+	h1 := hiddenStates.Slice(ctx, 1, 1, 2, 1).Contiguous(ctx, h, 1, nSeqs)
+	cache.PlanBoundaryCheckpoint()
+	cache.SetSerialGDN(true)
+	defer cache.SetSerialGDN(false)
+	out0, err := gdn.Forward(ctx, h0, nil, cache, opts)
+	if err != nil {
+		return nil, err
+	}
+	cache.FreezeCheckpoints()
+	out1, err := gdn.Forward(ctx, h1, nil, cache, opts)
+	if err != nil {
+		return nil, err
+	}
+	return out0.Concat(ctx, out1, 1), nil
 }
 
 // deltaNetAutoregressive implements single-token state update.

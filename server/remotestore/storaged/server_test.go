@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -116,6 +117,107 @@ func TestPutBlobRoundTrip(t *testing.T) {
 	body, _ := io.ReadAll(rr2.Body)
 	if !bytes.Equal(body, payload) {
 		t.Fatalf("get body mismatch")
+	}
+}
+
+func TestPutBlobContentRangeResume(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	auth := mustAuth(t)
+	s := New(dir, auth)
+	payload := []byte("abcdefghijklmnopqrstuvwxyz")
+	sum := sha256.Sum256(payload)
+	digest := "sha256-" + hex.EncodeToString(sum[:])
+
+	first := payload[:10]
+	req := httptest.NewRequest(http.MethodPut, "/v1/blob/"+digest, bytes.NewReader(first))
+	req.ContentLength = int64(len(first))
+	req.Header.Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(first)-1, len(payload)))
+	if err := auth.SignRequest(req, nil); err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("first chunk: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("X-Zerollama-Partial") != "1" {
+		t.Fatal("expected partial header")
+	}
+
+	head := httptest.NewRequest(http.MethodHead, "/v1/blob/"+digest, nil)
+	if err := auth.SignRequest(head, nil); err != nil {
+		t.Fatal(err)
+	}
+	hr := httptest.NewRecorder()
+	s.ServeHTTP(hr, head)
+	if hr.Code != http.StatusOK || hr.Header().Get("X-Zerollama-Partial") != "1" {
+		t.Fatalf("head partial: %d partial=%s", hr.Code, hr.Header().Get("X-Zerollama-Partial"))
+	}
+
+	bad := httptest.NewRequest(http.MethodPut, "/v1/blob/"+digest, bytes.NewReader(payload[5:]))
+	bad.Header.Set("Content-Range", fmt.Sprintf("bytes 5-%d/%d", len(payload)-1, len(payload)))
+	if err := auth.SignRequest(bad, nil); err != nil {
+		t.Fatal(err)
+	}
+	br := httptest.NewRecorder()
+	s.ServeHTTP(br, bad)
+	if br.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("want 416, got %d", br.Code)
+	}
+
+	rest := payload[10:]
+	req2 := httptest.NewRequest(http.MethodPut, "/v1/blob/"+digest, bytes.NewReader(rest))
+	req2.ContentLength = int64(len(rest))
+	req2.Header.Set("Content-Range", fmt.Sprintf("bytes 10-%d/%d", len(payload)-1, len(payload)))
+	if err := auth.SignRequest(req2, nil); err != nil {
+		t.Fatal(err)
+	}
+	rr2 := httptest.NewRecorder()
+	s.ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusCreated {
+		t.Fatalf("second chunk: %d %s", rr2.Code, rr2.Body.String())
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "blobs", digest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("assembled mismatch")
+	}
+}
+
+func TestGetBlobAcceptsRange(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	auth := mustAuth(t)
+	s := New(dir, auth)
+	payload := []byte("0123456789abcdef")
+	sum := sha256.Sum256(payload)
+	digest := "sha256-" + hex.EncodeToString(sum[:])
+	put := httptest.NewRequest(http.MethodPut, "/v1/blob/"+digest, bytes.NewReader(payload))
+	if err := auth.SignRequest(put, nil); err != nil {
+		t.Fatal(err)
+	}
+	pr := httptest.NewRecorder()
+	s.ServeHTTP(pr, put)
+	if pr.Code != http.StatusCreated {
+		t.Fatalf("put: %d", pr.Code)
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/v1/blob/"+digest, nil)
+	get.Header.Set("Range", "bytes=4-7")
+	if err := auth.SignRequest(get, nil); err != nil {
+		t.Fatal(err)
+	}
+	gr := httptest.NewRecorder()
+	s.ServeHTTP(gr, get)
+	if gr.Code != http.StatusPartialContent {
+		t.Fatalf("want 206, got %d", gr.Code)
+	}
+	body, _ := io.ReadAll(gr.Body)
+	if string(body) != "4567" {
+		t.Fatalf("range body %q", body)
 	}
 }
 

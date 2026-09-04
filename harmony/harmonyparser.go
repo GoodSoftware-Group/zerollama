@@ -479,7 +479,8 @@ func (h *HarmonyMessageHandler) Add(s string, done bool) (content string, thinki
 			name = h.FunctionNameMap.OriginalFromConverted(name)
 			var args api.ToolCallFunctionArguments
 			if err := json.Unmarshal([]byte(raw), &args); err != nil {
-				return "", "", nil, fmt.Errorf("error parsing tool call: raw='%s', err=%w", raw, err)
+				// mlx-serve: truncated opener ships name + {} (never partial values).
+				args = api.NewToolCallFunctionArguments()
 			}
 			calls = append(calls, api.ToolCall{Function: api.ToolCallFunction{Name: name, Arguments: args}})
 		}

@@ -1,0 +1,5 @@
+# DEFERRED 0126: pipe_gemm_q4_0_32x32.metal — do not wire for speed (2026-09-01)
+#
+# Kernel staged only. Same gate as 0125: no wire without positive A/B.
+# Docs: docs/m4-prefill-borrowings-findings.md (Closed)
+# Upstream: mohamedhossammohamed/m4-prefill-engine

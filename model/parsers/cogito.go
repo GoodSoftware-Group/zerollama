@@ -100,7 +100,7 @@ func (cogitoEventToolCall) isCogitoEvent()        {}
 
 func (p *CogitoParser) Add(s string, done bool) (content string, thinking string, calls []api.ToolCall, err error) {
 	p.buffer.WriteString(s)
-	events := p.parseEvents()
+	events := p.parseEvents(done)
 
 	var toolCalls []api.ToolCall
 	var contentSb strings.Builder
@@ -124,13 +124,13 @@ func (p *CogitoParser) Add(s string, done bool) (content string, thinking string
 	return contentSb.String(), thinkingSb.String(), toolCalls, nil
 }
 
-func (p *CogitoParser) parseEvents() []cogitoEvent {
+func (p *CogitoParser) parseEvents(done bool) []cogitoEvent {
 	var all []cogitoEvent
 
 	keepLooping := true
 	for keepLooping {
 		var events []cogitoEvent
-		events, keepLooping = p.eat()
+		events, keepLooping = p.eat(done)
 		if len(events) > 0 {
 			all = append(all, events...)
 		}
@@ -139,7 +139,7 @@ func (p *CogitoParser) parseEvents() []cogitoEvent {
 	return all
 }
 
-func (p *CogitoParser) eat() ([]cogitoEvent, bool) {
+func (p *CogitoParser) eat(done bool) ([]cogitoEvent, bool) {
 	var events []cogitoEvent
 	bufStr := p.buffer.String()
 	if bufStr == "" {
@@ -248,14 +248,53 @@ func (p *CogitoParser) eat() ([]cogitoEvent, bool) {
 		}
 
 		if idx := strings.Index(bufStr, cogitoToolCallsEndTag); idx != -1 {
+			prefix := bufStr[:idx]
 			remaining := bufStr[idx+len(cogitoToolCallsEndTag):]
 			remaining = strings.TrimLeftFunc(remaining, unicode.IsSpace)
+
+			if begin := strings.Index(prefix, cogitoToolCallBeginTag); begin != -1 {
+				inner := prefix[begin+len(cogitoToolCallBeginTag):]
+				if strings.Index(inner, cogitoToolCallEndTag) == -1 {
+					p.buffer.Reset()
+					p.buffer.WriteString(remaining)
+					p.state = CogitoCollectingContent
+					if tc, ok := salvageCogitoToolCall(inner); ok {
+						events = append(events, cogitoEventToolCall{toolCall: tc})
+					}
+					return events, remaining != ""
+				}
+			}
 
 			p.buffer.Reset()
 			p.buffer.WriteString(remaining)
 			p.state = CogitoCollectingContent
 
-			return events, true
+			return events, remaining != ""
+		}
+
+		if done {
+			if idx := strings.Index(bufStr, cogitoToolCallBeginTag); idx != -1 {
+				startIdx := idx + len(cogitoToolCallBeginTag)
+				rest := bufStr[startIdx:]
+				if next := strings.Index(rest, cogitoToolCallBeginTag); next != -1 {
+					rest = rest[:next]
+				}
+				if end := strings.Index(rest, cogitoToolCallsEndTag); end != -1 {
+					rest = rest[:end]
+				}
+				if end := strings.Index(rest, cogitoToolCallEndTag); end != -1 {
+					rest = rest[:end]
+				}
+				p.buffer.Reset()
+				p.state = CogitoCollectingContent
+				if tc, ok := salvageCogitoToolCall(rest); ok {
+					events = append(events, cogitoEventToolCall{toolCall: tc})
+				}
+				return events, false
+			}
+			p.buffer.Reset()
+			p.state = CogitoCollectingContent
+			return events, false
 		}
 
 		return events, false
@@ -323,4 +362,45 @@ func (p *CogitoParser) parseToolCallContent(content string) (api.ToolCall, error
 			Arguments: args,
 		},
 	}, nil
+}
+
+func salvageCogitoToolCall(content string) (api.ToolCall, bool) {
+	parts := strings.SplitN(content, cogitoToolSepTag, 2)
+	if len(parts) < 2 {
+		return api.ToolCall{}, false
+	}
+	nameAndArgs := parts[1]
+	fence := "\n```json\n"
+	jsonStart := strings.Index(nameAndArgs, fence)
+	if jsonStart == -1 {
+		fence = "```json\n"
+		jsonStart = strings.Index(nameAndArgs, fence)
+	}
+	var name, raw string
+	if jsonStart == -1 {
+		name = strings.TrimSpace(nameAndArgs)
+	} else {
+		name = strings.TrimSpace(nameAndArgs[:jsonStart])
+		raw = nameAndArgs[jsonStart+len(fence):]
+		if end := strings.Index(raw, "\n```"); end != -1 {
+			raw = raw[:end]
+		} else if end := strings.Index(raw, "```"); end != -1 {
+			raw = raw[:end]
+		}
+	}
+	if name == "" {
+		return api.ToolCall{}, false
+	}
+	args := api.ToolCallFunctionArguments{}
+	if trimmed := strings.TrimSpace(raw); trimmed != "" {
+		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+			args = api.ToolCallFunctionArguments{}
+		}
+	}
+	return api.ToolCall{
+		Function: api.ToolCallFunction{
+			Name:      name,
+			Arguments: args,
+		},
+	}, true
 }

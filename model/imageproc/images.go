@@ -16,6 +16,26 @@ var (
 	ClipDefaultSTD       = [3]float32{0.26862954, 0.26130258, 0.27577711}
 )
 
+// EngineMaxPixels is mlx-serve ENGINE_MAX_PIXELS (1536²). Checkpoint
+// processor bounds (Qwen packs advertise ~16.7 Mpx) are not the engine's:
+// the vision tower materializes the score matrix and a 5100×3300 photo OOM'd.
+// 1080p screenshots (~2.1 Mpx) sit under this cap and are left alone.
+const EngineMaxPixels = 1536 * 1536
+
+func ClampEnginePixels(n int) int {
+	if n <= 0 || n > EngineMaxPixels {
+		return EngineMaxPixels
+	}
+	return n
+}
+
+func WithinEnginePixels(height, width int) bool {
+	if height <= 0 || width <= 0 {
+		return false
+	}
+	return int64(height)*int64(width) <= int64(EngineMaxPixels)
+}
+
 const (
 	ResizeBilinear = iota
 	ResizeNearestNeighbor

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Build zerollama on macOS with CGO (Metal ggml + optional MLX dylibs + embedded libpython).
 #
-# Why metallib embed runs here: Eliza ggml-metal-device.m loads
-# ggml-metal-embed.metal via newLibraryWithData — that file must be compiled
-# default.metallib bytes (merged with eliza-shipped kernels), not Metal source.
-# Stale embeds miss new kernels (TQ2/E8/unary) and first decode can crash.
+# Why Metal embed regen runs here: ggml-metal-device.m JIT-compiles UTF-8
+# kernels/<kind>.metal via _ggml_metallib_*_{start,end}. Stale embeds miss
+# new kernels (TQ2/E8/unary) and first decode can crash.
 # See docs/qwen35-apple-silicon.md.
 #
 # MLX (safetensors): when ../mlx is present, BUILD_MLX=auto (default) installs
@@ -97,8 +96,11 @@ _should_build_mlx() {
   esac
 }
 
+# shellcheck source=scripts/build/uma_toolkit.sh
+source "${ROOT}/scripts/build/uma_toolkit.sh"
+
 _uma_toolkit_root() {
-  echo "${UMA_TOOLKIT:-${ROOT}/../bmtl/hardware_lab/lanes/m4/uma_toolkit}"
+  uma_toolkit_root
 }
 
 _should_build_uma() {
@@ -106,12 +108,10 @@ _should_build_uma() {
     0) return 1 ;;
     1) return 0 ;;
     auto)
-      local tk
-      tk="$(_uma_toolkit_root)"
-      if [[ -f "${tk}/uma_client.c" && -f "${tk}/include/uma/client.h" ]]; then
+      if uma_toolkit_present; then
         return 0
       fi
-      echo ">>> BUILD_UMA=auto: skip uma (no toolkit at ${tk})" >&2
+      echo ">>> BUILD_UMA=auto: skip uma (no toolkit at $(_uma_toolkit_root))" >&2
       return 1
       ;;
     *)
@@ -377,48 +377,14 @@ echo ">>> SDKROOT=${SDKROOT}" >&2
 echo ">>> python3-embed: $(pkg-config --modversion python3-embed)" >&2
 
 cd "${ROOT}"
-# Eliza Metal loader uses newLibraryWithData on ggml-metal-embed.metal — that
-# file must be compiled default.metallib bytes (not Metal source). Upstream
-# ollama JIT-compiles source; our ggml-metal-device.m embed path does not.
 METAL_DIR="${ROOT}/ml/backend/ggml/ggml/src/ggml-metal"
-METALLIB_TMP="${ROOT}/.build-stamps/metal-embed"
-echo ">>> compiling embedded Metal metallib (+ eliza-shipped kernels)" >&2
-mkdir -p "${METALLIB_TMP}" "${STAMP_DIR}"
-(
-  cd "${METAL_DIR}"
-  {
-    sed -e '/__embed_ggml-common.h__/r ../ggml-common.h' \
-        -e '/__embed_ggml-common.h__/d' \
-        ggml-metal.metal
-  } >"${METALLIB_TMP}/embed.tmp.metal"
-  sed -e '/#include "ggml-metal-impl.h"/r ggml-metal-impl.h' \
-      -e '/#include "ggml-metal-impl.h"/d' \
-      "${METALLIB_TMP}/embed.tmp.metal" >"${METALLIB_TMP}/ggml-metal-embed.metal"
-  xcrun -sdk macosx metal -O3 -DGGML_METAL_EMBED_LIBRARY=1 -DGGML_METAL_HAS_BF16=1 \
-    -c "${METALLIB_TMP}/ggml-metal-embed.metal" -o "${METALLIB_TMP}/ggml-metal-embed.air"
-  for _f in turbo3 turbo4 turbo3_tcq qjl qjl_set_rows polar polar_preht fused_attn_qjl_tbq fused_attn_qjl_polar istft; do
-    xcrun -sdk macosx metal -O3 -c "eliza-shipped/${_f}.metal" -o "${METALLIB_TMP}/${_f}.air"
-  done
-  xcrun -sdk macosx metallib \
-    "${METALLIB_TMP}/ggml-metal-embed.air" \
-    "${METALLIB_TMP}/turbo3.air" "${METALLIB_TMP}/turbo4.air" "${METALLIB_TMP}/turbo3_tcq.air" \
-    "${METALLIB_TMP}/qjl.air" "${METALLIB_TMP}/qjl_set_rows.air" \
-    "${METALLIB_TMP}/polar.air" "${METALLIB_TMP}/polar_preht.air" \
-    "${METALLIB_TMP}/fused_attn_qjl_tbq.air" "${METALLIB_TMP}/fused_attn_qjl_polar.air" \
-    "${METALLIB_TMP}/istft.air" \
-    -o "${METALLIB_TMP}/default.metallib"
-  cp "${METALLIB_TMP}/default.metallib" "${METAL_DIR}/ggml-metal-embed.metal"
-)
-# Guard against vendor sync dropping patch 0104. A compiled MTLB payload passed
-# to upstream's newLibraryWithSource aborts the discovery runner, silently
-# producing library=cpu, total_vram=0, and default_num_ctx=4096.
-if ! grep -q 'newLibraryWithData' "${METAL_DIR}/ggml-metal-device.m"; then
-  echo "error: compiled Metal embed requires patch 0104 (newLibraryWithData loader missing)" >&2
-  echo "  apply llama/patches/0104-ggml-metal-load-compiled-embedded-metallib.patch to the vendor tree, then sync" >&2
+echo ">>> generating per-kind Metal embeds (kernels + eliza-shipped kinds)" >&2
+bash "${ROOT}/scripts/build/gen_ggml_metal_embed.sh"
+if ! grep -q 'GGML_METAL_LIBS' "${METAL_DIR}/ggml-metal-device.m"; then
+  echo "error: ggml-metal-device.m is missing GGML_METAL_LIBS (per-kind embed loader)" >&2
   exit 1
 fi
-# Force as to re-.incbin: go build may skip ggml-metal-embed.s when only the
-# .metal payload changed (mtime race left stale shaders in the binary).
+# Force as to re-.incbin if only .metal payloads changed.
 touch "${METAL_DIR}/ggml-metal-embed.s"
 
 if _should_build_mlx; then

@@ -574,13 +574,22 @@ func skipSubprocessVRAMRefresh(devs []ml.DeviceInfo) bool {
 		return false
 	}
 	for _, d := range devs {
-		switch strings.ToLower(d.Library) {
-		case "metal", "cpu", "":
-		default:
+		if !darwinMetalLikeLibrary(d.Library) {
 			return false
 		}
 	}
 	return true
+}
+
+// ggml reports Metal as "Metal" or "MTL" (reg name / id prefix). Either way a
+// 3s ollama-engine bootstrap cannot refresh UMA free bytes.
+// Empty/"cpu" stay "metal-like" for this VRAM-refresh skip only (UMA bootstrap).
+func darwinMetalLikeLibrary(lib string) bool {
+	s := strings.ToLower(strings.TrimSpace(lib))
+	if s == "" || s == "cpu" {
+		return true
+	}
+	return ml.MetalLikeLibrary(lib)
 }
 
 func bootstrapDevices(ctx context.Context, ollamaLibDirs []string, extraEnvs map[string]string) []ml.DeviceInfo {

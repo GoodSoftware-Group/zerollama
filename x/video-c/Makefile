@@ -54,13 +54,15 @@ WAN_SRCS = \
 	wan_profile.c \
 	pipeline_t2v.c \
 	t5_umt5.c \
+	t5_cache.c \
+	wan_lora.c \
 	dit_wan.c \
 	vae_wan.c
 
 WAN_OBJS = $(WAN_SRCS:.c=.o)
 
-TEST_SRCS = tests/test_sched_unipc.c tests/test_validate.c tests/test_gguf_roundtrip.c tests/test_ops_wire.c tests/test_tokenizer_spm.c tests/test_h3_info.c tests/test_h3_host.c tests/test_h3_st_store.c tests/test_h3_packing_mlx.c tests/test_h3_audio_vae_host.c tests/test_h3_adaln_host.c tests/test_h3_clipproj_host.c tests/test_h3_dit_host.c tests/test_h3_video_vae_host.c tests/test_encode_avi.c tests/test_encode_mp4.c tests/test_h3_tokenizer.c tests/test_h3_qwen_te_host.c tests/test_h3_present.c tests/test_h3_convrot.c tests/test_h3_dit_block.c tests/test_h3_dit_forward.c tests/test_h3_dit_pack.c tests/test_h3_text_cond.c
-TEST_BINS = tests/test_sched_unipc tests/test_validate tests/test_gguf_roundtrip tests/test_ops_wire tests/test_tokenizer_spm tests/test_h3_info tests/test_h3_host tests/test_h3_st_store tests/test_h3_packing_mlx tests/test_h3_audio_vae_host tests/test_h3_adaln_host tests/test_h3_clipproj_host tests/test_h3_dit_host tests/test_h3_video_vae_host tests/test_encode_avi tests/test_encode_mp4 tests/test_h3_tokenizer tests/test_h3_qwen_te_host tests/test_h3_present tests/test_h3_convrot tests/test_h3_dit_block tests/test_h3_dit_forward tests/test_h3_dit_pack tests/test_h3_text_cond
+TEST_SRCS = tests/test_sched_unipc.c tests/test_validate.c tests/test_gguf_roundtrip.c tests/test_ops_wire.c tests/test_tokenizer_spm.c tests/test_t5_cache.c tests/test_wan_lora.c tests/test_h3_info.c tests/test_h3_host.c tests/test_h3_st_store.c tests/test_h3_packing_mlx.c tests/test_h3_audio_vae_host.c tests/test_h3_adaln_host.c tests/test_h3_clipproj_host.c tests/test_h3_dit_host.c tests/test_h3_video_vae_host.c tests/test_encode_avi.c tests/test_encode_mp4.c tests/test_h3_tokenizer.c tests/test_h3_qwen_te_host.c tests/test_h3_present.c tests/test_h3_convrot.c tests/test_h3_dit_block.c tests/test_h3_dit_forward.c tests/test_h3_dit_pack.c tests/test_h3_text_cond.c
+TEST_BINS = tests/test_sched_unipc tests/test_validate tests/test_gguf_roundtrip tests/test_ops_wire tests/test_tokenizer_spm tests/test_t5_cache tests/test_wan_lora tests/test_h3_info tests/test_h3_host tests/test_h3_st_store tests/test_h3_packing_mlx tests/test_h3_audio_vae_host tests/test_h3_adaln_host tests/test_h3_clipproj_host tests/test_h3_dit_host tests/test_h3_video_vae_host tests/test_encode_avi tests/test_encode_mp4 tests/test_h3_tokenizer tests/test_h3_qwen_te_host tests/test_h3_present tests/test_h3_convrot tests/test_h3_dit_block tests/test_h3_dit_forward tests/test_h3_dit_pack tests/test_h3_text_cond
 WEIGHT_TEST_BINS = tests/test_h3_audio_vae_decode tests/test_h3_video_vae_encode tests/test_h3_video_vae_decode tests/test_h3_qwen_te_4b tests/test_h3_convrot tests/test_h3_dit_block tests/test_h3_dit_forward
 
 # Resolve toolkit path (prefer primary).
@@ -144,11 +146,18 @@ tests/test_validate: tests/test_validate.o wan_config.o
 tests/test_gguf_roundtrip: tests/test_gguf_roundtrip.o gguf_min.o
 	$(CLANG) $(CFLAGS) -o $@ tests/test_gguf_roundtrip.o gguf_min.o
 
-tests/test_ops_wire: tests/test_ops_wire.o wan_graph.o wan_weights.o gguf_min.o safetensors_min.o zip_weight.o uma_buf_load.o wan_profile.o $(UMA_WAN_OPS_O)
-	$(CLANG) $(CFLAGS) -o $@ tests/test_ops_wire.o wan_graph.o wan_weights.o gguf_min.o safetensors_min.o zip_weight.o uma_buf_load.o wan_profile.o $(UMA_WAN_OPS_O) $(LDFLAGS)
+tests/test_ops_wire: tests/test_ops_wire.o wan_graph.o wan_weights.o wan_lora.o gguf_min.o safetensors_min.o zip_weight.o uma_buf_load.o wan_profile.o $(UMA_WAN_OPS_O)
+	$(CLANG) $(CFLAGS) -o $@ tests/test_ops_wire.o wan_graph.o wan_weights.o wan_lora.o gguf_min.o safetensors_min.o zip_weight.o uma_buf_load.o wan_profile.o $(UMA_WAN_OPS_O) $(LDFLAGS)
 
 tests/test_tokenizer_spm: tests/test_tokenizer_spm.o tokenizer_spm.o
 	$(CLANG) $(CFLAGS) -o $@ tests/test_tokenizer_spm.o tokenizer_spm.o
+
+tests/test_t5_cache: tests/test_t5_cache.o t5_cache.o
+	$(CLANG) $(CFLAGS) -o $@ tests/test_t5_cache.o t5_cache.o $(LDFLAGS)
+
+tests/test_wan_lora: tests/test_wan_lora.o wan_lora.o safetensors_min.o
+	$(CLANG) $(CFLAGS) -o $@ tests/test_wan_lora.o wan_lora.o \
+		safetensors_min.o $(LDFLAGS)
 
 tests/test_h3_info: tests/test_h3_info.o h3_info.o family_h3/h3_host.o family_h3/h3_reuse.o family_h3/h3_st_store.o family_h3/h3_convrot.o family_h3/h3_audio_vae_host.o family_h3/h3_adaln_host.o family_h3/h3_dit_host.o family_h3/h3_clipproj_host.o family_h3/h3_video_vae_host.o safetensors_min.o
 	$(CLANG) $(CFLAGS) -o $@ tests/test_h3_info.o h3_info.o family_h3/h3_host.o family_h3/h3_reuse.o \
@@ -308,6 +317,8 @@ test: $(TEST_BINS)
 	./tests/test_gguf_roundtrip
 	./tests/test_ops_wire
 	./tests/test_tokenizer_spm
+	./tests/test_t5_cache
+	./tests/test_wan_lora
 	./tests/test_h3_info
 	./tests/test_h3_host
 	./tests/test_h3_st_store

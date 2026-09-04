@@ -99,7 +99,7 @@ const (
 // events from the current parser state. The second return value indicates
 // whether to keep looping (true when state transitions, false when waiting
 // for more data).
-func (p *MinistralParser) eat() ([]ministralEvent, bool) {
+func (p *MinistralParser) eat(done bool) ([]ministralEvent, bool) {
 	var events []ministralEvent
 
 	switch p.state {
@@ -214,6 +214,20 @@ func (p *MinistralParser) eat() ([]ministralEvent, bool) {
 			p.state = ministralCollectingToolArgs
 			return events, true
 		}
+		if done {
+			name := strings.TrimSpace(bufStr)
+			p.buffer.Reset()
+			p.state = ministralCollectingContent
+			if name != "" {
+				p.pendingToolName = name
+				events = append(events, ministralEventToolCall{
+					name: name,
+					args: "{}",
+				})
+				p.pendingToolName = ""
+			}
+			return events, false
+		}
 		// Wait for more data
 		return events, false
 
@@ -236,6 +250,16 @@ func (p *MinistralParser) eat() ([]ministralEvent, bool) {
 			p.state = ministralCollectingContent
 			return events, true
 		}
+		if done && p.pendingToolName != "" {
+			events = append(events, ministralEventToolCall{
+				name: p.pendingToolName,
+				args: "{}",
+			})
+			p.pendingToolName = ""
+			p.buffer.Reset()
+			p.state = ministralCollectingContent
+			return events, false
+		}
 		// Wait for more data
 		return events, false
 
@@ -245,12 +269,12 @@ func (p *MinistralParser) eat() ([]ministralEvent, bool) {
 }
 
 // parseEvents loops calling eat() until it returns false
-func (p *MinistralParser) parseEvents() []ministralEvent {
+func (p *MinistralParser) parseEvents(done bool) []ministralEvent {
 	var all []ministralEvent
 	keepLooping := true
 	for keepLooping {
 		var events []ministralEvent
-		events, keepLooping = p.eat()
+		events, keepLooping = p.eat(done)
 		all = append(all, events...)
 	}
 	return all
@@ -259,7 +283,7 @@ func (p *MinistralParser) parseEvents() []ministralEvent {
 func (p *MinistralParser) Add(s string, done bool) (content string, thinking string, calls []api.ToolCall, err error) {
 	p.buffer.WriteString(s)
 
-	events := p.parseEvents()
+	events := p.parseEvents(done)
 
 	var contentBuilder, thinkingBuilder strings.Builder
 	var toolCalls []api.ToolCall

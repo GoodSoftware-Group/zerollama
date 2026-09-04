@@ -46,12 +46,30 @@ func (c *RotatingKVCache) Update(b *batch.Batch, keys, values *mlx.Array) *nn.KV
 	}
 
 	c.captureLazySnapshots(start, c.offset, batched)
-	return nn.NewKVHistory(newK, newV, rotatingApplier{
+
+	ringIdx := c.idx
+	attnK, attnV := newK, newV
+	L := keys.Dim(2)
+	// mlx-serve slidingViewFor: attention read is window+q_len-1, not the
+	// full linearized buffer and not a hard window (that drops keys the
+	// first fused queries still need). Concat already aims at this size;
+	// trim only leftover oversize K.
+	if batched {
+		view := c.maxSize + L - 1
+		if view > 0 && attnK.Dim(2) > view {
+			start := attnK.Dim(2) - view
+			attnK = attnK.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(start, attnK.Dim(2)), mlx.Slice())
+			attnV = attnV.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(start, attnV.Dim(2)), mlx.Slice())
+			ringIdx = 0
+		}
+	}
+
+	return nn.NewKVHistory(attnK, attnV, rotatingApplier{
 		b:       b,
-		K:       newK.Dim(2),
-		L:       keys.Dim(2),
+		K:       attnK.Dim(2),
+		L:       L,
 		window:  c.maxSize,
-		ringIdx: c.idx,
+		ringIdx: ringIdx,
 		dtype:   keys.DType(),
 	})
 }
@@ -214,6 +232,11 @@ func (c *RotatingKVCache) Free() {
 
 func (c *RotatingKVCache) Offset() int { return c.offset }
 
+// RingWriteIndex is the next write slot in the ring (after the last Update).
+// When idx % K == 0 the buffer is oldest-first; otherwise slot 0 is not the
+// oldest token. Flash CSA/HCA concat+mask assumes oldest-first raw keys.
+func (c *RotatingKVCache) RingWriteIndex() int { return c.idx }
+
 func (c *RotatingKVCache) PrepareSnapshots(offsets []int) { c.snapshots.prepare(c.offset, offsets) }
 func (c *RotatingKVCache) TakeSnapshots() []Snapshot      { return c.snapshots.take() }
 
@@ -289,6 +312,9 @@ type rotatingSnapshot struct {
 	cache                *RotatingKVCache // issuer while lazy; nil once copied out
 	sliceStart, sliceEnd int              // buffer slot range of the window while lazy
 
+	packed bool
+	elem   mlx.DType
+
 	// onMaterialize, if set, is fired once from copyOut with the newly-owned
 	// byte count so an owner (e.g. the trie's pagedOutBytes counter) can pick
 	// up bytes that were free while the snapshot was lazy.
@@ -328,6 +354,7 @@ func (s *rotatingSnapshot) copyOut() {
 	v := mlx.Contiguous(vSlice, false)
 	mlx.Pin(k, v)
 	mlx.AsyncEval(k, v)
+	k, v, s.packed, s.elem = packOwnedKV(k, v)
 
 	s.keys, s.values = k, v
 	c.dropLazySnapshot(s)
@@ -364,6 +391,7 @@ func (c *RotatingKVCache) Snapshot(fromOffset int) Snapshot {
 	k := state[0].Clone()
 	v := state[1].Clone()
 	mlx.Pin(k, v)
+	k, v, packed, elem := packOwnedKV(k, v)
 
 	return &rotatingSnapshot{
 		keys:       k,
@@ -371,6 +399,8 @@ func (c *RotatingKVCache) Snapshot(fromOffset int) Snapshot {
 		fromOffset: fromOffset,
 		toOffset:   c.offset,
 		idx:        c.idx,
+		packed:     packed,
+		elem:       elem,
 	}
 }
 
@@ -435,7 +465,8 @@ func (c *RotatingKVCache) Restore(snapshot Snapshot, target int) bool {
 	snap.copyOut()
 	c.copyOutLazySnapshots()
 
-	c.replaceBuffer(snap.keys.Clone(), snap.values.Clone())
+	dk, dv := unpackOwnedKV(snap.keys, snap.values, snap.packed, snap.elem)
+	c.replaceBuffer(dk.Clone(), dv.Clone())
 	c.offset = snap.toOffset
 	c.idx = snap.idx
 

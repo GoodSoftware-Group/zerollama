@@ -465,6 +465,18 @@ Do not enable "mxfp8" by default.
 			},
 			thinkingEnabled: true,
 		},
+		{
+			name:  "truncated_tool_args_on_done_ship_name_empty_object",
+			input: `<|tool_call>call:search{query:`,
+			expectedToolCalls: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Name:      "search",
+						Arguments: api.NewToolCallFunctionArguments(),
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1497,6 +1509,61 @@ func TestParseGemma4ToolCall_RawQuotedStructuralString(t *testing.T) {
 		},
 	}
 
+	if diff := cmp.Diff(want, got, argsComparer); diff != "" {
+		t.Fatalf("tool call mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParseGemma4ToolCall_DroppedDelimiterMarkupDoesNotSplitOnInnerComma(t *testing.T) {
+	got, err := parseGemma4ToolCall(`call:write{content:<div class="a,b">ok</div>}`, nil)
+	if err != nil {
+		t.Fatalf("parseGemma4ToolCall returned error: %v", err)
+	}
+	want := api.ToolCall{
+		Function: api.ToolCallFunction{
+			Name: "write",
+			Arguments: testArgs(map[string]any{
+				"content": `<div class="a,b">ok</div>`,
+			}),
+		},
+	}
+	if diff := cmp.Diff(want, got, argsComparer); diff != "" {
+		t.Fatalf("tool call mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParseGemma4ToolCall_DroppedDelimiterInnerBraceIsPayload(t *testing.T) {
+	got, err := parseGemma4ToolCall(`call:write{content:<div>}ok</div>}`, nil)
+	if err != nil {
+		t.Fatalf("parseGemma4ToolCall returned error: %v", err)
+	}
+	want := api.ToolCall{
+		Function: api.ToolCallFunction{
+			Name: "write",
+			Arguments: testArgs(map[string]any{
+				"content": `<div>}ok</div>`,
+			}),
+		},
+	}
+	if diff := cmp.Diff(want, got, argsComparer); diff != "" {
+		t.Fatalf("tool call mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParseGemma4ToolCall_DroppedDelimiterStopsAtSiblingKey(t *testing.T) {
+	got, err := parseGemma4ToolCall(`call:write{content:hello, world,mode:fast}`, nil)
+	if err != nil {
+		t.Fatalf("parseGemma4ToolCall returned error: %v", err)
+	}
+	want := api.ToolCall{
+		Function: api.ToolCallFunction{
+			Name: "write",
+			Arguments: testArgs(map[string]any{
+				"content": "hello, world",
+				"mode":    "fast",
+			}),
+		},
+	}
 	if diff := cmp.Diff(want, got, argsComparer); diff != "" {
 		t.Fatalf("tool call mismatch (-want +got):\n%s", diff)
 	}

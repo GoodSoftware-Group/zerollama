@@ -26,6 +26,54 @@ Clients call `POST /v1/videos` with a **model tag** only. They do **not** choose
 | `wan` (default) | Full T2V generate (UMA / host / CUDA twin lab) on M4 Max |
 | `h3` | **Host vertical (M4):** `--info`, AudioVAE, video VAE, packed DiT `--generate` (pruned int8 ConvRot; host-slow) |
 
+### Wan T2V run-to-run nondeterminism (measured 2026-08-21)
+
+Same binary, same seed, cache disabled, back-to-back 160²×9f×8s renders differ
+in decoded pixels: MAD ≈ **5.2** (0–255 scale). Suspected broker Metal ATTN
+reduction order / daemon scheduling, not the client. **Host mode
+(`UMA_WAN_LOCAL=1`) is bit-deterministic** — identical bytes across rebuilds.
+Consequences: broker seed reproducibility is *approximate only*; host renders
+are reproducible; rematch gates must use tolerance-based compare on broker
+runs. Prompt→embed disk cache (`t5_cache.c`, `WAN_T5_CACHE=0` to disable)
+verified to add zero divergence: cold-vs-warm MAD 5.07 vs 5.20 baseline pair;
+saves the full umt5 mmap+encode per repeat render (~46–110 s wall depending on
+page cache).
+
+### Wan T2V quality regression — RGB static at HEAD (FIXED 2026-08-22)
+
+Two root causes, both in the client, found by stage-by-stage dumps vs the
+upstream Python oracle (zerollama-fork `WanModel`, same weights/t/noise):
+
+1. **`x_dit_s` token-buffer corruption** (`dit_wan.c`): the seed-token PUT
+   went through `uma_buf_pool_ensure_put`, which routes >1 MiB via BANK —
+   and the BANK round-trip corrupted the 1.8 MiB activation (patch vs init
+   corr 0.965). Fix: direct `uma_buf_pool_put` for this buffer.
+   Lesson: BANK is for *weights*; hot activations stay on BUF.
+2. **Cond call denoised zeros** (`pipeline_t2v.c`): `cond = model_out` was
+   passed to `wan_dit_denoise` without copying the noisy latent first
+   (`latent[0]=0` at patch time). The uncond path had the correct memcpy,
+   so CFG≥2 hid it — cfg=1 renders were pure garbage. Fix: explicit
+   `memcpy(cond, latent, …)` per step.
+
+Post-fix oracle rematch (160²×9f×1s, cond-only): corr **+0.98**, maxdiff 0.57;
+patch_tok exact. TC flash (`tc=1`) re-validated as innocent — the earlier
+"TC diverges" reading was the same corrupted input.
+
+Also landed alongside: cross-process DiT weight bank (`wanc` persists across
+video-cli invocations when the daemon stays up; second run skips the
+5.3 GiB BANK_PUT via `BANK_STATUS` keys check + `destroy_keep_bank`),
+prompt→embed disk cache (above), and LoRA merge-at-load (`wan_lora.c`,
+`--lora/--lora-scale`; dotted PEFT keys; fixture-tested).
+
+Note: host mode (`UMA_WAN_LOCAL=1`) is a scaffold (identity-GEMM toy), not a
+real DiT — never use its output as evidence of pipeline health.
+
+Checkpoint note (2026-08-22 late): the local `Wan2.1-T2V-1.3B` tree and the
+Wan venv were deleted during a disk cleanup (~14 GiB freed; disk 97%→30%).
+Re-download via `scripts/video/install_wan_video.sh --profile 1.3b` before
+further wan-c renders; all fixes above are in-tree and unit-tested.
+
+
 H3 rematch references (not product runners):
 
 | Sibling | Role |

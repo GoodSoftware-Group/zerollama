@@ -75,6 +75,26 @@ static int dit_persist_bank_all(wan_ctx *ctx, int nblocks, int D, int Ffn) {
     return -1;
   if (ctx->dit_persist_ready && ctx->dit_persist_blocks >= nblocks)
     return 0;
+  /* Cross-process: if daemon already has the bank from a prior video-cli
+   * invocation, skip the 5.6 GiB re-PUT. */
+  {
+    char resp[512] = {0};
+    if (ctx->uma &&
+        uma_client_bank_status(ctx->uma, "wanc", resp, sizeof(resp)) == 0) {
+      const char *kp = strstr(resp, "keys=");
+      if (kp) {
+        int k = atoi(kp + 5);
+        if (k >= nblocks * 10) {
+          (void)uma_buf_pool_ensure_bank_open(ctx->bufs);
+          ctx->dit_persist_ready = 1;
+          ctx->dit_persist_blocks = nblocks;
+          fprintf(stderr,
+                  "wan-c: DiT BANK_PUT skip daemon already has %d keys\n", k);
+          return 0;
+        }
+      }
+    }
+  }
   size_t dd = (size_t)D * (size_t)D;
   size_t fd = (size_t)Ffn * (size_t)D;
   size_t df = (size_t)D * (size_t)Ffn;
@@ -151,7 +171,15 @@ static int dit_persist_bind_block(wan_ctx *ctx, int block, int have_cross) {
       return -1;
   }
   if (uma_buf_pool_bank_binds(ctx->bufs, pairs) != 0) {
-    fprintf(stderr, "wan-c: BANK_BINDS fail block=%d\n", block);
+    char resp2[512] = {0};
+    // Try direct client call to get detailed error
+    if (ctx->uma) {
+      uma_client_bank_binds(ctx->uma, "wanc", pairs, resp2, sizeof(resp2));
+      fprintf(stderr, "wan-c: BANK_BINDS fail block=%d pairs=%.80s resp=%.120s\n",
+              block, pairs, resp2);
+    } else {
+      fprintf(stderr, "wan-c: BANK_BINDS fail block=%d\n", block);
+    }
     return -1;
   }
   return 0;
@@ -2816,8 +2844,10 @@ static int dit_broker(wan_ctx *ctx, float *latent, size_t n, int step,
 
   int persist_hot = use_real_geom && ctx->dit_persist_ready &&
                     !dit_env_truthy("WAN_DIT_MIRROR");
-  /* Seed tokens / text once; persist keeps x_dit_s on broker across blocks. */
-  if (uma_buf_pool_ensure_put(ctx->bufs, bs, mirror, nbytes) != 0) {
+  /* Seed tokens / text once; persist keeps x_dit_s on broker across blocks.
+   * Fix 2026-08-22: ensure_put goes via BANK for >1M and corrupts the
+   * token buffer (patch vs init corr 0.965). Use direct put. */
+  if (uma_buf_pool_put(ctx->bufs, bs, mirror, nbytes) != 0) {
     fprintf(stderr, "wan-c: DiT ensure x_dit_s failed before blocks\n");
     free(e0);
     free(e_time);

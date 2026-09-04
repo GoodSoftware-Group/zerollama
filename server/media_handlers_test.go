@@ -148,6 +148,18 @@ func TestValidateWanKeyframes(t *testing.T) {
 	}
 }
 
+func TestValidateLtxMLXLastFrame(t *testing.T) {
+	if err := validateLtxMLXLastFrame(map[string]any{"last_frame_image": "end"}, []string{"end"}); err == nil {
+		t.Fatal("expected last_frame_image reject")
+	}
+	if err := validateLtxMLXLastFrame(nil, []string{"a", "b"}); err == nil {
+		t.Fatal("expected two-keyframe reject")
+	}
+	if err := validateLtxMLXLastFrame(map[string]any{"first_frame_image": "kf0"}, []string{"kf0"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func tinyPNGBytes() []byte {
 	return []byte{
 		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,

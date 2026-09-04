@@ -156,6 +156,8 @@ Zerollama automatically applies **`-ub 1`** and **`-fit on`** when a sidecar is 
 
 Rule of thumb: **5–15% of RAM** for slot bank.
 
+Per-model **routing** uses GGUF `expert_count` + `expert_used_count`. `ram_cap` is this table (interpolated). `recommend` is min(routing, ram_cap). `bank~` is packed `*_exps` tensor bytes × recommend / experts (header only). **Not** auto-passed (`ZEROLLAMA_FLASH_MOE_SLOT_BANK=0` omits `--moe-slot-bank`). Copy: `./zerollama flash-moe-resolve --print-env`.
+
 ---
 
 ## Design notes (implementation)
@@ -203,7 +205,8 @@ Disk-starved dev hosts: `FLASH_MOE_SKIP_GO_TEST=1 ./scripts/flash_moe_smoke.sh`
 **Auto-resolve from zerollama store:** tier 1/2 call `./zerollama flash-moe-resolve` when `FLASH_MOE_GGUF` / `FLASH_MOE_SIDECAR` are unset — scans pulled MoE tags under `~/.ollama/models`, reads manifest `moe_sidecar`, and checks `~/Models/flash/<tag>`.
 
 ```bash
-./zerollama flash-moe-resolve --list          # all local MoE tags
+./zerollama flash-moe-resolve --list          # tags + routing/ram_cap/recommend + bank~
+./zerollama flash-moe-resolve --print-env     # one export per blob; commented if sidecar missing
 ./zerollama flash-moe-resolve --json          # best pick (sidecar-ready first, else smallest)
 ./zerollama flash-moe-resolve --model qwen35  # prefer a tag
 ```
@@ -223,4 +226,5 @@ See also [testing-smoke.md](./testing-smoke.md).
 ## See also
 
 - [ANE probe](./ane-probe.md) — optional maderix/ANE bridge smoke (experimental, separate from Flash-MoE)
+- [FreeToken MoE lab](./freetoken-moe-lab.md) — offline \(q^\star\) / LRU / prefill-overlap sim (arXiv:2608.16157); not vendored
 - [ROADMAP — M16 Flash-MoE](./ROADMAP.md#apple-silicon--metal-track)

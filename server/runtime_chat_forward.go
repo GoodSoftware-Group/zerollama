@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -27,6 +28,9 @@ func chatMessagesToMaps(messages []api.Message) []map[string]any {
 		}
 		if m.ToolCallID != "" {
 			msg["tool_call_id"] = m.ToolCallID
+		}
+		if m.Thinking != "" {
+			msg["thinking"] = m.Thinking
 		}
 		out = append(out, msg)
 	}
@@ -115,6 +119,7 @@ func injectRuntimeRetryAfter(c *gin.Context, status int, respBody []byte) []byte
 func forwardRuntimeChatJSON(
 	c *gin.Context,
 	payload map[string]any,
+	compressionMeta *api.ChatCompressionMeta,
 ) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -150,7 +155,69 @@ func forwardRuntimeChatJSON(
 		return nil
 	}
 	metricsIncRequestResult("ok")
+	if compressionMeta != nil {
+		respBody = mergeChatCompressionMetaJSON(respBody, compressionMeta)
+		c.Header("X-Zerollama-Compressed", "1")
+	}
 	c.Data(http.StatusOK, "application/json", respBody)
 	c.Abort()
 	return nil
+}
+
+func mergeChatCompressionMetaJSON(respBody []byte, meta *api.ChatCompressionMeta) []byte {
+	if meta == nil || len(respBody) == 0 {
+		return respBody
+	}
+	var obj map[string]any
+	if json.Unmarshal(respBody, &obj) != nil {
+		return respBody
+	}
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		return respBody
+	}
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return respBody
+	}
+	obj["compression"] = m
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return respBody
+	}
+	return out
+}
+
+func copyRuntimeNDJSONWithChatCompression(w http.ResponseWriter, r io.Reader, meta *api.ChatCompressionMeta) error {
+	if meta == nil {
+		return copyRuntimeResponseBody(w, r)
+	}
+	flusher, canFlush := w.(http.Flusher)
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if ndjsonChatDone(line) {
+			line = mergeChatCompressionMetaJSON(line, meta)
+		}
+		if _, err := w.Write(line); err != nil {
+			return err
+		}
+		if _, err := w.Write([]byte{'\n'}); err != nil {
+			return err
+		}
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+	return sc.Err()
+}
+
+func ndjsonChatDone(line []byte) bool {
+	var obj map[string]any
+	if json.Unmarshal(line, &obj) != nil {
+		return false
+	}
+	done, _ := obj["done"].(bool)
+	return done
 }

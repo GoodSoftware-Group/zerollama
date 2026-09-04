@@ -333,3 +333,10 @@ func TestCompletionResponseUnmarshalCacheCreation(t *testing.T) {
 		t.Fatalf("PromptEvalCacheCreationCount=%d, want 80", resp.PromptEvalCacheCreationCount)
 	}
 }
+
+func TestCompactLibraryPaths(t *testing.T) {
+	got := compactLibraryPaths([]string{"/a", "", "/a", "/b", ""})
+	if len(got) != 2 || got[0] != "/a" || got[1] != "/b" {
+		t.Fatalf("compactLibraryPaths = %v", got)
+	}
+}

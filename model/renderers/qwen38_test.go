@@ -107,10 +107,11 @@ Reminder:
 		want        string
 	}{
 		{
-			name:     "default xhigh injects system guidance",
-			messages: []api.Message{{Role: "user", Content: "Hello"}},
+			name:        "default low injects brief guidance",
+			messages:    []api.Message{{Role: "user", Content: "Hello"}},
+			jinjaEffort: "low",
 			want: `<|im_start|>system
-` + qwen38RefXHigh + `<|im_end|>
+` + qwen38RefLow + `<|im_end|>
 <|im_start|>user
 Hello<|im_end|>
 <|im_start|>assistant
@@ -123,8 +124,9 @@ Hello<|im_end|>
 				{Role: "developer", Content: "Use Go."},
 				{Role: "user", Content: "Hello"},
 			},
+			jinjaEffort: "low",
 			want: `<|im_start|>system
-` + qwen38RefXHigh + `
+` + qwen38RefLow + `
 
 Use Go.<|im_end|>
 <|im_start|>user
@@ -140,8 +142,9 @@ Hello<|im_end|>
 				{Role: "developer", Content: "Use Go."},
 				{Role: "user", Content: "Hello"},
 			},
+			jinjaEffort: "low",
 			want: `<|im_start|>system
-` + qwen38RefXHigh + `
+` + qwen38RefLow + `
 
 Base policy.
 
@@ -159,8 +162,9 @@ Hello<|im_end|>
 				{Role: "system", Content: "Request policy."},
 				{Role: "user", Content: "Hello"},
 			},
+			jinjaEffort: "low",
 			want: `<|im_start|>system
-` + qwen38RefXHigh + `
+` + qwen38RefLow + `
 
 Base policy.
 
@@ -180,8 +184,9 @@ Hello<|im_end|>
 				{Role: "system", Content: "Request policy."},
 				{Role: "user", Content: "Current question"},
 			},
+			jinjaEffort: "low",
 			want: `<|im_start|>system
-` + qwen38RefXHigh + `
+` + qwen38RefLow + `
 
 Base policy.
 
@@ -249,8 +254,9 @@ Hello<|im_end|>
 				{Role: "assistant", Thinking: "Plan", Content: "<think>literal</think>\nAnswer"},
 				{Role: "user", Content: "Next"},
 			},
+			jinjaEffort: "low",
 			want: `<|im_start|>system
-` + qwen38RefXHigh + `<|im_end|>
+` + qwen38RefLow + `<|im_end|>
 <|im_start|>user
 First<|im_end|>
 <|im_start|>assistant
@@ -375,13 +381,14 @@ func TestQwen38RendererReasoningEffortMapping(t *testing.T) {
 		think *api.ThinkValue
 		want  string
 	}{
-		{name: "unset", want: qwen38RefXHigh},
+		{name: "unset", want: qwen38RefLow},
 		{name: "true", think: &api.ThinkValue{Value: true}, want: ""},
 		{name: "false", think: &api.ThinkValue{Value: false}, want: ""},
 		{name: "low", think: &api.ThinkValue{Value: "low"}, want: qwen38RefLow},
 		{name: "medium", think: &api.ThinkValue{Value: "medium"}, want: ""},
 		{name: "high", think: &api.ThinkValue{Value: "high"}, want: qwen38RefXHigh},
 		{name: "max", think: &api.ThinkValue{Value: "max"}, want: qwen38RefXHigh},
+		{name: "xhigh", think: &api.ThinkValue{Value: "xhigh"}, want: qwen38RefXHigh},
 	}
 
 	for _, tt := range tests {
@@ -440,7 +447,7 @@ func TestQwen38RendererAssistantPrefillKnownJinjaDifference(t *testing.T) {
 	}
 
 	want := `<|im_start|>system
-` + qwen38RefXHigh + `<|im_end|>
+` + qwen38RefLow + `<|im_end|>
 <|im_start|>user
 Complete this<|im_end|>
 <|im_start|>assistant
@@ -457,7 +464,7 @@ Partial`
 		return
 	}
 	requireQwen38Jinja(t)
-	jinja := renderQwen38Jinja(t, messages, nil, nil, "")
+	jinja := renderQwen38Jinja(t, messages, nil, nil, "low")
 	wantJinja := got + "<|im_end|>\n<|im_start|>assistant\n<think>\n"
 	if diff := cmp.Diff(wantJinja, jinja); diff != "" {
 		t.Fatalf("assistant prefill Jinja difference changed (-want +jinja):\n%s", diff)

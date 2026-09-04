@@ -394,3 +394,106 @@ func TestLoadWeightsPreservesLinearAttentionNormWeightDType(t *testing.T) {
 		t.Fatalf("k norm dtype = %v, want %v", got, f32)
 	}
 }
+
+func TestFuseExpertStacksChunkedMatchesFull(t *testing.T) {
+	skipIfNoMLX(t)
+	old := fuseEvalChunkExperts
+	t.Cleanup(func() { fuseEvalChunkExperts = old })
+
+	gate := mlx.AddScalar(mlx.Zeros(mlx.DTypeFloat32, 5, 3, 2), 1)
+	up := mlx.AddScalar(mlx.Zeros(mlx.DTypeFloat32, 5, 3, 2), 2)
+	mlx.Eval(gate, up)
+
+	fuseEvalChunkExperts = 64
+	want := fuseExpertStacks(gate, up, 1)
+	fuseEvalChunkExperts = 2
+	got := fuseExpertStacks(gate, up, 1)
+	if got.Dim(0) != 5 || got.Dim(1) != 6 || got.Dim(2) != 2 {
+		t.Fatalf("fused shape %v want [5 6 2]", got.Dims())
+	}
+	wf, gf := want.Floats(), got.Floats()
+	if len(wf) != len(gf) {
+		t.Fatalf("fused len %d vs %d", len(wf), len(gf))
+	}
+	for i := range wf {
+		if wf[i] != gf[i] {
+			t.Fatalf("fused[%d]=%v want %v", i, gf[i], wf[i])
+		}
+	}
+}
+
+func TestStackAndCloneChunkedMatchesFull(t *testing.T) {
+	skipIfNoMLX(t)
+	old := fuseEvalChunkExperts
+	t.Cleanup(func() { fuseEvalChunkExperts = old })
+
+	parts := make([]*mlx.Array, 5)
+	for i := range parts {
+		parts[i] = mlx.AddScalar(mlx.Zeros(mlx.DTypeFloat32, 2, 3), float32(i+1))
+	}
+
+	fuseEvalChunkExperts = 64
+	want := stackAndClone(parts)
+	fuseEvalChunkExperts = 2
+	got := stackAndClone(parts)
+	if got.Dim(0) != 5 || got.Dim(1) != 2 || got.Dim(2) != 3 {
+		t.Fatalf("stack shape %v want [5 2 3]", got.Dims())
+	}
+	wf, gf := want.Floats(), got.Floats()
+	for i := range wf {
+		if wf[i] != gf[i] {
+			t.Fatalf("stack[%d]=%v want %v", i, gf[i], wf[i])
+		}
+	}
+}
+
+func TestTransposeExpertWeightChunkedMatchesFull(t *testing.T) {
+	skipIfNoMLX(t)
+	old := fuseEvalChunkExperts
+	t.Cleanup(func() { fuseEvalChunkExperts = old })
+
+	w := mlx.AddScalar(mlx.Zeros(mlx.DTypeFloat32, 5, 3, 2), 1)
+	mlx.Eval(w)
+
+	fuseEvalChunkExperts = 64
+	want := transposeExpertWeightForGatherMM(w)
+	fuseEvalChunkExperts = 2
+	got := transposeExpertWeightForGatherMM(w)
+	if got.Dim(0) != 5 || got.Dim(1) != 2 || got.Dim(2) != 3 {
+		t.Fatalf("transpose shape %v want [5 2 3]", got.Dims())
+	}
+	wf, gf := want.Floats(), got.Floats()
+	for i := range wf {
+		if wf[i] != gf[i] {
+			t.Fatalf("transpose[%d]=%v want %v", i, gf[i], wf[i])
+		}
+	}
+}
+
+func TestMTPNormsAreDeltaFromMeans(t *testing.T) {
+	// mtplx #301: both families must agree; missing either family is absolute.
+	if mtpNormsAreDeltaFromMeans(nil, []float32{0.3}) {
+		t.Fatal("missing qk family must not shift")
+	}
+	if mtpNormsAreDeltaFromMeans([]float32{0.7}, nil) {
+		t.Fatal("missing low family must not shift")
+	}
+	if !mtpNormsAreDeltaFromMeans([]float32{0.73, 0.75}, []float32{0.30, 0.39}) {
+		t.Fatal("raw-delta fleet means must shift")
+	}
+	if mtpNormsAreDeltaFromMeans([]float32{1.73}, []float32{0.87}) {
+		t.Fatal("absolute sidecar must not shift")
+	}
+	if mtpNormsAreDeltaFromMeans([]float32{0.7}, []float32{0.87}) {
+		t.Fatal("families must agree")
+	}
+	if shouldShiftTrunkNormKey("mtp.layers.0.input_layernorm.weight") {
+		t.Fatal("trunk matcher must ignore mtp.*")
+	}
+	if !shouldShiftMTPNormKey("mtp.pre_fc_norm_hidden.weight") {
+		t.Fatal("MTP matcher must include pre_fc")
+	}
+	if shouldShiftMTPNormKey("model.layers.0.input_layernorm.weight") {
+		t.Fatal("MTP matcher must not claim trunk keys")
+	}
+}

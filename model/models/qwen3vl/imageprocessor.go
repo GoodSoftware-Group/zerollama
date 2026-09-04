@@ -36,10 +36,9 @@ func NewImageProcessor(c fs.Config) ImageProcessor {
 		temporalPatchSize: 2,
 		mergeSize:         mergeSize,
 		shortestEdge:      int(c.Uint("vision.shortest_edge", 64<<10)),
-		// FIXME(mxyng): the model defined longest edge (16M) is too large for the default
-		// context length of 8K and will panic. Adjusting to 2M for now.
-		// longestEdge:   int(c.Uint("vision.longest_edge", 16<<20)),
-		longestEdge:   2 << 20,
+		// Packs advertise ~16M longest_edge; the engine cannot hold that
+		// attention matrix (mlx-serve ENGINE_MAX_PIXELS 1536²).
+		longestEdge:   imageproc.ClampEnginePixels(int(c.Uint("vision.longest_edge", 2<<20))),
 		factor:        patchSize * mergeSize,
 		rescaleFactor: 1.0 / 255.0,
 		imageMean:     c.Floats("vision.image_mean", imageproc.ImageNetStandardMean[:]),
@@ -90,7 +89,7 @@ func (p *ImageProcessor) ProcessImage(ctx ml.Context, img image.Image, gridTHW [
 	origHeight := img.Bounds().Dy()
 
 	var resizedHeight, resizedWidth int
-	if rh, rw, ok := resizeFromGridHint(p.patchSize, p.mergeSize, gridTHW); ok {
+	if rh, rw, ok := resizeFromGridHint(p.patchSize, p.mergeSize, gridTHW); ok && imageproc.WithinEnginePixels(rh, rw) {
 		resizedHeight, resizedWidth = rh, rw
 		slog.Info("grid_thw hint resize",
 			"height", resizedHeight,
@@ -100,6 +99,10 @@ func (p *ImageProcessor) ProcessImage(ctx ml.Context, img image.Image, gridTHW [
 			"engine", "ollama",
 		)
 	} else {
+		if ok && !imageproc.WithinEnginePixels(rh, rw) {
+			slog.Info("grid_thw hint exceeds engine pixel cap; smart_resize",
+				"hint_h", rh, "hint_w", rw, "cap", imageproc.EngineMaxPixels)
+		}
 		resizedHeight, resizedWidth = p.SmartResize(origHeight, origWidth)
 	}
 

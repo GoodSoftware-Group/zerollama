@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Patch mlx-c (mlx/c/array.cpp) with two additions needed for CUDA imagegen:
 #
-#  1. mlx_array_detach  — detach an array from the MLX computation graph before
-#     mlx_array_free. WHY: freeing model weight arrays without detaching first
-#     leaves dangling sibling/parent graph links, causing use-after-free crashes
-#     during the transformer reload on tight 16GB hosts.
+#  1. mlx_array_detach  — optional C wrapper around array::detach().
+#     WHY still patched: older libmlxc + dlsym callers. Upstream mlx-c #119 was
+#     rejected: eval + dropping every handle is enough; do not detach-before-free
+#     in Go. Imagegen freeArray no longer calls this.
 #
 #  2. mlx_go_export_latents_bin_d2h — write GPU latents to a ZLAT binary via a
 #     direct cudaMemcpy D2H, bypassing mlx::core::copy. WHY: after the denoise

@@ -63,6 +63,11 @@ func TestCalculateLogprobs(t *testing.T) {
 			if tt.wantLen > 0 && result[0].Token != tt.wantToken {
 				t.Errorf("CalculateLogprobs() token = %s, want %s", result[0].Token, tt.wantToken)
 			}
+			if tt.wantLen > 0 {
+				if result[0].ID == nil || *result[0].ID != tt.selectedToken {
+					t.Errorf("CalculateLogprobs() id = %v, want %d", result[0].ID, tt.selectedToken)
+				}
+			}
 			if tt.topK > 0 && len(result) > 0 {
 				if len(result[0].TopLogprobs) != tt.topK {
 					t.Errorf("CalculateLogprobs() top logprobs count = %d, want %d", len(result[0].TopLogprobs), tt.topK)

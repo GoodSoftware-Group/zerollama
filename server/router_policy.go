@@ -27,6 +27,7 @@ type RouterFile struct {
 type RouterSpec struct {
 	Classifier          string            `yaml:"classifier" json:"classifier"`
 	Embedder            string            `yaml:"embedder" json:"embedder"`
+	Reranker            string            `yaml:"reranker" json:"reranker"`
 	Fallback            string            `yaml:"fallback" json:"fallback"`
 	ActivationThreshold float64           `yaml:"activation_threshold" json:"activation_threshold"`
 	LengthNormalize     bool              `yaml:"length_normalize" json:"length_normalize"`
@@ -58,16 +59,19 @@ type RouterDecision struct {
 }
 
 type RouterLabelScore struct {
-	Label     string  `json:"label"`
-	LogProb   float64 `json:"log_prob"`
-	Softmax   float64 `json:"softmax"`
-	NumTokens int     `json:"num_tokens"`
-	Active    bool    `json:"active"`
+	Label          string  `json:"label"`
+	LogProb        float64 `json:"log_prob"`
+	RelevanceScore float64 `json:"relevance_score,omitempty"`
+	Softmax        float64 `json:"softmax"`
+	NumTokens      int     `json:"num_tokens"`
+	Active         bool    `json:"active"`
 }
 
 type routerScoreFn func(ctx context.Context, classifier, prompt string, candidates []string, lengthNorm bool) ([]llm.CandidateScore, error)
 
 type routerEmbedFn func(ctx context.Context, model, text string) ([]float32, error)
+
+type routerRerankFn func(ctx context.Context, model, query string, docs []string) ([]llm.RerankHit, error)
 
 var (
 	routerFileMu    sync.Mutex
@@ -190,7 +194,7 @@ func buildRouterPrompt(spec RouterSpec, user string) string {
 	return b.String()
 }
 
-func decideRouter(ctx context.Context, name string, spec RouterSpec, user string, score routerScoreFn, embed routerEmbedFn) (RouterDecision, error) {
+func decideRouter(ctx context.Context, name string, spec RouterSpec, user string, score routerScoreFn, embed routerEmbedFn, rerank routerRerankFn) (RouterDecision, error) {
 	start := time.Now()
 	dec := RouterDecision{
 		Router:     name,
@@ -226,6 +230,9 @@ func decideRouter(ctx context.Context, name string, spec RouterSpec, user string
 	}
 	if routerIsKNN(spec) {
 		return decideRouterKNN(ctx, name, spec, user, embed, &dec, fallback, finish)
+	}
+	if routerIsRerank(spec) {
+		return decideRouterRerank(ctx, name, spec, user, rerank, &dec, fallback, finish)
 	}
 
 	thresh := spec.ActivationThreshold

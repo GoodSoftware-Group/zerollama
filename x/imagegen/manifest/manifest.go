@@ -13,6 +13,8 @@ import (
 	"github.com/ollama/ollama/envconfig"
 )
 
+const fileDigestPrefix = "file:"
+
 // ManifestLayer represents a layer in the manifest.
 type ManifestLayer struct {
 	MediaType string `json:"mediaType"`
@@ -33,6 +35,9 @@ type Manifest struct {
 type ModelManifest struct {
 	Manifest *Manifest
 	BlobDir  string
+	// SourceDir, when set, is a live HF/mlx-lm directory. Tensor shards are
+	// loaded from disk instead of OLLAMA_MODELS blobs.
+	SourceDir string
 }
 
 func DefaultBlobDir() string {
@@ -61,10 +66,29 @@ func LoadManifest(modelName string) (*ModelManifest, error) {
 		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
 
-	return &ModelManifest{
+	mm := &ModelManifest{
 		Manifest: &manifest,
 		BlobDir:  DefaultBlobDir(),
-	}, nil
+	}
+	mm.SourceDir = readSourceDir(mm)
+	return mm, nil
+}
+
+func readSourceDir(m *ModelManifest) string {
+	if m == nil || m.Manifest == nil || m.Manifest.Config.Digest == "" {
+		return ""
+	}
+	data, err := os.ReadFile(m.BlobPath(m.Manifest.Config.Digest))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		SourceDir string `json:"source_dir"`
+	}
+	if json.Unmarshal(data, &cfg) != nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.SourceDir)
 }
 
 // resolveManifestPath converts a model name to a manifest file path.
@@ -98,7 +122,11 @@ func resolveManifestPath(modelName string) string {
 }
 
 // BlobPath returns the full path to a blob given its digest.
+// Digests prefixed with "file:" are absolute paths (directory-linked shards).
 func (m *ModelManifest) BlobPath(digest string) string {
+	if strings.HasPrefix(digest, fileDigestPrefix) {
+		return digest[len(fileDigestPrefix):]
+	}
 	// Convert "sha256:abc123" to "sha256-abc123"
 	blobName := strings.Replace(digest, ":", "-", 1)
 	return filepath.Join(m.BlobDir, blobName)
@@ -109,6 +137,12 @@ func (m *ModelManifest) BlobPath(digest string) string {
 // If component is specified (e.g., "text_encoder", "transformer", "vae"),
 // returns only layers with that prefix.
 func (m *ModelManifest) GetTensorLayers(component string) []ManifestLayer {
+	if m.SourceDir != "" {
+		if component != "" {
+			return nil
+		}
+		return sourceDirTensorLayers(m.SourceDir)
+	}
 	var layers []ManifestLayer
 	for _, layer := range m.Manifest.Layers {
 		if layer.MediaType != "application/vnd.ollama.image.tensor" {
@@ -118,6 +152,35 @@ func (m *ModelManifest) GetTensorLayers(component string) []ManifestLayer {
 			layers = append(layers, layer)
 		}
 	}
+	return layers
+}
+
+func sourceDirTensorLayers(dir string) []ManifestLayer {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var layers []ManifestLayer
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".safetensors") {
+			continue
+		}
+		if strings.Contains(entry.Name(), "index") {
+			continue
+		}
+		p := filepath.Join(dir, entry.Name())
+		fi, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		layers = append(layers, ManifestLayer{
+			MediaType: "application/vnd.ollama.image.tensor",
+			Digest:    fileDigestPrefix + p,
+			Size:      fi.Size(),
+			Name:      entry.Name(),
+		})
+	}
+	sort.Slice(layers, func(i, j int) bool { return layers[i].Name < layers[j].Name })
 	return layers
 }
 
@@ -134,12 +197,20 @@ func (m *ModelManifest) GetConfigLayer(configPath string) *ManifestLayer {
 // ReadConfig reads and returns the content of a config file.
 func (m *ModelManifest) ReadConfig(configPath string) ([]byte, error) {
 	layer := m.GetConfigLayer(configPath)
-	if layer == nil {
-		return nil, fmt.Errorf("config %q not found in manifest", configPath)
+	if layer != nil {
+		return os.ReadFile(m.BlobPath(layer.Digest))
 	}
-
-	blobPath := m.BlobPath(layer.Digest)
-	return os.ReadFile(blobPath)
+	if m.SourceDir != "" {
+		p := filepath.Join(m.SourceDir, configPath)
+		if !pathInside(m.SourceDir, p) {
+			return nil, fmt.Errorf("config %q not found in manifest", configPath)
+		}
+		data, err := os.ReadFile(p)
+		if err == nil {
+			return data, nil
+		}
+	}
+	return nil, fmt.Errorf("config %q not found in manifest", configPath)
 }
 
 // ReadConfigJSON reads and unmarshals a config file.
@@ -158,23 +229,26 @@ func (m *ModelManifest) OpenBlob(digest string) (io.ReadCloser, error) {
 
 // HasTensorLayers returns true if the manifest has any tensor layers.
 func (m *ModelManifest) HasTensorLayers() bool {
-	for _, layer := range m.Manifest.Layers {
-		if layer.MediaType == "application/vnd.ollama.image.tensor" {
-			return true
-		}
-	}
-	return false
+	return len(m.GetTensorLayers("")) > 0
 }
 
 // TotalTensorSize returns the total size in bytes of all tensor layers.
 func (m *ModelManifest) TotalTensorSize() int64 {
 	var total int64
-	for _, layer := range m.Manifest.Layers {
-		if layer.MediaType == "application/vnd.ollama.image.tensor" {
-			total += layer.Size
-		}
+	for _, layer := range m.GetTensorLayers("") {
+		total += layer.Size
 	}
 	return total
+}
+
+func pathInside(root, p string) bool {
+	root = filepath.Clean(root)
+	p = filepath.Clean(p)
+	rel, err := filepath.Rel(root, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return false
+	}
+	return true
 }
 
 // ModelInfo contains metadata about an image generation model.

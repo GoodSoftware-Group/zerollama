@@ -246,6 +246,30 @@ func TestGlimmerParserStrayMessageTagInInvokeName(t *testing.T) {
 	}
 }
 
+func TestGlimmerParserErrorEchoInvokeName(t *testing.T) {
+	tool := glimmerTestTool("read", map[string]api.ToolProperty{
+		"path": {Type: api.PropertyType{"string"}},
+	})
+	input := ` to=read<|message|>` + glimmerTestATEM(
+		"Error: unknown tool foo; use read",
+		`<atem:parameter name="path">go.mod</atem:parameter>
+`,
+	) + `<|eot|>`
+
+	p := &GlimmerParser{}
+	p.Init([]api.Tool{tool}, nil, nil)
+	content, thinking, calls, err := p.Add(input, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != "" || thinking != "" || len(calls) != 1 {
+		t.Fatalf("got content=%q thinking=%q calls=%v", content, thinking, calls)
+	}
+	if calls[0].Function.Name != "read" {
+		t.Fatalf("call name = %q, want read", calls[0].Function.Name)
+	}
+}
+
 // TestGlimmerParserMessageTagReplacesInvokeTerminator covers the fleet-observed
 // stress failure where the model emits a <|message|> boundary token in place
 // of the `">` terminator of the invoke name (`name="read<|message|><atem:parameter ...`).
@@ -389,13 +413,44 @@ func TestGlimmerParserRejectsMismatchedATEMInvoke(t *testing.T) {
 	}
 }
 
-func TestGlimmerParserRejectsMalformedATEM(t *testing.T) {
+func TestGlimmerParserSalvagesMalformedATEM(t *testing.T) {
 	tool := glimmerTestTool("get_weather", nil)
 	p := &GlimmerParser{}
 	p.Init([]api.Tool{tool}, nil, nil)
-	_, _, _, err := p.Add(` to=get_weather<|message|>{"city":"SF"}`, true)
-	if err == nil || !strings.Contains(err.Error(), "function_calls wrapper") {
-		t.Fatalf("error = %v, want missing wrapper", err)
+	_, _, calls, err := p.Add(` to=get_weather<|message|>{"city":"SF"}`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "get_weather" {
+		t.Fatalf("calls=%v", calls)
+	}
+	if calls[0].Function.Arguments.Len() != 0 {
+		t.Fatalf("must not ship non-ATEM JSON as args, got %#v", calls[0].Function.Arguments)
+	}
+}
+
+func TestGlimmerParserTruncatedATEMKeepsCompletedParams(t *testing.T) {
+	tool := glimmerTestTool("get_weather", map[string]api.ToolProperty{
+		"city": {Type: api.PropertyType{"string"}},
+		"days": {Type: api.PropertyType{"integer"}},
+	})
+	p := &GlimmerParser{}
+	p.Init([]api.Tool{tool}, nil, nil)
+	_, _, calls, err := p.Add(` to=get_weather<|message|><atem:function_calls>
+<atem:invoke name="get_weather">
+<atem:parameter name="city">SF</atem:parameter>
+<atem:parameter name="days">`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "get_weather" {
+		t.Fatalf("calls=%v", calls)
+	}
+	if city, ok := calls[0].Function.Arguments.Get("city"); !ok || city != "SF" {
+		t.Fatalf("city=%v", city)
+	}
+	if _, ok := calls[0].Function.Arguments.Get("days"); ok {
+		t.Fatal("truncated days must not ship")
 	}
 }
 
@@ -672,4 +727,17 @@ func FuzzGlimmerParser(f *testing.F) {
 			lastIndex = call.Function.Index
 		}
 	})
+}
+
+func TestGlimmerParser_SeedFromPromptUserCommit(t *testing.T) {
+	p := &GlimmerParser{}
+	p.Init(nil, nil, &api.ThinkValue{Value: false})
+	p.SeedFromPrompt("<|start|>assistant to=user<|message|>")
+	content, thinking, calls, err := p.Add("Hello", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != "Hello" || thinking != "" || len(calls) != 0 {
+		t.Fatalf("content=%q thinking=%q calls=%v", content, thinking, calls)
+	}
 }

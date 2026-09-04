@@ -471,6 +471,60 @@ func TestCreateSafetensorsModel_SkipsIndexJson(t *testing.T) {
 	}
 }
 
+func TestLinkSafetensorsModel(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"architectures":["Test"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model.safetensors.index.json"), []byte(`{"weight_map":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model.safetensors"), []byte("do-not-copy-me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var names []string
+	createLayer := func(r io.Reader, mediaType, name string) (LayerInfo, error) {
+		data, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name == "model.safetensors" || strings.Contains(string(data), "do-not-copy-me") {
+			t.Fatalf("link copied tensor sidecar %q", name)
+		}
+		names = append(names, name)
+		return LayerInfo{Name: name, Digest: "sha256:" + name}, nil
+	}
+	var wrote bool
+	writeManifest := func(modelName string, config LayerInfo, layers []LayerInfo) error {
+		wrote = true
+		if config.Name != "config.json" {
+			t.Fatalf("config layer = %q", config.Name)
+		}
+		for _, l := range layers {
+			if strings.HasSuffix(l.Name, ".safetensors") {
+				t.Fatalf("manifest included tensor %q", l.Name)
+			}
+		}
+		return nil
+	}
+	if err := LinkSafetensorsModel("test-linked", dir, createLayer, writeManifest, func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if !wrote {
+		t.Fatal("manifest not written")
+	}
+	if !slices.Contains(names, "config.json") || !slices.Contains(names, "tokenizer.json") {
+		t.Fatalf("sidecars = %v", names)
+	}
+	if slices.Contains(names, "model.safetensors.index.json") || slices.Contains(names, "model.safetensors") {
+		t.Fatalf("copied weight files: %v", names)
+	}
+}
+
 func TestCreateSafetensorsModel_PacksPrequantizedTensorTriplets(t *testing.T) {
 	dir := t.TempDir()
 

@@ -10,9 +10,28 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"path"
+	"regexp"
 	"slices"
 	"strings"
 )
+
+// Transformers ≥5 often stores chat_template as `{% include 'chat_template.jinja' %}`
+// (mlx-serve issue #169). Treat that as a pointer, not the template body.
+var chatTemplateIncludeStubRE = regexp.MustCompile(`(?is)^\s*\{%\s*include\s+['"]([^'"]+)['"]\s*%\}\s*$`)
+
+// ChatTemplateIncludeStubPath returns the sidecar filename when s is only an include.
+func ChatTemplateIncludeStubPath(s string) (string, bool) {
+	m := chatTemplateIncludeStubRE.FindStringSubmatch(s)
+	if len(m) != 2 {
+		return "", false
+	}
+	p := path.Base(strings.TrimSpace(m[1]))
+	if p == "." || p == "/" || p == "" || strings.Contains(p, "..") {
+		return "", false
+	}
+	return p, true
+}
 
 const (
 	_ int32 = iota
@@ -138,6 +157,14 @@ func parseTokenizer(fsys fs.FS, specialTokenTypes []string) (*Tokenizer, error) 
 				}
 			} else {
 				return nil, fmt.Errorf("invalid chat_template: %w", err)
+			}
+		}
+		if stub, ok := ChatTemplateIncludeStubPath(t.Template); ok {
+			data, err := fs.ReadFile(fsys, stub)
+			if err != nil {
+				t.Template = ""
+			} else {
+				t.Template = string(data)
 			}
 		}
 

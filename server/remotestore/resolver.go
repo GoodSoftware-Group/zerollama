@@ -499,21 +499,44 @@ func PushBlob(ctx context.Context, auth *Auth, client *http.Client, baseURL, dig
 		client = &http.Client{Timeout: 30 * time.Minute}
 	}
 	digest = normalizeDigest(digest)
+	fi, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	total := fi.Size()
+	offset := int64(0)
+	tcp := &TCPTransport{Auth: auth, Client: client}
+	if sz, complete, herr := tcp.HeadBlob(ctx, baseURL, digest); herr == nil {
+		if complete {
+			if sz == total {
+				return nil
+			}
+			offset = 0
+		} else if sz > 0 && sz < total {
+			offset = sz
+		}
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return err
+		}
+	}
 	url := strings.TrimRight(baseURL, "/") + "/v1/blob/" + digest
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, f)
+	body := io.LimitReader(f, total-offset)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
 	if err != nil {
 		return err
 	}
-	if fi, err := f.Stat(); err == nil {
-		req.ContentLength = fi.Size()
-	}
+	req.ContentLength = total - offset
 	req.Header.Set("Content-Type", "application/octet-stream")
-	// Sign empty body: integrity is enforced by digest path + server-side hash.
+	if offset > 0 || total > 0 {
+		req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, total-1, total))
+	}
 	if err := auth.SignRequest(req, nil); err != nil {
 		return err
 	}
@@ -522,9 +545,12 @@ func PushBlob(ctx context.Context, auth *Auth, client *http.Client, baseURL, dig
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("put blob: %s: %s", resp.Status, b)
+	}
+	if resp.StatusCode == http.StatusAccepted {
+		return fmt.Errorf("put blob: incomplete (%s); retry to resume", resp.Status)
 	}
 	return nil
 }

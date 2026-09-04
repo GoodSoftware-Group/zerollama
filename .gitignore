@@ -45,6 +45,9 @@ research/h3-cuda/bin/
 .gomodcache/
 .gotmp/
 .tmp-build/
+
+# Per-kind Metal JIT embeds (regen: scripts/build/gen_ggml_metal_embed.sh)
+ml/backend/ggml/ggml/src/ggml-metal/ggml-metal-embed-*.metal
 build-cuda13/
 /llama-server
 

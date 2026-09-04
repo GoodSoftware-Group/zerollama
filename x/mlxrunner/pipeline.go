@@ -17,8 +17,8 @@ import (
 	"github.com/ollama/ollama/x/mlxrunner/mlx"
 	"github.com/ollama/ollama/x/mlxrunner/model/base"
 	sampler "github.com/ollama/ollama/x/mlxrunner/sample"
-	"github.com/ollama/ollama/x/uma"
 	"github.com/ollama/ollama/x/tokenizer"
+	"github.com/ollama/ollama/x/uma"
 )
 
 func modelSlidingWindow(m base.Model) int {
@@ -77,7 +77,7 @@ func (r *Runner) Prepare(request *Request) error {
 	}
 
 	if len(tokens) >= r.contextLength {
-		return fmt.Errorf("input length (%d tokens) exceeds the model's maximum context length (%d tokens)", len(tokens), r.contextLength)
+		return fmt.Errorf("%s", llm.ContextOverflowMessage(len(tokens), r.contextLength))
 	}
 
 	// Cap generation to stay within the model's context length
@@ -136,6 +136,7 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 		defer uma.LeaseEnd()
 		defer mlx.Synchronize() // first AsyncEval must finish under HOLD
 		r.Sampler.Add(pipelineSlot, request.SamplerOpts, inputs)
+		r.Sampler.SetSlotLogitBias(pipelineSlot, request.Options.LogitBias)
 		if spec != nil {
 			d = spec.decoder(seed, position)
 		} else {
@@ -171,6 +172,19 @@ func completionPromptMetrics(session *cacheSession) (evalCount, cachedCount int)
 // prefill evaluates the prompt in chunks, leaving one token for decode to
 // seed from, and schedules the prompt's periodic snapshots. It returns the
 // seed tokens, the resume position, and the prompt-evaluation duration.
+//
+// prefillSeedCount is the T=0 exactness contract (mtplx 2.6.0): speculative
+// and plain AR partition the prompt the same way (body + last token). A
+// whole-prompt spec prefill vs a split AR prefill rounds the last bit
+// differently and can flip greedy argmax at a near-tie.
+const prefillSeedCount = 1
+
+func prefillBodyLen(remaining int) int {
+	if remaining <= prefillSeedCount {
+		return 0
+	}
+	return remaining - prefillSeedCount
+}
 func (r *Runner) prefill(ctx context.Context, request Request, session *cacheSession, spec *speculationSession) (*mlx.Array, int, time.Duration, error) {
 	start := time.Now()
 	inputs := session.inputs
@@ -186,6 +200,18 @@ func (r *Runner) prefill(ctx context.Context, request Request, session *cacheSes
 		fastPath:       session.fastPath,
 		sameBranch:     session.sameBranch,
 	})
+	before := cfg.chunkSize
+	if rec, err := mlx.MaxRecommendedWorkingSetSize(); err == nil {
+		cfg = capPrefillChunkForWorkingSet(cfg, mlx.ActiveMemory(), rec)
+		if cfg.chunkSize < before {
+			slog.Info("mlx tune",
+				"hint", "prefill chunk shrunk because unified memory is ≥75% of the recommended working set",
+				"chunk", cfg.chunkSize,
+				"was", before,
+				"tune", "unset OLLAMA_MLX_PREFILL_CHUNK; or raise RAM headroom / shorter prompt",
+			)
+		}
+	}
 	prefillChunk := cfg.chunkSize
 	if prefillChunk < 1 {
 		prefillChunk = defaultPrefillChunk
@@ -207,14 +233,14 @@ func (r *Runner) prefill(ctx context.Context, request Request, session *cacheSes
 	total, processed := len(tokens), 0
 	position := len(inputs) - len(tokens)
 	chunkIdx := 0
-	for total-processed > 1 {
+	for body := prefillBodyLen(total - processed); body > 0; body = prefillBodyLen(total - processed) {
 		if err := ctx.Err(); err != nil {
 			return nil, 0, 0, err
 		}
 
-		n := min(prefillChunk, total-processed-1)
+		n := min(prefillChunk, body)
 		remainingAfter := total - processed - n
-		isLastChunk := remainingAfter <= 1
+		isLastChunk := remainingAfter <= prefillSeedCount
 		chunkIdx++
 
 		tForwardStart := time.Now()
@@ -374,6 +400,8 @@ func (r *Runner) decode(ctx context.Context, request Request, session *cacheSess
 		wantLogprobs:    request.SamplerOpts.Logprobs,
 		wantTopLogprobs: request.SamplerOpts.TopLogprobs,
 	}
+	stops := nonemptyStops(request.Options.Stop)
+	var stopHold string
 
 	final := CompletionResponse{Done: true, DoneReason: 1}
 	final.PromptEvalCount, final.PromptEvalCachedCount = completionPromptMetrics(session)
@@ -424,6 +452,13 @@ func (r *Runner) decode(ctx context.Context, request Request, session *cacheSess
 				continue
 			}
 			generated++
+			if generationShouldStop(session.outputs) {
+				logLoopStop(session.outputs)
+				final.FinishDetails = finishDetailsRepetitionLoop
+				done = true
+				stream = i + 1
+				continue
+			}
 			if generated >= request.Options.NumPredict {
 				done = true
 				stream = i + 1
@@ -435,10 +470,22 @@ func (r *Runner) decode(ctx context.Context, request Request, session *cacheSess
 			if !ok {
 				continue
 			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case request.Responses <- resp:
+			stopHold += resp.Content
+			emit, rest, matched := flushStopHold(stopHold, stops, false)
+			stopHold = rest
+			if emit != "" {
+				resp.Content = emit
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case request.Responses <- resp:
+				}
+			}
+			if matched != "" {
+				final.DoneReason = 0
+				final.StopSequence = matched
+				done = true
+				break
 			}
 		}
 
@@ -451,8 +498,19 @@ func (r *Runner) decode(ctx context.Context, request Request, session *cacheSess
 		}
 	}
 
+	if emit, _, _ := flushStopHold(stopHold, stops, true); emit != "" {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case request.Responses <- CompletionResponse{Content: emit}:
+		}
+	}
+
 	final.EvalCount = generated
 	final.EvalDuration = time.Since(now)
+	if r.spec != nil && r.spec.depth != nil {
+		r.spec.depth.saveRoundCost(r.modelName)
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -559,10 +617,12 @@ func buildLogprob(sample sampler.Result, wantLogprobs bool, wantTopLogprobs int,
 	}
 	tok := func(id int32) string { return decode([]int32{id}) }
 
+	id := int(sample.Token.Int())
 	out := llm.Logprob{
 		TokenLogprob: llm.TokenLogprob{
-			Token:   tok(int32(sample.Token.Int())),
+			Token:   tok(int32(id)),
 			Logprob: float64(sample.Logprob.Floats()[0]),
+			ID:      llm.IntPtr(id),
 		},
 	}
 
@@ -574,6 +634,7 @@ func buildLogprob(sample sampler.Result, wantLogprobs bool, wantTopLogprobs int,
 			pairs[i] = llm.TokenLogprob{
 				Token:   tok(int32(id)),
 				Logprob: float64(vals[i]),
+				ID:      llm.IntPtr(int(id)),
 			}
 		}
 		// The sampler emits the top maxK across registered slots via

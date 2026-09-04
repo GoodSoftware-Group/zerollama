@@ -74,6 +74,7 @@ func TestLeadingBOSForRenderer(t *testing.T) {
 		{name: "laguna", want: "〈|EOS|〉"},
 		{name: "poolside-v1", want: "〈|EOS|〉"},
 		{name: "deepseek3.1", want: "<｜begin▁of▁sentence｜>"},
+		{name: "deepseek3", want: "<｜begin▁of▁sentence｜>"},
 		{name: "cogito", want: "<｜begin▁of▁sentence｜>"},
 		{name: "qwen3-coder", want: ""},
 		{name: "unknown", want: ""},

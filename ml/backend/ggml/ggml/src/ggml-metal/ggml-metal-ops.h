@@ -22,7 +22,14 @@ ggml_metal_op_t ggml_metal_op_init(
 
 void ggml_metal_op_free(ggml_metal_op_t ctx);
 
+// Current MTLCommandBuffer (may change after ANE force sync-and-resume).
+ggml_metal_cmd_buf_t ggml_metal_op_cmd_buf(ggml_metal_op_t ctx);
+
 int ggml_metal_op_n_nodes(ggml_metal_op_t ctx);
+
+// Lab ANE FFN: node accessor + Metal sync-and-resume for host-visible acts.
+struct ggml_tensor * ggml_metal_op_node(ggml_metal_op_t ctx, int i);
+bool ggml_metal_op_sync_for_ane_host(ggml_metal_op_t ctx);
 
 int ggml_metal_op_encode(ggml_metal_op_t ctx, int idx);
 

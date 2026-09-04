@@ -93,18 +93,79 @@ func ScaledDotProductAttention(b *batch.Batch, q *mlx.Array, scale float32, opts
 
 	if cached, ok := b.Memo.Get(inputs); ok && cfg.sinks == nil {
 		d := cached.(sdpaDispatch)
-		return mlx.FastScaledDotProductAttention(q, k, v, scale, d.mode, d.arr)
+		return runFastSDPA(q, k, v, scale, cfg.sinks, d, inputs)
 	}
 
 	d := inputs.resolve()
 	if cfg.sinks == nil {
 		b.Memo.Put(inputs, d)
 	}
-	if cfg.sinks != nil {
-		// TODO: Metal fast SDPA+sinks panics on GQA; reference path still WIP.
-		return mlx.FastScaledDotProductAttentionWithSinks(q, k, v, cfg.sinks, scale, d.mode, d.arr)
+	return runFastSDPA(q, k, v, scale, cfg.sinks, d, inputs)
+}
+
+// sdpaVectorMaxQ is MLX's vector SDPA query cap (mlx/backend/metal
+// scaled_dot_product_attention.cpp). Above it, hd 192/256 uses the slow
+// unfused path. mlx-serve splits verify (L=6–9) into two vector passes.
+const sdpaVectorMaxQ = 8
+
+const sdpaVectorMaxQGQA = 32
+
+func sdpaFastQChunk(qL, qHeads, kvHeads, headDim int) int {
+	if qL <= 1 {
+		return qL
 	}
-	return mlx.FastScaledDotProductAttention(q, k, v, scale, d.mode, d.arr)
+	gqa := 1
+	if kvHeads > 0 {
+		gqa = max(1, qHeads/kvHeads)
+	}
+	chunk := sdpaVectorMaxQ
+	if cap := sdpaVectorMaxQGQA / gqa; cap < chunk {
+		chunk = cap
+	}
+	if chunk < 1 {
+		return qL
+	}
+	need := (headDim == 192 || headDim == 256) && qL > sdpaVectorMaxQ
+	if qL*gqa > sdpaVectorMaxQGQA && qL > chunk {
+		need = true
+	}
+	if !need {
+		return qL
+	}
+	return chunk
+}
+
+func runFastSDPA(q, k, v *mlx.Array, scale float32, sinks *mlx.Array, d sdpaDispatch, inputs dispatchInputs) *mlx.Array {
+	qL, qH, dH := q.Dim(2), q.Dim(1), q.Dim(3)
+	kvH := k.Dim(1)
+	chunk := sdpaFastQChunk(qL, qH, kvH, dH)
+	if chunk >= qL {
+		if sinks != nil {
+			return mlx.FastScaledDotProductAttentionWithSinks(q, k, v, sinks, scale, d.mode, d.arr)
+		}
+		return mlx.FastScaledDotProductAttention(q, k, v, scale, d.mode, d.arr)
+	}
+
+	mode, arr := d.mode, d.arr
+	if mode == "causal" {
+		arr = inputs.composedMask().AsArray(inputs.batch, inputs.K, inputs.dtype)
+		mode = "array"
+	}
+	parts := make([]*mlx.Array, 0, (qL+chunk-1)/chunk)
+	for off := 0; off < qL; off += chunk {
+		end := min(off+chunk, qL)
+		qc := q.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(off, end), mlx.Slice())
+		var mc *mlx.Array
+		if arr != nil {
+			mc = arr.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(off, end), mlx.Slice())
+		}
+		if sinks != nil {
+			parts = append(parts, mlx.FastScaledDotProductAttentionWithSinks(qc, k, v, sinks, scale, mode, mc))
+		} else {
+			parts = append(parts, mlx.FastScaledDotProductAttention(qc, k, v, scale, mode, mc))
+		}
+	}
+	return mlx.Concatenate(parts, 2)
 }
 
 // sdpaDispatch is the resolved kernel call for a given SDPA key —
@@ -178,14 +239,18 @@ func (k kLensKey) Int32s() []int32 {
 // remapped K space, so the applier owns any K-padding; on the
 // WithKV path kLens describes the direct K tensor, which shares
 // logical K space with QPaddingMask.
-func (inputs dispatchInputs) resolve() sdpaDispatch {
+func (inputs dispatchInputs) composedMask() AttentionMask {
 	mask := inputs.mask.Intersect(QPaddingMask(inputs.batch, inputs.dtype))
-
 	if inputs.applier != nil {
 		mask = inputs.applier.ApplyMask(mask)
 	} else if inputs.kLens != "" {
 		mask = mask.Intersect(KPaddingMask(inputs.batch, inputs.K, inputs.kLens.Int32s(), inputs.dtype))
 	}
+	return mask
+}
+
+func (inputs dispatchInputs) resolve() sdpaDispatch {
+	mask := inputs.composedMask()
 
 	switch {
 	case mask.IsZero():

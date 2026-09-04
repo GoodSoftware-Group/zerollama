@@ -396,11 +396,8 @@ func TestChatMiddleware(t *testing.T) {
 						Content: "Hello",
 					},
 				},
-				Options: map[string]any{
-					"temperature": 1.0,
-					"top_p":       1.0,
-				},
-				Stream: &False,
+				Options: map[string]any{},
+				Stream:  &False,
 			},
 		},
 		{
@@ -425,7 +422,7 @@ func TestChatMiddleware(t *testing.T) {
 				Messages: []api.Message{
 					{
 						Role:    "user",
-						Content: "Hello",
+						Content: "Hello" + "\n\n" + api.OutputBudgetGuidance,
 					},
 				},
 				Options: map[string]any{
@@ -464,7 +461,7 @@ func TestChatMiddleware(t *testing.T) {
 				Messages: []api.Message{
 					{
 						Role:    "user",
-						Content: "Hello",
+						Content: "Hello" + "\n\n" + api.OutputBudgetGuidance,
 					},
 				},
 				Options: map[string]any{
@@ -516,11 +513,8 @@ func TestChatMiddleware(t *testing.T) {
 						},
 					},
 				},
-				Options: map[string]any{
-					"temperature": 1.0,
-					"top_p":       1.0,
-				},
-				Stream: &False,
+				Options: map[string]any{},
+				Stream:  &False,
 			},
 		},
 		{
@@ -555,11 +549,8 @@ func TestChatMiddleware(t *testing.T) {
 						},
 					},
 				},
-				Options: map[string]any{
-					"temperature": 1.0,
-					"top_p":       1.0,
-				},
-				Stream: &False,
+				Options: map[string]any{},
+				Stream:  &False,
 			},
 		},
 		{
@@ -595,11 +586,8 @@ func TestChatMiddleware(t *testing.T) {
 						},
 					},
 				},
-				Options: map[string]any{
-					"temperature": 1.0,
-					"top_p":       1.0,
-				},
-				Stream: &False,
+				Options: map[string]any{},
+				Stream:  &False,
 			},
 		},
 		{
@@ -634,11 +622,8 @@ func TestChatMiddleware(t *testing.T) {
 						},
 					},
 				},
-				Options: map[string]any{
-					"temperature": 1.0,
-					"top_p":       1.0,
-				},
-				Stream: &False,
+				Options: map[string]any{},
+				Stream:  &False,
 			},
 		},
 		{
@@ -674,11 +659,8 @@ func TestChatMiddleware(t *testing.T) {
 						},
 					},
 				},
-				Options: map[string]any{
-					"temperature": 1.0,
-					"top_p":       1.0,
-				},
-				Stream: &False,
+				Options: map[string]any{},
+				Stream:  &False,
 			},
 		},
 		{
@@ -720,11 +702,8 @@ func TestChatMiddleware(t *testing.T) {
 						ToolCallID: "id_abc",
 					},
 				},
-				Options: map[string]any{
-					"temperature": 1.0,
-					"top_p":       1.0,
-				},
-				Stream: &False,
+				Options: map[string]any{},
+				Stream:  &False,
 			},
 		},
 		{
@@ -765,11 +744,8 @@ func TestChatMiddleware(t *testing.T) {
 						ToolName: "get_current_weather",
 					},
 				},
-				Options: map[string]any{
-					"temperature": 1.0,
-					"top_p":       1.0,
-				},
-				Stream: &False,
+				Options: map[string]any{},
+				Stream:  &False,
 			},
 		},
 		{
@@ -833,11 +809,8 @@ func TestChatMiddleware(t *testing.T) {
 						},
 					},
 				},
-				Options: map[string]any{
-					"temperature": 1.0,
-					"top_p":       1.0,
-				},
-				Stream: &True,
+				Options: map[string]any{},
+				Stream:  &True,
 			},
 		},
 		{
@@ -917,11 +890,8 @@ func TestCompletionsMiddleware(t *testing.T) {
 				Model:  "test-model",
 				Prompt: "Hello",
 				Options: map[string]any{
-					"frequency_penalty": 0.0,
-					"presence_penalty":  0.0,
-					"temperature":       0.8,
-					"top_p":             1.0,
-					"stop":              []any{"\n", "stop"},
+					"temperature": float64(float32(0.8)),
+					"stop":        []any{"\n", "stop"},
 				},
 				Suffix: "suffix",
 				Stream: &False,
@@ -941,11 +911,8 @@ func TestCompletionsMiddleware(t *testing.T) {
 				Model:  "test-model",
 				Prompt: "Hello",
 				Options: map[string]any{
-					"frequency_penalty": 0.0,
-					"presence_penalty":  0.0,
-					"temperature":       0.8,
-					"top_p":             1.0,
-					"stop":              []any{"\n", "stop"},
+					"temperature": float64(float32(0.8)),
+					"stop":        []any{"\n", "stop"},
 				},
 				Suffix: "suffix",
 				Stream: &True,
@@ -966,11 +933,8 @@ func TestCompletionsMiddleware(t *testing.T) {
 				Model:  "test-model",
 				Prompt: "Hello",
 				Options: map[string]any{
-					"frequency_penalty": 0.0,
-					"presence_penalty":  0.0,
-					"temperature":       0.8,
-					"top_p":             1.0,
-					"stop":              []any{"\n", "stop"},
+					"temperature": float64(float32(0.8)),
+					"stop":        []any{"\n", "stop"},
 				},
 				Suffix: "suffix",
 				Stream: &True,
@@ -1546,6 +1510,37 @@ func zstdCompress(t *testing.T, data []byte) []byte {
 	return buf.Bytes()
 }
 
+func TestResponsesWriter_StreamDoneSentinel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+
+	writer := &ResponsesWriter{
+		stream:     true,
+		model:      "m",
+		responseID: "resp_1",
+		itemID:     "msg_1",
+		converter:  openai.NewResponsesStreamConverter("resp_1", "msg_1", "m", openai.ResponsesRequest{}),
+		BaseWriter: BaseWriter{ResponseWriter: context.Writer},
+	}
+
+	data, err := json.Marshal(api.ChatResponse{
+		Model:   "m",
+		Message: api.Message{Role: "assistant", Content: "hi"},
+		Done:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	frames := sseDataFrames(recorder.Body.String())
+	if len(frames) == 0 || frames[len(frames)-1] != "[DONE]" {
+		t.Fatalf("want trailing [DONE], got %v\n%s", frames, recorder.Body.String())
+	}
+}
+
 func TestResponsesMiddlewareZstd(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1626,6 +1621,60 @@ func TestResponsesMiddlewareZstd(t *testing.T) {
 				t.Fatalf("expected single user message %q, got %+v", tt.wantMessage, capturedRequest.Messages)
 			}
 		})
+	}
+}
+
+func TestChatMiddleware_extraBodyCompression(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var captured *api.ChatRequest
+	r := gin.New()
+	r.Use(ChatMiddleware(), captureRequestMiddleware(&captured))
+	r.POST("/v1/chat/completions", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	body := `{
+		"model": "qwen3.5:9b",
+		"messages": [{"role":"user","content":"hi"}],
+		"extra_body": {"compression": {"mode": "placeholder"}, "prompt_cache_key": "hermes:agent:1"}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", w.Code, w.Body.String())
+	}
+	if captured == nil || captured.Compression == nil || captured.Compression.Mode != "placeholder" {
+		t.Fatalf("rewritten ChatRequest missing extra_body compression: %+v", captured)
+	}
+	if captured.Options["prompt_cache_key"] != "hermes:agent:1" {
+		t.Fatalf("missing extra_body prompt_cache_key: %+v", captured.Options)
+	}
+}
+
+func TestResponsesMiddleware_extraBodyCompression(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var captured *api.ChatRequest
+	r := gin.New()
+	r.Use(ResponsesMiddleware(), captureRequestMiddleware(&captured))
+	r.POST("/v1/responses", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	body := `{
+		"model": "qwen3.5:9b",
+		"input": "hi",
+		"extra_body": {"compression": {"mode": "placeholder"}, "prompt_cache_key": "hermes:agent:1"}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", w.Code, w.Body.String())
+	}
+	if captured == nil || captured.Compression == nil || captured.Compression.Mode != "placeholder" {
+		t.Fatalf("rewritten ChatRequest missing extra_body compression: %+v", captured)
+	}
+	if captured.Options["prompt_cache_key"] != "hermes:agent:1" {
+		t.Fatalf("missing extra_body prompt_cache_key: %+v", captured.Options)
 	}
 }
 
@@ -1718,6 +1767,86 @@ func TestCompleteWriter_StatusKeepaliveEmitsSSEDataFrame(t *testing.T) {
 	}
 	if chunk.Object != "text_completion" {
 		t.Fatalf("expected text_completion object, got %q", chunk.Object)
+	}
+}
+
+func TestStreamLeadHold(t *testing.T) {
+	var h streamLeadHold
+	if out, skip := h.merge("  \n", false); !skip || out != "" {
+		t.Fatalf("hold ws: out=%q skip=%v", out, skip)
+	}
+	out, skip := h.merge("def foo():", false)
+	if skip || out != "  \ndef foo():" {
+		t.Fatalf("prepend: out=%q skip=%v", out, skip)
+	}
+	out, skip = h.merge("\n    x", false)
+	if skip || out != "\n    x" {
+		t.Fatalf("after close: out=%q", out)
+	}
+
+	var done streamLeadHold
+	out, skip = done.merge("\t", true)
+	if skip || out != "\t" {
+		t.Fatalf("flush ws-only: out=%q skip=%v", out, skip)
+	}
+}
+
+func TestCompleteWriter_StreamLeadIndent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	writer := &CompleteWriter{
+		stream:     true,
+		id:         "cmpl-indent",
+		BaseWriter: BaseWriter{ResponseWriter: context.Writer},
+	}
+	first, _ := json.Marshal(api.GenerateResponse{Model: "m", Response: "    "})
+	if _, err := writer.Write(first); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("whitespace lead should be held, got %q", recorder.Body.String())
+	}
+	second, _ := json.Marshal(api.GenerateResponse{Model: "m", Response: "return x"})
+	if _, err := writer.Write(second); err != nil {
+		t.Fatal(err)
+	}
+	frames := sseDataFrames(recorder.Body.String())
+	if len(frames) != 1 {
+		t.Fatalf("frames=%d body=%s", len(frames), recorder.Body.String())
+	}
+	var chunk openai.CompletionChunk
+	if err := json.Unmarshal([]byte(frames[0]), &chunk); err != nil {
+		t.Fatal(err)
+	}
+	if chunk.Choices[0].Text != "    return x" {
+		t.Fatalf("text=%q", chunk.Choices[0].Text)
+	}
+}
+
+func TestCompleteWriter_EchoPrependsPrompt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	writer := &CompleteWriter{
+		id:         "cmpl-echo",
+		echo:       true,
+		prompt:     "PREFIX",
+		BaseWriter: BaseWriter{ResponseWriter: context.Writer},
+	}
+	data, err := json.Marshal(api.GenerateResponse{Model: "m", Response: "out", Done: true, DoneReason: "stop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = writer.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	var got openai.Completion
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Choices[0].Text != "PREFIXout" {
+		t.Fatalf("echo text=%q", got.Choices[0].Text)
 	}
 }
 

@@ -70,6 +70,14 @@ type speculation struct {
 // and PLD can coexist: each request stacks them (PLD first on echo-y
 // prompts). Nil only when both are unavailable.
 func newSpeculation(r *Runner, draft base.DraftModel) *speculation {
+	if r != nil && r.Model != nil {
+		if p, ok := r.Model.(interface{ ParkSpeculation() string }); ok {
+			if reason := p.ParkSpeculation(); reason != "" {
+				slog.Info("mlx speculation parked", "reason", reason)
+				return nil
+			}
+		}
+	}
 	if draft == nil && !pldEnabled() {
 		return nil
 	}
@@ -89,6 +97,11 @@ func newSpeculation(r *Runner, draft base.DraftModel) *speculation {
 // bind computes the draft/target cache partition the first time the persistent
 // caches exist; later requests reuse the same slice, so it runs once.
 func (s *speculation) bind(caches []cache.Cache) {
+	if len(caches) == 0 {
+		// Construction may run before the request's cache slice exists;
+		// open() binds again once caches are live.
+		return
+	}
 	if s.caches != nil {
 		if !slices.Equal(s.caches, caches) {
 			panic("speculation: cache slice changed between requests")
@@ -527,7 +540,8 @@ func commitSpeculation(caches []cache.Cache, accepted, draftCount, before int) {
 				}
 			}
 			if !c.Restore(nil, target) && !c.Restore(snaps[accepted], target) {
-				panic(fmt.Sprintf("speculation: cache restore to %d failed", target))
+				slog.Error("speculation: cache restore failed", "target", target)
+				continue
 			}
 		}
 		for _, s := range snaps {
@@ -581,15 +595,27 @@ func (s *speculationSession) accept(position *int, current sampler.Result, candi
 	// bonus row. No separate base-logits forward exists on this path.
 	targetDist := r.Sampler.Distribution(pipelineSlot, r.Model.Unembed(hiddenSeq), candidates.tokens)
 	draftDist := candidates.dist
-	acceptedMask := r.sampleAcceptedMask(targetDist.SliceRows(0, draftCount), draftDist, candidates.tokens)
+	var acceptedMask, residualTokens, bonusToken *mlx.Array
+	if batchedGreedyAcceptEnabled(s.promptTokens) && r.Sampler.Greedy(pipelineSlot) && greedyOneHot(targetDist) {
+		// T=0: target row i's argmax is both the accept check and the
+		// residual/bonus token. Equality is the Leviathan ratio at greedy
+		// (mtplx batched greedy accept #315).
+		targetIDs := targetDist.GreedyToken()
+		draftIDs := squeezeDraftRow(candidates.tokens)
+		acceptedMask = targetIDs.Slice(mlx.Slice(0, draftCount)).Equal(draftIDs).AsType(mlx.DTypeInt32)
+		residualTokens = targetIDs.Slice(mlx.Slice(0, draftCount))
+		bonusToken = targetIDs.Slice(mlx.Slice(draftCount, draftCount+1))
+	} else {
+		acceptedMask = r.sampleAcceptedMask(targetDist.SliceRows(0, draftCount), draftDist, candidates.tokens)
 
-	// The next token is sampled for every possible outcome before anything
-	// is evaluated — the residual at each rejection point in one batched
-	// draw, plus the bonus row — so a single Eval covers acceptance and the
-	// next token instead of a second host round trip after the rejection
-	// point is known.
-	residualTokens := r.Sampler.SampleDistribution(pipelineSlot, targetDist.SliceRows(0, draftCount).ResidualAgainst(draftDist))
-	bonusToken := r.sampleTokenAt(targetDist, draftCount)
+		// The next token is sampled for every possible outcome before anything
+		// is evaluated — the residual at each rejection point in one batched
+		// draw, plus the bonus row — so a single Eval covers acceptance and the
+		// next token instead of a second host round trip after the rejection
+		// point is known.
+		residualTokens = r.Sampler.SampleDistribution(pipelineSlot, targetDist.SliceRows(0, draftCount).ResidualAgainst(draftDist))
+		bonusToken = r.sampleTokenAt(targetDist, draftCount)
+	}
 
 	// Pin the arrays read after the eval, then sweep so the draft proposal
 	// chain and this validation forward's intermediates are freed as the eval
@@ -675,6 +701,17 @@ func (r *Runner) sampleAcceptedMask(targetDist, draftDist sampler.Distribution, 
 
 func (r *Runner) sampleTokenAt(dist sampler.Distribution, index int) *mlx.Array {
 	return r.Sampler.SampleDistribution(pipelineSlot, dist.SliceRows(index, index+1))
+}
+
+func greedyOneHot(d sampler.Distribution) bool {
+	return d.IDs != nil && d.IDs.NumDims() >= 1 && d.IDs.Dim(d.IDs.NumDims()-1) == 1
+}
+
+func squeezeDraftRow(tokens *mlx.Array) *mlx.Array {
+	if tokens.NumDims() == 2 && tokens.Dim(0) == 1 {
+		return tokens.Squeeze(0)
+	}
+	return tokens
 }
 
 // draftResults wraps accepted draft ids as sampler results; drafts carry no

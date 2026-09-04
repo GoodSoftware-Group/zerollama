@@ -89,6 +89,19 @@ curl -s http://localhost:11434/v1/responses \
 - **Cloud passthrough still applies** — a `:cloud`-suffixed or known cloud
   model name here is proxied remotely just like on `/v1/chat/completions`;
   it isn't guaranteed to hit your local GPU.
+- **`continue_final_message` is not on this surface** — use
+  `/v1/chat/completions` or `/api/chat` (mlx-serve also skips continue on
+  `/v1/responses`).
+- **Chat compression / `elide_from`** — top-level `compression` or
+  `extra_body.compression` (same object as Chat Completions). Echo
+  `usage.compression_meta.elide_from` on the next append-only turn.
+  Streaming completed events include `compression_meta` on `usage`.
+- **No store extras** — `include` with any non-empty value is 400.
+  `max_tool_calls` must be omit or ≥1 (`1` keeps a single tool call).
+  `usage.input_tokens_details.cached_tokens` is the prefix-cache hit (0 on miss).
+- **Streaming ends with `data: [DONE]`** after `response.completed` (same
+  sentinel as Chat Completions; mlx-serve). A token-cap stop is still that
+  event, with `status: incomplete` and `incomplete_details.reason=max_output_tokens`.
 
 ## Related
 

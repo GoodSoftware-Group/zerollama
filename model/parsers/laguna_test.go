@@ -90,6 +90,21 @@ func TestLagunaParserJSONToolCall(t *testing.T) {
 	}
 }
 
+func TestLagunaParserTruncatedJSONToolCallOnDone(t *testing.T) {
+	parser := ParserForName("laguna")
+	parser.Init(lagunaTestTools(), nil, nil)
+	_, _, calls, err := parser.Add(`<tool_call>{"name":"get_weather","arguments":{"loc`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "get_weather" {
+		t.Fatalf("calls=%v", calls)
+	}
+	if calls[0].Function.Arguments.Len() != 0 {
+		t.Fatalf("must not ship partial arguments, got %#v", calls[0].Function.Arguments)
+	}
+}
+
 func TestLagunaParserStandaloneJSONToolCall(t *testing.T) {
 	parser := ParserForName("laguna")
 	parser.Init(lagunaTestTools(), nil, nil)
@@ -106,6 +121,39 @@ func TestLagunaParserStandaloneJSONToolCall(t *testing.T) {
 	}
 	if calls[0].Function.Name != "get_weather" {
 		t.Fatalf("name=%q, want get_weather", calls[0].Function.Name)
+	}
+}
+
+func TestLagunaParserStandaloneJSONUndeclaredToolIsContent(t *testing.T) {
+	parser := ParserForName("laguna")
+	parser.Init(lagunaTestTools(), nil, nil)
+
+	raw := "{\"name\":\"not_a_tool\",\"arguments\":{\"x\":1}}"
+	content, thinking, calls, err := parser.Add(raw, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thinking != "" || len(calls) != 0 {
+		t.Fatalf("thinking=%q calls=%d, want content-only", thinking, len(calls))
+	}
+	if content != raw {
+		t.Fatalf("content=%q, want the JSON left as text", content)
+	}
+}
+
+func TestLagunaParserTaggedUndeclaredToolStillParses(t *testing.T) {
+	parser := ParserForName("laguna")
+	parser.Init(lagunaTestTools(), nil, nil)
+
+	content, thinking, calls, err := parser.Add("<tool_call>not_a_tool\n<arg_key>x</arg_key>\n<arg_value>1</arg_value>\n</tool_call>", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != "" || thinking != "" {
+		t.Fatalf("content=%q thinking=%q", content, thinking)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "not_a_tool" {
+		t.Fatalf("expected tagged undeclared call, got %#v", calls)
 	}
 }
 

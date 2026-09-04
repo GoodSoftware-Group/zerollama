@@ -50,3 +50,31 @@ func TestFormatHasGrammar(t *testing.T) {
 		t.Fatal("nil")
 	}
 }
+
+func TestFromChatRequest_JsonObjectAndFlatSchema(t *testing.T) {
+	obj, err := FromChatRequest(ChatCompletionRequest{
+		Model:          "m",
+		Messages:       []Message{{Role: "user", Content: "hi"}},
+		ResponseFormat: &ResponseFormat{Type: "json_object"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(obj.Format) != `"json"` {
+		t.Fatalf("json_object format=%s", obj.Format)
+	}
+	flat, err := FromChatRequest(ChatCompletionRequest{
+		Model:    "m",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		ResponseFormat: &ResponseFormat{
+			Type:   "json_schema",
+			Schema: json.RawMessage(`{"type":"object"}`),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(flat.Format) != `{"type":"object"}` {
+		t.Fatalf("flat schema format=%s", flat.Format)
+	}
+}

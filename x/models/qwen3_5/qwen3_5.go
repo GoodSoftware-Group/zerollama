@@ -978,7 +978,11 @@ func sanitizeConvWeight(w *mlx.Array) *mlx.Array {
 	return w
 }
 
-func shouldShiftNormKey(key string) bool {
+// Trunk RMSNorm +1.0 restoration (mlx-lm vs transformers layout).
+func shouldShiftTrunkNormKey(key string) bool {
+	if isMTPTensorName(key) {
+		return false
+	}
 	for _, suffix := range []string{
 		".input_layernorm.weight",
 		".post_attention_layernorm.weight",
@@ -993,11 +997,144 @@ func shouldShiftNormKey(key string) bool {
 	return false
 }
 
+// MTP RMSNorm suffixes (mtplx compressed_tensors #301). The +1.0 is a
+// set-level decision — never per tensor, never "any mtp.* exists".
+var (
+	mtpRMSNormLowSuffixes = []string{
+		"input_layernorm.weight",
+		"post_attention_layernorm.weight",
+		"pre_fc_norm_hidden.weight",
+		"pre_fc_norm_embedding.weight",
+	}
+	mtpRMSNormQKSuffixes = []string{
+		"self_attn.q_norm.weight",
+		"self_attn.k_norm.weight",
+	}
+)
+
+const (
+	mtpRMSNormQKDeltaMeanMax  = 1.25
+	mtpRMSNormLowDeltaMeanMax = 0.5
+)
+
+func isMTPTensorName(key string) bool {
+	return strings.Contains(key, "mtp.") || strings.HasPrefix(key, "draft.")
+}
+
+func isMTPFinalNormKey(key string) bool {
+	if key == "norm.weight" || key == "mtp.norm.weight" || strings.HasSuffix(key, ".mtp.norm.weight") {
+		return true
+	}
+	return isMTPTensorName(key) && strings.HasSuffix(key, ".norm.weight") &&
+		!strings.Contains(key, "layernorm") &&
+		!strings.Contains(key, "pre_fc_norm") &&
+		!strings.Contains(key, "q_norm") &&
+		!strings.Contains(key, "k_norm")
+}
+
+func shouldShiftMTPNormKey(key string) bool {
+	if !isMTPTensorName(key) {
+		return false
+	}
+	if isMTPFinalNormKey(key) {
+		return true
+	}
+	for _, suffix := range mtpRMSNormQKSuffixes {
+		if strings.HasSuffix(key, suffix) {
+			return true
+		}
+	}
+	for _, suffix := range mtpRMSNormLowSuffixes {
+		if strings.HasSuffix(key, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 func maybeShiftNormWeight(key string, w *mlx.Array, shouldShift bool) *mlx.Array {
-	if !shouldShift || w == nil || w.NumDims() != 1 || !shouldShiftNormKey(key) {
+	return maybeShiftNormWeightMatching(key, w, shouldShift, shouldShiftTrunkNormKey)
+}
+
+func maybeShiftMTPNormWeight(key string, w *mlx.Array, shouldShift bool) *mlx.Array {
+	return maybeShiftNormWeightMatching(key, w, shouldShift, shouldShiftMTPNormKey)
+}
+
+func maybeShiftNormWeightMatching(key string, w *mlx.Array, shouldShift bool, match func(string) bool) *mlx.Array {
+	if !shouldShift || w == nil || w.NumDims() != 1 || !match(key) {
 		return w
 	}
 	return mlx.AddScalar(w, 1.0)
+}
+
+func detectTrunkNormShift(tensors map[string]*mlx.Array) bool {
+	for name, t := range tensors {
+		if isMTPTensorName(name) {
+			continue
+		}
+		if strings.Contains(name, ".linear_attn.conv1d.weight") && t != nil && t.NumDims() == 3 && t.Dim(2) != 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func tensorMeanF32(w *mlx.Array) (float32, bool) {
+	if w == nil || w.NumDims() != 1 {
+		return 0, false
+	}
+	m := mlx.Mean(w.AsType(mlx.DTypeFloat32), 0, false)
+	mlx.Eval(m)
+	return float32(m.Float()), true
+}
+
+func mtpNormMeans(tensors map[string]*mlx.Array, suffixes []string) []float32 {
+	var means []float32
+	for name, w := range tensors {
+		if !isMTPTensorName(name) {
+			continue
+		}
+		matched := false
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(name, suffix) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		if mean, ok := tensorMeanF32(w); ok {
+			means = append(means, mean)
+		}
+	}
+	return means
+}
+
+// mtpNormsAreDeltaFromMeans is the two-signal gate (mtplx #301): both
+// separable families must agree, or the sidecar is treated as absolute so
+// nothing is blind-shifted.
+func mtpNormsAreDeltaFromMeans(qk, low []float32) bool {
+	if len(qk) == 0 || len(low) == 0 {
+		return false
+	}
+	maxQK := qk[0]
+	for _, v := range qk[1:] {
+		if v > maxQK {
+			maxQK = v
+		}
+	}
+	minLow := low[0]
+	for _, v := range low[1:] {
+		if v < minLow {
+			minLow = v
+		}
+	}
+	return maxQK < mtpRMSNormQKDeltaMeanMax && minLow < mtpRMSNormLowDeltaMeanMax
+}
+
+func mtpNormsAreDelta(tensors map[string]*mlx.Array) bool {
+	return mtpNormsAreDeltaFromMeans(mtpNormMeans(tensors, mtpRMSNormQKSuffixes), mtpNormMeans(tensors, mtpRMSNormLowSuffixes))
 }
 
 // LoadWeights assigns tensors to model fields.
@@ -1010,15 +1147,10 @@ func (m *Model) LoadWeights(tensors map[string]*mlx.Array) error {
 
 	linears := model.NewLinearFactory(tensors, cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode, cfg.TensorQuant)
 
-	shouldShiftNormWeights := false
-	for name, t := range tensors {
-		if strings.Contains(name, "mtp.") {
-			shouldShiftNormWeights = true
-			continue
-		}
-		if !shouldShiftNormWeights && strings.Contains(name, ".linear_attn.conv1d.weight") && t != nil && t.NumDims() == 3 && t.Dim(2) != 1 {
-			shouldShiftNormWeights = true
-		}
+	shouldShiftNormWeights := detectTrunkNormShift(tensors)
+	mtpShiftNormWeights := mtpNormsAreDelta(tensors)
+	if mtpShiftNormWeights {
+		slog.Info("qwen3.5 MTP norms are delta-encoded; restoring +1.0 convention")
 	}
 
 	embedTokens := model.MakeEmbeddingLayer(tensors, modelPrefix+"embed_tokens", cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode, cfg.TensorQuant)
@@ -1185,7 +1317,7 @@ func (m *Model) LoadWeights(tensors map[string]*mlx.Array) error {
 		}
 	}
 
-	if err := m.loadMTPHead(tensors, linears, shouldShiftNormWeights, useQuantizedExperts); err != nil {
+	if err := m.loadMTPHead(tensors, linears, mtpShiftNormWeights, useQuantizedExperts); err != nil {
 		slog.Warn("qwen3.5 MTP head not loaded; PLD/AR", "error", err)
 	}
 

@@ -20,6 +20,7 @@ import (
 	"github.com/ollama/ollama/auth"
 	internalcloud "github.com/ollama/ollama/internal/cloud"
 	"github.com/ollama/ollama/logutil"
+	"github.com/ollama/ollama/template"
 )
 
 // Error types matching Anthropic API
@@ -65,19 +66,25 @@ func NewError(code int, message string) ErrorResponse {
 
 // MessagesRequest represents an Anthropic Messages API request
 type MessagesRequest struct {
-	Model         string          `json:"model"`
-	MaxTokens     int             `json:"max_tokens"`
-	Messages      []MessageParam  `json:"messages"`
-	System        any             `json:"system,omitempty"` // string or []map[string]any (JSON-decoded ContentBlock)
-	Stream        bool            `json:"stream,omitempty"`
-	Temperature   *float64        `json:"temperature,omitempty"`
-	TopP          *float64        `json:"top_p,omitempty"`
-	TopK          *int            `json:"top_k,omitempty"`
-	StopSequences []string        `json:"stop_sequences,omitempty"`
-	Tools         []Tool          `json:"tools,omitempty"`
-	ToolChoice    *ToolChoice     `json:"tool_choice,omitempty"`
-	Thinking      *ThinkingConfig `json:"thinking,omitempty"`
-	Metadata      *Metadata       `json:"metadata,omitempty"`
+	Model          string                     `json:"model"`
+	MaxTokens      int                        `json:"max_tokens"`
+	Messages       []MessageParam             `json:"messages"`
+	System         any                        `json:"system,omitempty"` // string or []map[string]any (JSON-decoded ContentBlock)
+	Stream         bool                       `json:"stream,omitempty"`
+	Temperature    *float64                   `json:"temperature,omitempty"`
+	TopP           *float64                   `json:"top_p,omitempty"`
+	TopK           *int                       `json:"top_k,omitempty"`
+	StopSequences  []string                   `json:"stop_sequences,omitempty"`
+	Tools          []Tool                     `json:"tools,omitempty"`
+	ToolChoice     *ToolChoice                `json:"tool_choice,omitempty"`
+	Thinking       *ThinkingConfig            `json:"thinking,omitempty"`
+	OutputConfig   *OutputConfig              `json:"output_config,omitempty"`
+	Metadata       *Metadata                  `json:"metadata,omitempty"`
+	Compression    *api.ChatCompressionConfig `json:"compression,omitempty"`
+	PromptCacheKey *string                    `json:"prompt_cache_key,omitempty"`
+	SessionID      *string                    `json:"session_id,omitempty"`
+	CacheReset     *bool                      `json:"cache_reset,omitempty"`
+	ExtraBody      json.RawMessage            `json:"extra_body,omitempty"`
 }
 
 // MessageParam represents a message in the request
@@ -191,6 +198,19 @@ type ThinkingConfig struct {
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
+// OutputConfig is Claude Code's newer thinking/format envelope (mlx-serve
+// honors these; ignoring them left thinking unbounded and JSON-schema as markdown).
+type OutputConfig struct {
+	Effort string        `json:"effort,omitempty"`
+	Format *OutputFormat `json:"format,omitempty"`
+}
+
+// OutputFormat is output_config.format (json_schema / json_object).
+type OutputFormat struct {
+	Type   string          `json:"type"`
+	Schema json.RawMessage `json:"schema,omitempty"`
+}
+
 // Metadata for the request
 type Metadata struct {
 	UserID string `json:"user_id,omitempty"`
@@ -212,10 +232,11 @@ type MessagesResponse struct {
 
 // Usage contains token usage information
 type Usage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	InputTokens              int                      `json:"input_tokens"`
+	OutputTokens             int                      `json:"output_tokens"`
+	CacheReadInputTokens     int                      `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int                      `json:"cache_creation_input_tokens,omitempty"`
+	Compression              *api.ChatCompressionMeta `json:"compression_meta,omitempty"`
 }
 
 // Streaming event types
@@ -270,10 +291,11 @@ type MessageDelta struct {
 
 // DeltaUsage contains cumulative token usage
 type DeltaUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	InputTokens              int                      `json:"input_tokens"`
+	OutputTokens             int                      `json:"output_tokens"`
+	CacheReadInputTokens     int                      `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int                      `json:"cache_creation_input_tokens,omitempty"`
+	Compression              *api.ChatCompressionMeta `json:"compression_meta,omitempty"`
 }
 
 // MessageStopEvent signals the end of the message
@@ -295,6 +317,8 @@ type StreamErrorEvent struct {
 // FromMessagesRequest converts an Anthropic MessagesRequest to an Ollama api.ChatRequest
 func FromMessagesRequest(r MessagesRequest) (*api.ChatRequest, error) {
 	logutil.Trace("anthropic: converting request", "req", TraceMessagesRequest(r))
+	foldMessagesCompression(&r)
+	foldMessagesSessionCache(&r)
 
 	var messages []api.Message
 
@@ -350,6 +374,14 @@ func FromMessagesRequest(r MessagesRequest) (*api.ChatRequest, error) {
 	if len(r.StopSequences) > 0 {
 		options["stop"] = r.StopSequences
 	}
+	if r.PromptCacheKey != nil && strings.TrimSpace(*r.PromptCacheKey) != "" {
+		options["prompt_cache_key"] = strings.TrimSpace(*r.PromptCacheKey)
+	} else if r.SessionID != nil && strings.TrimSpace(*r.SessionID) != "" {
+		options["prompt_cache_key"] = strings.TrimSpace(*r.SessionID)
+	}
+	if r.CacheReset != nil && *r.CacheReset {
+		options["cache_reset"] = true
+	}
 
 	var tools api.Tools
 	hasBuiltinWebSearch := false
@@ -376,23 +408,141 @@ func FromMessagesRequest(r MessagesRequest) (*api.ChatRequest, error) {
 		tools = append(tools, tool)
 	}
 
+	forceTool := false
+	if r.ToolChoice != nil {
+		switch typ := strings.ToLower(strings.TrimSpace(r.ToolChoice.Type)); typ {
+		case "", "auto":
+		case "any":
+			forceTool = true
+		case "none":
+			tools = nil
+		case "tool":
+			name := strings.TrimSpace(r.ToolChoice.Name)
+			if name == "" {
+				return nil, fmt.Errorf("tool_choice.type=tool requires name")
+			}
+			tools = api.FilterToolsByName(tools, name)
+			if len(tools) == 0 {
+				return nil, fmt.Errorf("tool_choice names unknown function %q", name)
+			}
+			forceTool = true
+		default:
+			return nil, fmt.Errorf("unsupported tool_choice.type %q", r.ToolChoice.Type)
+		}
+	}
+	messages = api.AppendRequiredToolCallHint(messages, tools, forceTool)
+	messages = api.AppendOutputBudgetGuidance(messages, r.MaxTokens)
+
 	var think *api.ThinkValue
-	if r.Thinking != nil && r.Thinking.Type == "enabled" {
+	if r.Thinking != nil && strings.EqualFold(r.Thinking.Type, "disabled") {
+		think = &api.ThinkValue{Value: false}
+	} else if t := thinkFromOutputEffort(r.OutputConfig); t != nil {
+		think = t
+	} else if r.Thinking != nil && r.Thinking.Type == "enabled" {
 		think = &api.ThinkValue{Value: true}
 	}
 
 	stream := r.Stream
 	convertedRequest := &api.ChatRequest{
-		Model:    r.Model,
-		Messages: messages,
-		Options:  options,
-		Stream:   &stream,
-		Tools:    tools,
-		Think:    think,
+		Model:                r.Model,
+		Messages:             messages,
+		Options:              options,
+		Stream:               &stream,
+		Tools:                tools,
+		Think:                think,
+		Format:               formatFromOutputConfig(r.OutputConfig),
+		Compression:          r.Compression,
+		ContinueFinalMessage: template.ContinueFinalAllowed(messages),
+	}
+	if r.ToolChoice != nil && r.ToolChoice.DisableParallelToolUse {
+		off := false
+		convertedRequest.ParallelToolCalls = &off
 	}
 	logutil.Trace("anthropic: converted request", "req", TraceChatRequest(convertedRequest))
 
 	return convertedRequest, nil
+}
+
+func foldMessagesCompression(req *MessagesRequest) {
+	if req == nil || req.Compression != nil || len(req.ExtraBody) == 0 {
+		return
+	}
+	var extra struct {
+		Compression *api.ChatCompressionConfig `json:"compression"`
+	}
+	if json.Unmarshal(req.ExtraBody, &extra) == nil {
+		req.Compression = extra.Compression
+	}
+}
+
+func foldMessagesSessionCache(req *MessagesRequest) {
+	if req == nil || len(req.ExtraBody) == 0 {
+		return
+	}
+	var extra struct {
+		PromptCacheKey *string `json:"prompt_cache_key"`
+		SessionID      *string `json:"session_id"`
+		CacheReset     *bool   `json:"cache_reset"`
+	}
+	if json.Unmarshal(req.ExtraBody, &extra) != nil {
+		return
+	}
+	if req.PromptCacheKey == nil {
+		req.PromptCacheKey = extra.PromptCacheKey
+	}
+	if req.SessionID == nil {
+		req.SessionID = extra.SessionID
+	}
+	if req.CacheReset == nil {
+		req.CacheReset = extra.CacheReset
+	}
+}
+
+func thinkFromOutputEffort(oc *OutputConfig) *api.ThinkValue {
+	if oc == nil {
+		return nil
+	}
+	e := strings.ToLower(strings.TrimSpace(oc.Effort))
+	if e == "" {
+		return nil
+	}
+	switch e {
+	case "none", "off", "disabled":
+		return &api.ThinkValue{Value: false}
+	case "xhigh":
+		e = "max"
+	case "high", "medium", "low", "max":
+	default:
+		return &api.ThinkValue{Value: true}
+	}
+	return &api.ThinkValue{Value: e}
+}
+
+func formatFromOutputConfig(oc *OutputConfig) json.RawMessage {
+	if oc == nil || oc.Format == nil {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(oc.Format.Type)) {
+	case "json_object":
+		return json.RawMessage(`"json"`)
+	case "json_schema":
+		return unwrapJSONSchema(oc.Format.Schema)
+	default:
+		return nil
+	}
+}
+
+func unwrapJSONSchema(raw json.RawMessage) json.RawMessage {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	var wrap struct {
+		Schema json.RawMessage `json:"schema"`
+	}
+	if json.Unmarshal(raw, &wrap) == nil && len(bytes.TrimSpace(wrap.Schema)) > 0 {
+		return wrap.Schema
+	}
+	return raw
 }
 
 // convertMessage converts an Anthropic MessageParam to Ollama api.Message(s)
@@ -670,16 +820,18 @@ func ToMessagesResponse(id string, r api.ChatResponse) MessagesResponse {
 		})
 	}
 
-	stopReason := mapStopReason(r.DoneReason, len(r.Message.ToolCalls) > 0)
-
+	stopReason := mapStopReason(r.DoneReason, len(r.Message.ToolCalls) > 0, r.StopSequence)
+	u := usageFromMetrics(r.Metrics)
+	u.Compression = r.Compression
 	return MessagesResponse{
-		ID:         id,
-		Type:       "message",
-		Role:       "assistant",
-		Model:      r.Model,
-		Content:    content,
-		StopReason: stopReason,
-		Usage:      usageFromMetrics(r.Metrics),
+		ID:           id,
+		Type:         "message",
+		Role:         "assistant",
+		Model:        r.Model,
+		Content:      content,
+		StopReason:   stopReason,
+		StopSequence: r.StopSequence,
+		Usage:        u,
 	}
 }
 
@@ -703,16 +855,20 @@ func usageFromMetrics(m api.Metrics) Usage {
 }
 
 // mapStopReason converts Ollama done_reason to Anthropic stop_reason
-func mapStopReason(reason string, hasToolCalls bool) string {
+func mapStopReason(reason string, hasToolCalls bool, stopSequence string) string {
+	if strings.EqualFold(reason, "length") {
+		return "max_tokens"
+	}
 	if hasToolCalls {
 		return "tool_use"
+	}
+	if stopSequence != "" {
+		return "stop_sequence"
 	}
 
 	switch reason {
 	case "stop":
 		return "end_turn"
-	case "length":
-		return "max_tokens"
 	default:
 		if reason != "" {
 			return "stop_sequence"
@@ -957,20 +1113,22 @@ func (c *StreamConverter) Process(r api.ChatResponse) []StreamEvent {
 		c.outputTokens = u.OutputTokens
 		c.cacheReadTokens = u.CacheReadInputTokens
 		c.cacheCreationTokens = u.CacheCreationInputTokens
-		stopReason := mapStopReason(r.DoneReason, len(c.toolCallsSent) > 0)
+		stopReason := mapStopReason(r.DoneReason, len(c.toolCallsSent) > 0, r.StopSequence)
 
 		events = append(events, StreamEvent{
 			Event: "message_delta",
 			Data: MessageDeltaEvent{
 				Type: "message_delta",
 				Delta: MessageDelta{
-					StopReason: stopReason,
+					StopReason:   stopReason,
+					StopSequence: r.StopSequence,
 				},
 				Usage: DeltaUsage{
 					InputTokens:              c.inputTokens,
 					OutputTokens:             c.outputTokens,
 					CacheReadInputTokens:     c.cacheReadTokens,
 					CacheCreationInputTokens: c.cacheCreationTokens,
+					Compression:              r.Compression,
 				},
 			},
 		})

@@ -32,6 +32,7 @@ type ChatWriter struct {
 	streamOptions *openai.StreamOptions
 	id            string
 	toolCallSent  bool
+	lead          streamLeadHold
 	BaseWriter
 }
 
@@ -39,7 +40,61 @@ type CompleteWriter struct {
 	stream        bool
 	streamOptions *openai.StreamOptions
 	id            string
+	echo          bool
+	prompt        string
+	echoed        bool
+	lead          streamLeadHold
 	BaseWriter
+}
+
+// streamLeadHold is mlx-serve chat.streamContentLead: an all-whitespace first
+// stream chunk is held and prepended to the first real text so concatenated
+// SSE matches non-stream (FIM indent). A whitespace-only completion is flushed
+// on Done.
+type streamLeadHold struct {
+	held   string
+	closed bool
+}
+
+func entirelyWhitespace(s string) bool {
+	return s != "" && strings.TrimSpace(s) == ""
+}
+
+func (h *streamLeadHold) merge(text string, flush bool) (out string, skip bool) {
+	if h == nil {
+		return text, false
+	}
+	if h.closed {
+		return text, false
+	}
+	if entirelyWhitespace(text) {
+		h.held += text
+		if !flush {
+			return "", true
+		}
+	} else if text == "" && !flush {
+		return "", true
+	} else {
+		out = h.held + text
+		h.held = ""
+		h.closed = true
+		return out, false
+	}
+	h.closed = true
+	out = h.held
+	h.held = ""
+	return out, out == ""
+}
+
+func (w *CompleteWriter) applyEcho(r *api.GenerateResponse) {
+	if w == nil || r == nil || !w.echo || w.echoed {
+		return
+	}
+	if r.Response == "" && !r.Done {
+		return
+	}
+	r.Response = w.prompt + r.Response
+	w.echoed = true
 }
 
 type ListWriter struct {
@@ -106,6 +161,15 @@ func (w *ChatWriter) writeResponse(data []byte) (int, error) {
 
 	// chat chunk
 	if w.stream {
+		if chatResponse.Message.Thinking != "" || len(chatResponse.Message.ToolCalls) > 0 {
+			w.lead.closed = true
+		} else {
+			merged, skip := w.lead.merge(chatResponse.Message.Content, chatResponse.Done)
+			if skip && !chatResponse.Done {
+				return len(data), nil
+			}
+			chatResponse.Message.Content = merged
+		}
 		chunks := openai.ToChunks(w.id, chatResponse, w.toolCallSent)
 		w.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 		for _, c := range chunks {
@@ -189,6 +253,12 @@ func (w *CompleteWriter) writeResponse(data []byte) (int, error) {
 
 	// completion chunk
 	if w.stream {
+		w.applyEcho(&generateResponse)
+		merged, skip := w.lead.merge(generateResponse.Response, generateResponse.Done)
+		if skip && !generateResponse.Done {
+			return len(data), nil
+		}
+		generateResponse.Response = merged
 		c := openai.ToCompleteChunk(w.id, generateResponse)
 		if w.streamOptions != nil && w.streamOptions.IncludeUsage {
 			c.Usage = &openai.Usage{}
@@ -229,6 +299,7 @@ func (w *CompleteWriter) writeResponse(data []byte) (int, error) {
 
 	// completion
 	w.ResponseWriter.Header().Set("Content-Type", "application/json")
+	w.applyEcho(&generateResponse)
 	err = json.NewEncoder(w.ResponseWriter).Encode(openai.ToCompletion(w.id, generateResponse))
 	if err != nil {
 		return 0, err
@@ -357,8 +428,12 @@ func RetrieveMiddleware() gin.HandlerFunc {
 
 func CompletionsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var req openai.CompletionRequest
-		err := c.ShouldBindJSON(&req)
+		body, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		req, err := openai.BindCompletionRequest(body)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 			return
@@ -383,6 +458,8 @@ func CompletionsMiddleware() gin.HandlerFunc {
 			stream:        req.Stream,
 			id:            fmt.Sprintf("cmpl-%d", rand.Intn(999)),
 			streamOptions: req.StreamOptions,
+			echo:          req.Echo,
+			prompt:        req.Prompt,
 		}
 
 		c.Writer = w
@@ -533,6 +610,16 @@ func (w *ResponsesWriter) writeResponse(data []byte) (int, error) {
 				return 0, err
 			}
 		}
+		// mlx-serve: Responses SSE ends with data: [DONE] so proxies that
+		// key stream-end off the chat/completions sentinel still work.
+		if chatResponse.Done {
+			if _, err := w.ResponseWriter.Write([]byte("data: [DONE]\n\n")); err != nil {
+				return 0, err
+			}
+			if f, ok := w.ResponseWriter.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
 		return len(data), nil
 	}
 
@@ -667,8 +754,14 @@ func ImageGenerationsMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		genReq, err := openai.FromImageGenerationRequest(req)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+
 		var b bytes.Buffer
-		if err := json.NewEncoder(&b).Encode(openai.FromImageGenerationRequest(req)); err != nil {
+		if err := json.NewEncoder(&b).Encode(genReq); err != nil {
 			c.AbortWithStatusJSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
 			return
 		}

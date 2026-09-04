@@ -384,20 +384,34 @@ func collect(v reflect.Value, arrays *[]*Array, seen map[uintptr]bool) {
 	}
 }
 
-// FreeStruct releases all *Array fields in a struct (recursively).
-// Use this to free model weights when unloading a model.
+// FreeStruct marks all *Array fields for cleanup on the next Eval().
 func FreeStruct(v any) {
 	for _, arr := range Collect(v) {
 		arr.Free()
 	}
 }
 
-// ReleaseStruct detaches and releases all *Array fields in a struct (recursively).
-// Prefer this over FreeStruct when unloading model weights that may share MLX graph refs.
+// ReleaseStruct immediately frees all *Array fields in a struct (recursively).
+// Prefer ReleaseWeights when intermediates or a compile cache may still
+// hold graph references to those arrays.
 func ReleaseStruct(v any) {
 	for _, arr := range Collect(v) {
 		arr.Release()
 	}
+}
+
+// ReleaseWeights drops unkept graph holders, then frees model *Array fields.
+// WHY this order: mlx_array_free is enough once no other handle shares the
+// ArrayDesc. Freeing weights first (and detaching) papered over leftover
+// compile-trace wrappers and Eval intermediates that still listed the weights
+// as inputs. Eval already detaches after materialize; we just have to drop
+// those holders before delete.
+func ReleaseWeights(v any) {
+	syncStreams()
+	ClearCompileCache()
+	suppressCleanup = false
+	cleanup()
+	ReleaseStruct(v)
 }
 
 // ReleaseAll releases all arrays tracked by this package.
@@ -452,14 +466,13 @@ func ResumeCleanup() int {
 	return cleanup()
 }
 
-// freeArray frees the MLX array handle. Detach graph links first so shared
-// ArrayDesc refs drop to zero before the buffer is released.
+// freeArray deletes the C wrapper. The last shared_ptr to ArrayDesc runs
+// MLX's cycle-aware destructor; eval already detached the graph.
 func freeArray(a *Array) {
 	if a == nil || a.freed || a.c.ctx == nil {
 		return
 	}
 	C.mlx_synchronize(C.default_stream())
-	C.mlx_go_array_detach(a.c)
 	C.mlx_array_free(a.c)
 	a.c.ctx = nil
 	a.freed = true
@@ -524,7 +537,6 @@ func UntrackWeights(v any) {
 }
 
 // Release untracks and immediately frees an array's GPU/CPU buffer.
-// Detach clears sibling graph links so shared ArrayDesc refs drop to zero.
 func (a *Array) Release() {
 	if a == nil || a.freed || a.c.ctx == nil {
 		return
@@ -848,20 +860,17 @@ func ForceEval(outputs ...*Array) []*Array {
 	return outputs
 }
 
-// AsyncEval dispatches async evaluation and cleans up non-kept arrays.
-// Outputs are automatically kept (survive cleanup).
+// AsyncEval dispatches evaluation without waiting, then drops unkept arrays.
+// Outputs are kept. Do not cleanup before mlx_async_eval: the tape is built
+// from the C wrappers still in the vector. After submit, ArrayDesc copies on
+// the tape keep buffers alive until the GPU finishes.
 func AsyncEval(outputs ...*Array) {
-	// Keep outputs so cleanup doesn't free them
 	for _, o := range outputs {
 		if o != nil {
 			o.kept = true
 		}
 	}
 
-	// Cleanup non-kept arrays
-	cleanup()
-
-	// Then dispatch async eval
 	if len(outputs) > 0 {
 		evalHandles = evalHandles[:0]
 		for _, o := range outputs {
@@ -875,6 +884,8 @@ func AsyncEval(outputs ...*Array) {
 			C.mlx_vector_array_free(vec)
 		}
 	}
+
+	cleanup()
 }
 
 // syncStreams waits for both GPU and CPU MLX streams.

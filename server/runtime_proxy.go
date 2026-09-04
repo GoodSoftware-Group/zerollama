@@ -114,6 +114,7 @@ func forwardRuntimeNDJSON(
 	c *gin.Context,
 	path string,
 	payload map[string]any,
+	compressionMeta *api.ChatCompressionMeta,
 ) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -148,7 +149,10 @@ func forwardRuntimeNDJSON(
 
 	c.Header("Content-Type", "application/x-ndjson")
 	c.Status(http.StatusOK)
-	if err := copyRuntimeResponseBody(c.Writer, resp.Body); err != nil {
+	if compressionMeta != nil {
+		c.Header("X-Zerollama-Compressed", "1")
+	}
+	if err := copyRuntimeNDJSONWithChatCompression(c.Writer, resp.Body, compressionMeta); err != nil {
 		metricsIncRequestResult("error")
 		return err
 	}

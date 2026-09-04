@@ -61,6 +61,38 @@ func TestDeepSeekParser(t *testing.T) {
 			hasThinking: false,
 		},
 		{
+			name:            "missing_tool_call_end_on_done",
+			input:           "I'll check the weather.<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>get_weather<｜tool▁sep｜>{\"location\":\"Paris\"}",
+			expectedContent: "I'll check the weather.",
+			expectedCalls: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Index: 0,
+						Name:  "get_weather",
+						Arguments: testArgs(map[string]any{
+							"location": "Paris",
+						}),
+					},
+				},
+			},
+			hasThinking: false,
+		},
+		{
+			name:            "truncated_tool_json_on_done",
+			input:           "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>get_weather<｜tool▁sep｜>{\"location\":\"Par",
+			expectedContent: "",
+			expectedCalls: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Index:     0,
+						Name:      "get_weather",
+						Arguments: testArgs(map[string]any{}),
+					},
+				},
+			},
+			hasThinking: false,
+		},
+		{
 			name:            "multiple_tool_calls",
 			input:           "Getting weather for both cities.<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>get_weather<｜tool▁sep｜>{\"location\":\"Paris\"}<｜tool▁call▁end｜><｜tool▁call▁begin｜>get_weather<｜tool▁sep｜>{\"location\":\"London\"}<｜tool▁call▁end｜><｜tool▁calls▁end｜>",
 			expectedContent: "Getting weather for both cities.",

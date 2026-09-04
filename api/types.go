@@ -237,6 +237,10 @@ type GenerateRequest struct {
 
 	// ChatTemplateKwargs carries template knobs. Unknown nested keys are rejected (trap 07/77).
 	ChatTemplateKwargs map[string]any `json:"chat_template_kwargs,omitempty"`
+
+	EnablePLD     *bool `json:"enable_pld,omitempty"`
+	EnableMTP     *bool `json:"enable_mtp,omitempty"`
+	EnableDrafter *bool `json:"enable_drafter,omitempty"`
 }
 
 // ChatRequest describes a request sent by [Client.Chat].
@@ -303,6 +307,66 @@ type ChatRequest struct {
 	// chat_template_kwargs rather than an explicit think / reasoning_effort field.
 	// Non-thinking models ignore alias-only Think instead of HTTP 400 (minefield ceiling probes).
 	ThinkFromAlias bool `json:"-"`
+
+	// Compression is LA22 opt-in chat history compression (LocalAI-style).
+	Compression *ChatCompressionConfig `json:"compression,omitempty"`
+
+	// ContinueFinalMessage extends a trailing assistant message instead of
+	// starting a new turn (mlx-serve continue_final_message). Ignored unless
+	// the last message is assistant, has content, and has no tool calls.
+	ContinueFinalMessage bool `json:"continue_final_message,omitempty"`
+
+	// EnablePLD / EnableMTP are mlx-serve per-request spec overrides.
+	// Nil keeps process defaults (PLD on unless ZEROLLAMA_MLX_PLD=off; MTP if a draft head loaded).
+	EnablePLD     *bool `json:"enable_pld,omitempty"`
+	EnableMTP     *bool `json:"enable_mtp,omitempty"`
+	EnableDrafter *bool `json:"enable_drafter,omitempty"`
+
+	// ParallelToolCalls is OpenAI parallel_tool_calls. Nil = allow many.
+	// false keeps the first tool call only (mlx-serve).
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
+}
+
+// ChatCompressionConfig is per-request context compression. Agent tool/think
+// threads auto-elide; summary mode is opt-in. Set enabled=false to disable.
+type ChatCompressionConfig struct {
+	Enabled        *bool   `json:"enabled,omitempty"`
+	TriggerAtRatio float64 `json:"trigger_at_ratio,omitempty"`
+	KeepTailTokens int     `json:"keep_tail_tokens,omitempty"`
+	// Mode is "summary", "placeholder", or empty for auto.
+	Mode                      string `json:"mode,omitempty"`
+	MaxSummaryTokens          int    `json:"max_summary_tokens,omitempty"`
+	CompressorModel           string `json:"compressor_model,omitempty"`
+	OnPostCompressionOverflow string `json:"on_post_compression_overflow,omitempty"`
+	// ElideFrom is a 0-based index into this request's messages. Placeholder
+	// mode elides tools/thinking from that index through the last head turn
+	// before newest-first overflow. Echo ChatCompressionMeta.ElideFrom on the
+	// next append-only agent turn so restored full tool bodies cannot split
+	// prefix KV (FreeToken sticky suffix).
+	ElideFrom *int `json:"elide_from,omitempty"`
+}
+
+// ChatCompressionMeta is returned after a compression pass (native + OpenAI usage.compression_meta).
+type ChatCompressionMeta struct {
+	OriginalTokens     int    `json:"original_tokens"`
+	CompressedTokens   int    `json:"compressed_tokens"`
+	DroppedTurns       int    `json:"dropped_turns"`
+	Compressor         string `json:"compressor"`
+	SummaryTokens      int    `json:"summary_tokens"`
+	OverflowRecoveries int    `json:"overflow_recoveries,omitempty"`
+	// PrefixReuseTokens is the exact token prefix still shared with the
+	// pre-compression prompt. Placeholder newest-first elide can keep early
+	// tools; summary keep-tail only reuses system/developer messages.
+	PrefixReuseTokens int `json:"prefix_reuse_tokens,omitempty"`
+	// RecomputeTokens is the suffix that must be re-prefilled after the
+	// longest exact message prefix (summary+tail for keep-tail summary mode).
+	RecomputeTokens int `json:"recompute_tokens,omitempty"`
+	// Mode echoes the compression strategy used ("summary" or "placeholder").
+	Mode string `json:"mode,omitempty"`
+	// ElideFrom is the smallest index in this request's messages that was
+	// elided or peeled (not counting Modelfile/system prepend on /api/chat).
+	// Clients that only append turns should send it back as compression.elide_from.
+	ElideFrom int `json:"elide_from,omitempty"`
 }
 
 type Tools []Tool
@@ -745,6 +809,9 @@ type TokenLogprob struct {
 
 	// Bytes contains the raw byte representation of the token
 	Bytes []int `json:"bytes,omitempty"`
+
+	// ID is the vocab id when known (mlx-serve: ids travel WITH values).
+	ID *int `json:"id,omitempty"`
 }
 
 // Logprob contains log probability information for a generated token.
@@ -785,6 +852,12 @@ type ChatResponse struct {
 	// scheduler eviction so partial tool calls are not acted on as final.
 	PreemptedReason string `json:"preempted_reason,omitempty"`
 
+	// FinishDetails is mlx-serve loop-stop (`repetition_loop`). OpenAI finish_reason stays length.
+	FinishDetails *FinishDetails `json:"finish_details,omitempty"`
+
+	// StopSequence is the matched request stop string (Anthropic `/v1/messages` echo).
+	StopSequence string `json:"stop_sequence,omitempty"`
+
 	// PromptTruncated is true when input was shortened to fit num_ctx
 	// (chatPrompt tail-trim and/or runner token trim / runtime context-shift detect).
 	// Why on API: logs showed truncation while clients got silent 200 responses;
@@ -811,6 +884,9 @@ type ChatResponse struct {
 	// Logprobs contains log probability information for the generated tokens,
 	// if requested via the Logprobs parameter.
 	Logprobs []Logprob `json:"logprobs,omitempty"`
+
+	// Compression is set when history was rewritten (summary or placeholder elide).
+	Compression *ChatCompressionMeta `json:"compression,omitempty"`
 
 	Metrics
 }
@@ -869,6 +945,8 @@ type Options struct {
 	PresencePenalty  float32  `json:"presence_penalty,omitempty"`
 	FrequencyPenalty float32  `json:"frequency_penalty,omitempty"`
 	Stop             []string `json:"stop,omitempty"`
+	// LogitBias adds a constant to listed vocab ids before sampling (OpenAI logit_bias).
+	LogitBias map[int32]float32 `json:"logit_bias,omitempty"`
 }
 
 // Runner options which must be set when the model is loaded into memory
@@ -998,6 +1076,34 @@ type ScoreResponse struct {
 	Candidates []CandidateScore `json:"candidates"`
 }
 
+// RerankRequest is POST /v1/rerank (Jina) / TEI (`texts` alias for documents).
+type RerankRequest struct {
+	Model     string         `json:"model"`
+	Query     string         `json:"query"`
+	Documents []string       `json:"documents,omitempty"`
+	Texts     []string       `json:"texts,omitempty"`
+	TopN      int            `json:"top_n,omitempty"`
+	KeepAlive *Duration      `json:"keep_alive,omitempty"`
+	Options   map[string]any `json:"options"`
+}
+
+// RerankResult is one scored document (llama.cpp Jina shape).
+type RerankResult struct {
+	Index          int     `json:"index"`
+	RelevanceScore float64 `json:"relevance_score"`
+}
+
+// RerankResponse is POST /v1/rerank (Jina list object).
+type RerankResponse struct {
+	Model   string         `json:"model"`
+	Object  string         `json:"object"`
+	Results []RerankResult `json:"results"`
+	Usage   struct {
+		PromptTokens int `json:"prompt_tokens"`
+		TotalTokens  int `json:"total_tokens"`
+	} `json:"usage"`
+}
+
 // EmbeddingRequest is the request passed to [Client.Embeddings].
 type EmbeddingRequest struct {
 	// Model is the model name.
@@ -1118,6 +1224,7 @@ type ShowResponse struct {
 	ProjectorInfo map[string]any     `json:"projector_info,omitempty"`
 	Tensors       []Tensor           `json:"tensors,omitempty"`
 	Capabilities  []model.Capability `json:"capabilities,omitempty"`
+	SupportsMTP   bool               `json:"supports_mtp,omitempty"`
 	ModifiedAt    time.Time          `json:"modified_at,omitempty"`
 	Requires      string             `json:"requires,omitempty"`
 	// GgmlNumCtx is VRAM suggest for ggml models (M12); see scheduling-vram-policy.md.
@@ -1217,6 +1324,10 @@ type ListModelResponse struct {
 	Digest       string             `json:"digest"`
 	Details      ModelDetails       `json:"details,omitempty"`
 	Capabilities []model.Capability `json:"capabilities,omitempty"`
+	// SupportsMTP is true when the checkpoint ships a trained draft/MTP head
+	// (GGUF nextn, in-manifest mtp/config.json, or in-weight mtp.* / num_nextn).
+	// PLD-only models stay false. Gemma drafter/ sidecars stay false.
+	SupportsMTP bool `json:"supports_mtp,omitempty"`
 	// HostMaxContext is the largest num_ctx estimate that fits free VRAM/RAM on
 	// this host right now (loaded models credit their own footprint). Train/model
 	// ceiling remains Details.ContextLength. CLI shows a range when host < train.
@@ -1381,13 +1492,13 @@ type InferenceConfigStatus struct {
 
 // InferenceStatus summarizes local inference load for fleet management polling.
 type InferenceStatus struct {
-	Ggml     GgmlStatus            `json:"ggml"`
-	Runtime  RuntimeStatus         `json:"runtime"`
-	Backend  BackendPolicy         `json:"backend"`
-	Config   InferenceConfigStatus `json:"config"`
-	Pins     []PinStatus           `json:"pins,omitempty"`
-	Training *TrainingStatus       `json:"training,omitempty"`
-	HostMemory *HostMemoryStatus   `json:"host_memory,omitempty"`
+	Ggml       GgmlStatus            `json:"ggml"`
+	Runtime    RuntimeStatus         `json:"runtime"`
+	Backend    BackendPolicy         `json:"backend"`
+	Config     InferenceConfigStatus `json:"config"`
+	Pins       []PinStatus           `json:"pins,omitempty"`
+	Training   *TrainingStatus       `json:"training,omitempty"`
+	HostMemory *HostMemoryStatus     `json:"host_memory,omitempty"`
 }
 
 // HostMemoryStatus is cgroup RAM/swap pressure for GET /api/status (not host MemAvailable).
@@ -1449,6 +1560,32 @@ type CanLoadResponse struct {
 	TensorSplit    []float64 `json:"tensor_split,omitempty"`
 	MainGPU        int       `json:"main_gpu,omitempty"`
 	Notes          string    `json:"notes,omitempty"`
+}
+
+// LoadRequest is the body for POST /api/load (LA21 explicit prewarm).
+type LoadRequest struct {
+	Model     string         `json:"model"`
+	KeepAlive *Duration      `json:"keep_alive,omitempty"`
+	Options   map[string]any `json:"options,omitempty"`
+}
+
+// LoadResponse is returned after the runner is resident (or already was).
+type LoadResponse struct {
+	Model         string   `json:"model"`
+	Loaded        []string `json:"loaded"`
+	Message       string   `json:"message"`
+	AlreadyLoaded bool     `json:"already_loaded"`
+}
+
+// UnloadRequest is the body for POST /api/unload.
+type UnloadRequest struct {
+	Model string `json:"model"`
+}
+
+// UnloadResponse is returned after expireRunner (keep_alive:0 equivalent).
+type UnloadResponse struct {
+	Model   string `json:"model"`
+	Message string `json:"message"`
 }
 
 // PinRequest is the body for POST /api/pin (session eviction lease; does not load).
@@ -1517,12 +1654,12 @@ type CacheWarmRequest struct {
 
 // CacheWarmResponse is returned by POST /api/cache/warm.
 type CacheWarmResponse struct {
-	Warmed         bool           `json:"warmed"`
-	PromptCacheKey string         `json:"prompt_cache_key"`
-	KVDecodeSteps  *int           `json:"kv_decode_steps,omitempty"`
-	PinID          string         `json:"pin_id,omitempty"`
-	ExpiresAt      *time.Time     `json:"expires_at,omitempty"`
-	Notes          string         `json:"notes,omitempty"`
+	Warmed         bool       `json:"warmed"`
+	PromptCacheKey string     `json:"prompt_cache_key"`
+	KVDecodeSteps  *int       `json:"kv_decode_steps,omitempty"`
+	PinID          string     `json:"pin_id,omitempty"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	Notes          string     `json:"notes,omitempty"`
 }
 
 // ProposeLoadRequest is the body for POST /api/propose-load.
@@ -1604,6 +1741,12 @@ type GenerateResponse struct {
 	// WHY on the terminal chunk: Hermes must distinguish natural stop from
 	// scheduler eviction so partial tool calls are not acted on as final.
 	PreemptedReason string `json:"preempted_reason,omitempty"`
+
+	// FinishDetails is mlx-serve loop-stop (`repetition_loop`). OpenAI finish_reason stays length.
+	FinishDetails *FinishDetails `json:"finish_details,omitempty"`
+
+	// StopSequence is the matched request stop string (Anthropic `/v1/messages` echo).
+	StopSequence string `json:"stop_sequence,omitempty"`
 
 	// PromptTruncated is true when input was shortened to fit num_ctx
 	// (chatPrompt tail-trim and/or runner token trim / runtime context-shift detect).
@@ -1827,7 +1970,8 @@ func (opts *Options) FromMap(m map[string]any) error {
 			// from the raw Options map by the scheduler and ViT overlay).
 			switch key {
 			case "eliza", "prompt_cache_key", "cache_seed",
-				"zerollama", "keep_alive", "enable_prefix_mm_cache":
+				"zerollama", "keep_alive", "enable_prefix_mm_cache",
+				"enable_pld", "enable_mtp", "enable_drafter":
 			default:
 				slog.Warn("invalid option provided", "option", key)
 			}
@@ -1871,6 +2015,15 @@ func (opts *Options) FromMap(m map[string]any) error {
 					return fmt.Errorf("option %q must be of type array", key)
 				}
 				field.Set(reflect.ValueOf(slice))
+			case reflect.Map:
+				if key != "logit_bias" {
+					return fmt.Errorf("unknown type loading config params: %v", field.Kind())
+				}
+				parsed, err := ParseLogitBias(val)
+				if err != nil {
+					return fmt.Errorf("option %q: %w", key, err)
+				}
+				field.Set(reflect.ValueOf(parsed))
 			case reflect.Pointer:
 				var b bool
 				if field.Type() == reflect.TypeOf(&b) {
@@ -1922,10 +2075,25 @@ func DefaultOptions() Options {
 	}
 }
 
-// ThinkValue represents a value that can be a boolean or a string ("high", "medium", "low", "max")
+// ThinkValue represents a value that can be a boolean or a string
+// ("high", "medium", "low", "max", "xhigh"). xhigh is Qwen 3.8's native top effort.
 type ThinkValue struct {
 	// Value can be a bool or string
 	Value interface{}
+}
+
+func validThinkLevel(s string) bool {
+	switch s {
+	case "high", "medium", "low", "max", "xhigh":
+		return true
+	default:
+		return false
+	}
+}
+
+// FinishDetails names a stop that still uses finish_reason length (mlx-serve loop-stop).
+type FinishDetails struct {
+	Type string `json:"type"`
 }
 
 // IsValid checks if the ThinkValue is valid
@@ -1938,7 +2106,7 @@ func (t *ThinkValue) IsValid() bool {
 	case bool:
 		return true
 	case string:
-		return v == "high" || v == "medium" || v == "low" || v == "max"
+		return validThinkLevel(v)
 	default:
 		return false
 	}
@@ -1972,8 +2140,7 @@ func (t *ThinkValue) Bool() bool {
 	case bool:
 		return v
 	case string:
-		// Any string value ("high", "medium", "low", "max") means thinking is enabled
-		return v == "high" || v == "medium" || v == "low" || v == "max"
+		return validThinkLevel(v)
 	default:
 		return false
 	}
@@ -2011,14 +2178,14 @@ func (t *ThinkValue) UnmarshalJSON(data []byte) error {
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
 		// Validate string values
-		if s != "high" && s != "medium" && s != "low" && s != "max" {
-			return fmt.Errorf("invalid think value: %q (must be \"high\", \"medium\", \"low\", \"max\", true, or false)", s)
+		if !validThinkLevel(s) {
+			return fmt.Errorf("invalid think value: %q (must be \"high\", \"medium\", \"low\", \"max\", \"xhigh\", true, or false)", s)
 		}
 		t.Value = s
 		return nil
 	}
 
-	return fmt.Errorf("think must be a boolean or string (\"high\", \"medium\", \"low\", \"max\", true, or false)")
+	return fmt.Errorf("think must be a boolean or string (\"high\", \"medium\", \"low\", \"max\", \"xhigh\", true, or false)")
 }
 
 // MarshalJSON implements json.Marshaler

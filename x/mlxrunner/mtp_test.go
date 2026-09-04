@@ -143,6 +143,9 @@ type extendCall struct {
 func (d *fakeKVDraft) LoadWeights(map[string]*mlx.Array) error { return nil }
 
 func (d *fakeKVDraft) DraftCaches(caches []cache.Cache) []cache.Cache {
+	if len(caches) == 0 {
+		return nil
+	}
 	return caches[len(caches)-1:]
 }
 
@@ -324,6 +327,34 @@ func TestAcceptMTPDraftsGreedyMismatch(t *testing.T) {
 	}
 	if got := caches[0].Offset(); got != 2 {
 		t.Fatalf("cache offset = %d, want 2 (rolled back to accepted)", got)
+	}
+}
+
+func TestAcceptMTPDraftsBernoulliFallback(t *testing.T) {
+	skipIfNoMLX(t)
+	// Same mismatch as GreedyMismatch, but via Leviathan p/q. At T=0 a one-hot
+	// draft has q=1 so the ratio is 0/1 on the miss — identical cut.
+	t.Setenv("ZEROLLAMA_MLX_BATCHED_GREEDY_ACCEPT", "off")
+	predict := map[int32]int32{1: 2, 2: 3, 7: 0}
+	r := mtpTestRunner(t, predict, nil, sampler.Options{})
+
+	caches, _ := newMTPTestCaches(1)
+	candidates := scriptedCandidates(r, []int32{2, 7})
+
+	position := caches[0].Offset()
+	spec := testSpeculationSession(r, caches)
+	current := sampler.Result{Token: mlx.FromValues([]int32{1}, 1)}
+	unpin := pinAcceptInputs(current, candidates)
+	defer unpin()
+	results, accepted, observed, err := spec.accept(&position, current, candidates)
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if accepted != 1 || observed != 2 {
+		t.Fatalf("accepted = %d, observed = %d, want 1 and 2", accepted, observed)
+	}
+	if got := resultIDs(results); !slices.Equal(got, []int{2, 3}) {
+		t.Fatalf("results = %v, want [2 3]", got)
 	}
 }
 
@@ -625,7 +656,9 @@ func TestDecodePlain(t *testing.T) {
 	if final.DoneReason != 0 || final.EvalCount != 3 {
 		t.Fatalf("final DoneReason = %d, EvalCount = %d, want 0 (EOS) and 3", final.DoneReason, final.EvalCount)
 	}
-	if got := []int32{2, 3, 4, eos}; !slices.Equal(session.outputs, got) {
+	// Drain records the in-flight sample after EOS (predict[eos]=0); it is
+	// not streamed or counted.
+	if got := []int32{2, 3, 4, eos, 0}; !slices.Equal(session.outputs, got) {
 		t.Fatalf("session outputs = %v, want %v", session.outputs, got)
 	}
 

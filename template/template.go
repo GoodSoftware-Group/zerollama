@@ -206,6 +206,15 @@ func (t *Template) Contains(s string) bool {
 	return strings.Contains(t.raw, s)
 }
 
+// WrapFIM builds a fill-in-the-middle prompt (Qwen / mlx-serve FIM completions):
+// prefix, code before the hole, suffix token, code after, then middle.
+func WrapFIM(prompt, suffix string) string {
+	if suffix == "" {
+		return prompt
+	}
+	return "<|fim_prefix|>" + prompt + "<|fim_suffix|>" + suffix + "<|fim_middle|>"
+}
+
 type Values struct {
 	Messages []api.Message
 	api.Tools
@@ -281,9 +290,14 @@ func (t *Template) Execute(w io.Writer, v Values) error {
 		return err
 	}
 	if v.Prompt != "" && v.Suffix != "" {
+		prompt, suffix := v.Prompt, v.Suffix
+		if !t.Contains("Suffix") {
+			prompt = WrapFIM(v.Prompt, v.Suffix)
+			suffix = ""
+		}
 		return t.Template.Execute(w, map[string]any{
-			"Prompt":     v.Prompt,
-			"Suffix":     v.Suffix,
+			"Prompt":     prompt,
+			"Suffix":     suffix,
 			"Response":   "",
 			"Think":      v.Think,
 			"ThinkLevel": v.ThinkLevel,
@@ -497,26 +511,26 @@ type templateToolFunctionParameters struct {
 // templateToolCall is a template-compatible representation of api.ToolCall
 // with Arguments as a regular map for template ranging.
 type templateToolCall struct {
-	ID       string
-	Function templateToolCallFunction
+	ID       string                   `json:"id"`
+	Function templateToolCallFunction `json:"function"`
 }
 
 type templateToolCallFunction struct {
-	Index     int
-	Name      string
-	Arguments templateArgs
+	Index     int          `json:"index"`
+	Name      string       `json:"name"`
+	Arguments templateArgs `json:"arguments"`
 }
 
 // templateMessage is a template-compatible representation of api.Message
 // with ToolCalls converted for template use.
 type templateMessage struct {
-	Role       string
-	Content    string
-	Thinking   string
-	Images     []api.ImageData
-	ToolCalls  []templateToolCall
-	ToolName   string
-	ToolCallID string
+	Role       string             `json:"role"`
+	Content    string             `json:"content"`
+	Thinking   string             `json:"thinking,omitempty"`
+	Images     []api.ImageData    `json:"images,omitempty"`
+	ToolCalls  []templateToolCall `json:"tool_calls,omitempty"`
+	ToolName   string             `json:"name,omitempty"`
+	ToolCallID string             `json:"tool_call_id,omitempty"`
 }
 
 // convertToolsForTemplate converts Tools to template-compatible format.
@@ -551,17 +565,19 @@ func convertMessagesForTemplate(messages []*api.Message) []*templateMessage {
 		return nil
 	}
 	result := make([]*templateMessage, len(messages))
+	seq := 0
 	for i, msg := range messages {
 		var toolCalls []templateToolCall
 		for _, tc := range msg.ToolCalls {
 			toolCalls = append(toolCalls, templateToolCall{
-				ID: tc.ID,
+				ID: api.EnsureToolCallID(tc.ID, seq),
 				Function: templateToolCallFunction{
 					Index:     tc.Function.Index,
 					Name:      tc.Function.Name,
 					Arguments: templateArgs(tc.Function.Arguments.ToMap()),
 				},
 			})
+			seq++
 		}
 		result[i] = &templateMessage{
 			Role:       msg.Role,

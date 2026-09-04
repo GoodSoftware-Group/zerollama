@@ -52,7 +52,7 @@ Documented in depth in the operator guide. Summary for contributors:
 - **Defer** text encoder load until first `generate` when `mlx.GPUIsAvailable()`.
 - **Batch** weight materialization via `manifest/weights.go` → `mlx.EvalErrBatched(16, ...)`.
 - **Keep** mmap `SafetensorsFile` handles in `nativeCache` until `ReleaseAll()` — freeing after eval invalidates CUDA buffers.
-- **Free** text encoder before transformer load; call `mlx.ResumeCleanup()` to drop graph debris.
+- **Free** text encoder before transformer load via `mlx.ReleaseWeights` (drop unkept graph holders, then free).
 - **Keep** transformer weights between requests on CUDA (`freeTransformerWeights` no-op release).
 - **Decode** VAE in a **fresh CPU subprocess** after denoise on CUDA.
 

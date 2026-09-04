@@ -23,6 +23,21 @@ type Parser interface {
 	HasThinkingSupport() bool
 }
 
+// PromptSeeder is optional. Named parsers that own think/channel state seed
+// from the rendered prompt (mlx-serve promptOpensThink).
+type PromptSeeder interface {
+	SeedFromPrompt(prompt string)
+}
+
+func SeedFromPrompt(p Parser, prompt string) {
+	if p == nil {
+		return
+	}
+	if s, ok := p.(PromptSeeder); ok {
+		s.SeedFromPrompt(prompt)
+	}
+}
+
 type ParserConstructor func() Parser
 
 type ParserRegistry struct {

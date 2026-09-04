@@ -9,11 +9,11 @@ info:
     Live OpenAPI for this zerollama server.
 
     Includes the native Ollama `/api/*` surface plus OpenAI-compatible
-    `/v1/*` routes (chat, embeddings, images, audio speech/transcriptions,
+    `/v1/*` routes (chat, responses, Anthropic messages, embeddings, images, audio speech/transcriptions,
     voice catalog, and video generation).
 
-    LocalAI control plane (LA7/LA9/LA11/LA11b/LA15/LA17): `/api/repair`,
-    `/api/score`, `/api/router/*`, `/api/aliases`, experimental web_search/fetch.
+    LocalAI control plane (LA7/LA9/LA11/LA11b/LA15/LA16/LA17/LA21/LA22): `/api/repair`,
+    `/api/score`, `/v1/rerank`, `/api/router/*`, `/api/aliases`, `/api/load`, `/api/unload`, experimental web_search/fetch.
     In-band alias and router rewrite may set `X-Zerollama-*` response headers.
     Failed-load cooldown (LA18) returns 503 with `Retry-After`.
 
@@ -108,6 +108,13 @@ components:
           type: number
           format: float
           description: OpenAI-style penalty scaled by token frequency so far
+        logit_bias:
+          type: object
+          additionalProperties:
+            type: number
+          description: >
+            OpenAI logit_bias — map of token id (string) to additive logit.
+            Applied on MLX sampling and llama-server. Max 256 entries.
         num_keep:
           type: integer
           description: Tokens from the start of the prompt to always keep when context is truncated
@@ -641,6 +648,237 @@ components:
         top_logprobs:
           type: integer
           description: Number of most likely tokens to return at each token position when logprobs are enabled
+        compression:
+          $ref: "#/components/schemas/ChatCompressionConfig"
+        continue_final_message:
+          type: boolean
+          description: >
+            Extend a trailing assistant message instead of opening a new turn
+            (mlx-serve). Ignored unless the last message is assistant text
+            with no tool calls.
+    ChatCompressionConfig:
+      type: object
+      description: >
+        Chat history compression before prompt render. Same object on
+        `/api/chat`, `/v1/chat/completions`, `/v1/responses`, and `/v1/messages`
+        (also `extra_body.compression`). Agent threads with tool output or
+        thinking auto-enable `mode=placeholder`. `enabled: false` disables.
+        Summary mode is opt-in (`enabled` or `ZEROLLAMA_CHAT_COMPRESSION=1`).
+        Token counts are a byte-level upper bound. Cloud chat remains unsupported.
+      properties:
+        enabled:
+          type: boolean
+          description: Set false to disable auto-placeholder on agent threads
+        trigger_at_ratio:
+          type: number
+          description: >
+            Fraction of num_ctx that starts a new compression pass (default 0.75).
+            A sticky placeholder cut (elide_from or remembered prompt_cache_key)
+            still applies below this floor so a larger num_ctx cannot restore
+            already-elided tool bodies.
+        keep_tail_tokens:
+          type: integer
+          description: Summary mode only — newest tokens kept uncompressed (default 2048)
+        mode:
+          type: string
+          enum: [summary, placeholder]
+          description: >
+            Omit for auto. placeholder when the thread has tool output or thinking
+            (no extra flags). summary inserts a compressor message (needs enabled
+            or ZEROLLAMA_CHAT_COMPRESSION).
+        max_summary_tokens:
+          type: integer
+          description: Compressor NumPredict cap (default 512)
+        compressor_model:
+          type: string
+          description: Secondary GGUF; empty uses the chat model
+        on_post_compression_overflow:
+          type: string
+          enum: [error, drop_oldest_summary]
+          description: Default error → HTTP 413
+        elide_from:
+          type: integer
+          description: >
+            Echo ChatCompressionMeta.elide_from on the next append-only turn
+            (index into this request's messages, not Modelfile prepend).
+            Placeholder elides tools/thinking from this message index through
+            the last head turn even if the new request fits num_ctx (sticky
+            suffix so prefix KV is not split by restored tool bodies).
+            If omitted, a stable prompt_cache_key is enough: the server
+            remembers the last cut per model+key (30m, 256 keys).
+            cache_reset or a shorter history drops that memory.
+    ChatCompressionMeta:
+      type: object
+      properties:
+        original_tokens:
+          type: integer
+        compressed_tokens:
+          type: integer
+        dropped_turns:
+          type: integer
+        compressor:
+          type: string
+        summary_tokens:
+          type: integer
+        overflow_recoveries:
+          type: integer
+        prefix_reuse_tokens:
+          type: integer
+          description: >
+            Exact prefix still shared with the pre-compression prompt.
+            Placeholder newest-first elide can keep early tool bodies; summary
+            keep-tail only reuses system/developer messages.
+        recompute_tokens:
+          type: integer
+          description: Tokens after the longest exact message prefix; must be re-prefilled.
+        mode:
+          type: string
+          description: summary or placeholder
+        elide_from:
+          type: integer
+          description: >
+            Smallest index in this request's messages that was elided or peeled
+            (not Modelfile/system prepend). Echo as compression.elide_from.
+    AnthropicMessagesRequest:
+      type: object
+      additionalProperties: true
+      required: [model, max_tokens, messages]
+      description: Anthropic Messages API body. compression is a zerollama extension.
+      properties:
+        model:
+          type: string
+        max_tokens:
+          type: integer
+        messages:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: >
+            A trailing assistant text turn (no tool_use) is continued
+            (mlx-serve infer). User-last is a new turn.
+        stream:
+          type: boolean
+        prompt_cache_key:
+          type: string
+          description: Also extra_body.prompt_cache_key; pins L3 and server sticky elide_from
+        compression:
+          $ref: "#/components/schemas/ChatCompressionConfig"
+        extra_body:
+          type: object
+          additionalProperties: true
+          description: Nested compression / prompt_cache_key / cache_reset are folded like Chat Completions extra_body
+    AnthropicMessagesResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        role:
+          type: string
+        content:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        usage:
+          type: object
+          additionalProperties: true
+          properties:
+            input_tokens:
+              type: integer
+            output_tokens:
+              type: integer
+            compression_meta:
+              $ref: "#/components/schemas/ChatCompressionMeta"
+    OpenAIResponsesRequest:
+      type: object
+      additionalProperties: true
+      required: [model]
+      description: OpenAI Responses API body. compression is a zerollama extension.
+      properties:
+        model:
+          type: string
+        input:
+          description: String or array of input items
+        stream:
+          type: boolean
+          description: >
+            SSE. Ends with data: [DONE] after response.completed (mlx-serve).
+        background:
+          type: boolean
+          description: >
+            OpenAI async mode. Must be omitted or false — 400 if true (no
+            response store / poll). mlx-serve same.
+        previous_response_id:
+          type: string
+          description: >
+            Stateful chain. 400 if set (no response store); send full input.
+        include:
+          type: array
+          items:
+            type: string
+          description: >
+            Extra output parts. Any non-empty value is 400 (no encrypted
+            reasoning or file_search extras).
+        max_tool_calls:
+          type: integer
+          description: >
+            Must be omitted or at least 1. 1 keeps a single tool call
+            (same as parallel_tool_calls false).
+        reasoning_budget_tokens:
+          type: integer
+          description: >
+            mlx-serve think opt-in. 0 off, greater than 0 on. Outranks
+            reasoning.effort. Not a generation token cap.
+        truncation:
+          type: string
+          description: >
+            Must be omitted or disabled. auto is 400 (overflow is a named 400).
+        prompt_cache_key:
+          type: string
+          description: Also extra_body.prompt_cache_key; pins L3 and server sticky elide_from
+        compression:
+          $ref: "#/components/schemas/ChatCompressionConfig"
+        extra_body:
+          type: object
+          additionalProperties: true
+        text:
+          type: object
+          additionalProperties: true
+          description: >
+            format.type json_object constrains JSON like chat. json_schema
+            accepts nested json_schema.schema or a flat schema field.
+    OpenAIResponsesResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        status:
+          type: string
+        output:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        usage:
+          type: object
+          additionalProperties: true
+          properties:
+            input_tokens:
+              type: integer
+            output_tokens:
+              type: integer
+            compression_meta:
+              $ref: "#/components/schemas/ChatCompressionMeta"
+        prompt_cache_key:
+          type: string
+          description: Echo of the request thread key (top-level or extra_body)
     ChatResponse:
       type: object
       properties:
@@ -677,6 +915,8 @@ components:
         done:
           type: boolean
           description: Indicates whether the chat response has finished
+        compression:
+          $ref: "#/components/schemas/ChatCompressionMeta"
         done_reason:
           type: string
           description: >
@@ -1198,10 +1438,61 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CandidateScore"
+    RerankRequest:
+      type: object
+      required: [model, query]
+      description: Jina-style rerank (LA16). `texts` is the TEI alias for `documents`.
+      properties:
+        model:
+          type: string
+        query:
+          type: string
+        documents:
+          type: array
+          items:
+            type: string
+        texts:
+          type: array
+          items:
+            type: string
+        top_n:
+          type: integer
+        keep_alive:
+          oneOf:
+            - type: string
+            - type: number
+        options:
+          type: object
+          additionalProperties: true
+    RerankResult:
+      type: object
+      properties:
+        index:
+          type: integer
+        relevance_score:
+          type: number
+    RerankResponse:
+      type: object
+      properties:
+        model:
+          type: string
+        object:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/RerankResult"
+        usage:
+          type: object
+          properties:
+            prompt_tokens:
+              type: integer
+            total_tokens:
+              type: integer
     RouterDecideRequest:
       type: object
       required: [router]
-      description: Pick a specialist from a named router policy (LA11 score or LA11b KNN).
+      description: Pick a specialist from a named router policy (LA11 score, LA11b KNN, or LA16 rerank/colbert).
       properties:
         router:
           type: string
@@ -1217,6 +1508,8 @@ components:
         label:
           type: string
         log_prob:
+          type: number
+        relevance_score:
           type: number
         softmax:
           type: number
@@ -1605,6 +1898,50 @@ components:
           description: Primary GPU index from runtime config
         notes:
           type: string
+    LoadRequest:
+      type: object
+      required: [model]
+      description: Prewarm a local model until the runner is resident (LA21). Does not generate.
+      properties:
+        model:
+          type: string
+        keep_alive:
+          oneOf:
+            - type: string
+            - type: number
+          description: How long to keep the runner after this call (same as generate)
+        options:
+          type: object
+          additionalProperties: true
+    LoadResponse:
+      type: object
+      properties:
+        model:
+          type: string
+        loaded:
+          type: array
+          items:
+            type: string
+          description: Names actually resident after the call
+        message:
+          type: string
+        already_loaded:
+          type: boolean
+          description: True if /api/ps already listed the model before this call
+    UnloadRequest:
+      type: object
+      required: [model]
+      description: Expire a resident runner. Use model, not model_id or id.
+      properties:
+        model:
+          type: string
+    UnloadResponse:
+      type: object
+      properties:
+        model:
+          type: string
+        message:
+          type: string
     ProposeLoadRequest:
       type: object
       required: [models]
@@ -1869,11 +2206,39 @@ components:
           maxItems: 8
           items:
             $ref: "#/components/schemas/ChatCompletionBatchItem"
-    ChatCompletionBatchItem:
+    ChatCompletionUsage:
       type: object
       description: >
-        Same shape as a single /v1/chat/completions JSON body (object=
-        chat.completion). Optional zerollama extension `vram_num_ctx` may appear.
+        OpenAI usage plus zerollama compression_meta (same object as native
+        ChatResponse.compression). Echo elide_from on the next append-only turn.
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+        prompt_tokens_details:
+          type: object
+          properties:
+            cached_tokens:
+              type: integer
+            created_cache_tokens:
+              type: integer
+            image_tokens:
+              type: integer
+            audio_tokens:
+              type: integer
+            video_tokens:
+              type: integer
+        compression_meta:
+          $ref: "#/components/schemas/ChatCompressionMeta"
+    ChatCompletion:
+      type: object
+      description: >
+        Non-stream POST /v1/chat/completions body. Stream=true is SSE
+        (chat.completion.chunk); final chunk may include usage when
+        stream_options.include_usage is set.
       required: [id, object, created, model, choices]
       properties:
         id:
@@ -1891,30 +2256,68 @@ components:
           type: array
           items:
             type: object
-            required: [index, message, finish_reason]
             properties:
               index:
                 type: integer
               message:
                 type: object
-                required: [role, content]
-                properties:
-                  role:
-                    type: string
-                  content:
-                    type: string
-                    nullable: true
+                additionalProperties: true
               finish_reason:
                 type: string
-                description: Typically "stop" (batch is text-only; no tool_calls)
+              finish_details:
+                type: object
+                additionalProperties: true
+              logprobs:
+                type: object
+                additionalProperties: true
         usage:
+          $ref: "#/components/schemas/ChatCompletionUsage"
+        sglext:
           type: object
           additionalProperties: true
-        vram_num_ctx:
-          type: object
-          additionalProperties: true
-          description: Optional zerollama clamp visibility extension
+          description: SGLang-shaped cache tier breakdown (cached_tokens_details)
       additionalProperties: true
+    ChatCompletionChunk:
+      type: object
+      description: >
+        One SSE `data:` object when stream=true (object=chat.completion.chunk).
+        With stream_options.include_usage the last chunk before [DONE] has
+        empty choices and usage (compression_meta when a compression pass ran).
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: [chat.completion.chunk]
+        created:
+          type: integer
+        model:
+          type: string
+        system_fingerprint:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        usage:
+          $ref: "#/components/schemas/ChatCompletionUsage"
+        sglext:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+    ChatCompletionBatchItem:
+      allOf:
+        - $ref: "#/components/schemas/ChatCompletion"
+        - type: object
+          properties:
+            vram_num_ctx:
+              type: object
+              additionalProperties: true
+              description: Optional zerollama clamp visibility extension
+      description: >
+        Same shape as a single /v1/chat/completions JSON body. Optional
+        zerollama extension `vram_num_ctx` may appear.
     TokenLogprob:
       type: object
       description: Log probability information for a single token alternative
@@ -2090,7 +2493,9 @@ components:
           additionalProperties: true
           description: >
             Backend options. Wan: frames, steps, media_session, keyframes (label list
-            after PUT /v1/media/{session}/{label}). H3 T2VA: layers (DiT depth, default 24,
+            after PUT /v1/media/{session}/{label}). LTX MLX: first_frame_image or
+            keyframes[0] is I2V `--image`; last_frame_image or a second still is 400
+            (no last-frame VAE in community ltx-mlx). H3 T2VA: layers (DiT depth, default 24,
             cap 50; host 50 is rank-1 gray). WHY labels not inline bytes: keep
             create JSON small; CAS + media_missing recovery — docs/media-uploads.md.
     MediaPutResponse:
@@ -2135,7 +2540,9 @@ components:
       required: [model, messages]
       description: >
         OpenAI-compatible chat. Zerollama extensions (M15c/M15e): think, keep_alive,
-        timeout, options/zerollama QoS, prompt_cache_key. Why bind think: allowlisting
+        timeout, options/zerollama QoS, prompt_cache_key, compression (also
+        extra_body.compression). Response usage.compression_meta echoes the pass
+        (`elide_from` for the next append-only turn). Why bind think: allowlisting
         alone silently dropped Hermes `think` under trap 77.
       properties:
         model:
@@ -2147,19 +2554,93 @@ components:
             additionalProperties: true
         stream:
           type: boolean
+        stream_options:
+          type: object
+          properties:
+            include_usage:
+              type: boolean
+              description: >
+                Final SSE chunk carries usage (including compression_meta).
+                Required for streaming clients that echo elide_from.
         temperature:
           type: number
+        top_p:
+          type: number
+        top_k:
+          type: integer
+          description: Local-server sampling (mlx-serve / llama.cpp / vLLM). Omitted uses generation_config.
+        repetition_penalty:
+          type: number
+          description: Maps to Ollama repeat_penalty. Omitted uses generation_config.
+        repeat_penalty:
+          type: number
+          description: Ollama native name; same as repetition_penalty if that is omitted.
+        min_p:
+          type: number
+        typical_p:
+          type: number
+        max_completion_tokens:
+          type: integer
+          description: OpenAI alias for max_tokens. max_tokens wins if both are set.
         think:
           oneOf:
             - type: boolean
             - type: string
               enum: [high, medium, low]
           description: >
-            Native Ollama think knob. Precedence over reasoning_effort /
-            enable_thinking / chat_template_kwargs aliases.
+            Native Ollama think knob. Precedence over reasoning_budget_tokens /
+            reasoning_effort / enable_thinking / chat_template_kwargs aliases.
+        reasoning_budget_tokens:
+          type: integer
+          description: >
+            mlx-serve think opt-in. 0 off, greater than 0 on. Outranks
+            reasoning_effort and enable_thinking. Not a generation token cap.
         enable_thinking:
           type: boolean
           description: Harness alias (vLLM/SGLang); mapped to Think when Think unset
+        continue_final_message:
+          type: boolean
+          description: >
+            Extend a trailing assistant message instead of opening a new turn
+            (mlx-serve). Ignored unless the last message is assistant text
+            with no tool calls.
+        enable_pld:
+          type: boolean
+          description: Per-request Prompt Lookup Decoding. Omit for process default (on unless ZEROLLAMA_MLX_PLD=off).
+        enable_mtp:
+          type: boolean
+          description: Per-request draft-head speculation. Omit to use a loaded companion. false parks MTP.
+        enable_drafter:
+          type: boolean
+          description: mlx-serve Gemma/DFlash flag; same draft slot as enable_mtp (enable_mtp wins if both set).
+        parallel_tool_calls:
+          type: boolean
+          description: >
+            false keeps the first tool call only (mlx-serve / OpenAI SDK strict
+            structured-output). Omit or true leaves parser output unchanged.
+        tool_choice:
+          description: >
+            none omits tools. auto/required/any keep the list. A named function
+            object keeps that tool only (unknown name is 400).
+        functions:
+          type: array
+          description: >
+            Legacy OpenAI chat tools. Mapped onto tools when tools is empty.
+          items:
+            type: object
+            additionalProperties: true
+        function_call:
+          description: >
+            Legacy OpenAI tool_choice ("none"|"auto"|{name}). Mapped onto
+            tool_choice when tool_choice is unset.
+        n:
+          type: integer
+          description: OpenAI sample count. n>1 is 400 (mlx-serve; no n-best).
+        service_tier:
+          type: string
+          description: >
+            omit, auto, or default. flex/scale/priority are 400 (no capacity
+            tiers). Extra-body copies fold.
         keep_alive:
           oneOf:
             - type: string
@@ -2179,6 +2660,12 @@ components:
           oneOf:
             - type: string
             - type: object
+        response_format:
+          type: object
+          additionalProperties: true
+          description: >
+            json_object constrains JSON. json_schema accepts nested
+            json_schema.schema or a flat schema field (mlx-serve).
         prompt_cache_key:
           type: string
           description: Stable KV/session key (also options / extra_body)
@@ -2191,7 +2678,9 @@ components:
           additionalProperties: true
           description: >
             SDK clients often flatten this onto the HTTP root (M15c). Flat qos_class /
-            project_* / timeout / keep_alive are allowlisted and folded.
+            project_* / timeout / keep_alive / compression are allowlisted and folded.
+        compression:
+          $ref: "#/components/schemas/ChatCompressionConfig"
       additionalProperties: true
     ErrorResponse:
       type: object
@@ -3414,6 +3903,110 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InferenceError"
+  /api/load:
+    post:
+      summary: Prewarm a model (explicit load)
+      description: >
+        Blocks until the named local model is resident (LA21). No generate/chat
+        tokens. Inverse of POST /api/unload (and of generate `keep_alive: 0`).
+        LocalAI clients use POST /backend/load. Cloud models are rejected.
+      operationId: loadModel
+      x-codeSamples:
+        - lang: bash
+          label: Prewarm
+          source: |
+            curl http://localhost:11434/api/load -d '{"model":"llama3.2:latest","keep_alive":"30m"}'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoadRequest"
+      responses:
+        "200":
+          description: Runner is resident
+          headers:
+            X-Zerollama-Alias:
+              $ref: "#/components/headers/ZerollamaAlias"
+            X-Zerollama-Alias-Target:
+              $ref: "#/components/headers/ZerollamaAliasTarget"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoadResponse"
+        "400":
+          description: Missing model or cloud model
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "404":
+          description: Model not pulled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "503":
+          description: Queue busy or LA18 load cooldown
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/unload:
+    post:
+      summary: Unload a resident model
+      description: >
+        Inverse of POST /api/load. Expires the runner without a generate
+        round-trip. Body key is `model`. Ollama clients can also unload with
+        generate `keep_alive: 0`.
+      operationId: unloadModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnloadRequest"
+      responses:
+        "200":
+          description: Unload scheduled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnloadResponse"
+        "400":
+          description: Missing model or wrong key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "404":
+          description: Model not pulled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /backend/load:
+    post:
+      summary: Prewarm a model (LocalAI path)
+      description: Alias of POST /api/load.
+      operationId: loadModelBackend
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoadRequest"
+      responses:
+        "200":
+          description: Runner is resident
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoadResponse"
   /api/propose-load:
     post:
       summary: Multi-model capacity plan (dry-run)
@@ -3728,6 +4321,14 @@ paths:
     get:
       tags: [OpenAI]
       summary: List models (OpenAI-compatible)
+      description: >
+        Each row includes top-level context_length, max_model_len, and
+        model_max_tokens (and meta.context_length) so clients that never read
+        meta.* still see the advertised window (mlx-serve #188 / oh-my-pi).
+        Also capabilities (chat, tool_use, streaming, vision, reasoning,
+        json_schema, embeddings), input_modalities, meta.architecture, and
+        supports_mtp when the checkpoint ships a trained draft/MTP head
+        (GGUF nextn, in-manifest mtp/config.json, or in-weight mtp.* / num_nextn).
       operationId: listModelsV1
       responses:
         "200":
@@ -3741,6 +4342,9 @@ paths:
     get:
       tags: [OpenAI]
       summary: Retrieve model (OpenAI-compatible)
+      description: >
+        Same context_length / max_model_len / model_max_tokens / meta.context_length /
+        capabilities / input_modalities as GET /v1/models.
       operationId: retrieveModelV1
       parameters:
         - name: model
@@ -3775,7 +4379,17 @@ paths:
               $ref: "#/components/schemas/ChatCompletionRequest"
       responses:
         "200":
-          description: Chat completion (JSON or SSE when stream=true)
+          description: >
+            JSON chat.completion when stream is false. SSE chat.completion.chunk
+            when stream=true; set stream_options.include_usage to receive usage
+            (and compression_meta) on the last chunk before [DONE].
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatCompletion"
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/ChatCompletionChunk"
   /v1/chat/completions/batch:
     post:
       tags: [OpenAI]
@@ -3840,6 +4454,51 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InferenceError"
+  /v1/responses:
+    post:
+      tags: [OpenAI]
+      summary: Responses API (OpenAI-compatible)
+      description: >
+        Translates to native `/api/chat`. `compression` / `extra_body.compression`
+        and `usage.compression_meta` match Chat Completions. Stream=true is SSE
+        (`response.completed` usage includes compression_meta; stream ends with
+        `data: [DONE]`).
+      operationId: responsesV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OpenAIResponsesRequest"
+      responses:
+        "200":
+          description: JSON response object, or SSE when stream=true
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenAIResponsesResponse"
+  /v1/messages:
+    post:
+      tags: [Anthropic]
+      summary: Messages API (Anthropic-compatible)
+      description: >
+        Translates to native `/api/chat`. `compression` / `extra_body.compression`
+        and `usage.compression_meta` match Chat Completions. Streaming
+        `message_delta.usage` carries compression_meta.
+      operationId: messagesV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnthropicMessagesRequest"
+      responses:
+        "200":
+          description: JSON message object, or SSE when stream=true
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicMessagesResponse"
   /v1/completions:
     post:
       tags: [OpenAI]
@@ -3852,6 +4511,8 @@ paths:
             schema:
               type: object
               additionalProperties: true
+              description: >
+                echo prepends prompt to the generated text. n>1 and best_of>1 are 400.
       responses:
         "200":
           description: Completion response
@@ -3870,6 +4531,39 @@ paths:
       responses:
         "200":
           description: Embedding vectors
+  /v1/rerank:
+    post:
+      summary: Rerank documents (Jina / llama.cpp)
+      description: >
+        Cross-encoder scores of `query` vs `documents` (LA16). Requires a RANK-pooling
+        GGUF; llama-server is started with `--reranking`. Aliases `/v1/reranking`,
+        `/rerank`, `/api/rerank`. `model` may be an alias.
+      operationId: rerankV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RerankRequest"
+      responses:
+        "200":
+          description: Documents sorted by relevance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RerankResponse"
+        "400":
+          description: Missing query/documents/model
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "501":
+          description: Runner or GGUF does not support rerank
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
   /v1/images/generations:
     post:
       tags: [OpenAI]

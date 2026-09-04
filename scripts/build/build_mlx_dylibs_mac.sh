@@ -80,7 +80,7 @@ build_mlx_dylibs_mac() {
     -DCMAKE_BUILD_TYPE=Release \
     -DMLX_ENGINE=ON \
     -DOLLAMA_RUNNER_DIR=mlx_metal_v4 \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=26.2 \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
     -DCMAKE_INSTALL_PREFIX="${v4_prefix}" \
     -DFETCHCONTENT_SOURCE_DIR_MLX="${v3_deps}/mlx-src" \
     -DFETCHCONTENT_SOURCE_DIR_MLX-C="${v3_deps}/mlx-c-src" \

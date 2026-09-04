@@ -89,6 +89,87 @@ func mergeChatExtraBody(req *ChatCompletionRequest, extra json.RawMessage) {
 			req.Format = append(json.RawMessage(nil), f...)
 		}
 	}
+	if req.Compression == nil {
+		if raw, ok := flat["compression"]; ok && len(raw) > 0 {
+			var cfg api.ChatCompressionConfig
+			if json.Unmarshal(raw, &cfg) == nil {
+				req.Compression = &cfg
+			}
+		}
+	}
+	if req.StreamOptions == nil {
+		if raw, ok := flat["stream_options"]; ok && len(raw) > 0 {
+			var so StreamOptions
+			if json.Unmarshal(raw, &so) == nil {
+				req.StreamOptions = &so
+			}
+		}
+	}
+	overlaySamplingFromRaw(&samplingOverlay{
+		Temperature:         &req.Temperature,
+		TopP:                &req.TopP,
+		MinP:                &req.MinP,
+		TypicalP:            &req.TypicalP,
+		FrequencyPenalty:    &req.FrequencyPenalty,
+		PresencePenalty:     &req.PresencePenalty,
+		RepetitionPenalty:   &req.RepetitionPenalty,
+		RepeatPenalty:       &req.RepeatPenalty,
+		TopK:                &req.TopK,
+		Seed:                &req.Seed,
+		MaxTokens:           &req.MaxTokens,
+		MaxCompletionTokens: &req.MaxCompletionTokens,
+		EnablePLD:           &req.EnablePLD,
+		EnableMTP:           &req.EnableMTP,
+		EnableDrafter:       &req.EnableDrafter,
+	}, flat)
+	overlayInt(&req.N, flat["n"])
+	overlayInt(&req.ReasoningBudgetTokens, flat["reasoning_budget_tokens"])
+	if req.ServiceTier == "" {
+		if s := rawString(flat["service_tier"]); s != "" {
+			req.ServiceTier = s
+		}
+	}
+	overlayBool(&req.EnableThinking, flat["enable_thinking"])
+	overlayBool(&req.ParallelToolCalls, flat["parallel_tool_calls"])
+	overlayBool(&req.Store, flat["store"])
+	overlayLogitBias(&req.LogitBias, flat["logit_bias"])
+	if len(req.Tools) == 0 {
+		if raw, ok := flat["tools"]; ok && len(raw) > 0 {
+			var tools []api.Tool
+			if json.Unmarshal(raw, &tools) == nil {
+				req.Tools = tools
+			}
+		}
+	}
+	if len(req.Functions) == 0 {
+		if raw, ok := flat["functions"]; ok && len(raw) > 0 {
+			var fns []api.ToolFunction
+			if json.Unmarshal(raw, &fns) == nil {
+				req.Functions = fns
+			}
+		}
+	}
+	if req.ToolChoice == nil {
+		if raw, ok := flat["tool_choice"]; ok && len(raw) > 0 {
+			var v any
+			if json.Unmarshal(raw, &v) == nil {
+				req.ToolChoice = v
+			}
+		}
+	}
+	if req.FunctionCall == nil {
+		if raw, ok := flat["function_call"]; ok && len(raw) > 0 {
+			var v any
+			if json.Unmarshal(raw, &v) == nil {
+				req.FunctionCall = v
+			}
+		}
+	}
+	if !req.ContinueFinalMessage {
+		if b, ok := rawBool(flat["continue_final_message"]); ok {
+			req.ContinueFinalMessage = b
+		}
+	}
 	// Flat harness keys under nested extra_body (SDK did not flatten).
 	// Weaker than extra_body.options / extra_body.zerollama below.
 	req.Options = foldFlatZerollamaRaw(req.Options, flat)
@@ -274,4 +355,56 @@ func rawKeepAlive(raw json.RawMessage) *api.Duration {
 		return &d
 	}
 	return nil
+}
+
+func BindCompletionRequest(body []byte) (CompletionRequest, error) {
+	var req CompletionRequest
+	if len(body) == 0 {
+		return req, nil
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return req, err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return req, err
+	}
+	if eb, ok := raw["extra_body"]; ok {
+		mergeCompletionExtraBody(&req, eb)
+	}
+	return req, nil
+}
+
+func mergeCompletionExtraBody(req *CompletionRequest, extra json.RawMessage) {
+	var flat map[string]json.RawMessage
+	if json.Unmarshal(extra, &flat) != nil {
+		return
+	}
+	overlayF32(&req.Temperature, flat["temperature"])
+	overlayF32(&req.TopP, flat["top_p"])
+	overlayF32(&req.MinP, flat["min_p"])
+	overlayF32(&req.TypicalP, flat["typical_p"])
+	overlayF32(&req.FrequencyPenalty, flat["frequency_penalty"])
+	overlayF32(&req.PresencePenalty, flat["presence_penalty"])
+	overlayF32(&req.RepetitionPenalty, flat["repetition_penalty"])
+	overlayF32(&req.RepeatPenalty, flat["repeat_penalty"])
+	overlayInt(&req.TopK, flat["top_k"])
+	overlayInt(&req.Seed, flat["seed"])
+	overlayInt(&req.MaxTokens, flat["max_tokens"])
+	overlayInt(&req.N, flat["n"])
+	overlayInt(&req.BestOf, flat["best_of"])
+	if req.ServiceTier == "" {
+		if s := rawString(flat["service_tier"]); s != "" {
+			req.ServiceTier = s
+		}
+	}
+	overlayBool(&req.EnablePLD, flat["enable_pld"])
+	overlayBool(&req.EnableMTP, flat["enable_mtp"])
+	overlayBool(&req.EnableDrafter, flat["enable_drafter"])
+	overlayLogitBias(&req.LogitBias, flat["logit_bias"])
+	if !req.Echo {
+		if b, ok := rawBool(flat["echo"]); ok {
+			req.Echo = b
+		}
+	}
 }

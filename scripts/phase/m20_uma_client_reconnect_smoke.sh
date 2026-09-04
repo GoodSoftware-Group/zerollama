@@ -5,13 +5,16 @@
 # Requires live uma_daemon at UMA_SOCK (default /tmp/uma_daemon.sock).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TK="${BMTL_UMA_TOOLKIT:-${ROOT}/../bmtl/hardware_lab/lanes/m4/uma_toolkit}"
+# shellcheck source=scripts/build/uma_toolkit.sh
+source "${ROOT}/scripts/build/uma_toolkit.sh"
+TK="$(uma_toolkit_root)"
+UMA_CLIENT_C="$(uma_client_c)"
 SOCK="${UMA_SOCK:-/tmp/uma_daemon.sock}"
 OUT="${TMPDIR:-/tmp}/m20_uma_reconnect_smoke"
 SDK="$(xcrun --sdk macosx --show-sdk-path)"
 CLANG="$(xcrun -f clang)"
 
-test -f "${TK}/uma_client.c" || { echo "missing toolkit ${TK}" >&2; exit 1; }
+uma_toolkit_present || { echo "missing toolkit ${TK}" >&2; exit 1; }
 python3 - "${SOCK}" <<'PY'
 import socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -60,6 +63,6 @@ int main(void) {
 EOF
 
 "${CLANG}" -O2 -std=c11 -isysroot "${SDK}" \
-  -I"${TK}/include" -o "${OUT}" "${OUT}.c" "${TK}/uma_client.c"
+  -I"${TK}/include" -o "${OUT}" "${OUT}.c" "${UMA_CLIENT_C}"
 "${OUT}"
 rm -f "${OUT}" "${OUT}.c"

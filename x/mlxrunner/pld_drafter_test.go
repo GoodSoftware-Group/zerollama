@@ -9,7 +9,7 @@ import (
 func TestPLDProposeEcho(t *testing.T) {
 	skipIfNoMLX(t)
 	// 3-gram key (shipping default): trailing [1,2,3] matches the earlier
-	// site; draft is the tokens that followed ([4,5,6]).
+	// site; draft is up to maxDraft tokens that followed (pldDraftLen=5).
 	prompt := []int32{0, 1, 2, 3, 4, 5, 6, 9, 1, 2, 3}
 	d := newPLDSession(prompt)
 	c := d.propose(mlx.FromValues([]int32{3}, 1), 5)
@@ -17,7 +17,7 @@ func TestPLDProposeEcho(t *testing.T) {
 		t.Fatal("expected PLD draft")
 	}
 	got := c.tokens.Ints()
-	want := []int{4, 5, 6}
+	want := []int{4, 5, 6, 9, 1}
 	if len(got) != len(want) {
 		t.Fatalf("draft %v want %v", got, want)
 	}

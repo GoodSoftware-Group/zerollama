@@ -292,6 +292,22 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 	}
 }
 
+func compactLibraryPaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
 func StartRunner(ollamaEngine bool, modelPath string, gpuLibs []string, out io.Writer, extraEnvs map[string]string) (cmd *exec.Cmd, port int, err error) {
 	var exe string
 	exe, err = os.Executable()
@@ -333,6 +349,8 @@ func StartRunner(ollamaEngine bool, modelPath string, gpuLibs []string, out io.W
 	default:
 		pathEnv = "LD_LIBRARY_PATH"
 	}
+
+	gpuLibs = compactLibraryPaths(gpuLibs)
 
 	// Note: we always put our dependency paths first
 	// since these are the exact version we compiled/linked against

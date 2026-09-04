@@ -16,14 +16,16 @@ import (
 
 // FlashMoEInventoryEntry is a local MoE model zerollama can run with Flash-MoE.
 type FlashMoEInventoryEntry struct {
-	Name         string `json:"name"`
-	Tag          string `json:"tag"`
-	GGUFPath     string `json:"gguf_path"`
-	Sidecar      string `json:"sidecar,omitempty"`
-	SidecarReady bool   `json:"sidecar_ready"`
-	ExpertCount  uint32 `json:"expert_count"`
-	Family       string `json:"family"`
-	SizeBytes    int64  `json:"size_bytes"`
+	Name              string `json:"name"`
+	Tag               string `json:"tag"`
+	GGUFPath          string `json:"gguf_path"`
+	Sidecar           string `json:"sidecar,omitempty"`
+	SidecarReady      bool   `json:"sidecar_ready"`
+	ExpertCount       uint32 `json:"expert_count"`
+	ExpertUsedCount   uint32 `json:"expert_used_count,omitempty"`
+	ExpertWeightBytes int64  `json:"expert_weight_bytes,omitempty"`
+	Family            string `json:"family"`
+	SizeBytes         int64  `json:"size_bytes"`
 }
 
 // ListFlashMoEInventory scans ~/.ollama/models for pulled MoE GGUF tags.
@@ -197,15 +199,31 @@ func flashMoEEntryFromManifest(name model.Name, mf *manifest.Manifest) (FlashMoE
 	ready := flashMoESidecarReady(sidecar)
 
 	return FlashMoEInventoryEntry{
-		Name:         name.String(),
-		Tag:          tag,
-		GGUFPath:     modelPath,
-		Sidecar:      sidecar,
-		SidecarReady: ready,
-		ExpertCount:  kv.Uint("expert_count"),
-		Family:       firstNonEmpty(family, kv.Architecture()),
-		SizeBytes:    modelSize,
+		Name:              name.String(),
+		Tag:               tag,
+		GGUFPath:          modelPath,
+		Sidecar:           sidecar,
+		SidecarReady:      ready,
+		ExpertCount:       kv.Uint("expert_count"),
+		ExpertUsedCount:   kv.Uint("expert_used_count"),
+		ExpertWeightBytes: moeExpertTensorBytes(meta.Tensors().Items()),
+		Family:            firstNonEmpty(family, kv.Architecture()),
+		SizeBytes:         modelSize,
 	}, true, nil
+}
+
+func moeExpertTensorBytes(tensors []*ggml.Tensor) int64 {
+	var sum uint64
+	for _, t := range tensors {
+		if t == nil {
+			continue
+		}
+		n := strings.ToLower(t.Name)
+		if strings.Contains(n, "_exps.") || strings.HasSuffix(n, "_exps") {
+			sum += t.Size()
+		}
+	}
+	return int64(sum)
 }
 
 func isMoEGGUF(kv ggml.KV, family string) bool {

@@ -35,7 +35,7 @@ func newImageProcessor(c fs.Config) ImageProcessor {
 		temporalPatchSize: 2,
 		mergeSize:         mergeSize,
 		minPixels:         56 * 56,
-		maxPixels:         int(c.Uint("vision.max_pixels", 2<<20)), // 2M limit
+		maxPixels:         imageproc.ClampEnginePixels(int(c.Uint("vision.max_pixels", 2<<20))),
 		factor:            patchSize * mergeSize,
 		rescaleFactor:     1.0 / 255.0,
 		imageMean:         imageproc.ClipDefaultMean,
@@ -86,7 +86,7 @@ func (p *ImageProcessor) ProcessImage(img image.Image, gridTHW []int) ([]float32
 	origHeight := img.Bounds().Dy()
 
 	var resizedHeight, resizedWidth int
-	if rh, rw, ok := resizeFromGridHint(p.patchSize, p.mergeSize, gridTHW); ok {
+	if rh, rw, ok := resizeFromGridHint(p.patchSize, p.mergeSize, gridTHW); ok && imageproc.WithinEnginePixels(rh, rw) {
 		resizedHeight, resizedWidth = rh, rw
 		slog.Info("grid_thw hint resize",
 			"height", resizedHeight,
@@ -96,6 +96,10 @@ func (p *ImageProcessor) ProcessImage(img image.Image, gridTHW []int) ([]float32
 			"engine", "ollama",
 		)
 	} else {
+		if ok && !imageproc.WithinEnginePixels(rh, rw) {
+			slog.Info("grid_thw hint exceeds engine pixel cap; smart_resize",
+				"hint_h", rh, "hint_w", rw, "cap", imageproc.EngineMaxPixels)
+		}
 		resizedHeight, resizedWidth = p.SmartResize(origHeight, origWidth)
 	}
 

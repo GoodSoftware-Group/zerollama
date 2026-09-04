@@ -24,8 +24,8 @@ type VideoSampling struct {
 
 // VideoGenerationConfig holds per-model defaults for text-to-video (Wan and future runners).
 type VideoGenerationConfig struct {
-	Runner       string `json:"runner,omitempty"`    // video-cli | wan-cli | ltx-wan2gp; later rife | diffusers | comfy-headless
-	Profile      string `json:"profile,omitempty"`   // wan2.1-t2v-1.3b | wan2.2-ti2v-5b | ltxv-13b-distilled | h3-tiny-t2va | h3-768-t2va
+	Runner       string `json:"runner,omitempty"`    // video-cli | wan-cli | ltx-wan2gp | ltx-mlx | later rife | diffusers | comfy-headless
+	Profile      string `json:"profile,omitempty"`   // wan2.1-t2v-1.3b | wan2.2-ti2v-5b | ltxv-13b-distilled | ltxv-2b-distilled | ltxv-2b-mlx | ltxv-13b-mlx | h3-tiny-t2va | h3-768-t2va
 	VRAMTier     string `json:"vram_tier,omitempty"` // 16g | 24g | 32g
 	Size         string `json:"size,omitempty"`      // 832x480
 	Frames       int    `json:"frames,omitempty"`
@@ -84,6 +84,11 @@ type ConfigV2 struct {
 	RemoteHost  string `json:"remote_host,omitempty"`
 	RemoteModel string `json:"remote_model,omitempty"`
 
+	// SourceDir is an absolute HuggingFace/mlx-lm tree (config.json + *.safetensors).
+	// Why: create normally copies tensors into blobs (~one extra model size). A 90 GiB
+	// Flash pack cannot import on a full disk. mlxrunner loads shards in place when set.
+	SourceDir string `json:"source_dir,omitempty"`
+
 	// used for remotes
 	Capabilities []string `json:"capabilities,omitempty"`
 	ContextLen   int      `json:"context_length,omitempty"`
@@ -108,6 +113,7 @@ type ConfigV2 struct {
 	// "video_cli" / "wan_cli" (optional Pure-C video-c binary — docs/video-c.md),
 	// "h3_ckpt_dir" (MiniMax-H3 tree for backend h3),
 	// "wan2gp_repo", "wan2gp_venv", "wan2gp_ckpt_dir" (LTX via Wan2GP — docs/ltx-t2v.md),
+	// "ltx_mlx_model_dir", "ltx_mlx_venv" (Darwin ltx-mlx 2B/13B — docs/ltx-t2v.md),
 	// "sd_cli", "sd_model" (stable-diffusion.cpp binary and GGUF weights),
 	// "ov_model_dir", "ov_python", "external_image_bin" (OpenVINO GenAI; see docs/sd-openvino-a380.md),
 	// "comfy_workflow_dir" (Comfy template directory; relative paths need OLLAMA_COMFYUI_WORKFLOWS_ROOT

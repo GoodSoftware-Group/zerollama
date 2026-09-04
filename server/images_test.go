@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -142,6 +143,14 @@ func TestModelCapabilities(t *testing.T) {
 			expectedCaps: []model.Capability{model.CapabilityCompletion, model.CapabilityTools},
 		},
 		{
+			name: "missing gguf blob does not panic",
+			model: Model{
+				Name:      "toy:latest",
+				ModelPath: filepath.Join(t.TempDir(), "missing.gguf"),
+			},
+			expectedCaps: nil,
+		},
+		{
 			name: "model with vision capability",
 			model: Model{
 				ModelPath: visionModelPath,
@@ -175,6 +184,7 @@ func TestModelCapabilities(t *testing.T) {
 				},
 				Template: chatTemplate,
 			},
+			expectedCaps: []model.Capability{model.CapabilityInsert},
 		},
 		{
 			name: "gemma4 large safetensors suppresses vision and audio",
@@ -186,6 +196,7 @@ func TestModelCapabilities(t *testing.T) {
 				},
 				Template: chatTemplate,
 			},
+			expectedCaps: []model.Capability{model.CapabilityInsert},
 		},
 		{
 			name: "legacy gemma4 safetensors suppresses vision and audio",
@@ -197,6 +208,7 @@ func TestModelCapabilities(t *testing.T) {
 				},
 				Template: chatTemplate,
 			},
+			expectedCaps: []model.Capability{model.CapabilityInsert},
 		},
 	}
 
@@ -502,5 +514,20 @@ func TestPullModelDuplicateDigestVerifiesBlob(t *testing.T) {
 	err = PullModel(t.Context(), n.String(), &registryOptions{Insecure: true}, func(api.ProgressResponse) {})
 	if !errors.Is(err, errDigestMismatch) {
 		t.Fatalf("PullModel = %v, want errDigestMismatch (unverified blob would persist)", err)
+	}
+}
+
+func TestTextSurfaceWrongModalityMessage(t *testing.T) {
+	got := textSurfaceWrongModalityMessage(&Model{
+		Config: model.ConfigV2{Capabilities: []string{string(model.CapabilityEmbedding)}},
+	}, "bert", "chat")
+	if !strings.Contains(got, "embedding model") || !strings.Contains(got, "/v1/embeddings") {
+		t.Fatalf("got %q", got)
+	}
+	got = textSurfaceWrongModalityMessage(&Model{
+		Config: model.ConfigV2{Capabilities: []string{string(model.CapabilityCompletion)}},
+	}, "llama", "chat")
+	if got != `"llama" does not support chat` {
+		t.Fatalf("got %q", got)
 	}
 }

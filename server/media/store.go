@@ -582,8 +582,26 @@ func (s *Store) evictLocked() {
 	}
 }
 
+func optionString(opts map[string]any, key string) string {
+	if opts == nil {
+		return ""
+	}
+	v, ok := opts[key]
+	if !ok || v == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(v))
+}
+
+// OptionString is the exported form of optionString (video last-frame checks).
+func OptionString(opts map[string]any, key string) string {
+	return optionString(opts, key)
+}
+
 // ParseKeyframeRefs resolves options.media_session + options.keyframes into session + labels.
 // Also accepts "session/label" entries when media_session is empty.
+// mlx-serve aliases: first_frame_image / last_frame_image as ordered stills when
+// keyframes is omitted.
 // WHY two shapes: agents that already namespace labels as "sid/kf0" need not
 // duplicate the session field; media_session + bare labels is the common case.
 func ParseKeyframeRefs(opts map[string]any) (session string, labels []string, err error) {
@@ -595,20 +613,35 @@ func ParseKeyframeRefs(opts map[string]any) (session string, labels []string, er
 	}
 	raw, ok := opts["keyframes"]
 	if !ok || raw == nil {
-		return session, nil, nil
-	}
-	switch t := raw.(type) {
-	case []any:
-		for _, item := range t {
-			labels = append(labels, strings.TrimSpace(fmt.Sprint(item)))
+		if first := optionString(opts, "first_frame_image"); first != "" {
+			labels = append(labels, first)
 		}
-	case []string:
-		labels = append(labels, t...)
-	default:
-		return "", nil, fmt.Errorf("options.keyframes must be an array of strings")
-	}
-	if len(labels) == 0 {
-		return session, nil, nil
+		if last := optionString(opts, "last_frame_image"); last != "" {
+			labels = append(labels, last)
+		}
+		if len(labels) == 0 {
+			return session, nil, nil
+		}
+	} else {
+		switch t := raw.(type) {
+		case []any:
+			for _, item := range t {
+				labels = append(labels, strings.TrimSpace(fmt.Sprint(item)))
+			}
+		case []string:
+			labels = append(labels, t...)
+		default:
+			return "", nil, fmt.Errorf("options.keyframes must be an array of strings")
+		}
+		if last := optionString(opts, "last_frame_image"); last != "" && len(labels) == 1 && labels[0] != last {
+			labels = append(labels, last)
+		}
+		if first := optionString(opts, "first_frame_image"); first != "" && len(labels) == 0 {
+			labels = append(labels, first)
+		}
+		if len(labels) == 0 {
+			return session, nil, nil
+		}
 	}
 
 	// Normalize session/label composite refs.

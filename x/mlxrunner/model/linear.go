@@ -123,7 +123,9 @@ func isAttentionProjection(path string) bool {
 	case ".q_proj", ".k_proj", ".v_proj", ".o_proj", ".out_proj",
 		".qkv_proj", ".wqkv", ".wq", ".wk", ".wv", ".wo",
 		".query_proj", ".key_proj", ".value_proj",
-		".q_a_proj", ".q_b_proj", ".kv_a_proj", ".kv_b_proj":
+		".q_a_proj", ".q_b_proj", ".kv_a_proj", ".kv_b_proj",
+		".wq_a", ".wq_b", ".wkv", ".wo_b":
+		// why not .wo_a: DSv4 grouped 3-D out-proj; decode-quant wrap is 2-D only.
 		return true
 	default:
 		return false

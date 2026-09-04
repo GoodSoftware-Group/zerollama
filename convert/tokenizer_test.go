@@ -57,6 +57,21 @@ func TestParseTokenizer(t *testing.T) {
 			},
 		},
 		{
+			name: "include stub chat template",
+			fsys: createTokenizerFS(t, t.TempDir(), map[string]io.Reader{
+				"tokenizer.json": strings.NewReader(`{}`),
+				"tokenizer_config.json": strings.NewReader(`{
+					"chat_template": "{% include 'chat_template.jinja' %}"
+				}`),
+				"chat_template.jinja": strings.NewReader("{{ bos_token }}"),
+			}),
+			want: &Tokenizer{
+				Vocabulary: &Vocabulary{Model: "gpt2"},
+				Pre:        "default",
+				Template:   "{{ bos_token }}",
+			},
+		},
+		{
 			name: "list chat template",
 			fsys: createTokenizerFS(t, t.TempDir(), map[string]io.Reader{
 				"tokenizer.json": strings.NewReader(`{}`),

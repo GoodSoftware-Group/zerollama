@@ -175,3 +175,22 @@ func TestNormalize(t *testing.T) {
 		})
 	}
 }
+
+func TestClampEnginePixels(t *testing.T) {
+	t.Parallel()
+	if got := ClampEnginePixels(16 << 20); got != EngineMaxPixels {
+		t.Fatalf("16M pack bound = %d want %d", got, EngineMaxPixels)
+	}
+	if got := ClampEnginePixels(2 << 20); got != 2<<20 {
+		t.Fatalf("2M stays 2M, got %d", got)
+	}
+	if got := ClampEnginePixels(0); got != EngineMaxPixels {
+		t.Fatalf("zero = %d want engine max", got)
+	}
+	if WithinEnginePixels(1920, 1080) != true {
+		t.Fatal("1080p screenshot should pass")
+	}
+	if WithinEnginePixels(5100, 3300) {
+		t.Fatal("5100x3300 must not reach the vision tower")
+	}
+}

@@ -334,10 +334,11 @@ type ResponsesReasoning struct {
 }
 
 type ResponsesTextFormat struct {
-	Type   string          `json:"type"`             // "text", "json_schema"
-	Name   string          `json:"name,omitempty"`   // for json_schema
-	Schema json.RawMessage `json:"schema,omitempty"` // for json_schema
-	Strict *bool           `json:"strict,omitempty"` // for json_schema
+	Type       string          `json:"type"`             // "text", "json_object", "json_schema"
+	Name       string          `json:"name,omitempty"`   // for json_schema
+	Schema     json.RawMessage `json:"schema,omitempty"` // flat json_schema
+	JsonSchema *JsonSchema     `json:"json_schema,omitempty"`
+	Strict     *bool           `json:"strict,omitempty"`
 }
 
 type ResponsesText struct {
@@ -361,13 +362,24 @@ type ResponsesRequest struct {
 	// for us: not supported
 	Background bool `json:"background"`
 
+	// Store true would persist the response. We have no ResponseStore — 400.
+	Store *bool `json:"store,omitempty"`
+
 	// originally: optional `string | {id: string}`
-	// for us: not supported
+	// for us: not supported — 400 if set
 	Conversation json.RawMessage `json:"conversation"`
 
+	// previous_response_id chains stored turns. We have no ResponseStore — 400 if set.
+	PreviousResponseID *string `json:"previous_response_id,omitempty"`
+
 	// originally: string[]
-	// for us: ignored
+	// for us: any non-empty value is 400 (no file_search results, encrypted
+	// reasoning, or output_text logprobs on this surface).
 	Include []string `json:"include"`
+
+	// OpenAI caps built-in tool rounds. 1 keeps a single function call
+	// (same as parallel_tool_calls:false). 0 is 400. >1 is a no-op on one turn.
+	MaxToolCalls *int `json:"max_tool_calls,omitempty"`
 
 	Input ResponsesInput `json:"input"`
 
@@ -378,15 +390,23 @@ type ResponsesRequest struct {
 	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
 
 	Reasoning ResponsesReasoning `json:"reasoning"`
+	// ReasoningBudgetTokens outranks reasoning.effort (mlx-serve). 0 off, >0 on.
+	ReasoningBudgetTokens *int `json:"reasoning_budget_tokens,omitempty"`
 
-	// optional, default is 1.0
-	Temperature *float64 `json:"temperature"`
+	Temperature       *float64           `json:"temperature"`
+	TopP              *float64           `json:"top_p"`
+	TopK              *int               `json:"top_k"`
+	MinP              *float64           `json:"min_p"`
+	TypicalP          *float64           `json:"typical_p"`
+	Seed              *int               `json:"seed"`
+	FrequencyPenalty  *float64           `json:"frequency_penalty"`
+	PresencePenalty   *float64           `json:"presence_penalty"`
+	RepetitionPenalty *float64           `json:"repetition_penalty"`
+	RepeatPenalty     *float64           `json:"repeat_penalty"`
+	LogitBias         map[string]float64 `json:"logit_bias,omitempty"`
 
 	// optional, controls output format (e.g. json_schema)
 	Text *ResponsesText `json:"text,omitempty"`
-
-	// optional, default is 1.0
-	TopP *float64 `json:"top_p"`
 
 	// optional, default is `"disabled"`
 	Truncation *string `json:"truncation"`
@@ -394,15 +414,39 @@ type ResponsesRequest struct {
 	Tools []ResponsesTool `json:"tools,omitempty"`
 
 	// ToolChoice: "none" omits tools for this turn (minefield trap 78).
-	// "required" / named-tool object forms are not generally supported yet.
+	// "required" / "any" keep the list. Named function objects keep that tool.
 	ToolChoice any `json:"tool_choice,omitempty"`
 
 	// optional, default is false
 	Stream *bool `json:"stream,omitempty"`
+
+	EnablePLD         *bool `json:"enable_pld,omitempty"`
+	EnableMTP         *bool `json:"enable_mtp,omitempty"`
+	EnableDrafter     *bool `json:"enable_drafter,omitempty"`
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
+	// Compression is the same object as /v1/chat/completions (also extra_body.compression).
+	Compression *api.ChatCompressionConfig `json:"compression,omitempty"`
+	// PromptCacheKey pins L3 + server placeholder sticky elide_from (also extra_body).
+	PromptCacheKey *string         `json:"prompt_cache_key,omitempty"`
+	SessionID      *string         `json:"session_id,omitempty"`
+	CacheReset     *bool           `json:"cache_reset,omitempty"`
+	ExtraBody      json.RawMessage `json:"extra_body,omitempty"`
+	ServiceTier    string          `json:"service_tier,omitempty"`
 }
 
 // FromResponsesRequest converts a ResponsesRequest to api.ChatRequest
 func FromResponsesRequest(r ResponsesRequest) (*api.ChatRequest, error) {
+	foldResponsesCompression(&r)
+	foldResponsesSessionCache(&r)
+	foldResponsesLogitBias(&r)
+	foldResponsesReasoningBudget(&r)
+	if err := rejectUnsupportedResponsesFields(r); err != nil {
+		return nil, err
+	}
+	if r.MaxToolCalls != nil && *r.MaxToolCalls == 1 {
+		off := false
+		r.ParallelToolCalls = &off
+	}
 	var messages []api.Message
 
 	// Add instructions as system message if present
@@ -505,57 +549,217 @@ func FromResponsesRequest(r ResponsesRequest) (*api.ChatRequest, error) {
 
 	options := make(map[string]any)
 
-	if r.Temperature != nil {
-		options["temperature"] = *r.Temperature
-	} else {
-		options["temperature"] = 1.0
+	samplingOpts{
+		Temperature:       r.Temperature,
+		TopP:              r.TopP,
+		MinP:              r.MinP,
+		TypicalP:          r.TypicalP,
+		FrequencyPenalty:  r.FrequencyPenalty,
+		PresencePenalty:   r.PresencePenalty,
+		RepetitionPenalty: r.RepetitionPenalty,
+		RepeatPenalty:     r.RepeatPenalty,
+		TopK:              r.TopK,
+		Seed:              r.Seed,
+		MaxTokens:         r.MaxOutputTokens,
+	}.apply(options)
+	if r.EnablePLD != nil {
+		options["enable_pld"] = *r.EnablePLD
+	}
+	if r.EnableMTP != nil {
+		options["enable_mtp"] = *r.EnableMTP
+	}
+	if r.EnableDrafter != nil {
+		options["enable_drafter"] = *r.EnableDrafter
+	}
+	if err := putLogitBias(options, r.LogitBias); err != nil {
+		return nil, err
+	}
+	if r.PromptCacheKey != nil && strings.TrimSpace(*r.PromptCacheKey) != "" {
+		options["prompt_cache_key"] = strings.TrimSpace(*r.PromptCacheKey)
+	} else if r.SessionID != nil && strings.TrimSpace(*r.SessionID) != "" {
+		options["prompt_cache_key"] = strings.TrimSpace(*r.SessionID)
+	}
+	if r.CacheReset != nil && *r.CacheReset {
+		options["cache_reset"] = true
 	}
 
-	if r.TopP != nil {
-		options["top_p"] = *r.TopP
-	} else { //nolint:staticcheck // SA9003: empty branch
-		// TODO(drifkin): OpenAI defaults to 1.0 here, but we don't follow that here
-		// in case the model has a different default. It would be best if we
-		// understood whether there was a model-specific default and if not, we
-		// should also default to 1.0, but that will require some additional
-		// plumbing
-	}
-
-	if r.MaxOutputTokens != nil {
-		options["num_predict"] = *r.MaxOutputTokens
-	}
-
-	// Convert tools from Responses API format to api.Tool format.
-	// tool_choice "none" omits tools (trap 78); other values keep tools attached.
+	// Convert tools from Responses API format to api.Tool format, then apply
+	// tool_choice (none omits; named function keeps that tool only).
 	var tools []api.Tool
-	if !toolChoiceMeansNone(r.ToolChoice) {
-		for _, t := range r.Tools {
-			tool, err := convertTool(t)
-			if err != nil {
-				return nil, err
-			}
-			tools = append(tools, tool)
+	for _, t := range r.Tools {
+		tool, err := convertTool(t)
+		if err != nil {
+			return nil, err
 		}
+		tools = append(tools, tool)
 	}
+	tools, err := applyToolChoice(tools, r.ToolChoice)
+	if err != nil {
+		return nil, err
+	}
+	messages = api.AppendRequiredToolCallHint(messages, tools, toolChoiceRequiresCall(r.ToolChoice))
+	messages = api.AppendOutputBudgetGuidance(messages, api.NumPredictFromMap(options))
 
-	// Handle text format (e.g. json_schema)
 	var format json.RawMessage
 	if r.Text != nil && r.Text.Format != nil {
-		switch r.Text.Format.Type {
-		case "json_schema":
-			if r.Text.Format.Schema != nil {
-				format = r.Text.Format.Schema
-			}
+		format = formatFromStructuredOutput(r.Text.Format.Type, r.Text.Format.JsonSchema, r.Text.Format.Schema)
+	}
+
+	thinkFromAlias := false
+	var think *api.ThinkValue
+	if t, err := thinkFromReasoningBudget(r.ReasoningBudgetTokens); err != nil {
+		return nil, err
+	} else if t != nil {
+		think = t
+		thinkFromAlias = true
+	}
+	if think == nil {
+		if t, err := thinkFromReasoningEffort(r.Reasoning.Effort); err != nil {
+			return nil, err
+		} else if t != nil {
+			think = t
+			thinkFromAlias = true
 		}
 	}
 
 	return &api.ChatRequest{
-		Model:    r.Model,
-		Messages: messages,
-		Options:  options,
-		Tools:    tools,
-		Format:   format,
+		Model:             r.Model,
+		Messages:          messages,
+		Options:           options,
+		Tools:             tools,
+		Format:            format,
+		Think:             think,
+		ThinkFromAlias:    thinkFromAlias,
+		EnablePLD:         r.EnablePLD,
+		EnableMTP:         r.EnableMTP,
+		EnableDrafter:     r.EnableDrafter,
+		Compression:       r.Compression,
+		ParallelToolCalls: r.ParallelToolCalls,
 	}, nil
+}
+
+func foldResponsesCompression(req *ResponsesRequest) {
+	if req == nil || req.Compression != nil || len(req.ExtraBody) == 0 {
+		return
+	}
+	var extra struct {
+		Compression *api.ChatCompressionConfig `json:"compression"`
+	}
+	if json.Unmarshal(req.ExtraBody, &extra) == nil {
+		req.Compression = extra.Compression
+	}
+}
+
+func foldResponsesSessionCache(req *ResponsesRequest) {
+	if req == nil || len(req.ExtraBody) == 0 {
+		return
+	}
+	var extra struct {
+		PromptCacheKey     *string `json:"prompt_cache_key"`
+		SessionID          *string `json:"session_id"`
+		CacheReset         *bool   `json:"cache_reset"`
+		PreviousResponseID *string `json:"previous_response_id"`
+		Store              *bool   `json:"store"`
+	}
+	if json.Unmarshal(req.ExtraBody, &extra) != nil {
+		return
+	}
+	if req.Store == nil {
+		req.Store = extra.Store
+	}
+	if req.PromptCacheKey == nil {
+		req.PromptCacheKey = extra.PromptCacheKey
+	}
+	if req.SessionID == nil {
+		req.SessionID = extra.SessionID
+	}
+	if req.CacheReset == nil {
+		req.CacheReset = extra.CacheReset
+	}
+	if req.PreviousResponseID == nil {
+		req.PreviousResponseID = extra.PreviousResponseID
+	}
+}
+
+func foldResponsesLogitBias(req *ResponsesRequest) {
+	if req == nil || req.LogitBias != nil || len(req.ExtraBody) == 0 {
+		return
+	}
+	var extra struct {
+		LogitBias map[string]float64 `json:"logit_bias"`
+	}
+	if json.Unmarshal(req.ExtraBody, &extra) == nil && len(extra.LogitBias) > 0 {
+		req.LogitBias = extra.LogitBias
+	}
+}
+
+func foldResponsesReasoningBudget(req *ResponsesRequest) {
+	if req == nil || req.ReasoningBudgetTokens != nil || len(req.ExtraBody) == 0 {
+		return
+	}
+	var extra struct {
+		ReasoningBudgetTokens *int `json:"reasoning_budget_tokens"`
+	}
+	if json.Unmarshal(req.ExtraBody, &extra) == nil {
+		req.ReasoningBudgetTokens = extra.ReasoningBudgetTokens
+	}
+}
+
+func rejectUnsupportedResponsesFields(r ResponsesRequest) error {
+	if r.Background {
+		return fmt.Errorf("background:true is not supported (no async response store); omit background or set false")
+	}
+	if err := rejectStore(r.Store); err != nil {
+		return err
+	}
+	if id := strings.TrimSpace(derefString(r.PreviousResponseID)); id != "" {
+		return fmt.Errorf("previous_response_id is not supported (no response store); send the full input instead")
+	}
+	if responsesConversationSet(r.Conversation) {
+		return fmt.Errorf("conversation is not supported (no response store); send messages in input")
+	}
+	if r.Truncation != nil {
+		t := strings.ToLower(strings.TrimSpace(*r.Truncation))
+		if t != "" && t != "disabled" {
+			return fmt.Errorf("truncation %q is not supported; omit it or set disabled (overflow is a named 400)", *r.Truncation)
+		}
+	}
+	for _, raw := range r.Include {
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		return fmt.Errorf("include %q is not supported", v)
+	}
+	if r.MaxToolCalls != nil && *r.MaxToolCalls < 1 {
+		return fmt.Errorf("max_tool_calls must be at least 1")
+	}
+	if err := rejectServiceTier(r.ServiceTier); err != nil {
+		return err
+	}
+	return nil
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func responsesParallelToolCalls(r ResponsesRequest) bool {
+	if r.MaxToolCalls != nil && *r.MaxToolCalls == 1 {
+		return false
+	}
+	if r.ParallelToolCalls != nil {
+		return *r.ParallelToolCalls
+	}
+	return true
+}
+
+func responsesConversationSet(raw json.RawMessage) bool {
+	s := strings.TrimSpace(string(raw))
+	return s != "" && s != "null" && s != `""` && s != "{}"
 }
 
 func convertTool(t ResponsesTool) (api.Tool, error) {
@@ -728,6 +932,7 @@ type ResponsesUsage struct {
 	TotalTokens         int                          `json:"total_tokens"`
 	InputTokensDetails  ResponsesInputTokensDetails  `json:"input_tokens_details"`
 	OutputTokensDetails ResponsesOutputTokensDetails `json:"output_tokens_details"`
+	Compression         *api.ChatCompressionMeta     `json:"compression_meta,omitempty"`
 }
 
 // derefFloat64 returns the value of a float64 pointer, or a default if nil.
@@ -738,9 +943,17 @@ func derefFloat64(p *float64, def float64) float64 {
 	return def
 }
 
+func responsesStatus(doneReason string) (string, *ResponsesIncompleteDetails) {
+	if strings.EqualFold(strings.TrimSpace(doneReason), "length") {
+		return "incomplete", &ResponsesIncompleteDetails{Reason: "max_output_tokens"}
+	}
+	return "completed", nil
+}
+
 // ToResponse converts an api.ChatResponse to a Responses API response.
 // The request is used to echo back request parameters in the response.
 func ToResponse(model, responseID, itemID string, chatResponse api.ChatResponse, request ResponsesRequest) ResponsesResponse {
+	foldResponsesSessionCache(&request)
 	var output []ResponsesOutputItem
 
 	// Add reasoning item if thinking is present
@@ -822,13 +1035,15 @@ func ToResponse(model, responseID, itemID string, chatResponse api.ChatResponse,
 		}
 	}
 
+	status, incomplete := responsesStatus(chatResponse.DoneReason)
+
 	return ResponsesResponse{
 		ID:                 responseID,
 		Object:             "response",
 		CreatedAt:          chatResponse.CreatedAt.Unix(),
 		CompletedAt:        nil, // Set by middleware when writing final response
-		Status:             "completed",
-		IncompleteDetails:  nil, // Only populated if response incomplete
+		Status:             status,
+		IncompleteDetails:  incomplete,
 		Model:              model,
 		PreviousResponseID: nil, // Not supported
 		Instructions:       instructions,
@@ -837,7 +1052,7 @@ func ToResponse(model, responseID, itemID string, chatResponse api.ChatResponse,
 		Tools:              tools,
 		ToolChoice:         "auto", // Default value
 		Truncation:         truncation,
-		ParallelToolCalls:  true, // Default value
+		ParallelToolCalls:  responsesParallelToolCalls(request),
 		Text:               text,
 		TopP:               derefFloat64(request.TopP, 1.0),
 		PresencePenalty:    0, // Default value
@@ -850,18 +1065,19 @@ func ToResponse(model, responseID, itemID string, chatResponse api.ChatResponse,
 			OutputTokens: chatResponse.EvalCount,
 			TotalTokens:  chatResponse.PromptEvalCount + chatResponse.EvalCount,
 			// TODO(drifkin): wire through the actual values
-			InputTokensDetails: ResponsesInputTokensDetails{CachedTokens: 0},
+			InputTokensDetails: ResponsesInputTokensDetails{CachedTokens: chatResponse.CachedPromptTokens},
 			// TODO(drifkin): wire through the actual values
 			OutputTokensDetails: ResponsesOutputTokensDetails{ReasoningTokens: 0},
+			Compression:         chatResponse.Compression,
 		},
 		MaxOutputTokens:  request.MaxOutputTokens,
-		MaxToolCalls:     nil,   // Not supported
+		MaxToolCalls:     request.MaxToolCalls,
 		Store:            false, // We don't store responses
 		Background:       request.Background,
 		ServiceTier:      "default", // Default value
 		Metadata:         map[string]any{},
 		SafetyIdentifier: nil, // Not supported
-		PromptCacheKey:   nil, // Not supported
+		PromptCacheKey:   request.PromptCacheKey,
 	}
 }
 
@@ -915,6 +1131,7 @@ func (c *ResponsesStreamConverter) newEvent(eventType string, data map[string]an
 
 // NewResponsesStreamConverter creates a new converter with the given configuration.
 func NewResponsesStreamConverter(responseID, itemID, model string, request ResponsesRequest) *ResponsesStreamConverter {
+	foldResponsesSessionCache(&request)
 	return &ResponsesStreamConverter{
 		responseID: responseID,
 		itemID:     itemID,
@@ -1049,7 +1266,7 @@ func (c *ResponsesStreamConverter) buildResponseObject(status string, output []a
 		"tools":                tools,
 		"tool_choice":          "auto",
 		"truncation":           truncation,
-		"parallel_tool_calls":  true,
+		"parallel_tool_calls":  responsesParallelToolCalls(c.request),
 		"text":                 map[string]any{"format": textFormat},
 		"top_p":                topP,
 		"presence_penalty":     0,
@@ -1059,13 +1276,13 @@ func (c *ResponsesStreamConverter) buildResponseObject(status string, output []a
 		"reasoning":            reasoning,
 		"usage":                usage,
 		"max_output_tokens":    c.request.MaxOutputTokens,
-		"max_tool_calls":       nil,
+		"max_tool_calls":       c.request.MaxToolCalls,
 		"store":                false,
 		"background":           c.request.Background,
 		"service_tier":         "default",
 		"metadata":             map[string]any{},
 		"safety_identifier":    nil,
-		"prompt_cache_key":     nil,
+		"prompt_cache_key":     c.request.PromptCacheKey,
 	}
 }
 
@@ -1356,14 +1573,21 @@ func (c *ResponsesStreamConverter) processCompletion(r api.ChatResponse) []Respo
 		"output_tokens": r.EvalCount,
 		"total_tokens":  r.PromptEvalCount + r.EvalCount,
 		"input_tokens_details": map[string]any{
-			"cached_tokens": 0,
+			"cached_tokens": r.CachedPromptTokens,
 		},
 		"output_tokens_details": map[string]any{
 			"reasoning_tokens": 0,
 		},
 	}
-	response := c.buildResponseObject("completed", c.buildFinalOutput(), usage)
+	if r.Compression != nil {
+		usage["compression_meta"] = r.Compression
+	}
+	status, details := responsesStatus(r.DoneReason)
+	response := c.buildResponseObject(status, c.buildFinalOutput(), usage)
 	response["completed_at"] = time.Now().Unix()
+	if details != nil {
+		response["incomplete_details"] = map[string]any{"reason": details.Reason}
+	}
 	events = append(events, c.newEvent("response.completed", map[string]any{
 		"response": response,
 	}))

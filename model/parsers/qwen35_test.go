@@ -60,6 +60,93 @@ func TestQwen35ParserXMLToolCall(t *testing.T) {
 	}
 }
 
+func TestQwen35ParserMissingToolCloseOnDone(t *testing.T) {
+	parser := ParserForName("qwen3.5")
+	if parser == nil {
+		t.Fatal("expected qwen3.5 parser")
+	}
+
+	tools := []api.Tool{
+		{
+			Function: api.ToolFunction{
+				Name: "get_weather",
+				Parameters: api.ToolFunctionParameters{
+					Properties: func() *api.ToolPropertiesMap {
+						props := api.NewToolPropertiesMap()
+						props.Set("location", api.ToolProperty{Type: api.PropertyType{"string"}})
+						return props
+					}(),
+				},
+			},
+		},
+	}
+	parser.Init(tools, nil, &api.ThinkValue{Value: false})
+
+	body := "<tool_call><function=get_weather><parameter=location>\nParis\n</parameter></function>"
+	content, thinking, calls, err := parser.Add(body, false)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if content != "" || thinking != "" || len(calls) != 0 {
+		t.Fatalf("expected no emit before done, got content=%q thinking=%q calls=%d", content, thinking, len(calls))
+	}
+
+	content, thinking, calls, err = parser.Add("", true)
+	if err != nil {
+		t.Fatalf("parse failed on done: %v", err)
+	}
+	if content != "" || thinking != "" {
+		t.Fatalf("expected empty content/thinking, got %q / %q", content, thinking)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "get_weather" {
+		t.Fatalf("expected get_weather, got %#v", calls)
+	}
+	location, ok := calls[0].Function.Arguments.Get("location")
+	if !ok || location != "Paris" {
+		t.Fatalf("expected location Paris, got %v", location)
+	}
+}
+
+func TestQwen35ParserPluralToolCallsWrapper(t *testing.T) {
+	parser := ParserForName("qwen3.5")
+	if parser == nil {
+		t.Fatal("expected qwen3.5 parser")
+	}
+	tools := []api.Tool{
+		{
+			Function: api.ToolFunction{
+				Name: "get_weather",
+				Parameters: api.ToolFunctionParameters{
+					Properties: func() *api.ToolPropertiesMap {
+						props := api.NewToolPropertiesMap()
+						props.Set("location", api.ToolProperty{Type: api.PropertyType{"string"}})
+						return props
+					}(),
+				},
+			},
+		},
+	}
+	parser.Init(tools, nil, &api.ThinkValue{Value: true})
+	input := "Plan<tool_calls:0><function=get_weather><parameter=location>\nLisbon\n</parameter></function></tool_calls>"
+	content, thinking, calls, err := parser.Add(input, true)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if thinking != "Plan" {
+		t.Fatalf("expected thinking Plan, got %q", thinking)
+	}
+	if content != "" {
+		t.Fatalf("expected empty content, got %q", content)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "get_weather" {
+		t.Fatalf("expected get_weather, got %#v", calls)
+	}
+	location, ok := calls[0].Function.Arguments.Get("location")
+	if !ok || location != "Lisbon" {
+		t.Fatalf("expected Lisbon, got %v", location)
+	}
+}
+
 func TestQwen35ParserThinkingWithExplicitOpeningTag(t *testing.T) {
 	parser := ParserForName("qwen3.5")
 	if parser == nil {

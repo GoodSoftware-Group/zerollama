@@ -1,0 +1,11 @@
+# CLOSED 0122: fused Gate+Up SwiGLU (opt-in) — speed track done 2026-09-01
+#
+# Shipped:
+# 1. m4-prefill-shipped/m4_fused_swiglu.metal — fused_gate_up_swiglu_q4_0_f32
+# 2. GGML_METAL_LIBS kind m4_fused_swiglu + embed
+# 3. m4_prefill_metal_hook.cpp in ggml_metal_op_mul_mat (before ANE)
+# 4. Env: ZEROLLAMA_M4_PREFILL_SWIGLU=1 (telemetry: ZEROLLAMA_M4_PREFILL_TELEMETRY=1)
+#
+# Lab A/B (M4 Max): regresses ~−16…−20% vs stock mul_mm — keep experimental/off.
+# Docs: docs/m4-prefill-borrowings.md + findings
+# Upstream: mohamedhossammohamed/m4-prefill-engine

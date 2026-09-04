@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/thinking"
 )
 
 type LFM2ParserState int
@@ -94,6 +95,15 @@ func (p *LFM2Parser) Init(tools []api.Tool, lastMessage *api.Message, thinkValue
 	return tools
 }
 
+// SeedFromPrompt starts in-think when the rendered prompt already opened <think>
+// (LFM2.5 templates can do that). mlx-serve seeds from bytes, not the request flag.
+func (p *LFM2Parser) SeedFromPrompt(prompt string) {
+	if thinking.PromptOpensThink(prompt) {
+		p.state = LFM2CollectingThinking
+		p.needsThinkingLeadingTrim = true
+	}
+}
+
 type lfm2Event interface {
 	isLFM2Event()
 }
@@ -129,6 +139,10 @@ func (p *LFM2Parser) Add(s string, done bool) (content string, thinking string, 
 	}
 
 	events := p.parseEvents()
+	if done && p.state == LFM2CollectingToolCalls && !strings.Contains(p.buffer.String(), lfm2ToolCallEndTag) {
+		p.buffer.WriteString(lfm2ToolCallEndTag)
+		events = append(events, p.parseEvents()...)
+	}
 
 	var toolCalls []api.ToolCall
 	var contentSb strings.Builder
@@ -378,8 +392,10 @@ func (p *LFM2Parser) parsePythonStyleToolCalls(content string) ([]api.ToolCall, 
 	content = strings.TrimSpace(content)
 
 	// Strip outer brackets if present: [func(...)] -> func(...)
-	if strings.HasPrefix(content, "[") && strings.HasSuffix(content, "]") {
-		content = content[1 : len(content)-1]
+	// Truncation may omit the closing ']'.
+	if strings.HasPrefix(content, "[") {
+		content = content[1:]
+		content = strings.TrimSuffix(strings.TrimSpace(content), "]")
 	}
 
 	var toolCalls []api.ToolCall
@@ -410,10 +426,19 @@ func (p *LFM2Parser) parsePythonStyleToolCalls(content string) ([]api.ToolCall, 
 			return nil, errors.New("invalid tool call: empty function name")
 		}
 
-		// Find matching closing parenthesis
 		closeIdx := findMatchingParen(content, parenIdx)
 		if closeIdx == -1 {
-			return nil, errors.New("invalid tool call: no matching closing parenthesis")
+			if !lfm2ToolFuncName(funcName) {
+				return nil, errors.New("invalid tool call: no matching closing parenthesis")
+			}
+			// Truncation: never ship partial args (mlx-serve).
+			toolCalls = append(toolCalls, api.ToolCall{
+				Function: api.ToolCallFunction{
+					Name:      funcName,
+					Arguments: api.NewToolCallFunctionArguments(),
+				},
+			})
+			break
 		}
 
 		argsStr := content[parenIdx+1 : closeIdx]
@@ -445,6 +470,19 @@ func (p *LFM2Parser) parsePythonStyleToolCalls(content string) ([]api.ToolCall, 
 
 // findMatchingParen finds the index of the closing parenthesis matching the one at openIdx
 // Returns -1 if not found. Handles nested parentheses and quoted strings.
+func lfm2ToolFuncName(s string) bool {
+	if s == "" || strings.Contains(s, "<|") {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '.' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func findMatchingParen(s string, openIdx int) int {
 	depth := 1
 	i := openIdx + 1

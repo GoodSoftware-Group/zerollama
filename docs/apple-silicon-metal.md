@@ -85,6 +85,19 @@ Inherited Ollama scheduler behavior (still true in zerollama):
 - **No partial-offload penalty** in memory layout (`llm/server.go` treats Metal like full GPU).
 - **No discrete VRAM recovery wait** when evicting runners (`sched.go` — unified memory).
 - **Phase 8 broker** still applies when runtime + ggml share the process.
+- **Flash attention gate:** discovery may report `Library=MTL` (not `Metal`). `ml.MetalLikeLibrary` treats both as Metal-like so FA + quantized KV can stick (ROADMAP **M27**).
+
+### GGUF flash attention + `q8_0` KV (lab / operator)
+
+For long-context GGUF on Metal, prefer stock paths:
+
+```bash
+OLLAMA_FLASH_ATTENTION=1
+OLLAMA_KV_CACHE_TYPE=q8_0
+# leave ZEROLLAMA_M4_PREFILL_Q8_KV and ZEROLLAMA_M4_PREFILL_SWIGLU unset
+```
+
+Native Q8 FA skip and fused Gate+Up SwiGLU are experiment-only (slower on M4 Max). Lab serve (never `:11434` / `:8081`): `./scripts/phase/m4_prefill_lab_serve.sh`. Details: [m4-prefill-borrowings.md](./m4-prefill-borrowings.md).
 
 ---
 
@@ -325,6 +338,7 @@ See [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track). Summary:
 | **M6** MPS LoRA training (PEFT adapters) | **Shipped** — same `/api/train` + `lora_adapter/` output as CUDA |
 | **M7** Upstream-shape GGUF benchmark | **Done** — ggml ~164 vs upstream ~158 tok/s @ 4k ctx; [phase17-llama-server.md](./phase17-llama-server.md) |
 | **M24** GGUF MTP on ggml Metal | **Partial** — ollama-engine binds `mtp.*` + `DraftForward`. Spec loop not wired. llama-server `draft-mtp` stays **off** for qwen35 (SWA/GDN). MLX safetensors already speculate. Do **not** load `qwen3.6-mtp` on `:11434`. |
+| **MLX DSv4 Flash (M26)** | `DeepseekV4ForCausalLM` (`x/models/deepseekv4`). CSA (ratio 4) + HCA (128) + SWA raw KV. **Why not stub MHA:** most layers are compressed. Load with **`create --experimental --link`**, not a blob copy. [doc](./mlx-deepseek-v4-flash.md) · [findings](./mlx-deepseek-v4-flash-findings.md). |
 
 ## GGUF MTP on Metal (M24)
 
@@ -334,9 +348,9 @@ See [ROADMAP.md](./ROADMAP.md#apple-silicon--metal-track). Summary:
 |------|-----------|
 | **MLX** (`qwen3.6:27b-mlx-mtp`) | Dense int4 trunk + [mlx-community/Qwen3.6-27B-MTP-4bit](https://huggingface.co/mlx-community/Qwen3.6-27B-MTP-4bit) (`qwen3_5_mtp`) via `DRAFT`. mlxrunner `RegisterDraft`; affine `.scales`/`.biases` remapped; MTP fields exported so `Sweep` does not drop the head. Lab: counting prompt 48/48 accept; prose is lower. Do **not** load the 22 GiB `qwen3.6-mtp` GGUF on `:11434`. |
 | **llama-server** + GGUF `draft-mtp` | **Off** for `qwen35` / `qwen35moe` — hybrid SWA/GDN cache invalidation desyncs the draft slot (token salad). `--no-spec-draft-backend-sampling` is not enough. |
-| **ggml ollama-engine** (default Mac GGUF) | Trunk AR only until now. `qwen3next` now **loads** Ollama `mtp.*` (`fc`, `pre_fc_norm_*`, one full-attn layer) and can `DraftForward`. The runner does **not** yet draft/verify. `eliza-1-2b` has **no** `mtp.*` (eagle3 sidecar). `qwen3.6-mtp` has 20 MTP tensors on a **22 GiB** MoE blob — do not load it next to production Metal serve. |
+| **ggml ollama-engine** (default Mac GGUF) | `ZEROLLAMA_GGML_MTP=1` (default off). 2-token verify graph. Causal-only: `RemoveKVTail` on reject. **Hybrid GDN:** serialize the pair, checkpoint after token 0, Restore+Remove on reject. llama-server `draft-mtp` stays **off** for qwen35. Do not load `qwen3.6-mtp` (22 GiB) on `:11434`. |
 
-Next slice: speculative accept in `runner/ollamarunner` on a **lab** port, with a dense GGUF that actually contains `mtp.*` (not the 22 GiB tag).
+Next slice: lab-port smoke on a **small** GGUF with `mtp.*` (not the 22 GiB `qwen3.6-mtp` tag). Do not enable `ZEROLLAMA_GGML_MTP` on `:11434`.
 
 ## GPU bootstrap discovery (Jun 2026)
 

@@ -41,9 +41,67 @@ func stripThinkToggleMarkers(s string) string {
 	return strings.TrimRight(thinkToggleTrailRe.ReplaceAllString(s, ""), " \t\n\r")
 }
 
-// sanitizeAssistantContent strips control tokens and think-toggle echo.
+// sanitizeAssistantContent strips control tokens, think-toggle echo, leaked
+// think tags, and unparsed tool markup (mlx-serve trimLeakedToolMarkup /
+// trimTrailingThinkClosers).
 func sanitizeAssistantContent(s string) string {
-	return stripThinkToggleMarkers(stripChatControlTokens(s))
+	return trimThinkTagLeaks(trimLeakedToolMarkup(stripThinkToggleMarkers(stripChatControlTokens(s))))
+}
+
+// sanitizeAssistantThinking applies the same tool-markup and think-tag cuts
+// to reasoning so tags never ride out on that channel either.
+func sanitizeAssistantThinking(s string) string {
+	return trimThinkTagLeaks(trimLeakedToolMarkup(stripChatControlTokens(s)))
+}
+
+const thinkOpenTag = "<think>"
+const thinkCloseTag = "</think>"
+
+// trimThinkTagLeaks drops a pos-0 unclosed <think> and trailing </think>
+// closers (mlx-serve). Mid-string tags are left alone.
+func trimThinkTagLeaks(s string) string {
+	lead := strings.TrimLeft(s, " \t\n\r")
+	if strings.HasPrefix(lead, thinkOpenTag) {
+		rest := lead[len(thinkOpenTag):]
+		if !strings.Contains(rest, thinkCloseTag) {
+			s = strings.TrimLeft(rest, " \t\n\r")
+		}
+	}
+	for {
+		t := strings.TrimRight(s, " \t\n\r")
+		if !strings.HasSuffix(t, thinkCloseTag) {
+			return t
+		}
+		s = t[:len(t)-len(thinkCloseTag)]
+	}
+}
+
+var leakedToolOpeners = []string{
+	"<tool_call>",
+	"<|tool_call>",
+	"<|tool_call|>",
+	"<|tool_call_start|>",
+	"<|tool_calls_section_begin|>",
+	"<|tool_call_begin|>",
+	"<atem:function_calls>",
+	"<start_function_call>",
+	"<function_calls>",
+	"<|START_ACTION|>",
+}
+
+// trimLeakedToolMarkup cuts at the first tool-wrapper opener so unparsed
+// markup never appears as assistant content. Applied once, at the earliest hit.
+func trimLeakedToolMarkup(s string) string {
+	cut := -1
+	for _, o := range leakedToolOpeners {
+		if i := strings.Index(s, o); i >= 0 && (cut < 0 || i < cut) {
+			cut = i
+		}
+	}
+	if cut < 0 {
+		return s
+	}
+	return strings.TrimRight(s[:cut], " \t\n\r")
 }
 
 func usesQwenStyleChat(m *Model) bool {

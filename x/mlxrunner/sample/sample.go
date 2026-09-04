@@ -12,6 +12,7 @@ type Options struct {
 	Temperature      float32
 	TopP             float32
 	MinP             float32
+	TypicalP         float32
 	TopK             int
 	RepeatLastN      int
 	RepeatPenalty    float32
@@ -82,6 +83,20 @@ func (d Distribution) SampleWithKey(key *mlx.Array) *mlx.Array {
 		return choice
 	}
 	return d.IDs.TakeAlongAxis(choice.ExpandDims(-1), -1).Squeeze(-1).AsType(mlx.DTypeInt32)
+}
+
+// GreedyToken is the argmax id per row. At temperature 0, Distribution stores
+// that id as a one-hot IDs column — reuse it instead of a Categorical draw so
+// a draft chain can stay on-device until the next Eval (mtplx greedy-chain).
+func (d Distribution) GreedyToken() *mlx.Array {
+	if d.IDs != nil {
+		ids := d.IDs
+		if ids.NumDims() >= 1 && ids.Dim(ids.NumDims()-1) == 1 {
+			ids = ids.Squeeze(-1)
+		}
+		return ids.AsType(mlx.DTypeInt32)
+	}
+	return d.Probs.Argmax(-1, false).AsType(mlx.DTypeInt32)
 }
 
 // Prob returns the probability assigned to one token per row.
@@ -189,17 +204,23 @@ type Sampler struct {
 	// numCtx is the runner's context window; normalize uses it to
 	// resolve the repeat_last_n == -1 sentinel.
 	numCtx int
+
+	// banned is int32 token ids to never sample (FIM/pad-unk), shape [K].
+	banned *mlx.Array
 }
 
 type slotState struct {
 	opts          Options
 	historyLen    int
 	randomCounter uint64
+	biasIDs       *mlx.Array
+	biasVals      *mlx.Array
 }
 
 type slotCtx struct {
 	opts    Options
 	history *mlx.Array // 2D [B, W] when penalties are configured; nil otherwise
+	banned  *mlx.Array // 1-D int32 ids; nil if none
 }
 
 // New constructs an empty sampler with no registered slots. numCtx is
@@ -255,6 +276,24 @@ func (o Options) normalize(numCtx int) Options {
 	return o
 }
 
+func (s *Sampler) ctx(opts Options, hist *mlx.Array) *slotCtx {
+	return &slotCtx{opts: opts, history: hist, banned: s.banned}
+}
+
+// SetBannedIDs never-samples these vocab ids (mlx-serve reserved FIM tokens).
+// Logprobs stay on the raw logits; only the draw is masked.
+func (s *Sampler) SetBannedIDs(ids []int32) {
+	if s.banned != nil {
+		mlx.Unpin(s.banned)
+		s.banned = nil
+	}
+	if len(ids) == 0 {
+		return
+	}
+	s.banned = mlx.NewArrayInt32(ids, []int32{int32(len(ids))})
+	mlx.Pin(s.banned)
+}
+
 // Add registers a sequence under seqID. The last RepeatLastN entries of
 // priorTokens seed the ring buffer.
 func (s *Sampler) Add(seqID int, opts Options, priorTokens []int32) {
@@ -308,6 +347,35 @@ func (s *Sampler) Add(seqID int, opts Options, priorTokens []int32) {
 	s.recomputeInvariants()
 }
 
+// SetSlotLogitBias adds OpenAI logit_bias to an already-registered slot.
+func (s *Sampler) SetSlotLogitBias(seqID int, bias map[int32]float32) {
+	slot, ok := s.byID[seqID]
+	if !ok || len(bias) == 0 {
+		return
+	}
+	ids := make([]int32, 0, len(bias))
+	vals := make([]float32, 0, len(bias))
+	for id, v := range bias {
+		ids = append(ids, id)
+		vals = append(vals, v)
+	}
+	slot.freeBias()
+	slot.biasIDs = mlx.NewArrayInt32(ids, []int32{int32(len(ids))})
+	slot.biasVals = mlx.FromValues(vals, len(vals))
+	mlx.Pin(slot.biasIDs)
+	mlx.Pin(slot.biasVals)
+}
+
+func (slot *slotState) freeBias() {
+	if slot == nil {
+		return
+	}
+	mlx.Unpin(slot.biasIDs)
+	mlx.Unpin(slot.biasVals)
+	slot.biasIDs = nil
+	slot.biasVals = nil
+}
+
 // makeHistoryRow builds a [1, width] int32 row with the last repeatLastN
 // entries of priorTokens packed into [0, min(len, repeatLastN)), zeros
 // elsewhere.
@@ -357,6 +425,7 @@ func (s *Sampler) Remove(seqID int) {
 
 	row := slices.Index(s.slots, slot)
 	s.slots = slices.Delete(s.slots, row, row+1)
+	slot.freeBias()
 	s.recomputeInvariants()
 
 	if s.history == nil {
@@ -386,7 +455,11 @@ func (s *Sampler) Remove(seqID int) {
 // Free releases the pooled history tensor and resets the sampler to the
 // New-equivalent state so it may be reused.
 func (s *Sampler) Free() {
+	for _, slot := range s.slots {
+		slot.freeBias()
+	}
 	mlx.Unpin(s.history)
+	mlx.Unpin(s.banned)
 	*s = Sampler{
 		byID:        make(map[int]*slotState),
 		allSameOpts: true,
@@ -464,7 +537,7 @@ func (s *Sampler) Distribution(seqID int, logits *mlx.Array, draftTokens *mlx.Ar
 		hist = s.speculativeHistory(slot, draftTokens, rows)
 	}
 
-	return slot.distribution(&slotCtx{opts: slot.opts, history: hist}, logits)
+	return slot.distribution(s.ctx(slot.opts, hist), logits)
 }
 
 // SpeculativeScores applies this slot's sampling transforms to logits without
@@ -486,7 +559,7 @@ func (s *Sampler) SpeculativeScores(seqID int, logits *mlx.Array, draftTokens *m
 		hist = s.speculativeHistory(slot, draftTokens, rows)
 	}
 
-	return slot.speculativeScores(&slotCtx{opts: slot.opts, history: hist}, logits)
+	return slot.speculativeScores(s.ctx(slot.opts, hist), logits)
 }
 
 // SampleDistribution draws from a precomputed distribution while advancing
@@ -509,6 +582,16 @@ func (s *Sampler) mustSlot(caller string, seqID int) *slotState {
 		panic(fmt.Sprintf("sample.Sampler.%s: seqID %d not registered", caller, seqID))
 	}
 	return slot
+}
+
+// Greedy reports whether seqID samples by argmax (temperature <= 0).
+// Unregistered slots are not greedy (telemetry may call this after Remove).
+func (s *Sampler) Greedy(seqID int) bool {
+	if s == nil {
+		return false
+	}
+	slot, ok := s.byID[seqID]
+	return ok && slot != nil && slot.opts.Temperature <= 0
 }
 
 func (s *Sampler) speculativeInputs(caller string, seqID int, logits *mlx.Array, draftTokens *mlx.Array) (*slotState, *mlx.Array, *mlx.Array) {
@@ -606,7 +689,7 @@ func (s *Sampler) speculativeDistributionSerial(slot *slotState, logits *mlx.Arr
 				hist = hist.Slice(mlx.Slice(), mlx.Slice(hist.Dim(1)-slot.opts.RepeatLastN, mlx.End))
 			}
 		}
-		dists = append(dists, slot.distribution(&slotCtx{opts: slot.opts, history: hist}, rowLogits))
+		dists = append(dists, slot.distribution(s.ctx(slot.opts, hist), rowLogits))
 	}
 	return ConcatenateDistributions(dists)
 }
@@ -667,6 +750,13 @@ func (s *Sampler) canBatch(slots []*slotState) (Options, bool) {
 	// slots is non-empty (Sample guards) and every slot is registered,
 	// so s.slots[0].opts is the canonical shared value.
 	shared := s.slots[0].opts
+	if len(slots) > 1 {
+		for _, slot := range slots {
+			if slot.biasIDs != nil {
+				return Options{}, false
+			}
+		}
+	}
 	// TODO(pdevine): Before using multi-slot batching with seeded stochastic sampling,
 	// make sure each row gets its own per-slot random key instead of sharing
 	// slots[0]'s key through one batched categorical op.
@@ -698,7 +788,7 @@ func (s *Sampler) sampleTokensUniform(slots []*slotState, opts Options, logits *
 		}
 	}
 
-	ctx := &slotCtx{opts: opts, history: hist}
+	ctx := s.ctx(opts, hist)
 	token := slots[0].sample(ctx, logits)
 	if opts.UseSeed && opts.Temperature != 0 {
 		// TODO: This only keeps counters aligned; it does not give each slot
@@ -745,7 +835,7 @@ func (s *Sampler) sampleTokensSerial(slots []*slotState, logits *mlx.Array) *mlx
 			)
 		}
 
-		ctx := &slotCtx{opts: slot.opts, history: hist}
+		ctx := s.ctx(slot.opts, hist)
 		perSlotTokens[i] = slot.sample(ctx, row)
 	}
 
@@ -815,12 +905,36 @@ func mixSeed(seed, counter uint64) uint64 {
 	return z ^ (z >> splitMix64FinalShift)
 }
 
+func applyBannedLogits(scores, banned *mlx.Array) *mlx.Array {
+	if banned == nil {
+		return scores
+	}
+	b := scores.Dim(0)
+	k := banned.Dim(0)
+	idx := mlx.BroadcastTo(banned.ExpandDims(0), int32(b), int32(k))
+	vals := mlx.AddScalar(mlx.Zeros(mlx.DTypeFloat32, b, k), float32(math.Inf(-1)))
+	return scores.PutAlongAxis(idx, vals, -1)
+}
+
+func applyLogitBias(scores, ids, vals *mlx.Array) *mlx.Array {
+	if ids == nil || vals == nil {
+		return scores
+	}
+	b := scores.Dim(0)
+	k := ids.Dim(0)
+	idx := mlx.BroadcastTo(ids.ExpandDims(0), int32(b), int32(k))
+	delta := mlx.BroadcastTo(vals.ExpandDims(0), int32(b), int32(k))
+	cur := scores.TakeAlongAxis(idx, -1).AsType(mlx.DTypeFloat32)
+	return scores.PutAlongAxis(idx, mlx.Add(cur, delta), -1)
+}
+
 func (slot *slotState) baseScores(ctx *slotCtx, logits *mlx.Array) *mlx.Array {
 	scores := logits
 	if slot.opts.usesHistory() {
 		scores = penalty(ctx, scores)
 	}
-	return scores
+	scores = applyLogitBias(scores, slot.biasIDs, slot.biasVals)
+	return applyBannedLogits(scores, ctx.banned)
 }
 
 func (slot *slotState) distribution(ctx *slotCtx, logits *mlx.Array) Distribution {
@@ -844,6 +958,7 @@ func sparseDistribution(opts Options, scores *mlx.Array) Distribution {
 	probs := mlx.SoftmaxAxis(mlx.DivScalar(topScores, opts.Temperature), -1, true)
 	probs = applyTopPProbs(probs, opts.TopP)
 	probs = applyMinPProbs(probs, opts.MinP)
+	probs = applyTypicalPProbs(probs, opts.TypicalP)
 	return Distribution{IDs: ids, Probs: normalizeProbs(probs)}
 }
 
@@ -851,6 +966,7 @@ func denseDistribution(opts Options, scores *mlx.Array) Distribution {
 	probs := mlx.SoftmaxAxis(mlx.DivScalar(scores.AsType(mlx.DTypeFloat32), opts.Temperature), -1, true)
 	probs = applyTopPProbs(probs, opts.TopP)
 	probs = applyMinPProbs(probs, opts.MinP)
+	probs = applyTypicalPProbs(probs, opts.TypicalP)
 	return Distribution{Probs: normalizeProbs(probs)}
 }
 
@@ -872,6 +988,24 @@ func applyMinPProbs(probs *mlx.Array, minP float32) *mlx.Array {
 	}
 	threshold := mlx.MulScalar(probs.MaxAxis(-1, true), minP)
 	return mlx.Where(probs.Less(threshold), mlx.FromValue(float32(0)), probs)
+}
+
+// applyTypicalPProbs keeps the locally typical mass (HF / llama.cpp typ_p).
+// Disabled at p>=1 (Ollama default 1.0). p=0 keeps the single most typical token.
+func applyTypicalPProbs(probs *mlx.Array, typicalP float32) *mlx.Array {
+	if typicalP < 0 || typicalP >= 1 {
+		return probs
+	}
+	clipped := mlx.Maximum(probs, mlx.FromValue(float32(1e-20)))
+	nll := mlx.Log(clipped).Negative()
+	entropy := probs.Multiply(nll).SumAxis(-1, true)
+	shifted := nll.Subtract(entropy).Abs()
+	order := shifted.ArgsortAxis(-1)
+	sorted := probs.TakeAlongAxis(order, -1)
+	prevCum := sorted.Cumsum(-1, false, true).Subtract(sorted)
+	keep := prevCum.LessEqual(mlx.FromValue(typicalP))
+	filtered := mlx.Where(keep, sorted, mlx.FromValue(float32(0)))
+	return mlx.Zeros(probs.DType(), probs.Dims()...).PutAlongAxis(order, filtered, -1)
 }
 
 func normalizeProbs(probs *mlx.Array) *mlx.Array {

@@ -296,13 +296,15 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   _BUILD_UMA="${BUILD_UMA:-auto}"
   _UMA_DIR="${ZEROLLAMA_ROOT}/x/uma"
   _UMA_TOOLKIT="${BMTL_UMA_TOOLKIT:-${ZEROLLAMA_ROOT}/../bmtl/hardware_lab/lanes/m4/uma_toolkit}"
+  # shellcheck source=scripts/build/uma_toolkit.sh
+  source "${ZEROLLAMA_ROOT}/scripts/build/uma_toolkit.sh"
   if [[ "${_BUILD_UMA}" == "1" || "${_BUILD_UMA}" == "on" || "${_BUILD_UMA}" == "true" ]]; then
     _do_uma=1
   elif [[ "${_BUILD_UMA}" == "0" || "${_BUILD_UMA}" == "off" || "${_BUILD_UMA}" == "false" ]]; then
     _do_uma=0
   else
-    # auto
-    if [[ -f "${_UMA_TOOLKIT}/uma_client.c" && -f "${_UMA_DIR}/Makefile" ]]; then
+    # auto — src/uma_client.c is current bmtl layout; root uma_client.c is legacy
+    if BMTL_UMA_TOOLKIT="${_UMA_TOOLKIT}" uma_toolkit_present && [[ -f "${_UMA_DIR}/Makefile" ]]; then
       _do_uma=1
     else
       _do_uma=0

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/ollama/ollama/api"
 )
@@ -64,6 +66,14 @@ func (p *GlimmerParser) Init(tools []api.Tool, lastMessage *api.Message, thinkVa
 	p.emitThinking = thinkValue == nil || thinkValue.Bool()
 	p.contentStreamed = false
 	return tools
+}
+
+// SeedFromPrompt starts in the user channel when think-off committed
+// ` to=user<|message|>` on the prompt (mlx-serve noThinkTailSuffix).
+func (p *GlimmerParser) SeedFromPrompt(prompt string) {
+	if strings.HasSuffix(prompt, " to=user<|message|>") {
+		p.state = glimmerParserContent
+	}
 }
 
 func (p *GlimmerParser) Add(s string, done bool) (content string, thinking string, calls []api.ToolCall, err error) {
@@ -414,7 +424,39 @@ func glimmerCutInvokeName(s string) (name, rest string, ok bool) {
 	if fumbled {
 		slog.Warn("glimmer parser recovered stray message boundary token in ATEM invoke name", "name", b.String())
 	}
-	return b.String(), rest, true
+	name = glimmerTrailingIdentifier(b.String())
+	if name == "" || strings.Contains(name, "<|") {
+		return "", "", false
+	}
+	return name, rest, true
+}
+
+// glimmerTrailingIdentifier is the last identifier in an invoke name (mlx-serve
+// Inkling salvage: error-echo prefixes are not the tool). `<|` truncates first.
+func glimmerTrailingIdentifier(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "<|"); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	ident := ""
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			j := i
+			for j < len(s) {
+				r2, sz := utf8.DecodeRuneInString(s[j:])
+				if !(r2 == '_' || r2 == '.' || unicode.IsLetter(r2) || unicode.IsDigit(r2)) {
+					break
+				}
+				j += sz
+			}
+			ident = strings.Trim(s[i:j], ".")
+			i = j
+			continue
+		}
+		i += size
+	}
+	return ident
 }
 
 func (p *GlimmerParser) parseToolCall(body string) (api.ToolCall, error) {
@@ -430,7 +472,7 @@ func (p *GlimmerParser) parseToolCall(body string) (api.ToolCall, error) {
 
 	name, args, err := parseGlimmerATEM(body, tool)
 	if err != nil {
-		return api.ToolCall{}, fmt.Errorf("parse Glimmer call to %s: %w", p.recipient, err)
+		return p.newToolCall(recipient, api.NewToolCallFunctionArguments()), nil
 	}
 	if resolved, ok := glimmerResolveToolName(p.tools, name); !ok || resolved != recipient {
 		return api.ToolCall{}, fmt.Errorf("Glimmer recipient %q does not match ATEM invoke %q", p.recipient, name)
@@ -477,38 +519,48 @@ func glimmerToolsByName(tools []api.Tool) map[string]api.Tool {
 
 func parseGlimmerATEM(body string, tool api.Tool) (string, api.ToolCallFunctionArguments, error) {
 	body = strings.TrimSpace(body)
-	if !strings.HasPrefix(body, glimmerATEMCallsOpen) || !strings.HasSuffix(body, glimmerATEMCallsClose) {
+	if !strings.HasPrefix(body, glimmerATEMCallsOpen) {
 		return "", api.ToolCallFunctionArguments{}, fmt.Errorf("missing ATEM function_calls wrapper")
 	}
+	body = strings.TrimSpace(strings.TrimPrefix(body, glimmerATEMCallsOpen))
+	body = strings.TrimSuffix(body, glimmerATEMCallsClose)
+	body = strings.TrimSpace(body)
 
-	invoke := strings.TrimSpace(body[len(glimmerATEMCallsOpen) : len(body)-len(glimmerATEMCallsClose)])
-	if !strings.HasPrefix(invoke, glimmerATEMInvokeOpen) || !strings.HasSuffix(invoke, glimmerATEMInvokeClose) {
+	if !strings.HasPrefix(body, glimmerATEMInvokeOpen) {
 		return "", api.ToolCallFunctionArguments{}, fmt.Errorf("missing ATEM invoke wrapper")
 	}
-	invoke = invoke[len(glimmerATEMInvokeOpen):]
+	invoke := body[len(glimmerATEMInvokeOpen):]
 	name, rest, ok := glimmerCutInvokeName(invoke)
-	if !ok || len(rest) < len(glimmerATEMInvokeClose) {
+	if !ok {
 		return "", api.ToolCallFunctionArguments{}, fmt.Errorf("malformed ATEM invoke name")
 	}
-	params := rest[:len(rest)-len(glimmerATEMInvokeClose)]
+	params := rest
+	if strings.HasSuffix(params, glimmerATEMInvokeClose) {
+		params = params[:len(params)-len(glimmerATEMInvokeClose)]
+	}
 	params = strings.TrimPrefix(params, "\n")
 	params = strings.TrimSuffix(params, "\n")
 
 	args := api.NewToolCallFunctionArguments()
 	for params != "" {
+		params = strings.TrimPrefix(params, "\n")
+		if params == "" {
+			break
+		}
 		if !strings.HasPrefix(params, glimmerATEMParamOpen) {
-			return "", api.ToolCallFunctionArguments{}, fmt.Errorf("malformed ATEM parameter")
+			break
 		}
 		params = params[len(glimmerATEMParamOpen):]
 		paramNameEnd := strings.Index(params, `">`)
 		if paramNameEnd < 0 {
-			return "", api.ToolCallFunctionArguments{}, fmt.Errorf("malformed ATEM parameter name")
+			break
 		}
 		paramName := params[:paramNameEnd]
 		params = params[paramNameEnd+2:]
 		valueEnd := strings.Index(params, glimmerATEMParamClose)
 		if valueEnd < 0 {
-			return "", api.ToolCallFunctionArguments{}, fmt.Errorf("unterminated ATEM parameter %q", paramName)
+			// Truncated parameter: keep completed pairs only.
+			break
 		}
 		value := params[:valueEnd]
 		params = params[valueEnd+len(glimmerATEMParamClose):]

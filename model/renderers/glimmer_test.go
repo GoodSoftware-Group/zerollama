@@ -133,6 +133,33 @@ func TestGlimmerRenderToolResultName(t *testing.T) {
 	}
 }
 
+func TestGlimmerDropPriorTurnReasoning(t *testing.T) {
+	got, err := (&GlimmerRenderer{currentDate: "2026-07-29"}).Render([]api.Message{
+		{Role: "user", Content: "Q1"},
+		{Role: "assistant", Thinking: "old reason", Content: "A1"},
+		{Role: "user", Content: "Q2"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "old reason") {
+		t.Fatalf("prior-turn reasoning should be dropped:\n%s", got)
+	}
+	if !strings.Contains(got, "A1") {
+		t.Fatalf("prior answer content missing:\n%s", got)
+	}
+	gotKeep, err := (&GlimmerRenderer{currentDate: "2026-07-29"}).Render([]api.Message{
+		{Role: "user", Content: "Q1"},
+		{Role: "assistant", Thinking: "current reason", Content: "A1"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotKeep, "current reason") {
+		t.Fatalf("current-turn reasoning missing:\n%s", gotKeep)
+	}
+}
+
 func TestGlimmerRendererRegistered(t *testing.T) {
 	if rendererForName("glimmer") == nil {
 		t.Fatal("glimmer renderer is not registered")

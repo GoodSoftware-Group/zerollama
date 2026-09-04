@@ -59,7 +59,7 @@ func TestDecideRouterKNN(t *testing.T) {
 		}
 		return []float32{0, 1}, nil
 	}
-	dec, err := decideRouter(t.Context(), "agent", spec, "fix this rust borrow checker error", nil, embed)
+	dec, err := decideRouter(t.Context(), "agent", spec, "fix this rust borrow checker error", nil, embed, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestDecideRouterKNNFallbackFar(t *testing.T) {
 		}
 		return []float32{0, 1}, nil
 	}
-	dec, err := decideRouter(t.Context(), "agent", spec, "unrelated weather chat", nil, embed)
+	dec, err := decideRouter(t.Context(), "agent", spec, "unrelated weather chat", nil, embed, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

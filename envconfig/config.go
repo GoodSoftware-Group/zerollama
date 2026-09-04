@@ -445,6 +445,35 @@ func RouterRewrite() bool {
 	return true
 }
 
+// ChatCompression opts in summary-style compression for ordinary chats.
+// Agent threads with tool output or thinking auto-elide (placeholder) without this.
+func ChatCompression() bool {
+	s := strings.TrimSpace(strings.ToLower(Var("ZEROLLAMA_CHAT_COMPRESSION")))
+	return s == "1" || s == "true" || s == "on"
+}
+
+// ToolAutocorrect is mlx-serve schema coerce + buried-arg hoist (default on).
+// ZEROLLAMA_TOOL_AUTOCORRECT=0 passes model arguments through unchanged.
+func ToolAutocorrect() bool {
+	s := strings.TrimSpace(strings.ToLower(Var("ZEROLLAMA_TOOL_AUTOCORRECT")))
+	return s != "0" && s != "false" && s != "off"
+}
+
+// ChatCompressor is the default summarizer model when compression is on and
+// the request omits compressor_model. Empty uses the primary chat model.
+func ChatCompressor() string {
+	return strings.TrimSpace(Var("ZEROLLAMA_CHAT_COMPRESSOR"))
+}
+
+// ChatCompressionMode overrides auto mode ("placeholder" vs "summary"). Empty = auto.
+func ChatCompressionMode() string {
+	s := strings.ToLower(strings.TrimSpace(Var("ZEROLLAMA_CHAT_COMPRESSION_MODE")))
+	if s == "placeholder" || s == "summary" {
+		return s
+	}
+	return ""
+}
+
 // AliasesConfigPath is the YAML map for LA17 live model aliases.
 // Default: $OLLAMA_MODELS/../aliases.yaml. Empty disables (`0`/`off`).
 func AliasesConfigPath() string {
@@ -616,6 +645,7 @@ func AsMap() map[string]EnvVar {
 		"FLASH_MOE_REPO":                           {"FLASH_MOE_REPO", FlashMoERepo(), "anemll-flash-llama.cpp checkout for build script"},
 		"ANE_REPO":                                 {"ANE_REPO", ANERepo(), "maderix/ane checkout for ANE probe bridge"},
 		"ZEROLLAMA_ANE_DRAFT":                      {"ZEROLLAMA_ANE_DRAFT", ANEDraftEnabled(), "Route speculative draft to ANE when wired (default off)"},
+		"ZEROLLAMA_GGML_MTP":                       {"ZEROLLAMA_GGML_MTP", GgmlMTPObserveEnabled(), "ollamarunner MTP observe+2-token verify (default off; lab only)"},
 		"ZEROLLAMA_EDGE":                           {"ZEROLLAMA_EDGE", EdgeMode(), "Phase 16 upstream-shaped edge: llama-server GGUF, runtime chat off (1/on)"},
 		"ZEROLLAMA_RUNTIME_DARWIN_SIDECAR":         {"ZEROLLAMA_RUNTIME_DARWIN_SIDECAR", darwinSidecarEnvDisplay(), "Darwin uv sidecar: unset/on=persist, managed=kill with serve, 0=off"},
 		"ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD":       {"ZEROLLAMA_MEMORY_RECLAIM_THRESHOLD", MemoryReclaimThreshold(), "GPU VRAM usage ratio (0–1) to evict idle LRU runner; 0=off"},
@@ -628,6 +658,10 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_ROUTER_CONFIG":                  {"ZEROLLAMA_ROUTER_CONFIG", RouterConfigPath(), "LA11 router YAML (default ~/.ollama/router.yaml; 0=off)"},
 		"ZEROLLAMA_ROUTER_REWRITE":                 {"ZEROLLAMA_ROUTER_REWRITE", RouterRewrite(), "Rewrite chat/generate model when the name is a router (default on)"},
 		"ZEROLLAMA_ALIASES_CONFIG":                 {"ZEROLLAMA_ALIASES_CONFIG", AliasesConfigPath(), "LA17 aliases YAML (default ~/.ollama/aliases.yaml; 0=off)"},
+		"ZEROLLAMA_CHAT_COMPRESSION":               {"ZEROLLAMA_CHAT_COMPRESSION", ChatCompression(), "Opt-in summary compress for non-agent chat (1/on). Tool/think threads auto-elide without this."},
+		"ZEROLLAMA_TOOL_AUTOCORRECT":               {"ZEROLLAMA_TOOL_AUTOCORRECT", ToolAutocorrect(), "Coerce tool args to the tool schema and hoist buried required keys (default on; 0=off)"},
+		"ZEROLLAMA_CHAT_COMPRESSOR":                {"ZEROLLAMA_CHAT_COMPRESSOR", ChatCompressor(), "Summarizer model for summary mode (empty=primary)"},
+		"ZEROLLAMA_CHAT_COMPRESSION_MODE":          {"ZEROLLAMA_CHAT_COMPRESSION_MODE", ChatCompressionMode(), "Optional override: summary or placeholder (empty=auto)"},
 		"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL":        {"ZEROLLAMA_SCHED_WATCHDOG_INTERVAL", SchedWatchdogInterval(), "Scheduler memory/busy watchdog tick interval (default 30s)"},
 		"ZEROLLAMA_ELIZA_NGRAM":                    {"ZEROLLAMA_ELIZA_NGRAM", ElizaNgramDefault(), "Auto ngram-simple for eliza-1-* on llama-server (1/on; default off)"},
 		"ZEROLLAMA_SPEC_DM_ADAPTIVE":               {"ZEROLLAMA_SPEC_DM_ADAPTIVE", SpecDmAdaptive(), "Bee B1 adaptive DFlash draft-max: profit/1/on (default off)"},

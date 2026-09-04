@@ -16,7 +16,9 @@
 | **llama.cpp** | `../llama.cpp` | [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) | [LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md), [llama-fork-watchlist.md](./llama-fork-watchlist.md) | Pin bumps only |
 | **Ollama upstream** | `../ollama-upstream` | [ollama/ollama](https://github.com/ollama/ollama) | [upstream-ollama-diff.md](./upstream-ollama-diff.md) | As needed (mergeability) |
 | **eliza llama fork** | `../eliza-llama.cpp` | elizaOS/llama.cpp | [llama-fork-watchlist.md](./llama-fork-watchlist.md) | L2 kernel watch |
-| **ANE / MLX / toolkit** | `../ane`, `../mlx`, `../mlx-c`, `../bmtl` | various | [ane-draft-inprocess.md](./ane-draft-inprocess.md); **bmtl gigatoken techniques** → [faster-bpe-tokenize.md](./faster-bpe-tokenize.md) (patches **0106–0126**, do **not** vendor Rust) | Mac-only / technique watch |
+| **ANE / MLX / toolkit** | `../ane`, `../mlx`, `../mlx-c`, `../bmtl` | various | [ane-draft-inprocess.md](./ane-draft-inprocess.md); **bmtl gigatoken techniques** → [faster-bpe-tokenize.md](./faster-bpe-tokenize.md) (pretok through **0105**; **0122–0126** = m4-prefill stubs, do **not** vendor Rust) | Mac-only / technique watch |
+| **m4-prefill-engine** | `../m4-prefill-engine` | [mohamedhossammohamed/m4-prefill-engine](https://github.com/mohamedhossammohamed/m4-prefill-engine) | [m4-prefill-borrowings.md](./m4-prefill-borrowings.md) + [findings](./m4-prefill-borrowings-findings.md) — **speed track closed**: durable MTL FA + FA/`q8_0` (stock kv_f16); fused SwiGLU / native Q8 FA opt-in but regress on M4 Max; P2–P3 staged. Lab: `scripts/phase/m4_prefill_lab_serve.sh` | As needed (ggml-metal prefill) |
+| **mlx-serve** | `../mlx-serve` | [ddalcu/mlx-serve](https://github.com/ddalcu/mlx-serve) | [mlx-serve-borrowings.md](./mlx-serve-borrowings.md) — PLD / spec gates / Metal cookbook; **do not vendor Zig** | As needed (Mac MLX serving) |
 | **Wan2GP** | `../Wan2GP` (CT: `/root/Wan2GP`) | [deepbeepmeep/Wan2GP](https://github.com/deepbeepmeep/Wan2GP) | [wangp-borrowings.md](./wangp-borrowings.md) (`mmgp` VRAM) | As needed (video VRAM / zoo watch) |
 | **h3.c** | `../h3.c` | [antirez/h3.c](https://github.com/antirez/h3.c) | Metal MiniMax-H3 **C rematch** for [video-c.md](./video-c.md) (`--family h3`); not the product runner | As needed (H3 parity) |
 | **minimax-h3-mlx** | `../minimax-h3-mlx` | [mrbizarro/minimax-h3-mlx](https://github.com/mrbizarro/minimax-h3-mlx) | MLX MiniMax-H3 **Python rematch oracle** (packing, AdaLN cache, TE layer-50, VAEs) for video-c Darwin | As needed (H3 parity / dumps) |
@@ -57,6 +59,7 @@ Other checkouts under the same parent (`ggml/`, `shard/`, rotorquant labs, …) 
 | SGLang `main` (prior) | `4e5a05148a` | 2026-07-28 | **Brought:** #31417 / #31438 / #31832 / #29436 (`session_id`) |
 | LocalAI | v4.5.6 tree | 2026-07-03 | LA11+ candidates in [localai-borrowings.md](./localai-borrowings.md) |
 | Wan2GP `main` | `7e45fe7e2110` | 2026-08-11 | **Brought:** `mmgp==3.7.12` attach for 16g TI2V — [wangp-borrowings.md](./wangp-borrowings.md) |
+| mlx-serve | README / `pld_index.zig` | 2026-08-24 | **Brought:** PLD + spec gates — [mlx-serve-borrowings.md](./mlx-serve-borrowings.md) |
 
 ---
 

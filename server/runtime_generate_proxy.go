@@ -123,7 +123,7 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 				writeRuntimeProxyError(c, err)
 				return
 			}
-			if err := forwardRuntimeNDJSON(c, "/api/generate", payload); err != nil {
+			if err := forwardRuntimeNDJSON(c, "/api/generate", payload, nil); err != nil {
 				writeRuntimeProxyError(c, err)
 			}
 			return

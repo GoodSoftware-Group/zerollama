@@ -38,6 +38,57 @@ func TestStripThinkToggleMarkers(t *testing.T) {
 	}
 }
 
+func TestTrimLeakedToolMarkup(t *testing.T) {
+	got := sanitizeAssistantContent("I'll call it.\n<tool_call>\n{\"name\":\"x\"}\n</tool_call>")
+	if got != "I'll call it." {
+		t.Fatalf("got %q", got)
+	}
+	got = sanitizeAssistantContent("plain answer")
+	if got != "plain answer" {
+		t.Fatalf("plain %q", got)
+	}
+
+	cases := []struct {
+		in, want string
+	}{
+		{"Checking.<|tool_call_start|>[get_weather()]", "Checking."},
+		{"Calling.<atem:function_calls><atem:invoke name=\"read\">", "Calling."},
+		{"Gemma.<|tool_call>call:write{x:1}", "Gemma."},
+		{"FG.<start_function_call>call:get_weather{}", "FG."},
+		{"Olmo.<function_calls>get_weather(location=\"SF\")", "Olmo."},
+		{"North.<|START_ACTION|>[{\"tool_name\":\"x\"}]", "North."},
+	}
+	for _, tc := range cases {
+		if got := sanitizeAssistantContent(tc.in); got != tc.want {
+			t.Fatalf("in=%q got=%q want=%q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestTrimThinkTagLeaks(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"answer</think>", "answer"},
+		{"answer</think></think>", "answer"},
+		{"<think>unclosed reasoning", "unclosed reasoning"},
+		{"<think>a</think>visible", "<think>a</think>visible"},
+		{"The closer </think> in docs stays", "The closer </think> in docs stays"},
+		{"plain", "plain"},
+	}
+	for _, tc := range cases {
+		if got := trimThinkTagLeaks(tc.in); got != tc.want {
+			t.Fatalf("in=%q got=%q want=%q", tc.in, got, tc.want)
+		}
+	}
+	if got := sanitizeAssistantContent("OK</think>"); got != "OK" {
+		t.Fatalf("content %q", got)
+	}
+	if got := sanitizeAssistantThinking("plan\n<tool_call>{\"name\":\"x\"}"); got != "plan" {
+		t.Fatalf("thinking %q", got)
+	}
+}
+
 func TestDefaultRendererForFamilyQwen35(t *testing.T) {
 	got := defaultRendererForFamily(&Model{Config: model.ConfigV2{ModelFamily: "qwen35"}})
 	if got != "qwen3.5" {

@@ -104,9 +104,19 @@ func cloneInferenceModel(src *Model) *Model {
 	dst.ProjectorPaths = slices.Clone(src.ProjectorPaths)
 	dst.License = slices.Clone(src.License)
 	dst.Options = maps.Clone(src.Options)
+	dst.GenSampling = maps.Clone(src.GenSampling)
 	dst.Messages = slices.Clone(src.Messages)
 
 	return &dst
+}
+
+func (c *inferenceModelCache) Invalidate() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	clear(c.entries)
+	c.mu.Unlock()
 }
 
 func (s *Server) getModel(name string) (*Model, error) {

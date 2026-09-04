@@ -43,6 +43,10 @@ typedef struct wan_ctx wan_ctx;
 wan_ctx *wan_ctx_open(const char *ckpt_dir, const char *uma_sock);
 void wan_ctx_close(wan_ctx *ctx);
 
+/* Merge a LoRA safetensors into every DiT weight load (wan_lora.c).
+ * Call after wan_ctx_open, before the first generate. */
+int wan_ctx_set_lora(wan_ctx *ctx, const char *path, float scale);
+
 int wan_generate_t2v(wan_ctx *ctx, const wan_gen_params *p, const char *out_mp4);
 int wan_validate_params(const wan_gen_params *p, char *err, size_t err_n);
 

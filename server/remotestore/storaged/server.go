@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"os"
@@ -87,6 +88,11 @@ func (s *Server) blobPath(digest string) (string, error) {
 	return p, nil
 }
 
+const (
+	headerPartial     = "X-Zerollama-Partial"
+	headerPartialSize = "X-Zerollama-Partial-Size"
+)
+
 func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	digest := strings.TrimPrefix(r.URL.Path, "/v1/blob/")
 	digest = strings.Trim(digest, "/")
@@ -103,25 +109,41 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fi, err := os.Stat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				http.NotFound(w, r)
+		if err == nil {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+			if r.Method == http.MethodHead {
+				w.WriteHeader(http.StatusOK)
 				return
 			}
+			http.ServeFile(w, r, path)
+			return
+		}
+		if !os.IsNotExist(err) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Incomplete range PUT (LA14): HEAD reports partial size so push can resume.
+		pfi, perr := os.Stat(path + ".partial")
+		if perr != nil {
+			if os.IsNotExist(perr) {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, perr.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Accept-Ranges", "bytes")
-		w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+		w.Header().Set("Content-Length", strconv.FormatInt(pfi.Size(), 10))
+		w.Header().Set(headerPartial, "1")
+		w.Header().Set(headerPartialSize, strconv.FormatInt(pfi.Size(), 10))
 		if r.Method == http.MethodHead {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		http.ServeFile(w, r, path)
+		http.ServeFile(w, r, path+".partial")
 
 	case http.MethodPut:
-		// Why verify with empty body: client streams multi-GB without buffering
-		// for HMAC; content integrity is the digest in the URL + hash below.
 		if err := s.Auth.VerifyRequest(r, nil); err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
@@ -130,42 +152,145 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		tmp := path + ".partial"
-		f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		cr, err := parseContentRange(r.Header.Get("Content-Range"))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		h := sha256.New()
-		_, err = io.Copy(io.MultiWriter(f, h), r.Body)
-		cerr := f.Close()
-		if err != nil {
-			_ = os.Remove(tmp)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if cerr != nil {
-			_ = os.Remove(tmp)
-			http.Error(w, cerr.Error(), http.StatusInternalServerError)
+		if cr != nil {
+			s.putBlobRange(w, r, path, digest, cr)
 			return
 		}
-		got := hex.EncodeToString(h.Sum(nil))
-		want := strings.TrimPrefix(strings.ReplaceAll(digest, ":", "-"), "sha256-")
-		if !strings.EqualFold(got, want) {
-			_ = os.Remove(tmp)
-			http.Error(w, "digest mismatch", http.StatusBadRequest)
-			return
-		}
-		if err := os.Rename(tmp, path); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusCreated)
+		s.putBlobFull(w, r, path, digest)
 
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
+
+func (s *Server) putBlobFull(w http.ResponseWriter, r *http.Request, path, digest string) {
+	tmp := path + ".partial"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h := sha256.New()
+	_, err = io.Copy(io.MultiWriter(f, h), r.Body)
+	cerr := f.Close()
+	if err != nil {
+		_ = os.Remove(tmp)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if cerr != nil {
+		_ = os.Remove(tmp)
+		http.Error(w, cerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := finalizeBlobPartial(tmp, path, digest, h); err != nil {
+		_ = os.Remove(tmp)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *Server) putBlobRange(w http.ResponseWriter, r *http.Request, path, digest string, cr *contentRange) {
+	tmp := path + ".partial"
+	var current int64
+	if fi, err := os.Stat(tmp); err == nil {
+		current = fi.Size()
+	} else if !os.IsNotExist(err) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, err := os.Stat(path); err == nil && cr.start == 0 {
+		// Replacing a complete blob: drop it so resume metadata is on .partial.
+		_ = os.Remove(path)
+	}
+
+	if cr.start == 0 && current > 0 {
+		_ = os.Remove(tmp)
+		current = 0
+	}
+	if cr.start != current {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", cr.total))
+		w.Header().Set(headerPartialSize, strconv.FormatInt(current, 10))
+		http.Error(w, fmt.Sprintf("Content-Range start %d does not match current size %d", cr.start, current), http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, err := f.Seek(cr.start, io.SeekStart); err != nil {
+		_ = f.Close()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	expect := cr.end - cr.start + 1
+	n, err := io.Copy(f, io.LimitReader(r.Body, expect))
+	cerr := f.Close()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if cerr != nil {
+		http.Error(w, cerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if n != expect {
+		http.Error(w, fmt.Sprintf("short write: got %d want %d", n, expect), http.StatusBadRequest)
+		return
+	}
+	newSize := cr.start + n
+	if newSize < cr.total {
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set(headerPartial, "1")
+		w.Header().Set(headerPartialSize, strconv.FormatInt(newSize, 10))
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", cr.total))
+		w.WriteHeader(http.StatusAccepted) // incomplete; not 308 (clients would follow as redirect)
+		return
+	}
+
+	sum, err := hashFile(tmp)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := finalizeBlobPartial(tmp, path, digest, sum); err != nil {
+		_ = os.Remove(tmp)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+}
+
+func hashFile(path string) (hash hash.Hash, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
+func finalizeBlobPartial(tmp, path, digest string, h hash.Hash) error {
+	got := hex.EncodeToString(h.Sum(nil))
+	want := strings.TrimPrefix(strings.ReplaceAll(digest, ":", "-"), "sha256-")
+	if !strings.EqualFold(got, want) {
+		return fmt.Errorf("digest mismatch")
+	}
+	return os.Rename(tmp, path)
+}
+
 
 func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	rel := strings.TrimPrefix(r.URL.Path, "/v1/manifest/")

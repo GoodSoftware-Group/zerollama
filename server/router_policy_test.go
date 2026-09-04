@@ -73,7 +73,7 @@ func TestDecideRouterFallback(t *testing.T) {
 			{Candidate: "general", LogProb: -10},
 		}, nil
 	}
-	dec, err := decideRouter(t.Context(), "agent", spec, "hello", score, nil)
+	dec, err := decideRouter(t.Context(), "agent", spec, "hello", score, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestDecideRouterPicksCoveringCandidate(t *testing.T) {
 			{Candidate: "general", LogProb: -5},
 		}, nil
 	}
-	dec, err := decideRouter(t.Context(), "agent", spec, "fix this rust borrow checker error", score, nil)
+	dec, err := decideRouter(t.Context(), "agent", spec, "fix this rust borrow checker error", score, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -56,6 +56,25 @@ func TestAliasesConfigPathOff(t *testing.T) {
 	}
 }
 
+func TestChatCompressionEnv(t *testing.T) {
+	t.Setenv("ZEROLLAMA_CHAT_COMPRESSION", "")
+	if ChatCompression() {
+		t.Fatal("default off")
+	}
+	t.Setenv("ZEROLLAMA_CHAT_COMPRESSION", "1")
+	if !ChatCompression() {
+		t.Fatal("1 should enable")
+	}
+	t.Setenv("ZEROLLAMA_CHAT_COMPRESSOR", "tiny")
+	if ChatCompressor() != "tiny" {
+		t.Fatal(ChatCompressor())
+	}
+	t.Setenv("ZEROLLAMA_CHAT_COMPRESSION_MODE", "placeholder")
+	if ChatCompressionMode() != "placeholder" {
+		t.Fatal(ChatCompressionMode())
+	}
+}
+
 func TestBackendParentWatch(t *testing.T) {
 	t.Setenv("ZEROLLAMA_BACKEND_PARENT_WATCH", "")
 	if !BackendParentWatch() {

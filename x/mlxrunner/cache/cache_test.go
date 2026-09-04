@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/ollama/ollama/x/mlxrunner/batch"
@@ -11,6 +12,11 @@ func skipIfNoMLX(t *testing.T) {
 	t.Helper()
 	if err := mlx.CheckInit(); err != nil {
 		t.Skipf("MLX not available: %v", err)
+	}
+	runtime.LockOSThread()
+	t.Cleanup(runtime.UnlockOSThread)
+	if mlx.GPUIsAvailable() {
+		mlx.SetDefaultDeviceGPU()
 	}
 }
 

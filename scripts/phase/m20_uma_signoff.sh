@@ -23,6 +23,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/build/uma_toolkit.sh
+source "${ROOT}/scripts/build/uma_toolkit.sh"
 cd "${ROOT}"
 
 M20_PORT="${M20_PORT:-11435}"
@@ -176,8 +178,8 @@ echo "bin=${BIN} port=${M20_PORT} model=${M20_MODEL}"
 if [[ "${M20_SKIP_BUILD:-0}" != "1" ]]; then
   echo ""
   echo "== [0] build -tags uma =="
-  if [[ ! -f "${ROOT}/../bmtl/hardware_lab/lanes/m4/uma_toolkit/uma_client.c" ]]; then
-    echo "error: sibling bmtl uma_toolkit missing" >&2
+  if ! uma_toolkit_present; then
+    echo "error: sibling bmtl uma_toolkit missing at $(uma_toolkit_root)" >&2
     exit 1
   fi
   # shellcheck source=scripts/runtime/mac_cgo_env.sh

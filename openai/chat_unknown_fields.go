@@ -23,16 +23,12 @@ var chatCompletionPassthroughFields = []string{
 	"extra_body",
 	"n",
 	"user",
-	"logit_bias",
 	"parallel_tool_calls",
 	"max_completion_tokens",
-	"functions",
-	"function_call",
+	// functions / function_call live on ChatCompletionRequest (legacy OpenAI tools).
 	"modalities",
 	"audio",
 	"metadata",
-	"service_tier",
-	"store",
 	"prediction",
 	"web_search_options",
 	"format", // now also on ChatCompletionRequest; keep for older clients

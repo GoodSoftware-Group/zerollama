@@ -63,7 +63,7 @@ func (s *llamaServerRunner) Score(ctx context.Context, req ScoreRequest) (ScoreR
 			}
 			joint += lp
 			if req.IncludeTokenLogprobs {
-				tokenLPs = append(tokenLPs, TokenLogprob{Token: piece, Logprob: lp})
+				tokenLPs = append(tokenLPs, TokenLogprob{Token: piece, Logprob: lp, ID: IntPtr(tok)})
 			}
 			ctxPrefix = append(ctxPrefix, tok)
 		}

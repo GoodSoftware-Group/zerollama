@@ -110,8 +110,8 @@ func splitQwen35ReasoningContent(content, messageThinking string, isThinking, ex
 }
 
 func qwen38ReasoningInstructions(think *api.ThinkValue) (string, error) {
-	if think == nil || think.Value == nil {
-		return qwen38XHighReasoningInstructions, nil
+		if think == nil || think.Value == nil {
+		return qwen38LowReasoningInstructions, nil
 	}
 	if !think.IsValid() {
 		return "", fmt.Errorf("invalid thinking value %v", think.Value)
@@ -125,7 +125,7 @@ func qwen38ReasoningInstructions(think *api.ThinkValue) (string, error) {
 		return qwen38LowReasoningInstructions, nil
 	case "medium":
 		return "", nil
-	case "high", "max":
+	case "high", "max", "xhigh":
 		return qwen38XHighReasoningInstructions, nil
 	default:
 		return "", fmt.Errorf("unsupported Qwen3.8 reasoning effort %q", think.String())

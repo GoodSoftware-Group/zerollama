@@ -134,12 +134,6 @@ func (cf *CompiledFunc) Free() {
 	C.mlx_closure_free(cf.closure)
 }
 
-// borrowArray wraps a C array WITHOUT setting up GC cleanup.
-// Use this for arrays we don't own (e.g., borrowed references in callbacks).
-func borrowArray(array C.mlx_array) *Array {
-	return &Array{c: array}
-}
-
 //export goClosureCallback
 func goClosureCallback(res *C.mlx_vector_array, input C.mlx_vector_array, payload unsafe.Pointer) (rc C.int) {
 	defer func() {
@@ -172,13 +166,16 @@ func goClosureCallback(res *C.mlx_vector_array, input C.mlx_vector_array, payloa
 	handle := cgo.Handle(payload)
 	fn := handle.Value().(ClosureFunc)
 
-	// Convert input vector to Go slice - use borrowArray since MLX owns these
+	// mlx_vector_array_get copies into a new C++ wrapper (mlx_array_set_).
+	// Track those wrappers in scratch so the callback defer frees them.
+	// The vector still owns its own copies; leaving get() wrappers alive
+	// kept extra ArrayDesc refs (weights never fully released after compile).
 	numInputs := int(C.mlx_vector_array_size(input))
 	inputs := make([]*Array, numInputs)
 	for i := range numInputs {
 		var arr C.mlx_array
 		C.mlx_vector_array_get(&arr, input, C.size_t(i))
-		inputs[i] = borrowArray(arr) // Don't set up cleanup - MLX owns these
+		inputs[i] = newArray(arr)
 	}
 
 	// Call the Go function

@@ -265,6 +265,9 @@ type CompletionRequest struct {
 	Logprobs    bool
 	TopLogprobs int
 
+	EnablePLD *bool `json:"enable_pld,omitempty"`
+	EnableMTP *bool `json:"enable_mtp,omitempty"`
+
 	Width       int32  `json:"width,omitempty"`
 	Height      int32  `json:"height,omitempty"`
 	AspectRatio string `json:"aspect_ratio,omitempty"`
@@ -300,6 +303,12 @@ func (d DoneReason) String() string {
 type TokenLogprob struct {
 	Token   string  `json:"token"`
 	Logprob float64 `json:"logprob"`
+	// ID is the vocab id (mlx-serve: ids travel WITH values). 0 is a real id.
+	ID *int `json:"id,omitempty"`
+}
+
+func IntPtr(n int) *int {
+	return &n
 }
 
 type Logprob struct {
@@ -312,7 +321,11 @@ type CompletionResponse struct {
 	DoneReason DoneReason `json:"done_reason"`
 	Done       bool       `json:"done"`
 	// PreemptedReason explains DoneReasonPreempted (e.g. lower_wait_interactive).
-	PreemptedReason       string `json:"preempted_reason,omitempty"`
+	PreemptedReason string `json:"preempted_reason,omitempty"`
+	// FinishDetails is mlx-serve loop-stop (repetition_loop); finish_reason stays length.
+	FinishDetails         string `json:"finish_details,omitempty"`
+	// StopSequence is the matched request stop string (Anthropic stop_sequence echo).
+	StopSequence string `json:"stop_sequence,omitempty"`
 	PrefillProcessed      int    `json:"prefill_processed,omitempty"`
 	PrefillTotal          int    `json:"prefill_total,omitempty"`
 	PromptEvalCount       int    `json:"prompt_eval_count"`

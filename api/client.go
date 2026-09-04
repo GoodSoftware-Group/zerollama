@@ -430,6 +430,33 @@ func (c *Client) Embeddings(ctx context.Context, req *EmbeddingRequest) (*Embedd
 	return &resp, nil
 }
 
+// Rerank scores documents against a query (POST /v1/rerank, Jina shape).
+func (c *Client) Rerank(ctx context.Context, req *RerankRequest) (*RerankResponse, error) {
+	var resp RerankResponse
+	if err := c.do(ctx, http.MethodPost, "/v1/rerank", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// Load prewarms a local model until the runner is resident (POST /api/load).
+func (c *Client) Load(ctx context.Context, req *LoadRequest) (*LoadResponse, error) {
+	var resp LoadResponse
+	if err := c.do(ctx, http.MethodPost, "/api/load", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// Unload expires a resident runner (POST /api/unload). Same as generate keep_alive:0.
+func (c *Client) Unload(ctx context.Context, req *UnloadRequest) (*UnloadResponse, error) {
+	var resp UnloadResponse
+	if err := c.do(ctx, http.MethodPost, "/api/unload", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // CreateBlob creates a blob from a file on the server. digest is the
 // expected SHA256 digest of the file, and r represents the file.
 func (c *Client) CreateBlob(ctx context.Context, digest string, r io.Reader) error {

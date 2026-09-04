@@ -97,6 +97,11 @@ func (qwen3EventThinkingContent) isQwen3Event() {}
 func (p *Qwen3Parser) Add(s string, done bool) (content string, thinking string, calls []api.ToolCall, err error) {
 	p.buffer.WriteString(s)
 	events := p.parseEvents()
+	collectingTool := p.state == qwen3ParserStateCollectingToolContent || p.state == qwen3ParserStateToolStartedEatingWhitespace
+	flushedRaw, flushed := takeOpenToolCallOnDone(done, collectingTool, &p.buffer)
+	if flushed {
+		p.state = qwen3ParserStateCollectingContent
+	}
 
 	var contentSb strings.Builder
 	var thinkingSb strings.Builder
@@ -115,6 +120,17 @@ func (p *Qwen3Parser) Add(s string, done bool) (content string, thinking string,
 			thinkingSb.WriteString(event.content)
 		case qwen3EventContent:
 			contentSb.WriteString(event.content)
+		}
+	}
+
+	if flushed {
+		toolCall, err := parseQwen3ToolCall(qwen3EventRawToolCall{raw: flushedRaw}, p.tools)
+		if err != nil {
+			slog.Warn("qwen3 tool call parsing failed", "error", err)
+		} else {
+			toolCall.Function.Index = p.callIndex
+			p.callIndex++
+			calls = append(calls, toolCall)
 		}
 	}
 
@@ -327,17 +343,29 @@ func (p *Qwen3Parser) eat() ([]qwen3Event, bool) {
 }
 
 func parseQwen3ToolCall(raw qwen3EventRawToolCall, tools []api.Tool) (api.ToolCall, error) {
+	if qwenXMLFunctionFirst(raw.raw) {
+		return parseToolCall(qwenEventRawToolCall{raw: raw.raw}, tools)
+	}
 	var parsed struct {
 		Name      string                        `json:"name"`
 		Arguments api.ToolCallFunctionArguments `json:"arguments"`
 	}
 
 	if err := json.Unmarshal([]byte(raw.raw), &parsed); err != nil {
+		if call, ok := salvageJSONToolCall(raw.raw); ok {
+			return call, nil
+		}
 		return api.ToolCall{}, fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
 	if parsed.Name == "" {
-		return api.ToolCall{}, fmt.Errorf("empty function name")
+		if call, ok := salvageJSONToolCall(raw.raw); ok {
+			return call, nil
+		}
+		return api.ToolCall{}, errEmptyToolName
+	}
+	if strings.Contains(parsed.Name, "<|") {
+		return api.ToolCall{}, fmt.Errorf("invalid function name")
 	}
 
 	_ = tools // qwen3 uses direct JSON args and does not require schema coercion here.

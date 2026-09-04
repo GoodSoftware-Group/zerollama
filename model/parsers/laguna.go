@@ -132,7 +132,9 @@ func (p *LagunaParser) Add(s string, done bool) (content string, thinking string
 				return "", "", nil, err
 			}
 			if progress {
-				calls = append(calls, call)
+				if call.Function.Name != "" {
+					calls = append(calls, call)
+				}
 			}
 		}
 		if !progress {
@@ -348,7 +350,17 @@ func (p *LagunaParser) consumeStandaloneJSONTool(done bool) (progress bool, cont
 
 	call, err = parseLagunaToolCall(raw, p.tools)
 	if err != nil {
-		return false, "", api.ToolCall{}, true, err
+		if salv, ok := salvageJSONToolCall(raw); ok {
+			call = salv
+			err = nil
+		} else {
+			return false, "", api.ToolCall{}, true, err
+		}
+	}
+	if _, declared := lagunaResolveToolName(call.Function.Name, p.tools); !declared {
+		// Heuristic raw JSON must name a declared tool (mlx-serve filterInferredBySchema).
+		// Explicit <tool_call> tags are not filtered.
+		return false, "", api.ToolCall{}, false, nil
 	}
 	call.Function.Index = p.callIndex
 	p.callIndex++
@@ -382,7 +394,11 @@ func (p *LagunaParser) parseToolAlias(raw string) (api.ToolCall, bool) {
 	}
 	call, err := parseLagunaToolCall(raw, p.tools)
 	if err != nil {
-		return api.ToolCall{}, false
+		if salv, ok := salvageLagunaTaggedToolCall(raw); ok {
+			call = salv
+		} else {
+			return api.ToolCall{}, false
+		}
 	}
 	call.Function.Index = p.callIndex
 	p.callIndex++
@@ -467,7 +483,11 @@ func (p *LagunaParser) consumeTool(done bool) (bool, api.ToolCall, error) {
 		p.state = lagunaParserStateContent
 		call, err := parseLagunaToolCall(raw, p.tools)
 		if err != nil {
-			return false, api.ToolCall{}, err
+			if salv, ok := salvageLagunaTaggedToolCall(raw); ok {
+				call = salv
+			} else {
+				return true, api.ToolCall{}, nil
+			}
 		}
 		call.Function.Index = p.callIndex
 		p.callIndex++
@@ -478,7 +498,11 @@ func (p *LagunaParser) consumeTool(done bool) (bool, api.ToolCall, error) {
 		p.state = lagunaParserStateContent
 		call, err := parseLagunaToolCall(acc, p.tools)
 		if err != nil {
-			return false, api.ToolCall{}, err
+			if salv, ok := salvageLagunaTaggedToolCall(acc); ok {
+				call = salv
+			} else {
+				return true, api.ToolCall{}, nil
+			}
 		}
 		call.Function.Index = p.callIndex
 		p.callIndex++
@@ -566,4 +590,21 @@ func parseLagunaToolCall(raw string, tools []api.Tool) (api.ToolCall, error) {
 		call.Function.Arguments.Set(key, parseValue(value, paramType))
 	}
 	return call, nil
+}
+
+func salvageLagunaTaggedToolCall(raw string) (api.ToolCall, bool) {
+	raw = cleanLagunaToolCallRaw(raw)
+	if strings.HasPrefix(strings.TrimSpace(raw), "{") {
+		return salvageJSONToolCall(raw)
+	}
+	name, ok := lagunaToolCallName(raw)
+	if !ok || strings.Contains(name, "<|") {
+		return api.ToolCall{}, false
+	}
+	return api.ToolCall{
+		Function: api.ToolCallFunction{
+			Name:      name,
+			Arguments: api.NewToolCallFunctionArguments(),
+		},
+	}, true
 }

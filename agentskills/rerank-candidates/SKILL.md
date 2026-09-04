@@ -20,7 +20,11 @@ Score a fixed set of candidate continuations against a shared prompt on a
 This is the LocalAI "Score RPC" pattern: cheaper than a full chat
 completion when you already know the finite set of possible answers
 (classification labels, tool-routing choices, multiple-choice options,
-reranking a shortlist of retrieved documents).
+scoring a shortlist as continuations).
+
+Dedicated **cross-encoder rerank** (Jina / llama.cpp `--reranking` RANK GGUF)
+is a different route: `POST /v1/rerank` (aliases `/v1/reranking`, `/rerank`,
+`/api/rerank`). That needs a reranker model, not a chat continuation score.
 
 ## Compatibility check
 
@@ -33,6 +37,7 @@ against a host you don't control:
 zerollama --version                      # binary build
 curl -s http://localhost:11434/api/version | jq   # server build (if reachable)
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/api/score -d '{}'   # 400/422 = route exists; 404 = missing on this build
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/v1/rerank -d '{}'   # 400/422 = Jina rerank exists; 404 = missing on this build
 ```
 
 A **404** on an endpoint above (or an unrecognized flag/subcommand) means this build predates the feature this skill
@@ -74,6 +79,10 @@ Response `candidates[i]` matches `candidates[i]` in the request order, each
 with `log_prob`, `length_normalized_log_prob` (if requested), `num_tokens`,
 and optional `tokens` (per-token logprobs).
 
+`POST /v1/rerank` — Jina body: `model`, `query`, `documents` (or TEI `texts`),
+optional `top_n`. Needs a RANK-pooling GGUF; 501 if the runner cannot rerank.
+Not a drop-in for `/api/score`.
+
 ## How to Run
 
 ```bash
@@ -106,10 +115,9 @@ lengths).
 - **Leading whitespace/punctuation changes tokenization** — `" positive"`
   vs `"positive"` can tokenize differently and skew comparisons; keep a
   consistent prefix convention across all candidates in one call.
-- **Not a substitute for a dedicated cross-encoder** — this is a
-  general-purpose scoring primitive against any local model, useful when
-  you don't want to run a second specialized reranker model, not a
-  guaranteed quality replacement for one at scale.
+- **Not a substitute for a dedicated cross-encoder** — `/api/score` is a
+  general-purpose scoring primitive against any local chat model. Use
+  `/v1/rerank` when you actually have a RANK GGUF.
 - **`include_token_logprobs` adds payload size** — only request it when you
   actually need per-token detail (e.g. debugging why one candidate scored
   low).

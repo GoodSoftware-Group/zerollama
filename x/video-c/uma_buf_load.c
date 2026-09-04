@@ -43,6 +43,30 @@ void uma_buf_pool_destroy(uma_buf_pool *pool) {
   free(pool);
 }
 
+void uma_buf_pool_destroy_keep_bank(uma_buf_pool *pool) {
+  if (!pool)
+    return;
+  uma_buf_pool_free_all(pool);
+  free(pool);
+}
+
+int uma_buf_pool_ensure_bank_open(uma_buf_pool *pool) {
+  if (!pool || !pool->client)
+    return -1;
+  if (pool->bank_open)
+    return 0;
+  if (uma_client_bank_open(pool->client, pool->bank, g_resp, sizeof(g_resp)) !=
+      0) {
+    // If bank already exists, open will succeed (returns OK). If not, it will create.
+    // Try force open as fallback.
+    if (uma_client_bank_force_open(pool->client, pool->bank, g_resp,
+                                   sizeof(g_resp)) != 0)
+      return -1;
+  }
+  pool->bank_open = 1;
+  return 0;
+}
+
 static uma_buf_entry *pool_find(uma_buf_pool *pool, const char *name) {
   for (uma_buf_entry *e = pool->head; e; e = e->next) {
     if (!strcmp(e->name, name))
@@ -242,16 +266,22 @@ int uma_buf_pool_bank_binds(uma_buf_pool *pool, const char *pairs) {
     return -1;
   double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
   if (uma_client_bank_binds(pool->client, pool->bank, pairs, g_resp,
-                            sizeof(g_resp)) != 0)
+                            sizeof(g_resp)) != 0) {
+    fprintf(stderr, "wan-c: BANK_BINDS fail bank=%s pairs=%.80s resp=%.120s\n",
+            pool->bank, pairs, g_resp);
     return -1;
+  }
   if (wan_profile_on())
     wan_profile_add_ms("bank_bind", wan_profile_now_ms() - t0);
   /* Track each as= alias (pairs = key:as,key:as,…). */
   const char *p = pairs;
   while (*p) {
     const char *colon = strchr(p, ':');
-    if (!colon)
-      break;
+    if (!colon) {
+      fprintf(stderr, "wan-c: BANK_BINDS track fail no colon pairs=%.80s\n",
+              pairs);
+      return -1;
+    }
     const char *as = colon + 1;
     const char *comma = strchr(as, ',');
     char name[128];

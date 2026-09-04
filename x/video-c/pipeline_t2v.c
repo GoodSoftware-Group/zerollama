@@ -1,5 +1,6 @@
 #include "encode_mp4.h"
 #include "sched_unipc.h"
+#include "t5_cache.h"
 #include "tokenizer_spm.h"
 #include "wan_internal.h"
 #include "wan_profile.h"
@@ -9,6 +10,30 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+/* Encode prompt → [text_len × text_dim] with the persistent embed cache in
+ * front (t5_cache.c): repeat renders of the same shot must not re-pay the
+ * ~46 s umt5 mmap+encode. ids path preferred (tokenizer already ran). */
+static int t5_encode_cached(wan_ctx *ctx, const char *prompt,
+                            const int32_t *ids, size_t n_ids, float *emb,
+                            size_t n) {
+  double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
+  if (wan_t5_cache_get(ctx, prompt, emb, n) == 0) {
+    if (wan_profile_on())
+      wan_profile_add_ms("t5_hit", wan_profile_now_ms() - t0);
+    return 0;
+  }
+  int rc;
+  if (n_ids > 0)
+    rc = wan_t5_encode_ids(ctx, ids, n_ids, emb, n);
+  else
+    rc = wan_t5_encode(ctx, prompt, emb, n);
+  if (rc == 0)
+    (void)wan_t5_cache_put(ctx, prompt, emb, n);
+  if (wan_profile_on())
+    wan_profile_add_ms("t5", wan_profile_now_ms() - t0);
+  return rc;
+}
 
 static size_t latent_elems(const wan_model_config *c, int w, int h, int frames) {
   int lt = (frames - 1) / c->vae_stride_t + 1;
@@ -113,22 +138,9 @@ int wan_pipeline_t2v(wan_ctx *ctx, const wan_gen_params *p, float *rgb_out,
     }
   }
 
-  if (n_ids > 0) {
-    double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
-    if (wan_t5_encode_ids(ctx, ids, n_ids, text_emb, text_n) != 0) {
-      fprintf(stderr, "wan-c: T5 encode(ids) failed\n");
-      free(latent);
-      free(model_out);
-      free(text_emb);
-      free(neg_emb);
-      free(rgb);
-      return -1;
-    }
-    if (wan_profile_on())
-      wan_profile_add_ms("t5", wan_profile_now_ms() - t0);
-  } else {
-    double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
-    if (wan_t5_encode(ctx, p->prompt, text_emb, text_n) != 0) {
+  {
+    const char *cond_prompt = p->prompt ? p->prompt : "";
+    if (t5_encode_cached(ctx, cond_prompt, ids, n_ids, text_emb, text_n) != 0) {
       fprintf(stderr, "wan-c: T5 encode failed\n");
       free(latent);
       free(model_out);
@@ -137,14 +149,11 @@ int wan_pipeline_t2v(wan_ctx *ctx, const wan_gen_params *p, float *rgb_out,
       free(rgb);
       return -1;
     }
-    if (wan_profile_on())
-      wan_profile_add_ms("t5", wan_profile_now_ms() - t0);
   }
   if (p->negative_prompt && p->negative_prompt[0]) {
-    if (n_neg > 0)
-      wan_t5_encode_ids(ctx, neg_ids, n_neg, neg_emb, text_n);
-    else
-      wan_t5_encode(ctx, p->negative_prompt, neg_emb, text_n);
+    if (t5_encode_cached(ctx, p->negative_prompt, neg_ids, n_neg, neg_emb,
+                         text_n) != 0)
+      fprintf(stderr, "wan-c: negative T5 encode failed; using zeros\n");
   } else if (p->cfg_scale > 1.0001f) {
     /* Wan CFG uses empty/neg prompt — not a second cond pass. */
     int32_t empty_ids[8];
@@ -156,12 +165,8 @@ int wan_pipeline_t2v(wan_ctx *ctx, const wan_gen_params *p, float *rgb_out,
         tokenizer_spm_free(tok);
       }
     }
-    if (n_empty > 0) {
-      if (wan_t5_encode_ids(ctx, empty_ids, n_empty, neg_emb, text_n) != 0)
-        memset(neg_emb, 0, text_n * sizeof(float));
-    } else {
+    if (t5_encode_cached(ctx, "", empty_ids, n_empty, neg_emb, text_n) != 0)
       memset(neg_emb, 0, text_n * sizeof(float));
-    }
     static int logged_cfg;
     if (!logged_cfg) {
       fprintf(stderr, "wan-c: CFG uncond = empty prompt encoding\n");
@@ -253,6 +258,7 @@ int wan_pipeline_t2v(wan_ctx *ctx, const wan_gen_params *p, float *rgb_out,
     fprintf(stderr, "wan-c: UniPC step %d/%d sigma_t=%.4f cfg=%.2f\n", step + 1,
             p->steps, ctx->gen_t / 1000.f, p->cfg_scale);
     fflush(stderr);
+    memcpy(cond, latent, latent_n * sizeof(float));
     {
       double t0 = wan_profile_on() ? wan_profile_now_ms() : 0.0;
       if (wan_dit_denoise(ctx, cond, latent_n, step, text_emb, text_n) != 0) {

@@ -96,6 +96,16 @@ void ggml_metal_encoder_memory_barrier(ggml_metal_encoder_t encoder);
 
 void ggml_metal_encoder_end_encoding(ggml_metal_encoder_t encoder);
 
+// Lab ANE force: end+commit+wait current cmd_buf so CPU can read shared buffers,
+// then open a fresh command buffer + compute encoder. Returns the new cmd_buf
+// (retained once; caller/context takes ownership). NULL on failure.
+ggml_metal_cmd_buf_t ggml_metal_encoder_sync_and_resume(
+    ggml_metal_encoder_t encoder,
+    ggml_metal_device_t  dev);
+
+// Current command buffer associated with the encoder (may change after sync).
+ggml_metal_cmd_buf_t ggml_metal_encoder_cmd_buf(ggml_metal_encoder_t encoder);
+
 //
 // MTLLibrary wrapper
 //

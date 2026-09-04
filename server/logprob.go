@@ -11,18 +11,20 @@ func toAPILogprobs(logprobs []llm.Logprob) []api.Logprob {
 	for i, lp := range logprobs {
 		result[i] = api.Logprob{
 			TokenLogprob: api.TokenLogprob{
-				Token:   lp.Token,
+				Token:   utf8LogprobToken(lp.Token),
 				Bytes:   stringToByteInts(lp.Token),
 				Logprob: lp.Logprob,
+				ID:      lp.ID,
 			},
 		}
 		if len(lp.TopLogprobs) > 0 {
 			result[i].TopLogprobs = make([]api.TokenLogprob, len(lp.TopLogprobs))
 			for j, tlp := range lp.TopLogprobs {
 				result[i].TopLogprobs[j] = api.TokenLogprob{
-					Token:   tlp.Token,
+					Token:   utf8LogprobToken(tlp.Token),
 					Bytes:   stringToByteInts(tlp.Token),
 					Logprob: tlp.Logprob,
+					ID:      tlp.ID,
 				}
 			}
 		}

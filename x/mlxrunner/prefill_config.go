@@ -116,14 +116,34 @@ func capPrefillChunkForRotatingKV(cfg prefillConfig, slidingWindow int) prefillC
 	return out
 }
 
+// capPrefillChunkForWorkingSet tightens chunk hygiene when unified memory is
+// already most of the recommended working set (mlx-serve long-prompt OOM
+// path). Env chunk/materialize/clear overrides still win.
+func capPrefillChunkForWorkingSet(cfg prefillConfig, active, recommended int) prefillConfig {
+	if recommended <= 0 || active <= 0 || active < recommended*3/4 {
+		return cfg
+	}
+	out := cfg
+	if !cfg.chunkSizeFromEnv && out.chunkSize > 1024 {
+		out.chunkSize = 1024
+	}
+	if !cfg.materializeEveryFromEnv {
+		out.materializeEvery = 1
+	}
+	if !cfg.clearCacheEveryFromEnv {
+		out.clearCacheEvery = 1
+	}
+	return out
+}
+
 // prefillConfigForCachedTail relaxes allocator hygiene when most of a long prompt
 // is already resident and only a short tail remains to evaluate.
 // Deprecated: use tunePrefillConfig.
 func prefillConfigForCachedTail(cfg prefillConfig, cachedPrefix, remaining int) prefillConfig {
 	return tunePrefillConfig(cfg, prefillTuneInput{
-		total:         cachedPrefix + remaining,
-		cachedPrefix:  cachedPrefix,
-		remaining:     remaining,
+		total:          cachedPrefix + remaining,
+		cachedPrefix:   cachedPrefix,
+		remaining:      remaining,
 		promptCacheKey: "",
 	})
 }

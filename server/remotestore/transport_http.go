@@ -110,7 +110,11 @@ func (t *TCPTransport) HeadBlob(ctx context.Context, baseURL, digest string) (si
 	if resp.StatusCode != http.StatusOK {
 		return 0, false, fmt.Errorf("head %s: %s", digest, resp.Status)
 	}
-	return resp.ContentLength, true, nil
+	size = resp.ContentLength
+	if resp.Header.Get("X-Zerollama-Partial") == "1" {
+		return size, false, nil
+	}
+	return size, true, nil
 }
 
 // GetCapability probes /v1/capability over TCP.

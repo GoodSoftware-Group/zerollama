@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <devnull@zerollama.local>
+Date: Tue, 1 Sep 2026 00:20:00 -0700
+Subject: [PATCH] ggml-metal-m4-prefill-flash-attn-q8-kv
+
+P1: causal FlashAttention that reads Q8_0 K/V in-tile (D=64 PoC).
+
+Staged Metal (not yet in GGML_METAL_LIBS):
+  ml/backend/ggml/ggml/src/ggml-metal/m4-prefill-shipped/flash_attn_q8_0_causal.metal
+
+See docs/m4-prefill-borrowings.md. Upstream:
+  https://github.com/mohamedhossammohamed/m4-prefill-engine (Apache-2.0)
+
+This stub is a placeholder until ggml-shaped wire lands; do not expect
+`quilt push` to change encode paths yet.
+---
+ ml/backend/ggml/ggml/src/ggml-metal/m4-prefill-shipped/PATCH_0124.todo | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/ml/backend/ggml/ggml/src/ggml-metal/m4-prefill-shipped/PATCH_0124.todo b/ml/backend/ggml/ggml/src/ggml-metal/m4-prefill-shipped/PATCH_0124.todo
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/ml/backend/ggml/ggml/src/ggml-metal/m4-prefill-shipped/PATCH_0124.todo
+@@ -0,0 +1,8 @@
++# TODO 0124: wire flash_attn_q8_0_causal.metal
++# 1) Adapt to ggml-common block_q4_0/block_q8_0 + general ne/nb
++# 2) Register Metal library kind + embed via scripts/build/gen_ggml_metal_embed.sh
++# 3) Encode/dispatch in ggml-metal-ops (opt-in env)
++# 4) A/B TTFT vs stock path on lab ports only
++# Kernel source (already in tree): flash_attn_q8_0_causal.metal
++# Docs: docs/m4-prefill-borrowings.md
++# Upstream citation: mohamedhossammohamed/m4-prefill-engine

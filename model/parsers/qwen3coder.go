@@ -19,8 +19,10 @@ import (
 type qwenParserState int
 
 const (
-	toolOpenTag  = "<tool_call>"
-	toolCloseTag = "</tool_call>"
+	toolOpenTag            = "<tool_call>"
+	toolOpenPluralPrefixed = "<tool_calls:" // hy3 / mlx-serve: colon-suffixed plural wrapper only
+	toolCloseTag           = "</tool_call>"
+	toolClosePlural        = "</tool_calls>"
 )
 
 const (
@@ -46,7 +48,9 @@ func (p *Qwen3CoderParser) HasThinkingSupport() bool {
 func (p *Qwen3CoderParser) PreservedTokens() []string {
 	return []string{
 		toolOpenTag,
+		toolOpenPluralPrefixed,
 		toolCloseTag,
+		toolClosePlural,
 	}
 }
 
@@ -60,6 +64,13 @@ func (p *Qwen3CoderParser) Add(s string, done bool) (content string, thinking st
 	p.acc.WriteString(s)
 
 	events := p.parseEvents()
+	var flushedRaw string
+	var flushed bool
+	if raw, ok := takeOpenToolCallOnDone(done, p.state == qwenParserState_CollectingToolContent, &p.acc); ok {
+		flushedRaw = raw
+		flushed = true
+		p.state = qwenParserState_LookingForToolStart
+	}
 
 	var toolCalls []api.ToolCall
 	var sb strings.Builder
@@ -82,7 +93,32 @@ func (p *Qwen3CoderParser) Add(s string, done bool) (content string, thinking st
 		}
 	}
 
+	if flushed {
+		toolCall, err := parseToolCall(qwenEventRawToolCall{raw: flushedRaw}, p.tools)
+		if err != nil {
+			slog.Warn("qwen tool call parsing failed", "error", err)
+		} else {
+			toolCall.Function.Index = p.callIndex
+			p.callIndex++
+			toolCalls = append(toolCalls, toolCall)
+		}
+	}
+
 	return sb.String(), "", toolCalls, nil
+}
+
+// takeOpenToolCallOnDone recovers a tool body when generation ended without
+// </tool_call> (mlx-serve delimiter-drop: never bail on one missing closer).
+func takeOpenToolCallOnDone(done, collecting bool, acc *strings.Builder) (string, bool) {
+	if !done || !collecting {
+		return "", false
+	}
+	raw := acc.String()
+	if strings.TrimSpace(raw) == "" {
+		return "", false
+	}
+	acc.Reset()
+	return raw, true
 }
 
 func (p *Qwen3CoderParser) parseEvents() []qwenEvent {
@@ -135,29 +171,24 @@ func eat(p *Qwen3CoderParser) ([]qwenEvent, bool) {
 
 	switch p.state {
 	case qwenParserState_LookingForToolStart:
-		if strings.Contains(p.acc.String(), toolOpenTag) {
-			// we found a full tool open tag, so we can emit the content before the
-			// tag, being sure to trim any trailing whitespace
-			split := strings.SplitN(p.acc.String(), toolOpenTag, 2)
-			before := split[0]
-			before = strings.TrimRightFunc(before, unicode.IsSpace)
+		acc := p.acc.String()
+		if idx, tag := qwenXMLToolOpenIndex(acc); idx >= 0 {
+			before := strings.TrimRightFunc(acc[:idx], unicode.IsSpace)
+			before = dropQwenPluralWrapperToken(before)
 			if len(before) > 0 {
 				events = append(events, qwenEventContent{content: before})
 			}
-			after := split[1]
+			after := stripQwenPluralWrapperHead(acc[idx+len(tag):])
 			p.acc.Reset()
 			p.acc.WriteString(after)
 			p.state = qwenParserState_CollectingToolContent
 			return events, true
-		} else if overlap := overlap(p.acc.String(), toolOpenTag); overlap > 0 {
-			// we found a partial tool open tag, so we can emit the unambiguous part,
-			// which is the (trailing-whitespace trimmed) content before the partial
-			// tool open tag
-			beforePartialTag := p.acc.String()[:len(p.acc.String())-overlap]
+		} else if ov := max(overlap(acc, toolOpenTag), overlap(acc, toolOpenPluralPrefixed)); ov > 0 {
+			beforePartialTag := acc[:len(acc)-ov]
 			trailingWhitespaceLen := trailingWhitespaceLen(beforePartialTag)
 			ambiguousStart := len(beforePartialTag) - trailingWhitespaceLen
-			unambiguous := p.acc.String()[:ambiguousStart]
-			ambiguous := p.acc.String()[ambiguousStart:]
+			unambiguous := dropQwenPluralWrapperToken(acc[:ambiguousStart])
+			ambiguous := acc[ambiguousStart:]
 			p.acc.Reset()
 			p.acc.WriteString(ambiguous)
 			if len(unambiguous) > 0 {
@@ -165,12 +196,10 @@ func eat(p *Qwen3CoderParser) ([]qwenEvent, bool) {
 			}
 			return events, false
 		} else {
-			// we found content that is entirely not a tool call. We should withhold
-			// any trailing whitespace in case this is the end of the content
-			whitespaceLen := trailingWhitespaceLen(p.acc.String())
-			ambiguousStart := len(p.acc.String()) - whitespaceLen
-			unambiguous := p.acc.String()[:ambiguousStart]
-			ambiguous := p.acc.String()[ambiguousStart:]
+			whitespaceLen := trailingWhitespaceLen(acc)
+			ambiguousStart := len(acc) - whitespaceLen
+			unambiguous := dropQwenPluralWrapperToken(acc[:ambiguousStart])
+			ambiguous := acc[ambiguousStart:]
 			p.acc.Reset()
 			p.acc.WriteString(ambiguous)
 			if len(unambiguous) > 0 {
@@ -179,28 +208,78 @@ func eat(p *Qwen3CoderParser) ([]qwenEvent, bool) {
 			return events, false
 		}
 	case qwenParserState_CollectingToolContent:
-		if strings.Contains(p.acc.String(), toolCloseTag) {
-			split := strings.SplitN(p.acc.String(), toolCloseTag, 2)
-			before := split[0]
+		acc := p.acc.String()
+		if idx, tag := qwenXMLToolCloseIndex(acc); idx >= 0 {
+			before := acc[:idx]
 			if len(before) == 0 {
 				slog.Warn("qwen tool call closing tag found but no content before it")
 			}
-			// remove any whitespace between the tool call and any content after it
-			after := strings.TrimLeftFunc(split[1], unicode.IsSpace)
+			after := strings.TrimLeftFunc(acc[idx+len(tag):], unicode.IsSpace)
 			p.acc.Reset()
 			p.acc.WriteString(after)
 			events = append(events, qwenEventRawToolCall{raw: before})
 			p.state = qwenParserState_LookingForToolStart
 			return events, true
-		} else {
-			// note that we don't need to check the overlap here because we only plan
-			// on parsing the tool call once we see the full closing tag. We don't
-			// stream back the unparsed tool content, so there's no need to be eager
-			// here
-			return events, false
 		}
+		return events, false
 	default:
 		panic("unreachable")
+	}
+}
+
+func qwenXMLToolOpenIndex(s string) (int, string) {
+	i1 := strings.Index(s, toolOpenTag)
+	i2 := strings.Index(s, toolOpenPluralPrefixed)
+	switch {
+	case i1 < 0 && i2 < 0:
+		return -1, ""
+	case i1 < 0:
+		return i2, toolOpenPluralPrefixed
+	case i2 < 0:
+		return i1, toolOpenTag
+	case i2 < i1:
+		return i2, toolOpenPluralPrefixed
+	default:
+		return i1, toolOpenTag
+	}
+}
+
+func qwenXMLToolCloseIndex(s string) (int, string) {
+	i1 := strings.Index(s, toolCloseTag)
+	i2 := strings.Index(s, toolClosePlural)
+	switch {
+	case i1 < 0 && i2 < 0:
+		return -1, ""
+	case i1 < 0:
+		return i2, toolClosePlural
+	case i2 < 0:
+		return i1, toolCloseTag
+	case i2 < i1:
+		return i2, toolClosePlural
+	default:
+		return i1, toolCloseTag
+	}
+}
+
+// stripQwenPluralWrapperHead drops the rest of a `<tool_calls:…>` tag
+// (`0>`, `>`). Leaves `<function=` (and similar) bodies alone.
+func stripQwenPluralWrapperHead(s string) string {
+	gt := strings.IndexByte(s, '>')
+	if gt < 0 {
+		return s
+	}
+	if strings.Contains(s[:gt], "<") {
+		return s
+	}
+	return s[gt+1:]
+}
+
+func dropQwenPluralWrapperToken(s string) string {
+	switch strings.TrimSpace(s) {
+	case toolClosePlural, "<tool_calls>", "</tool_calls:>":
+		return ""
+	default:
+		return s
 	}
 }
 
@@ -213,6 +292,13 @@ type XMLFunctionCall struct {
 type XMLParameter struct {
 	Name  string `xml:"name,attr"`
 	Value string `xml:",chardata"`
+}
+
+// qwenXMLFunctionFirst reports a Qwen 3.5+ XML tool body (`<function=`).
+// JSON parse must not run first: a parameter value can be a package.json and
+// its "name" would be shipped as the tool (mlx-serve).
+func qwenXMLFunctionFirst(raw string) bool {
+	return strings.Contains(raw, "<function=")
 }
 
 // parseToolCall parses a raw tool call string into an api.ToolCall.

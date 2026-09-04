@@ -80,6 +80,9 @@ struct wan_ctx {
   float gen_t;
   /* Host f32 weight borrow cache (wan_borrow_tensor_f32). */
   void *weight_cache;
+  /* LoRA adapter merged at load (wan_lora.c); set before first generate. */
+  void *lora;
+  float lora_scale;
   /* F0994: persistent DiT block BANK (keys blocks.{i}.*). */
   int dit_persist_blocks; /* >0 when banked */
   int dit_persist_ready;

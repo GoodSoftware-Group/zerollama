@@ -299,6 +299,10 @@ func TestSkipSubprocessVRAMRefresh(t *testing.T) {
 		if !skipSubprocessVRAMRefresh(metal) {
 			t.Fatal("darwin Metal should skip subprocess VRAM refresh")
 		}
+		mtl := []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "MTL"}}}
+		if !skipSubprocessVRAMRefresh(mtl) {
+			t.Fatal("darwin MTL library id should skip subprocess VRAM refresh")
+		}
 		if skipSubprocessVRAMRefresh(cuda) {
 			t.Fatal("darwin CUDA should not skip subprocess VRAM refresh")
 		}

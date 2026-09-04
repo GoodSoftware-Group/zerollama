@@ -1191,6 +1191,41 @@ func TestLFM2Parser_BareToolCallFallback(t *testing.T) {
 	}
 }
 
+func TestLFM2Parser_TruncatedPythonicShipsEmptyArgs(t *testing.T) {
+	parser := &LFM2Parser{}
+	parser.Init([]api.Tool{{Type: "function", Function: api.ToolFunction{Name: "get_weather"}}}, nil, &api.ThinkValue{Value: false})
+
+	content, _, calls, err := parser.Add(`I'll check.<|tool_call_start|>[get_weather(location="Par`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != "I'll check." {
+		t.Fatalf("content=%q", content)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "get_weather" {
+		t.Fatalf("calls=%+v", calls)
+	}
+	if calls[0].Function.Arguments.Len() != 0 {
+		t.Fatalf("truncated call must ship {}, got %+v", calls[0].Function.Arguments)
+	}
+}
+
+func TestLFM2Parser_CompleteCallWithoutEndTag(t *testing.T) {
+	parser := &LFM2Parser{}
+	parser.Init([]api.Tool{{Type: "function", Function: api.ToolFunction{Name: "get_weather"}}}, nil, &api.ThinkValue{Value: false})
+
+	_, _, calls, err := parser.Add(`<|tool_call_start|>[get_weather(location="Paris")]`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "get_weather" {
+		t.Fatalf("calls=%+v", calls)
+	}
+	if loc, ok := calls[0].Function.Arguments.Get("location"); !ok || loc != "Paris" {
+		t.Fatalf("args=%+v", calls[0].Function.Arguments)
+	}
+}
+
 func TestLFM2Parser_BareUnknownToolCallDoesNotParse(t *testing.T) {
 	parser := &LFM2Parser{}
 	tools := []api.Tool{
@@ -1260,5 +1295,18 @@ func TestLFM2Parser_ImagePlaceholdersPreserved(t *testing.T) {
 				t.Fatalf("expected no tool calls, got %d", len(calls))
 			}
 		})
+	}
+}
+
+func TestLFM2Parser_SeedFromPromptOpensThink(t *testing.T) {
+	parser := &LFM2Parser{hasThinkingSupport: true}
+	parser.Init(nil, nil, &api.ThinkValue{Value: true})
+	parser.SeedFromPrompt("<|im_start|>assistant\n<think>\n")
+	content, thinking, _, err := parser.Add("plan</think>Answer", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thinking != "plan" || content != "Answer" {
+		t.Fatalf("thinking=%q content=%q", thinking, content)
 	}
 }

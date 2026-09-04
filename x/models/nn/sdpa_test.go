@@ -678,3 +678,55 @@ func TestSDPAMultiSequenceParity(t *testing.T) {
 		}
 	}
 }
+
+func TestSDPAFastQChunk(t *testing.T) {
+	if got := sdpaFastQChunk(9, 1, 1, 256); got != 8 {
+		t.Fatalf("hd256 L=9 chunk=%d want 8", got)
+	}
+	if got := sdpaFastQChunk(4, 1, 1, 256); got != 4 {
+		t.Fatalf("hd256 L=4 chunk=%d want 4", got)
+	}
+	if got := sdpaFastQChunk(6, 32, 4, 128); got != 4 {
+		t.Fatalf("GQA8 L=6 chunk=%d want 4", got)
+	}
+	if got := sdpaFastQChunk(4, 32, 4, 128); got != 4 {
+		t.Fatalf("GQA8 L=4 fits vector, chunk=%d want 4", got)
+	}
+	if got := sdpaFastQChunk(9, 1, 1, 128); got != 9 {
+		t.Fatalf("hd128 L=9 should not split, chunk=%d", got)
+	}
+}
+
+func TestSDPASplitHd256CausalParity(t *testing.T) {
+	skipIfNoMLX(t)
+	const L, K, D = 9, 24, 256
+	qVals := make([]float32, L*D)
+	kVals := make([]float32, K*D)
+	vVals := make([]float32, K*D)
+	for i := range qVals {
+		qVals[i] = 0.01 * float32((i%17)+1)
+	}
+	for i := range kVals {
+		kVals[i] = 0.007 * float32((i%13)+1)
+		vVals[i] = 0.003 * float32((i%11)+1)
+	}
+	q := mlx.FromValues(qVals, 1, 1, L, D)
+	k := mlx.FromValues(kVals, 1, 1, K, D)
+	v := mlx.FromValues(vVals, 1, 1, K, D)
+	b := newBatch([]int32{int32(K - L)}, L, nil)
+	got := ScaledDotProductAttention(b, q, 1.0/16,
+		WithKV(k, v, []int32{int32(K)}),
+		WithMask(CausalMask()),
+	)
+	want := mlx.FastScaledDotProductAttention(q, k, v, 1.0/16, "causal", nil)
+	mlx.Eval(got, want)
+	gs, ws := got.Floats(), want.Floats()
+	if len(gs) != len(ws) {
+		t.Fatalf("len got %d want %d", len(gs), len(ws))
+	}
+	for i := range ws {
+		if !approxEqual(gs[i], ws[i], 2e-3) {
+			t.Fatalf("index %d: want %v, got %v", i, ws[i], gs[i])
+		}
+	}
+}

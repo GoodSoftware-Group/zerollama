@@ -2,7 +2,6 @@ package api
 
 import (
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 )
@@ -63,8 +62,8 @@ func applyThinkingAliasFields(think **ThinkValue, enable *bool, kwargs map[strin
 			return fmt.Errorf("invalid chat_template_kwargs.reasoning_effort: must be string")
 		}
 		effort := strings.TrimSpace(s)
-		if !slices.Contains([]string{"high", "medium", "low", "none"}, effort) {
-			return fmt.Errorf("invalid reasoning value: '%s' (must be \"high\", \"medium\", \"low\", or \"none\")", effort)
+		if effort != "none" && !validThinkLevel(effort) {
+			return fmt.Errorf("invalid reasoning value: '%s' (must be \"high\", \"medium\", \"low\", \"xhigh\", \"max\", or \"none\")", effort)
 		}
 		if effort == "none" {
 			set(&ThinkValue{Value: false})

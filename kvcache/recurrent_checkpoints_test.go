@@ -286,3 +286,17 @@ func TestSlotCheckpointStorePruneAfterAll(t *testing.T) {
 		t.Fatalf("expected no checkpoint after pruning all")
 	}
 }
+
+func TestPlanBoundaryCheckpointUsesMinPos(t *testing.T) {
+	cache := newTestCache()
+	cache.curSeqs = []int{7}
+	cache.batchMinPos = map[int]int32{7: 3}
+	cache.PlanBoundaryCheckpoint()
+	if len(cache.curCheckpointPos) != 1 || cache.curCheckpointPos[0] != 3 {
+		t.Fatalf("curCheckpointPos=%v", cache.curCheckpointPos)
+	}
+	cache.FreezeCheckpoints()
+	if cache.curCheckpointPos[0] != -1 {
+		t.Fatalf("FreezeCheckpoints left %d", cache.curCheckpointPos[0])
+	}
+}

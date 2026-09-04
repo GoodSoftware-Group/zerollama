@@ -71,6 +71,10 @@ func (qwenEventThinkingContent) isQwenEvent() {}
 func (p *Qwen3VLParser) Add(s string, done bool) (content string, thinking string, calls []api.ToolCall, err error) {
 	p.buffer.WriteString(s)
 	events := p.parseEvents()
+	flushedRaw, flushed := takeOpenToolCallOnDone(done, p.state == CollectingToolContent, &p.buffer)
+	if flushed {
+		p.state = CollectingContent
+	}
 
 	var contentSb strings.Builder
 	var thinkingSb strings.Builder
@@ -89,6 +93,15 @@ func (p *Qwen3VLParser) Add(s string, done bool) (content string, thinking strin
 			// TODO(drifkin): if the same turn contains multiple interleaved content
 			// events, we naively append them together here.
 			contentSb.WriteString(event.content)
+		}
+	}
+
+	if flushed {
+		toolCall, err := parseJSONToolCall(qwenEventRawToolCall{raw: flushedRaw}, p.tools)
+		if err != nil {
+			slog.Warn("qwen tool call parsing failed", "error", err)
+		} else {
+			calls = append(calls, toolCall)
 		}
 	}
 
@@ -249,13 +262,24 @@ func (p *Qwen3VLParser) eat() ([]qwenEvent, bool) {
 }
 
 func parseJSONToolCall(raw qwenEventRawToolCall, tools []api.Tool) (api.ToolCall, error) {
+	if qwenXMLFunctionFirst(raw.raw) {
+		return parseToolCall(raw, tools)
+	}
+	_ = tools
 	var toolCallFunction api.ToolCallFunction
 	if err := json.Unmarshal([]byte(raw.raw), &toolCallFunction); err != nil {
+		if call, ok := salvageJSONToolCall(raw.raw); ok {
+			return call, nil
+		}
 		return api.ToolCall{}, err
 	}
-
+	if toolCallFunction.Name == "" {
+		if call, ok := salvageJSONToolCall(raw.raw); ok {
+			return call, nil
+		}
+		return api.ToolCall{}, errEmptyToolName
+	}
 	toolCall := api.ToolCall{}
 	toolCall.Function = toolCallFunction
-
 	return toolCall, nil
 }

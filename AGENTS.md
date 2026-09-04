@@ -15,7 +15,8 @@ On the Mac lab host (`~/Sites/inference/zerollama`):
 | SGLang multimodal | `../sglang` → [docs/sglang-multimodal-borrowings.md](./docs/sglang-multimodal-borrowings.md) |
 | MiniMax Music 3 rematch (optional clone) | `../sglang-omni` — **not** in sibling `sglang`; Mac hear path is mlx-audio ([docs/music-c.md](./docs/music-c.md), [findings](./docs/music-c-findings.md)). Do **not** vendor ComfyUI. |
 | llama.cpp pin / fork watch | `../llama.cpp`, `../eliza-llama.cpp` → [runtime/LLAMA_CPP_PIN.md](./runtime/LLAMA_CPP_PIN.md) |
-| Gigatoken / BMTL techniques (do **not** vendor Rust) | `../bmtl` → [docs/faster-bpe-tokenize.md](./docs/faster-bpe-tokenize.md) + [findings](./docs/faster-bpe-tokenize-findings.md) (patches **0106–0126** in `llama/patches/`; must reach **`llama/llama.cpp/`** via sync) |
+| Gigatoken / BMTL techniques (do **not** vendor Rust) | `../bmtl` → [docs/faster-bpe-tokenize.md](./docs/faster-bpe-tokenize.md) + [findings](./docs/faster-bpe-tokenize-findings.md) (unicode/BPE pretok in `llama/patches/` through **0105** port of islands/SWAR; must reach **`llama/llama.cpp/`** via sync — note **0122–0126** filenames are **m4-prefill stubs**, not BPE) |
+| M4 Metal prefill kernels (do **not** vendor host engine) | `../m4-prefill-engine` → [docs/m4-prefill-borrowings.md](./docs/m4-prefill-borrowings.md) + [findings](./docs/m4-prefill-borrowings-findings.md) (durable: MTL FA fix; FA+q8_0 KV useful; native Q8 FA / fused SwiGLU regress on M4 Max; lab: `scripts/phase/m4_prefill_lab_serve.sh`) |
 | Vanilla Ollama diff | `../ollama-upstream` → [docs/upstream-ollama-diff.md](./docs/upstream-ollama-diff.md) |
 
 ## Do not touch
@@ -55,7 +56,7 @@ Canonical guide: **[docs/mac-dev-setup.md](./docs/mac-dev-setup.md)**.
 
 **Pin:** ggml-org **`b10615`** (`f280b26983ad0fdb705a0d9ebf0503e76f2899b0`) — [runtime/LLAMA_CPP_PIN.md](./runtime/LLAMA_CPP_PIN.md). Sibling clone defaults to elizaOS for fork kernels; public pin checkout: `LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp.git`.
 
-**Optional (skip cleanly):** `../mlx` (safetensors), `../bmtl/.../uma_toolkit` (UMA), training venv (`MAC_SETUP_TRAINING=1`).
+**Optional (skip cleanly):** `../mlx` (safetensors), `../bmtl/.../uma_toolkit` (UMA), training venv (`MAC_SETUP_TRAINING=1`). DeepSeek-V4 Flash mlx-lm packs: [docs/mlx-deepseek-v4-flash.md](./docs/mlx-deepseek-v4-flash.md) — `create --experimental --link`, do not blob-copy.
 
 **Ggml-only (skip llama.cpp build):** `MAC_SETUP_BUILD=0 MAC_SETUP_LLAMA_OPTIONAL=1 ./scripts/runtime/dev_bootstrap.sh` — chat on `:11434` works; runtime inprocess on `:8081` wants `libllama.dylib`.
 

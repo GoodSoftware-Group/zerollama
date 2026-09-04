@@ -30,11 +30,12 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 	paths := doc["paths"].(map[string]any)
 	for _, p := range []string{
 		"/v1/audio/speech", "/v1/audio/voices", "/v1/audio/generations", "/openapi.json", "/docs",
-		"/api/status", "/api/can-load", "/api/propose-load", "/api/pin",
+		"/api/status", "/api/can-load", "/api/load", "/backend/load", "/api/unload", "/api/propose-load", "/api/pin",
 		"/api/cache/pin", "/api/cache/warm", "/api/metrics", "/api/version",
 		"/api/aliases", "/api/score", "/api/router/decide", "/api/router/corpus",
 		"/api/repair", "/api/experimental/web_search", "/api/experimental/web_fetch",
 		"/v1/chat/completions", "/v1/chat/completions/batch",
+		"/v1/responses", "/v1/messages",
 	} {
 		if _, ok := paths[p]; !ok {
 			t.Fatalf("missing path %s", p)
@@ -48,9 +49,13 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"CacheWarmRequest", "CacheWarmResponse",
 		"ChatCompletionsBatchRequest", "ChatCompletionsBatchRequestItem",
 		"ChatCompletionsBatchResponse", "ChatCompletionBatchItem",
+		"ChatCompletion", "ChatCompletionUsage", "ChatCompletionChunk",
+		"AnthropicMessagesRequest", "AnthropicMessagesResponse",
+		"OpenAIResponsesRequest", "OpenAIResponsesResponse",
 		"ProposeLoadRequest", "ProposeLoadResponse", "ZerollamaQoS", "ZerollamaVersionQoS",
 		"AliasInfo", "ScoreRequest", "ScoreResponse", "RouterDecision",
 		"RouterCorpusEntry", "RepairRequest", "RepairResponse",
+		"LoadRequest", "LoadResponse", "UnloadRequest", "UnloadResponse",
 	} {
 		if _, ok := schemas[s]; !ok {
 			t.Fatalf("missing schema %s", s)
@@ -67,6 +72,42 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 	batchContent := batch200["content"].(map[string]any)["application/json"].(map[string]any)
 	if ref, _ := batchContent["schema"].(map[string]any)["$ref"].(string); ref != "#/components/schemas/ChatCompletionsBatchResponse" {
 		t.Fatalf("batch 200 schema ref=%v", ref)
+	}
+	chatPath := paths["/v1/chat/completions"].(map[string]any)["post"].(map[string]any)
+	chat200 := chatPath["responses"].(map[string]any)["200"].(map[string]any)
+	chatJSON := chat200["content"].(map[string]any)["application/json"].(map[string]any)
+	if ref, _ := chatJSON["schema"].(map[string]any)["$ref"].(string); ref != "#/components/schemas/ChatCompletion" {
+		t.Fatalf("chat 200 schema ref=%v", ref)
+	}
+	if sse, ok := chat200["content"].(map[string]any)["text/event-stream"].(map[string]any); !ok {
+		t.Fatal("chat 200 missing text/event-stream")
+	} else if ref, _ := sse["schema"].(map[string]any)["$ref"].(string); ref != "#/components/schemas/ChatCompletionChunk" {
+		t.Fatalf("chat SSE schema ref=%v", ref)
+	}
+	ccReq := schemas["ChatCompletionRequest"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := ccReq["stream_options"]; !ok {
+		t.Fatal("ChatCompletionRequest missing stream_options")
+	}
+	for _, schema := range []string{"AnthropicMessagesRequest", "OpenAIResponsesRequest"} {
+		props := schemas[schema].(map[string]any)["properties"].(map[string]any)
+		if _, ok := props["compression"]; !ok {
+			t.Fatalf("%s missing compression", schema)
+		}
+		if _, ok := props["prompt_cache_key"]; !ok {
+			t.Fatalf("%s missing prompt_cache_key", schema)
+		}
+	}
+	respProps := schemas["OpenAIResponsesResponse"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := respProps["prompt_cache_key"]; !ok {
+		t.Fatal("OpenAIResponsesResponse missing prompt_cache_key")
+	}
+	usage := schemas["ChatCompletionUsage"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := usage["compression_meta"]; !ok {
+		t.Fatal("ChatCompletionUsage missing compression_meta")
+	}
+	chatProps := schemas["ChatCompletion"].(map[string]any)["properties"].(map[string]any)
+	if uref, _ := chatProps["usage"].(map[string]any)["$ref"].(string); uref != "#/components/schemas/ChatCompletionUsage" {
+		t.Fatalf("ChatCompletion.usage ref=%v", uref)
 	}
 	canLoad := schemas["CanLoadResponse"].(map[string]any)["properties"].(map[string]any)
 	for _, f := range []string{"device_count", "tensor_parallel", "split_mode", "tensor_split", "main_gpu"} {
@@ -108,6 +149,37 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 	}
 	if len(wantCauses) > 0 {
 		t.Fatalf("InferenceError.cause missing enums %v", wantCauses)
+	}
+	for _, schema := range []string{"ChatRequest", "ChatCompletionRequest"} {
+		props := schemas[schema].(map[string]any)["properties"].(map[string]any)
+		if _, ok := props["continue_final_message"]; !ok {
+			t.Fatalf("%s missing continue_final_message", schema)
+		}
+		if _, ok := props["compression"]; !ok {
+			t.Fatalf("%s missing compression", schema)
+		}
+	}
+	cc := schemas["ChatCompletionRequest"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := cc["n"]; !ok {
+		t.Fatal("ChatCompletionRequest missing n")
+	}
+	if _, ok := cc["functions"]; !ok {
+		t.Fatal("ChatCompletionRequest missing functions")
+	}
+	if _, ok := cc["service_tier"]; !ok {
+		t.Fatal("ChatCompletionRequest missing service_tier")
+	}
+	cfg := schemas["ChatCompressionConfig"].(map[string]any)["properties"].(map[string]any)
+	meta := schemas["ChatCompressionMeta"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := cfg["elide_from"]; !ok {
+		t.Fatal("ChatCompressionConfig missing elide_from")
+	}
+	if _, ok := meta["elide_from"]; !ok {
+		t.Fatal("ChatCompressionMeta missing elide_from")
+	}
+	cr := schemas["ChatResponse"].(map[string]any)["properties"].(map[string]any)
+	if cref, _ := cr["compression"].(map[string]any)["$ref"].(string); cref != "#/components/schemas/ChatCompressionMeta" {
+		t.Fatalf("ChatResponse.compression ref=%v", cr["compression"])
 	}
 }
 

@@ -72,28 +72,41 @@ func Open(modelName string) (*Root, error) {
 }
 
 func readDraftConfig(m *manifest.ModelManifest) *modeltypes.Draft {
-	if m == nil || m.Manifest == nil || m.Manifest.Config.Digest == "" {
+	if m == nil || m.Manifest == nil {
 		return nil
 	}
 
-	data, err := os.ReadFile(m.BlobPath(m.Manifest.Config.Digest))
-	if err != nil {
-		return nil
+	if m.Manifest.Config.Digest != "" {
+		if data, err := os.ReadFile(m.BlobPath(m.Manifest.Config.Digest)); err == nil {
+			var cfg modeltypes.ConfigV2
+			if err := json.Unmarshal(data, &cfg); err == nil && cfg.Draft != nil {
+				return cfg.Draft
+			}
+		}
 	}
 
-	var cfg modeltypes.ConfigV2
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil
-	}
-	if cfg.Draft != nil {
-		return cfg.Draft
-	}
+	return draftCompanionFromLayers(m)
+}
 
-	if m.GetConfigLayer("draft/config.json") != nil {
-		return &modeltypes.Draft{
-			ModelFormat:  "safetensors",
-			TensorPrefix: "draft.",
-			Config:       "draft/config.json",
+// Known in-manifest draft layouts. mlx-serve ships Gemma companions as
+// drafter/, Qwen MTP as mtp/; create.go writes draft/; some HF packs use assistant/.
+var draftCompanionLayouts = []struct {
+	config, prefix string
+}{
+	{"draft/config.json", "draft."},
+	{"drafter/config.json", "drafter."},
+	{"assistant/config.json", "assistant."},
+	{"mtp/config.json", "mtp."},
+}
+
+func draftCompanionFromLayers(m *manifest.ModelManifest) *modeltypes.Draft {
+	for _, layout := range draftCompanionLayouts {
+		if m.GetConfigLayer(layout.config) != nil {
+			return &modeltypes.Draft{
+				ModelFormat:  "safetensors",
+				TensorPrefix: layout.prefix,
+				Config:       layout.config,
+			}
 		}
 	}
 	return nil

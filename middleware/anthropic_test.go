@@ -59,7 +59,7 @@ func TestAnthropicMessagesMiddleware(t *testing.T) {
 			req: api.ChatRequest{
 				Model: "test-model",
 				Messages: []api.Message{
-					{Role: "user", Content: "Hello"},
+					{Role: "user", Content: "Hello" + "\n\n" + api.OutputBudgetGuidance},
 				},
 				Options: map[string]any{"num_predict": 1024},
 				Stream:  &False,
@@ -79,7 +79,7 @@ func TestAnthropicMessagesMiddleware(t *testing.T) {
 				Model: "test-model",
 				Messages: []api.Message{
 					{Role: "system", Content: "You are helpful."},
-					{Role: "user", Content: "Hello"},
+					{Role: "user", Content: "Hello" + "\n\n" + api.OutputBudgetGuidance},
 				},
 				Options: map[string]any{"num_predict": 1024},
 				Stream:  &False,
@@ -101,7 +101,7 @@ func TestAnthropicMessagesMiddleware(t *testing.T) {
 			req: api.ChatRequest{
 				Model: "test-model",
 				Messages: []api.Message{
-					{Role: "user", Content: "Hello"},
+					{Role: "user", Content: "Hello" + "\n\n" + api.OutputBudgetGuidance},
 				},
 				Options: map[string]any{
 					"num_predict": 2048,
@@ -126,7 +126,7 @@ func TestAnthropicMessagesMiddleware(t *testing.T) {
 			req: api.ChatRequest{
 				Model: "test-model",
 				Messages: []api.Message{
-					{Role: "user", Content: "Hello"},
+					{Role: "user", Content: "Hello" + "\n\n" + api.OutputBudgetGuidance},
 				},
 				Options: map[string]any{"num_predict": 1024},
 				Stream:  &stream,
@@ -155,7 +155,7 @@ func TestAnthropicMessagesMiddleware(t *testing.T) {
 			req: api.ChatRequest{
 				Model: "test-model",
 				Messages: []api.Message{
-					{Role: "user", Content: "What's the weather?"},
+					{Role: "user", Content: "What's the weather?" + "\n\n" + api.OutputBudgetGuidance},
 				},
 				Tools: []api.Tool{
 					{
@@ -195,7 +195,7 @@ func TestAnthropicMessagesMiddleware(t *testing.T) {
 			req: api.ChatRequest{
 				Model: "test-model",
 				Messages: []api.Message{
-					{Role: "user", Content: "What's the weather?"},
+					{Role: "user", Content: "What's the weather?" + "\n\n" + api.OutputBudgetGuidance},
 					{
 						Role: "assistant",
 						ToolCalls: []api.ToolCall{
@@ -227,7 +227,7 @@ func TestAnthropicMessagesMiddleware(t *testing.T) {
 			req: api.ChatRequest{
 				Model: "test-model",
 				Messages: []api.Message{
-					{Role: "user", Content: "Hello"},
+					{Role: "user", Content: "Hello" + "\n\n" + api.OutputBudgetGuidance},
 				},
 				Options: map[string]any{"num_predict": 1024},
 				Stream:  &False,
@@ -373,6 +373,34 @@ func TestAnthropicMessagesMiddleware(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAnthropicMessagesMiddleware_extraBodyCompression(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var captured *api.ChatRequest
+	r := gin.New()
+	r.Use(AnthropicMessagesMiddleware(), captureAnthropicRequest(&captured))
+	r.POST("/v1/messages", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	body := `{
+		"model": "qwen3.5:9b",
+		"max_tokens": 32,
+		"messages": [{"role":"user","content":"hi"}],
+		"extra_body": {"compression": {"mode": "placeholder"}, "prompt_cache_key": "hermes:agent:1"}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", w.Code, w.Body.String())
+	}
+	if captured == nil || captured.Compression == nil || captured.Compression.Mode != "placeholder" {
+		t.Fatalf("rewritten ChatRequest missing extra_body compression: %+v", captured)
+	}
+	if captured.Options["prompt_cache_key"] != "hermes:agent:1" {
+		t.Fatalf("missing extra_body prompt_cache_key: %+v", captured.Options)
 	}
 }
 

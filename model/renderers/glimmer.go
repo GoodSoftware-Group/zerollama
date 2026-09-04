@@ -313,6 +313,12 @@ func (r *GlimmerRenderer) Render(messages []api.Message, tools []api.Tool, think
 	}
 
 	imageOffset := 0
+	lastUser := -1
+	for i, message := range messages {
+		if message.Role == "user" {
+			lastUser = i
+		}
+	}
 	for i, message := range messages {
 		content, nextImageOffset := r.renderContent(message, imageOffset)
 		imageOffset = nextImageOffset
@@ -339,9 +345,12 @@ func (r *GlimmerRenderer) Render(messages []api.Message, tools []api.Tool, think
 			sb.WriteString("\n</tool_output>")
 			sb.WriteString(glimmerEndTurn)
 		case "assistant":
-			if message.Thinking != "" {
+			// Muse round-trips reasoning as to=self history. Prior-turn
+			// reasoning is dropped (mlx-serve dropPriorTurnReasoning).
+			if message.Thinking != "" && i > lastUser {
 				writeGlimmerMessage(&sb, "assistant to=self", message.Thinking, glimmerEndMessage)
 			}
+			keepThinking := message.Thinking != "" && i > lastUser
 			// A final thinking-only message is the server's unfinished self
 			// segment, represented by recipient=self and end_turn=false in Jinja.
 			if len(message.ToolCalls) > 0 {
@@ -356,7 +365,7 @@ func (r *GlimmerRenderer) Render(messages []api.Message, tools []api.Tool, think
 						sb.WriteString(glimmerEndMessage)
 					}
 				}
-			} else if content != "" || message.Thinking == "" {
+			} else if content != "" || !keepThinking {
 				writeGlimmerMessage(&sb, "assistant to=user", content, glimmerEndTurn)
 			}
 		}

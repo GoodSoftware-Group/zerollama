@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/convert"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/parser"
 	"github.com/ollama/ollama/progress"
@@ -106,7 +107,31 @@ func ConfigFromModelfile(modelfile *parser.Modelfile) (string, *ModelfileConfig,
 		modelDir = "."
 	}
 
+	mergeGenerationConfigParams(modelDir, mfConfig)
+
 	return modelDir, mfConfig, nil
+}
+
+func mergeGenerationConfigParams(modelDir string, mf *ModelfileConfig) {
+	if mf == nil {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(modelDir, "generation_config.json"))
+	if err != nil {
+		return
+	}
+	gen := api.SamplingMapFromGenerationConfig(data)
+	if len(gen) == 0 {
+		return
+	}
+	if mf.Parameters == nil {
+		mf.Parameters = make(map[string]any)
+	}
+	for k, v := range gen {
+		if _, ok := mf.Parameters[k]; !ok {
+			mf.Parameters[k] = v
+		}
+	}
 }
 
 // CreateOptions holds all options for model creation.
@@ -115,6 +140,7 @@ type CreateOptions struct {
 	ModelDir      string
 	Quantize      string // "int4", "int8", "nvfp4", "mxfp4", or "mxfp8" for quantization
 	DraftQuantize string // optional quantization level for draft model tensors
+	LinkDir       bool   // register *.safetensors in place (source_dir); no tensor blob copy
 	Modelfile     *ModelfileConfig
 	BaseConfig    *model.ConfigV2
 }
@@ -130,6 +156,17 @@ func CreateModel(opts CreateOptions, p *progress.Progress) error {
 	isBaseModelWithDraft := hasDraft && !isSafetensors && create.IsSafetensorsLLMModel(opts.ModelDir)
 	if opts.DraftQuantize != "" && !hasDraft {
 		return fmt.Errorf("--draft-quantize requires a DRAFT model")
+	}
+	if opts.LinkDir {
+		if !isSafetensors {
+			return fmt.Errorf("--link requires a HuggingFace/mlx-lm directory (config.json + *.safetensors); got %s (pass --dir /path/to/pack)", opts.ModelDir)
+		}
+		if opts.Quantize != "" {
+			return fmt.Errorf("--link cannot be combined with --quantize (in-place load uses the directory as-is)")
+		}
+		if hasDraft {
+			return fmt.Errorf("--link cannot be combined with a DRAFT model")
+		}
 	}
 
 	if !isSafetensors && !isImageGen && !isBaseModelWithDraft {
@@ -210,13 +247,20 @@ func CreateModel(opts CreateOptions, p *progress.Progress) error {
 		if len(draftLayers) > 0 {
 			writer = appendLayersManifestWriter(writer, draftLayers)
 		}
-		err = create.CreateSafetensorsModel(
-			opts.ModelName, opts.ModelDir, opts.Quantize,
-			newLayerCreator(), newTensorLayerCreator(),
-			writer,
-			progressFn,
-			newPackedTensorLayerCreator(),
-		)
+		if opts.LinkDir {
+			err = create.LinkSafetensorsModel(
+				opts.ModelName, opts.ModelDir,
+				newLayerCreator(), writer, progressFn,
+			)
+		} else {
+			err = create.CreateSafetensorsModel(
+				opts.ModelName, opts.ModelDir, opts.Quantize,
+				newLayerCreator(), newTensorLayerCreator(),
+				writer,
+				progressFn,
+				newPackedTensorLayerCreator(),
+			)
+		}
 	} else {
 		err = create.CreateImageGenModel(
 			opts.ModelName, opts.ModelDir, opts.Quantize,
@@ -532,6 +576,16 @@ func newManifestWriter(opts CreateOptions, capabilities []string, parserName, re
 			configData = *opts.BaseConfig
 		}
 		configData.ModelFormat = "safetensors"
+		if opts.LinkDir {
+			abs, err := filepath.Abs(opts.ModelDir)
+			if err != nil {
+				return fmt.Errorf("resolve source_dir: %w", err)
+			}
+			configData.SourceDir = abs
+			if configData.FileType == "" {
+				configData.FileType = "linked"
+			}
+		}
 		if opts.Quantize != "" || configData.FileType == "" {
 			configData.FileType = strings.ToLower(strings.TrimSpace(opts.Quantize))
 		}
@@ -734,7 +788,13 @@ func readChatTemplate(modelDir string) string {
 			ChatTemplate string `json:"chat_template"`
 		}
 		if json.Unmarshal(data, &cfg) == nil && cfg.ChatTemplate != "" {
-			return cfg.ChatTemplate
+			if stub, ok := convert.ChatTemplateIncludeStubPath(cfg.ChatTemplate); ok {
+				if data, err := os.ReadFile(filepath.Join(modelDir, stub)); err == nil {
+					return string(data)
+				}
+			} else {
+				return cfg.ChatTemplate
+			}
 		}
 	}
 	if data, err := os.ReadFile(filepath.Join(modelDir, "chat_template.jinja")); err == nil {
@@ -816,7 +876,7 @@ func rendererNameForIdentifier(modelDir, s string) string {
 	case strings.Contains(s, "glm4") || strings.Contains(s, "glm-4"):
 		return "glm-4.7"
 	case strings.Contains(s, "deepseek"):
-		return "deepseek3"
+		return "deepseek3.1"
 	case isQwen35Family(s):
 		return qwen35RendererName(modelDir)
 	case strings.Contains(s, "qwen3"):

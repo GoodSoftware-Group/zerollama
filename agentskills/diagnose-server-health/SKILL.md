@@ -63,6 +63,9 @@ zerollama doctor --models --audit
 
 # Apply safe auto-fixes (runtime venv install; on Darwin, build Metal llama.cpp if missing)
 zerollama doctor --fix
+
+# MoE slot-bank advice + agent KV/prefill lab (no GGUF load, not production serve)
+zerollama freetoken
 ```
 
 Exit code is non-zero when any check fails (`report.OK == false` /
@@ -80,6 +83,7 @@ ready," not necessarily "request-level bug."
 | Serve mode | Go API reachable (`:11434`/`:8080`), runtime sidecar reachable (`:8081`), which layout matches (Mac daily vs CI/smoke) |
 | Sidecar health | `/health` autoconfig pick, `llama_backend`, `vram_probe_effective`, fallback flags |
 | Models | A usable local text GGUF exists; `--models` flag finds orphaned/broken/repairable manifest registrations |
+| Flash-MoE / agent KV lab | `zerollama freetoken` (and doctor `freetoken MoE policy` line): GGUF expert_count advice + synthetic placeholder vs summary prefill table. Server sticky `elide_from` uses `prompt_cache_key`. No weight load. Do not export `--moe-slot-bank` without a sidecar. |
 
 ## Reading a JSON report
 

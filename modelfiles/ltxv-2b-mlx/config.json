@@ -1,0 +1,22 @@
+{
+  "capabilities": ["video_gen"],
+  "modality_backends": { "video_generation": "ltx" },
+  "video_generation": {
+    "runner": "ltx-mlx",
+    "profile": "ltxv-2b-mlx",
+    "vram_tier": "uma",
+    "size": "768x480",
+    "frames": 17,
+    "steps": 4,
+    "precision": "bf16",
+    "quant": "none",
+    "timeout_sec": 600
+  },
+  "backend_paths": {
+    "ltx_mlx_model_dir": "~/.zerollama/third_party/ltx-mlx/models/LTX",
+    "ltx_mlx_venv": "~/.zerollama/third_party/ltx-mlx/venv"
+  },
+  "architecture": "arm64",
+  "os": "darwin",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

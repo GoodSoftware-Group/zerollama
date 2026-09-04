@@ -39,6 +39,10 @@ func TestFromValues(t *testing.T) {
 				t.Errorf("%s: want %v, got %v", want, want, got)
 			}
 		}
+		empty := FromValues([]int32{}, 0)
+		if empty.DType() != DTypeInt32 || empty.Dim(0) != 0 {
+			t.Fatalf("empty FromValues: dtype=%v dim0=%d", empty.DType(), empty.Dim(0))
+		}
 	})
 }
 
@@ -73,4 +77,16 @@ func TestComparisonOpsAndBernoulli(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestIntsEvalsLazyExpandDims(t *testing.T) {
+	withMLXThread(t, func() {
+		// Prefill seed is a 1-D FromValues; park() ExpandDims(-1) before PLD
+		// committed(). Host data is null until Eval — SIGSEGV on Ints().
+		tok := FromValues([]int32{42}, 1).ExpandDims(-1)
+		got := tok.Ints()
+		if len(got) != 1 || got[0] != 42 {
+			t.Fatalf("got %v", got)
+		}
+	})
 }

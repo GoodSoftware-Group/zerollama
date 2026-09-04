@@ -452,6 +452,21 @@ func TestExecuteWithSuffix(t *testing.T) {
 	}
 }
 
+func TestExecuteWrapsFIMWhenTemplateIgnoresSuffix(t *testing.T) {
+	tmpl, err := Parse(`{{ .Prompt }}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b bytes.Buffer
+	if err := tmpl.Execute(&b, Values{Prompt: "def add(", Suffix: "return x"}); err != nil {
+		t.Fatal(err)
+	}
+	want := WrapFIM("def add(", "return x")
+	if b.String() != want {
+		t.Fatalf("got %q want %q", b.String(), want)
+	}
+}
+
 func TestDateFunctions(t *testing.T) {
 	t.Run("currentDate", func(t *testing.T) {
 		tmpl, err := Parse("{{- range .Messages }}{{ .Content }}{{ end }} Today is {{ currentDate }}")
@@ -652,6 +667,30 @@ func TestTemplateArgumentsJSON(t *testing.T) {
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
 		t.Errorf("Arguments not valid JSON: %s, error: %v", got, err)
+	}
+}
+
+func TestTemplateFillsEmptyToolCallID(t *testing.T) {
+	tmpl := `{{- range .Messages }}{{- range .ToolCalls }}{{ .ID }}{{- end }}{{- end }}`
+	template, err := Parse(tmpl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := api.NewToolCallFunctionArguments()
+	args.Set("x", 1)
+	var buf bytes.Buffer
+	if err := template.Execute(&buf, Values{
+		Messages: []api.Message{{
+			Role: "assistant",
+			ToolCalls: []api.ToolCall{{
+				Function: api.ToolCallFunction{Name: "fn", Arguments: args},
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); got != "call_0" {
+		t.Fatalf("id = %q, want call_0", got)
 	}
 }
 

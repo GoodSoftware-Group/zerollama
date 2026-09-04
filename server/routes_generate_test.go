@@ -374,7 +374,7 @@ func TestGenerateChat(t *testing.T) {
 			t.Errorf("expected status 400, got %d", w.Code)
 		}
 
-		if diff := cmp.Diff(w.Body.String(), `{"error":"\"bert\" does not support chat"}`); diff != "" {
+		if diff := cmp.Diff(w.Body.String(), `{"error":"\"bert\" is an embedding model; use POST /api/embed or POST /v1/embeddings"}`); diff != "" {
 			t.Errorf("mismatch (-got +want):\n%s", diff)
 		}
 	})
@@ -1062,7 +1062,7 @@ func TestGenerate(t *testing.T) {
 			t.Errorf("expected status 400, got %d", w.Code)
 		}
 
-		if diff := cmp.Diff(w.Body.String(), `{"error":"\"bert\" does not support generate"}`); diff != "" {
+		if diff := cmp.Diff(w.Body.String(), `{"error":"\"bert\" is an embedding model; use POST /api/embed or POST /v1/embeddings"}`); diff != "" {
 			t.Errorf("mismatch (-got +want):\n%s", diff)
 		}
 	})

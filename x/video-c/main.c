@@ -66,6 +66,9 @@ static void usage(const char *argv0) {
           "  --cfg F             Wan CFG (H3 is Comfy BasicGuider: cond only)\n"
           "  --shift F           Flow sigma shift (default 5.0)\n"
           "  --seed N            RNG seed (0=auto)\n"
+          "  --lora PATH         Wan: merge LoRA safetensors into DiT weights\n"
+          "                      (dotted PEFT/ComfyUI keys; merge-at-load)\n"
+          "  --lora-scale F      Wan: LoRA strength multiplier (default 1.0)\n"
           "  --solver unipc|dpmpp  Solver (default unipc)\n"
           "  --dtype f32|f16     Compute dtype hint (default f16)\n"
           "  --fps N             Output fps (default 16)\n"
@@ -88,6 +91,9 @@ static void usage(const char *argv0) {
           "ZEROLLAMA_VIDEO_CLI (or ZEROLLAMA_WAN_CLI) for this binary.\n"
           "\n"
           "Env: UMA_WAN_LOCAL=1  host uma_wan_ops (no broker)\n"
+          "     WAN_T5_CACHE=0   disable prompt→embed disk cache (t5_cache.c;\n"
+          "                      default on, ~/.zerollama/cache/wan_t5)\n"
+          "     WAN_T5_CACHE_DIR PATH  override cache dir\n"
           "     UMA_WAN_EXT=1    prefer EXT_CALL for LN/AdaLN/GN (needs opworker)\n"
           "     UMA_EXT_SOCK     EXT worker socket (default /tmp/uma_ext_wan.sock)\n"
           "     WAN_DIT_NO_PERSIST=1  skip F0994 block BANK (host FFN)\n"
@@ -706,6 +712,8 @@ int main(int argc, char **argv) {
 
   const char *ckpt_dir = NULL;
   const char *uma_sock = NULL;
+  const char *lora_path = NULL;
+  float lora_scale = 1.0f;
   const char *out_mp4 = NULL;
   const char *in_path = NULL;
   int validate_only = 0;
@@ -812,6 +820,10 @@ int main(int argc, char **argv) {
       p.shift = (float)atof(argv[++i]);
     else if (!strcmp(a, "--seed") && i + 1 < argc)
       p.seed = atoi(argv[++i]);
+    else if (!strcmp(a, "--lora") && i + 1 < argc)
+      lora_path = argv[++i];
+    else if (!strcmp(a, "--lora-scale") && i + 1 < argc)
+      lora_scale = (float)atof(argv[++i]);
     else if (!strcmp(a, "--solver") && i + 1 < argc) {
       if (parse_solver(argv[++i], &p.solver) != 0) {
         fprintf(stderr, "bad --solver\n");
@@ -1489,6 +1501,13 @@ int main(int argc, char **argv) {
   wan_ctx *ctx = wan_ctx_open(ckpt_dir, uma_sock);
   if (!ctx)
     return 1;
+
+  if (lora_path && lora_path[0] &&
+      wan_ctx_set_lora(ctx, lora_path, lora_scale) != 0) {
+    fprintf(stderr, "wan-c: --lora failed: %s\n", lora_path);
+    wan_ctx_close(ctx);
+    return 1;
+  }
 
   int rc = wan_generate_t2v(ctx, &p, out_mp4);
   wan_ctx_close(ctx);

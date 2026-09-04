@@ -64,7 +64,7 @@ func (s *speculationSession) logStats() {
 		avgDraft = float64(s.stats.drafted) / float64(s.stats.iterations)
 		avgAccepted = float64(s.stats.accepted) / float64(s.stats.iterations)
 	}
-	slog.Debug("speculative decode stats", "iterations", s.stats.iterations, "drafted", s.stats.drafted, "accepted", s.stats.accepted, "acceptance", fmt.Sprintf("%.2f", acceptance), "avg_draft", fmt.Sprintf("%.2f", avgDraft), "max_draft", s.stats.maxDraft, "avg_accepted", fmt.Sprintf("%.2f", avgAccepted), "depth_over_time", s.stats.depthOverTime())
+	slog.Debug("speculative decode stats", "iterations", s.stats.iterations, "drafted", s.stats.drafted, "accepted", s.stats.accepted, "acceptance", fmt.Sprintf("%.2f", acceptance), "avg_draft", fmt.Sprintf("%.2f", avgDraft), "max_draft", s.stats.maxDraft, "avg_accepted", fmt.Sprintf("%.2f", avgAccepted), "greedy_coupled", s.greedyCoupled(), "depth_over_time", s.stats.depthOverTime())
 
 	if s.spec == nil || s.spec.depth == nil {
 		return
@@ -101,7 +101,11 @@ func (s *speculationSession) tuneHint(acceptance float64) string {
 		if s.pld {
 			return "spec parked (runtime gate). Novel text is expected AR. ZEROLLAMA_MLX_PLD=off only for a bench; leave on for agents"
 		}
-		return "MTP parked (accept <0.70). Try ZEROLLAMA_MLX_MTP_HISTORY=auto on long prompts, or check the draft companion loaded"
+		hint := "MTP parked (accept <0.70). Try ZEROLLAMA_MLX_MTP_HISTORY=auto on long prompts, or check the draft companion loaded"
+		if fence := greedyTrioMaxContext(); fence > 0 && s.promptTokens >= fence {
+			hint += "; T=0 greedy trio is fenced at this prompt length (ZEROLLAMA_MLX_GREEDY_TRIO_MAX_CONTEXT)"
+		}
+		return hint
 	}
 	if s.pld && acceptance < pldRuntimeMinAccept {
 		return "PLD accept is low this request; runtime gate will freeze PLD. Echo/code prompts should be higher; prose stays AR"
@@ -110,4 +114,16 @@ func (s *speculationSession) tuneHint(acceptance float64) string {
 		return "draft width 0. After a few echo requests, mlx-round-cost should show scheduled>0 (`zerollama doctor`)"
 	}
 	return ""
+}
+
+// greedyCoupled is mtplx telemetry: T=0 and the greedy trio fence are both
+// live, so draft argmax and equality-accept match the target.
+func (s *speculationSession) greedyCoupled() bool {
+	if s == nil || s.spec == nil || s.spec.r == nil || s.spec.r.Sampler == nil {
+		return false
+	}
+	if !s.spec.r.Sampler.Greedy(pipelineSlot) {
+		return false
+	}
+	return greedyDraftChainEnabled(s.promptTokens) && batchedGreedyAcceptEnabled(s.promptTokens)
 }

@@ -158,11 +158,19 @@ type RunOptions struct {
 
 	// YoloMode skips all tool approval prompts
 	YoloMode bool
+
+	// CompressionSticky is the last ChatCompressionMeta (elide_from) for this
+	// session. Chat applies it on every agent round and updates it after each
+	// compressed response.
+	CompressionSticky *api.ChatCompressionMeta
 }
 
 // Chat runs an agent chat loop with tool support.
 // This is the experimental version of chat that supports tool calling.
-func Chat(ctx context.Context, opts RunOptions) (*api.Message, error) {
+func Chat(ctx context.Context, opts *RunOptions) (*api.Message, error) {
+	if opts == nil {
+		return nil, errors.New("nil run options")
+	}
 	client, err := api.ClientFromEnvironment()
 	if err != nil {
 		return nil, err
@@ -265,6 +273,7 @@ func Chat(ctx context.Context, opts RunOptions) (*api.Message, error) {
 			Options:  opts.Options,
 			Think:    opts.Think,
 		}
+		api.ApplyStickyChatCompression(req, opts.CompressionSticky)
 
 		// Add tools
 		if toolRegistry != nil {
@@ -346,6 +355,9 @@ func Chat(ctx context.Context, opts RunOptions) (*api.Message, error) {
 
 		// Reset consecutive error counter on success
 		consecutiveErrors = 0
+		if latest.Compression != nil && latest.Compression.Mode != "" {
+			opts.CompressionSticky = latest.Compression
+		}
 
 		// If no tool calls, we're done
 		if len(pendingToolCalls) == 0 || toolRegistry == nil {
@@ -724,6 +736,7 @@ func GenerateInteractive(cmd *cobra.Command, modelName string, wordWrap bool, op
 	approval := agent.NewApprovalManager()
 
 	var messages []api.Message
+	var compressionSticky *api.ChatCompressionMeta
 	var sb strings.Builder
 	var format string
 	var system string
@@ -750,6 +763,7 @@ func GenerateInteractive(cmd *cobra.Command, modelName string, wordWrap bool, op
 			return nil
 		case strings.HasPrefix(line, "/clear"):
 			messages = []api.Message{}
+			compressionSticky = nil
 			approval.Reset()
 			fmt.Println("Cleared session context and tool approvals")
 			continue
@@ -1058,24 +1072,26 @@ func GenerateInteractive(cmd *cobra.Command, modelName string, wordWrap bool, op
 
 			verbose, _ := cmd.Flags().GetBool("verbose")
 			opts := RunOptions{
-				Model:        modelName,
-				Messages:     messages,
-				WordWrap:     wordWrap,
-				Format:       format,
-				Options:      options,
-				Think:        think,
-				HideThinking: hideThinking,
-				KeepAlive:    keepAlive,
-				Tools:        toolRegistry,
-				Approval:     approval,
-				YoloMode:     yoloMode,
-				Verbose:      verbose,
+				Model:             modelName,
+				Messages:          messages,
+				WordWrap:          wordWrap,
+				Format:            format,
+				Options:           options,
+				Think:             think,
+				HideThinking:      hideThinking,
+				KeepAlive:         keepAlive,
+				Tools:             toolRegistry,
+				Approval:          approval,
+				YoloMode:          yoloMode,
+				Verbose:           verbose,
+				CompressionSticky: compressionSticky,
 			}
 
-			assistant, err := Chat(cmd.Context(), opts)
+			assistant, err := Chat(cmd.Context(), &opts)
 			if err != nil {
 				return err
 			}
+			compressionSticky = opts.CompressionSticky
 			if assistant != nil {
 				messages = append(messages, *assistant)
 			}

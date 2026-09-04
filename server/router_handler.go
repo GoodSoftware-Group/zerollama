@@ -61,7 +61,7 @@ func (s *Server) RouterDecideHandler(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("router %q not found", name)})
 		return
 	}
-	dec, err := decideRouter(c.Request.Context(), name, spec, prompt, s.scoreRouterPolicies, s.embedRouterText)
+	dec, err := decideRouter(c.Request.Context(), name, spec, prompt, s.scoreRouterPolicies, s.embedRouterText, s.rerankRouterDocs)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
@@ -77,7 +77,7 @@ func (s *Server) applyRouterRewrite(ctx context.Context, modelName, prompt strin
 	if !ok {
 		return modelName, nil, nil
 	}
-	dec, err := decideRouter(ctx, modelName, spec, prompt, s.scoreRouterPolicies, s.embedRouterText)
+	dec, err := decideRouter(ctx, modelName, spec, prompt, s.scoreRouterPolicies, s.embedRouterText, s.rerankRouterDocs)
 	if err != nil {
 		return "", nil, err
 	}

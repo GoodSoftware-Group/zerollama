@@ -168,11 +168,8 @@ func (m *Model) freeTextEncoderWeights() {
 	}
 	fmt.Printf("  [freeTextEncoder] releasing %d arrays\n", len(mlx.Collect(m.TextEncoder)))
 	before := mlx.MetalGetActiveMemory()
-	mlx.ReleaseStruct(m.TextEncoder)
+	mlx.ReleaseWeights(m.TextEncoder)
 	m.TextEncoder = nil
-	// ResumeCleanup drops MLX graph nodes that still reference freed encoder weights;
-	// without this, transformer load sees inflated active memory and OOMs on 16GB.
-	mlx.ResumeCleanup()
 	mlx.Sync()
 	mlx.TrimVRAM()
 	fmt.Printf("  [freeTextEncoder] active=%.2fGB→%.2fGB\n",
@@ -235,7 +232,7 @@ func (m *Model) freeTransformerWeights() {
 	if m.VAEDecoder != nil {
 		m.VAEDecoder.pinWeights()
 	}
-	mlx.ReleaseStruct(m.Transformer)
+	mlx.ReleaseWeights(m.Transformer)
 	m.Transformer = nil
 	m.needsReload.transformer = true
 	m.qkvFused = false

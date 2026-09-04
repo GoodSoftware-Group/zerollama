@@ -496,9 +496,9 @@ func TestThinking_UnmarshalJSON(t *testing.T) {
 			expectedThinking: &ThinkValue{Value: "low"},
 		},
 		{
-			name:             "string_max",
-			input:            `{ "think": "max" }`,
-			expectedThinking: &ThinkValue{Value: "max"},
+			name:             "string_xhigh",
+			input:            `{ "think": "xhigh" }`,
+			expectedThinking: &ThinkValue{Value: "xhigh"},
 		},
 		{
 			name:             "invalid_string",
@@ -925,6 +925,16 @@ func TestFromMapGuessedParameters(t *testing.T) {
 	}))
 	assert.Equal(t, 8192, opts.NumCtx)
 	assert.Equal(t, []string{"<|im_end|>"}, opts.Stop)
+}
+
+func TestFromMapLogitBias(t *testing.T) {
+	opts := DefaultOptions()
+	require.NoError(t, opts.FromMap(map[string]any{
+		"logit_bias": map[string]float64{"13": -100.0},
+	}))
+	if opts.LogitBias[13] != -100 {
+		t.Fatalf("%v", opts.LogitBias)
+	}
 }
 
 func TestGgmlVRAMRequestOptions(t *testing.T) {

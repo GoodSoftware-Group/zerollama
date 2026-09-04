@@ -15,8 +15,8 @@ mlx.Eval(result)           // free non-kept, eval result (auto-kept)
 
 ### Key Functions
 
-- `mlx.Eval(outputs...)` - free non-kept arrays, then evaluate (outputs auto-kept)
-- `mlx.AsyncEval(outputs...)` - async version of Eval (outputs auto-kept)
+- `mlx.Eval(outputs...)` - evaluate, then free non-kept arrays (outputs auto-kept)
+- `mlx.AsyncEval(outputs...)` - same order, without waiting for the GPU
 - `mlx.Keep(arrays...)` - mark arrays to survive cleanup (for weights, caches)
 - `array.Free()` - mark array for cleanup on next Eval
 
@@ -34,7 +34,7 @@ for step := 0; step < maxTokens; step++ {
     }
 
     oldToken.Free()       // mark for cleanup
-    mlx.AsyncEval(token)  // frees old, evals new
+    mlx.AsyncEval(token)  // eval new, then free old
 }
 ```
 

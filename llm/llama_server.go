@@ -417,7 +417,7 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 				if !s.launch.config.ContextShift {
 					return nil, false, 0, api.StatusError{
 						StatusCode:   http.StatusBadRequest,
-						ErrorMessage: "the prompt is longer than the context length currently available to the model; shorten the prompt, adjust the context length in settings, or use a model with a longer context length",
+						ErrorMessage: ContextOverflowMessage(len(tokens), s.options.NumCtx),
 					}
 				}
 				nKeep := req.Options.NumKeep
@@ -643,7 +643,7 @@ func (s *llamaServerRunner) completionPromptForRequest(ctx context.Context, req 
 	if !s.launch.config.ContextShift {
 		return nil, false, 0, api.StatusError{
 			StatusCode:   http.StatusBadRequest,
-			ErrorMessage: "the prompt is longer than the context length currently available to the model; shorten the prompt, adjust the context length in settings, or use a model with a longer context length",
+			ErrorMessage: ContextOverflowMessage(len(tokens), s.options.NumCtx),
 		}
 	}
 
@@ -876,6 +876,9 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 	params = appendFlashAttentionArgsForLaunch(params, launch)
 
 	params = appendBatchArgsWithUBatch(params, launch.opts, launch.embedding, launch.numParallel, launch.ubatchSize)
+	if launch.embedding && ggufIsRerank(launch.ggufKV) {
+		params = append(params, "--reranking")
+	}
 
 	// GPU layer offloading — only pass an exact count when the caller asked for
 	// a real partial/full pin. Default (-1) and Modelfile/eliza sentinel 999
@@ -1627,6 +1630,15 @@ func cloneStringMap(src map[string]string) map[string]string {
 	return dst
 }
 
+// ggufIsRerank is true when GGUF pooling_type is RANK (llama.cpp enum 4).
+func ggufIsRerank(kv ggml.KV) bool {
+	arch := kv.Architecture()
+	if _, ok := kv[fmt.Sprintf("%s.pooling_type", arch)]; !ok {
+		return false
+	}
+	return kv.Uint("pooling_type", 0) == 4
+}
+
 func legacyEmbeddingsWereRaw(kv ggml.KV) bool {
 	arch := kv.Architecture()
 	if _, ok := kv[fmt.Sprintf("%s.pooling_type", arch)]; !ok {
@@ -2084,6 +2096,7 @@ type llamaServerCompletionRequest struct {
 	NProbs          int             `json:"n_probs,omitempty"`
 	IDSlot          int             `json:"id_slot,omitempty"`
 	PreservedTokens []string        `json:"preserved_tokens,omitempty"`
+	LogitBias       [][]float64     `json:"logit_bias,omitempty"`
 }
 
 func llamaServerPreservedTokens(parserTokens []string, toolCallTag string) []string {
@@ -2142,6 +2155,7 @@ type llamaServerCompletionResponse struct {
 	Content                 string                 `json:"content"`
 	Stop                    bool                   `json:"stop"`
 	StopType                string                 `json:"stop_type"`
+	StoppingWord            string                 `json:"stopping_word"`
 	Timings                 llamaServerTimings     `json:"timings"`
 	CompletionProbabilities []llamaServerTokenProb `json:"completion_probabilities"`
 }
@@ -2257,6 +2271,12 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 		TypicalP:        req.Options.TypicalP,
 		Seed:            req.Options.Seed,
 		PreservedTokens: llamaServerPreservedTokens(req.PreservedTokens, req.ToolCallTag),
+	}
+	if len(req.Options.LogitBias) > 0 {
+		lsReq.LogitBias = make([][]float64, 0, len(req.Options.LogitBias))
+		for id, bias := range req.Options.LogitBias {
+			lsReq.LogitBias = append(lsReq.LogitBias, []float64{float64(id), float64(bias)})
+		}
 	}
 
 	if req.Logprobs {
@@ -2433,6 +2453,7 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 					Content:               lsResp.Content,
 					Done:                  true,
 					DoneReason:            doneReason,
+					StopSequence:          lsResp.StoppingWord,
 					PromptEvalCount:       lsResp.Timings.promptEvalCount(),
 					PromptEvalCachedCount: lsResp.Timings.CacheN,
 					PromptEvalDuration:    time.Duration(lsResp.Timings.PromptMS * float64(time.Millisecond)),
@@ -2549,6 +2570,7 @@ func convertLogprobs(probs []llamaServerTokenProb, includeTop bool) []Logprob {
 			TokenLogprob: TokenLogprob{
 				Token:   p.Token,
 				Logprob: logprob,
+				ID:      IntPtr(p.ID),
 			},
 		}
 
@@ -2569,6 +2591,7 @@ func convertLogprobs(probs []llamaServerTokenProb, includeTop bool) []Logprob {
 			result[i].TopLogprobs = append(result[i].TopLogprobs, TokenLogprob{
 				Token:   tp.Token,
 				Logprob: tl,
+				ID:      IntPtr(tp.ID),
 			})
 		}
 	}
@@ -3018,7 +3041,7 @@ func llamaServerMediaBytes(data []byte) ([]byte, error) {
 func llamaServerChatToolCalls(tcs []api.ToolCall) ([]llamaServerChatToolCall, error) {
 	toolCalls := make([]llamaServerChatToolCall, len(tcs))
 	for i, tc := range tcs {
-		toolCalls[i].ID = tc.ID
+		toolCalls[i].ID = api.EnsureToolCallID(tc.ID, i)
 		toolCalls[i].Index = tc.Function.Index
 		toolCalls[i].Type = "function"
 		toolCalls[i].Function.Name = tc.Function.Name

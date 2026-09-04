@@ -1,0 +1,6 @@
+{"seq":0,"layer":0,"n_expert_used":2,"n_tokens":4,"experts":[0,1,2,3,0,1,4,5]}
+{"seq":1,"layer":1,"n_expert_used":2,"n_tokens":4,"experts":[1,2,3,4,1,2,5,0]}
+{"seq":2,"layer":0,"n_expert_used":2,"n_tokens":1,"experts":[0,1]}
+{"seq":3,"layer":1,"n_expert_used":2,"n_tokens":1,"experts":[1,2]}
+{"seq":4,"layer":0,"n_expert_used":2,"n_tokens":1,"experts":[0,2]}
+{"seq":5,"layer":1,"n_expert_used":2,"n_tokens":1,"experts":[1,3]}

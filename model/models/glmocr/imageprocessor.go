@@ -40,7 +40,7 @@ func newImageProcessor(c fs.Config) ImageProcessor {
 		temporalPatchSize: temporalPatchSize,
 		spatialMergeSize:  spatialMergeSize,
 		minPixels:         int(c.Uint("vision.min_pixels", uint32(8*patchSize*patchSize*spatialMergeSize*spatialMergeSize*temporalPatchSize))),
-		maxPixels:         int(c.Uint("vision.max_pixels", uint32(defaultMaxPixels))),
+		maxPixels:         imageproc.ClampEnginePixels(int(c.Uint("vision.max_pixels", uint32(defaultMaxPixels)))),
 		factor:            patchSize * spatialMergeSize,
 		imageMean:         [3]float32{imageMean[0], imageMean[1], imageMean[2]},
 		imageStd:          [3]float32{imageStd[0], imageStd[1], imageStd[2]},
@@ -97,7 +97,7 @@ func (p *ImageProcessor) ProcessImage(img image.Image, gridTHW []int) ([]float32
 	origHeight := img.Bounds().Dy()
 
 	var resizedHeight, resizedWidth int
-	if rh, rw, ok := resizeFromGridHint(p.patchSize, p.spatialMergeSize, gridTHW); ok {
+	if rh, rw, ok := resizeFromGridHint(p.patchSize, p.spatialMergeSize, gridTHW); ok && imageproc.WithinEnginePixels(rh, rw) {
 		resizedHeight, resizedWidth = rh, rw
 		slog.Info("grid_thw hint resize",
 			"height", resizedHeight,
@@ -107,6 +107,10 @@ func (p *ImageProcessor) ProcessImage(img image.Image, gridTHW []int) ([]float32
 			"engine", "ollama",
 		)
 	} else {
+		if ok && !imageproc.WithinEnginePixels(rh, rw) {
+			slog.Info("grid_thw hint exceeds engine pixel cap; smart_resize",
+				"hint_h", rh, "hint_w", rw, "cap", imageproc.EngineMaxPixels)
+		}
 		resizedHeight, resizedWidth = p.SmartResize(origHeight, origWidth)
 	}
 

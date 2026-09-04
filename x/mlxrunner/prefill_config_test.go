@@ -150,3 +150,21 @@ func TestPrefillChunkEnvOverridesRotatingCap(t *testing.T) {
 		t.Fatalf("env chunk = %d want 4096", got.chunkSize)
 	}
 }
+
+func TestCapPrefillChunkForWorkingSet(t *testing.T) {
+	t.Parallel()
+	base := prefillConfig{chunkSize: 8192, materializeEvery: 4, clearCacheEvery: 4}
+	got := capPrefillChunkForWorkingSet(base, 7<<30, 8<<30)
+	if got.chunkSize != 1024 || got.materializeEvery != 1 || got.clearCacheEvery != 1 {
+		t.Fatalf("tight working set: %+v", got)
+	}
+	loose := capPrefillChunkForWorkingSet(base, 1<<30, 8<<30)
+	if loose.chunkSize != 8192 {
+		t.Fatalf("roomy working set should keep chunk, got %d", loose.chunkSize)
+	}
+	env := prefillConfig{chunkSize: 4096, chunkSizeFromEnv: true, materializeEvery: 4, clearCacheEvery: 4}
+	kept := capPrefillChunkForWorkingSet(env, 7<<30, 8<<30)
+	if kept.chunkSize != 4096 {
+		t.Fatalf("env chunk must win, got %d", kept.chunkSize)
+	}
+}

@@ -26,7 +26,7 @@ Eliza Cloud default              Post-load probe → /api/status (LA5)
 
 LocalAI’s lesson: **cheap metadata + honest lifecycle** at the daemon boundary—not replacing your hot path.
 
-**Shipped track:** **LA1–LA11** (incl. **LA11b**), **LA15**, **LA17–LA20**. **Upstream watch:** remaining **LA12+**.
+**Shipped track:** **LA1–LA11** (incl. **LA11b**), **LA14–LA15**, **LA17–LA21**. **Upstream watch:** remaining **LA12+**.
 
 ---
 
@@ -215,6 +215,29 @@ routers:
         labels: [code, general]
 ```
 
+**LA16 rerank / ColBERT-style router** — `classifier: rerank` or `colbert` plus a RANK-pooling GGUF. Policy **descriptions** (not labels) are scored against the user prompt via llama.cpp `/v1/rerank`. Labels with `relevance_score` ≥ `activation_threshold` (default 0.15) are active. This is llama.cpp RANK pooling, not LocalAI’s Python `bge-m3` ColBERT MaxSim backend.
+
+```yaml
+routers:
+  agent:
+    classifier: rerank
+    reranker: qwen3-reranker
+    fallback: llama3.2:3b
+    activation_threshold: 0.15
+    policies:
+      - label: code
+        description: programming, compilers, and rust
+      - label: general
+        description: chitchat and general questions
+    candidates:
+      - model: qwen2.5-coder:7b
+        labels: [code]
+      - model: llama3.2:3b
+        labels: [code, general]
+```
+
+Public API: `POST /v1/rerank` (Jina `{query, documents, top_n}`; TEI `texts` alias). RANK GGUFs start llama-server with `--reranking`.
+
 | Piece | Role |
 |-------|------|
 | `GET /api/router/corpus?router=` | Counts only (no exemplar text) |
@@ -232,7 +255,17 @@ aliases:
   gpt-4o-mini: llama3.2:1b
 ```
 
-One hop only (no alias→alias). Applied before LA11 router rewrite on generate/chat/embed/score/show. Headers: `X-Zerollama-Alias`, `X-Zerollama-Alias-Target`. `GET /api/aliases` lists; `POST /api/aliases` `{name,target}` is a session overlay (YAML is durable).
+One hop only (no alias→alias). Applied before LA11 router rewrite on generate/chat/embed/score/rerank/show. Headers: `X-Zerollama-Alias`, `X-Zerollama-Alias-Target`. `GET /api/aliases` lists; `POST /api/aliases` `{name,target}` is a session overlay (YAML is durable).
+
+### Context compression (LA22)
+
+**Why:** Long agent threads hit `num_ctx` and then truncate or error. LocalAI v4.9 compresses older complete turns with a second model.
+
+**Default (no flags):** if the thread already has **tool** messages, **tool_calls**, or **thinking**, `/api/chat` auto-elides old tool bodies and thinking in place when the prompt crosses ~75% of `num_ctx`. No env, no `compression` object, no second model. `enabled: false` turns that off.
+
+**Summary mode** (second model) stays opt-in: `ZEROLLAMA_CHAT_COMPRESSION=1` or `"compression": {"enabled": true}`. Omit `mode` unless you need to force `summary` on an agent thread or `placeholder` on a non-agent one.
+
+Optional knobs when you need them: `trigger_at_ratio`, `compressor_model` (summary only), `keep_tail_tokens` (**summary** only — placeholder always keeps the last turn then peels). Echo `elide_from` from the previous meta, or send a stable `prompt_cache_key` so the server remembers the cut (Go: `api.ChatThread`). `cache_reset` drops that memory. Native `compression` on the **done** chat response (JSON and NDJSON stream, including the Python runtime proxy). OpenAI Chat Completions / Responses and Anthropic Messages use `usage.compression_meta` (Chat Completions SSE needs `stream_options.include_usage`). Header `X-Zerollama-Compressed: 1`. Cloud chat is still rejected.
 
 ---
 
@@ -295,6 +328,32 @@ zerollama pull mymodel --source huggingface://org/repo/file.gguf   # API: explic
 
 DNS rebinding after the lookup is not fully pinned on the subsequent dial (same limitation as LocalAI).
 
+### Explicit prewarm (LA21)
+
+**Why:** Agents and fleet assign used a dummy `/api/generate` or empty embeddings call to pay cold-start. LocalAI `POST /backend/load` blocks until resident.
+
+```bash
+curl http://127.0.0.1:11434/api/load -d '{"model":"llama3.2:3b","keep_alive":"30m"}'
+```
+
+- Also LocalAI `POST /backend/load` (same handler). Unload is `POST /api/unload` or generate `keep_alive: 0`.
+- Aliases apply; `:cloud` rejected; does **not** run LA11 router rewrite
+- `already_loaded` is true when `/api/ps` already listed the tag
+- Host mem guard and assignment-token middleware match generate/chat
+
+### Resumable peer GGUF (LA14)
+
+**Why:** `zerollama storage push` truncated `.partial` on every PUT, so a dropped 20 GiB transfer restarted from byte 0.
+
+- `PUT /v1/blob/{digest}` with `Content-Range: bytes start-end/total` appends to `{digest}.partial`
+- Incomplete → **202** + `X-Zerollama-Partial: 1` (not 308 — HTTP clients would follow that as a redirect)
+- Wrong offset → **416** with `X-Zerollama-Partial-Size`
+- HEAD of a partial does **not** count as a complete blob (`storage push` will resume, not skip)
+- `PushBlob` HEADs then sends only the remainder
+- GET Range-GET was already advertised; tests cover 206
+
+Doc: [remote-model-storage.md](./remote-model-storage.md).
+
 ### Operator checklist
 
 1. **`/api/show <model>`** — check `num_ctx` in parameters; prefer ≤8192 in manifest, raise per-request via `options.num_ctx`
@@ -302,6 +361,7 @@ DNS rebinding after the lookup is not fully pinned on the subsequent dial (same 
 3. **Tight GPU pairs** — add `concurrency_groups` on imagegen + chat models
 4. **Agent fleets** — pass `session_key` / `prompt_cache_key` on assign; poll `loaded_model_details`
 5. **Disk** — avoid `OLLAMA_NOPRUNE=1` in production unless debugging; prune reclaims failed pulls
+6. **Prewarm** — `POST /api/load` before a latency SLA; do not use empty generate
 
 ---
 
@@ -339,10 +399,10 @@ Periodic scan of [mudler/LocalAI](https://github.com/mudler/LocalAI) via GitHub 
 | **Model-load cooldown** (v4.7) | Failed load → cooldown (10s→5m geometric); clients get `503 + Retry-After` instead of respawning crash loops | **LA18 Done** — `ZEROLLAMA_LOAD_COOLDOWN` | **Shipped** |
 | **VRAM budget** (v4.8) | `LOCALAI_VRAM_BUDGET=80%` or `12GB`; hard per-process + distributed placement ceiling | **LA19 Done** — `ZEROLLAMA_VRAM_BUDGET` on GPUDevices + runtime free probes | **Shipped** |
 | **Parent-death backend watch** (v4.6) | Backend self-terminates if parent PID reparented (`LOCALAI_BACKEND_PARENT_WATCH`) | **LA20 Done** — Linux `Pdeathsig` SIGKILL | **Shipped** |
-| **Eager warm + load API** (v4.6) | `POST /backend/load`; realtime pipeline block-warm at session start | Implicit via generate/keep_alive | **Maybe — LA21** (explicit prewarm) |
+| **Eager warm + load API** (v4.6) | `POST /backend/load`; realtime pipeline block-warm at session start | **LA21 Done** — `POST /api/load` (+ `/backend/load`) | **Shipped** |
 | **KNN router classifier** (v4.9) | `classifier: knn` over labelled corpus; no classifier LM; undecidable → fallback | **LA11b Done** — cosine KNN + `/api/router/corpus` | **Shipped** |
 | **Global HTTP admission** (v4.9) | Process-wide in-flight bounds beyond per-backend | Phase 11 + Go pending queue | **Watch** (overlap Phase 11) |
-| **Context compression** (v4.9) | Opt-in per-model: compress older turns via local model before infer | Agent/client responsibility today | **Maybe — LA22** |
+| **Context compression** (v4.9) | Opt-in per-model: compress older turns via local model before infer | **LA22 Done** — `compression` on chat + `ZEROLLAMA_CHAT_COMPRESSION` | **Shipped** |
 | **Gallery SSRF / auth default-deny** (v4.6/v4.9) | `ValidateExternalURL`; deny-by-default HTTP auth | **LA15 Done** — `internal/ssrf` on video, HF, blob redirect, web_fetch | **Shipped** |
 | **Parallel HF downloads** (v4.9) | Concurrent whole-file snapshot transfers | LA8 sequential | **Maybe — LA8 polish** |
 | **Durable cold-load jobs** (v4.9) | Advisory lock ≠ multi-GB transfer lifetime | Go load coalescing + singleflight | **Watch** (we already coalesce) |
@@ -361,7 +421,7 @@ Refs: [v4.9.0](https://github.com/mudler/LocalAI/releases/tag/v4.9.0) · [v4.8.0
 | **PII filtering** | NER + regex; reversible pseudonyms (v4.9) | Cloud passthrough — **LA12** |
 | **Distributed prefix routing** | Radix + xxhash across replicas | **LA13 Done** via L3-R8/R9 |
 | **Model aliases** | Live name redirect | **LA17 Done** |
-| **Resumable GGUF transfer** | `Content-Range` | **LA14** |
+| **Resumable GGUF transfer** | `Content-Range` | **LA14 Done** |
 | **Multi-user defaults** | Prefix cache on; VRAM-scaled `n_parallel` | L1/L3 manual profiles |
 
 ### Parity matrix (control plane)
@@ -380,31 +440,21 @@ Refs: [v4.9.0](https://github.com/mudler/LocalAI/releases/tag/v4.9.0) · [v4.8.0
 | Operator throughput cache | `zerollama bench`, `TOK/S` in `ls` | **LA10** ✓ |
 | Failed-load cooldown + Retry-After | `load_cooldown`, `ZEROLLAMA_LOAD_COOLDOWN` | **LA18** ✓ |
 | Parent-death orphan backend kill | Linux `Pdeathsig` on runners | **LA20** ✓ |
-| Intelligent router (score/colbert/knn) | YAML + `/api/router/decide` (score + knn) | **LA11** ✓ / **LA11b** ✓ |
+| Intelligent router (score/colbert/knn) | YAML + `/api/router/decide` (score + knn + rerank) | **LA11** ✓ / **LA11b** ✓ / **LA16** ✓ |
 | PII middleware (NER + secrets + reverse) | — | **Candidate LA12** (enterprise) |
 | Fleet radix prefix routing | **L3-R8 + L3-R9** | **LA13** ✓ |
 | Cross-node KV blob pull | **L3-R10 + L3-R11** | ✓ (NIXL still open) |
-| Resumable peer GGUF transfer | — | **Candidate LA14** |
+| Resumable peer GGUF transfer | `storage` PUT `Content-Range` | **LA14** ✓ |
 | Outbound HTTP / SSRF / auth harden | `internal/ssrf` | **LA15** ✓ |
-| `POST /v1/rerank` (colbert routing tier) | llama.cpp `/reranking` unwired | **Candidate LA16** |
+| `POST /v1/rerank` (colbert routing tier) | llama-server `--reranking` + `llm.Reranker` | **LA16** ✓ |
 | Model aliases (live name redirect) | `aliases.yaml`, `/api/aliases` | **LA17** ✓ |
 | Absolute / % VRAM budget | `ZEROLLAMA_VRAM_BUDGET` | **LA19** ✓ |
-| Explicit prewarm / load API | keep_alive only | **Candidate LA21** |
-| Server-side context compression | — | **Candidate LA22** |
+| Explicit prewarm / load API | `POST /api/load`, `/backend/load` | **LA21** ✓ |
+| Server-side context compression | `compression` on chat; `ZEROLLAMA_CHAT_COMPRESSION` | **LA22** ✓ |
 | Backend gallery + gRPC zoo / vllm.cpp | — | **Not goals** |
 | NATS cluster / ds4 layer-split | — | **Not goals** |
 
 ### Candidates (LA11+) — suggested priority
-
-**High fit (control plane, small surface):**
-
-1. **LA21 Explicit prewarm** — `POST /api/load` (or `/backend/load`) without a generate round-trip.
-
-2. **LA14 Resumable GGUF transfer** — Fleet peer staging `Content-Range`.
-
-3. **LA16 Rerank API** — Wire llama-server `/v1/rerank` for docs + colbert router tier.
-
-4. **LA22 Context compression** — Opt-in compress older chat turns via a small local model (v4.9); agent-facing.
 
 **Lower priority / different tracks:**
 
@@ -437,7 +487,7 @@ Refs: [v4.9.0](https://github.com/mudler/LocalAI/releases/tag/v4.9.0) · [v4.8.0
 
 ## Tests
 
-- `go test ./server -run 'GgufGuess|Watchdog|Concurrency|RunnerMetadata|InferenceFleet|InferenceBacklog|Score'`
+- `go test ./server -run 'GgufGuess|Watchdog|Concurrency|RunnerMetadata|InferenceFleet|InferenceBacklog|Score|Rerank|DecideRouter|CompressChat'`
 - `go test ./fleet/...`
 - `go test ./fs/ggml -run DecodeMetadata`
 - `go test ./llm -run TestLlamaServer`

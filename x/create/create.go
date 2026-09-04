@@ -985,6 +985,88 @@ func CreateSafetensorsModel(modelName, modelDir, quantize string, createLayer La
 	return nil
 }
 
+func isLinkSidecar(name string) bool {
+	switch {
+	case name == "model.safetensors.index.json":
+		return false
+	case strings.HasSuffix(name, ".safetensors"):
+		return false
+	case strings.HasSuffix(name, ".json"), strings.HasSuffix(name, ".jinja"), name == "tokenizer.model":
+		return true
+	default:
+		return false
+	}
+}
+
+// LinkSafetensorsModel registers a HuggingFace/mlx-lm directory in place.
+// Copies only small JSON/tokenizer sidecars into blobs and leaves *.safetensors
+// on the original volume. Why: CreateSafetensorsModel copies every shard and
+// may reclaim sources; a 90 GiB Flash pack cannot import on a full disk.
+func LinkSafetensorsModel(modelName, modelDir string, createLayer LayerCreator, writeManifest ManifestWriter, fn func(status string)) error {
+	abs, err := filepath.Abs(modelDir)
+	if err != nil {
+		return fmt.Errorf("resolve link dir: %w", err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return fmt.Errorf("link dir %s: %w", abs, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("link path is not a directory: %s", abs)
+	}
+	if !IsSafetensorsModelDir(abs) {
+		return fmt.Errorf("%s is not a safetensors model directory (need config.json + *.safetensors)", abs)
+	}
+
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		return err
+	}
+	shards := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".safetensors") || strings.Contains(entry.Name(), "index") {
+			continue
+		}
+		shards++
+	}
+	if shards == 0 {
+		return fmt.Errorf("no safetensors shards in %s", abs)
+	}
+
+	var layers []LayerInfo
+	var configLayer LayerInfo
+	for _, entry := range entries {
+		if entry.IsDir() || !isLinkSidecar(entry.Name()) {
+			continue
+		}
+		name := entry.Name()
+		fn(fmt.Sprintf("importing config %s", name))
+		f, err := os.Open(filepath.Join(abs, name))
+		if err != nil {
+			return fmt.Errorf("failed to open %s: %w", name, err)
+		}
+		layer, err := createLayer(f, "application/vnd.ollama.image.json", name)
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("failed to create layer for %s: %w", name, err)
+		}
+		if name == "config.json" {
+			configLayer = layer
+		}
+		layers = append(layers, layer)
+	}
+	if configLayer.Digest == "" {
+		return fmt.Errorf("config.json not found in %s", abs)
+	}
+
+	fn(fmt.Sprintf("linking %s (%d shards in place, no tensor copy)", modelName, shards))
+	if err := writeManifest(modelName, configLayer, layers); err != nil {
+		return fmt.Errorf("failed to write manifest: %w", err)
+	}
+	fn(fmt.Sprintf("successfully linked %s (%d sidecar layers)", modelName, len(layers)))
+	return nil
+}
+
 func shouldSkipSourceCompanion(name string, tensorSet map[string]struct{}) bool {
 	switch {
 	case strings.HasSuffix(name, ".scales"):

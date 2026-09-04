@@ -24,6 +24,27 @@ func TestRemapLoadedTensorsAffineScales(t *testing.T) {
 	}
 }
 
+func TestRemapLoadedTensorsKeepsHCScale(t *testing.T) {
+	raw := map[string]*mlx.Array{
+		"model.hc_head.fn":    dummyArray(),
+		"model.hc_head.base":  dummyArray(),
+		"model.hc_head.scale": dummyArray(),
+		"linear.weight":       dummyArray(),
+		"linear.weight.scale": dummyArray(),
+		"linear.weight.bias":  dummyArray(),
+	}
+	got := remapLoadedTensors(raw)
+	if _, ok := got["model.hc_head.scale"]; !ok {
+		t.Fatalf("hc_head.scale dropped; keys %v", keys(got))
+	}
+	if _, ok := got["linear.weight_scale"]; !ok {
+		t.Fatalf("weight.scale not remapped; keys %v", keys(got))
+	}
+	if _, ok := got["linear.weight.scale"]; ok {
+		t.Fatal("raw weight.scale should be remapped away")
+	}
+}
+
 func dummyArray() *mlx.Array { return &mlx.Array{} }
 
 func keys(m map[string]*mlx.Array) []string {

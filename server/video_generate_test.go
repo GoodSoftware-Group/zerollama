@@ -458,6 +458,173 @@ func TestBuildVideoJobPayloadLTX(t *testing.T) {
 	}
 }
 
+func TestBuildVideoJobPayloadLTX2B(t *testing.T) {
+	root := findRepoRoot(t)
+	t.Setenv("ZEROLLAMA_REPO", root)
+	t.Setenv("ZEROLLAMA_LTX_DRY_RUN", "")
+	t.Setenv("ZEROLLAMA_LTX_MMGP_PROFILE", "")
+	t.Setenv("ZEROLLAMA_LTX_MODEL_TYPE", "")
+
+	repo := t.TempDir()
+	ckpt := filepath.Join(repo, "ckpts")
+	venv := filepath.Join(t.TempDir(), "venv")
+	if err := os.MkdirAll(ckpt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(venv, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(venv, "bin", "python3"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"ltxv-2b-0.9.8-distilled-fp8.safetensors",
+		"ltxv_0.9.7_VAE.safetensors",
+	} {
+		if err := os.WriteFile(filepath.Join(ckpt, name), make([]byte, 2048), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendLTX},
+		BackendPaths: map[string]string{
+			"wan2gp_repo":     repo,
+			"wan2gp_ckpt_dir": ckpt,
+			"wan2gp_venv":     venv,
+		},
+		VideoGeneration: &model.VideoGenerationConfig{
+			Profile:    ltxProfile2BDistill,
+			VRAMTier:   "uma",
+			Size:       ltx2bDefaultSize,
+			Frames:     17,
+			Steps:      8,
+			TimeoutSec: 600,
+		},
+	}
+
+	payload, err := buildVideoJobPayload(model.BackendLTX, cfg, *cfg.VideoGeneration, "ltxv-2b-distilled:lab", "a pink-haired anime girl", nil, time.Now().UTC(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Env["LTX_MODEL_TYPE"] != "ltxv_2b_distilled" {
+		t.Fatalf("model_type: %s", payload.Env["LTX_MODEL_TYPE"])
+	}
+	if payload.Env["LTX_SIZE"] != ltx2bDefaultSize {
+		t.Fatalf("size: %s", payload.Env["LTX_SIZE"])
+	}
+	if payload.Env["LTX_STEPS"] != "8" {
+		t.Fatalf("steps: %s", payload.Env["LTX_STEPS"])
+	}
+	if payload.Env["LTX_MMGP_PROFILE"] != "4" {
+		t.Fatalf("mmgp: %s want 4 for non-16g 2B", payload.Env["LTX_MMGP_PROFILE"])
+	}
+}
+
+func TestBuildVideoJobPayloadLTXMLX(t *testing.T) {
+	root := findRepoRoot(t)
+	t.Setenv("ZEROLLAMA_REPO", root)
+	t.Setenv("ZEROLLAMA_LTX_DRY_RUN", "")
+	t.Setenv("ZEROLLAMA_LTX_MLX_PYTHON", "")
+
+	dir := t.TempDir()
+	modelDir := filepath.Join(dir, "LTX")
+	if err := os.MkdirAll(filepath.Join(modelDir, "tokenizer"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(modelDir, "text_encoder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, "tokenizer", "spiece.model"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, "text_encoder", "config.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, "ltxv-2b-0.9.8-distilled.safetensors"), make([]byte, 2048), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	venv := filepath.Join(dir, "venv", "bin")
+	if err := os.MkdirAll(venv, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	py := filepath.Join(venv, "python3")
+	if err := os.WriteFile(py, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendLTX},
+		BackendPaths: map[string]string{
+			"ltx_mlx_model_dir": modelDir,
+			"ltx_mlx_venv":      filepath.Dir(venv),
+		},
+		VideoGeneration: &model.VideoGenerationConfig{
+			Runner:     "ltx-mlx",
+			Profile:    ltxProfile2BMlx,
+			Size:       ltxMlxDefaultSize,
+			Frames:     17,
+			Steps:      4,
+			TimeoutSec: 120,
+		},
+	}
+	payload, err := buildVideoJobPayload(model.BackendLTX, cfg, *cfg.VideoGeneration, "ltxv-2b-mlx:lab", "a fox", nil, time.Now().UTC(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(payload.ScriptPath, "ltx_mlx_generate.py") {
+		t.Fatalf("script: %s", payload.ScriptPath)
+	}
+	if payload.Env["LTX_MLX_MODEL_DIR"] != modelDir {
+		t.Fatalf("model dir: %s", payload.Env["LTX_MLX_MODEL_DIR"])
+	}
+	if payload.Env["LTX_STEPS"] != "4" {
+		t.Fatalf("steps: %s", payload.Env["LTX_STEPS"])
+	}
+	if payload.Env["LTX_MODEL"] != "2b" {
+		t.Fatalf("model: %s", payload.Env["LTX_MODEL"])
+	}
+	if payload.PythonBin != py {
+		t.Fatalf("python: %s want %s", payload.PythonBin, py)
+	}
+
+	if err := os.MkdirAll(filepath.Join(modelDir, "LTX 13B"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, "LTX 13B", "ltxv-13b-0.9.8-distilled.safetensors"), make([]byte, 2048), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.VideoGeneration.Profile = ltxProfile13BMlx
+	cfg.VideoGeneration.Size = ""
+	cfg.VideoGeneration.Frames = 0
+	cfg.VideoGeneration.Steps = 0
+	cfg.VideoGeneration.TimeoutSec = 0
+	kf := t.TempDir()
+	still := filepath.Join(kf, "cel.png")
+	if err := os.WriteFile(still, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload13, err := buildVideoJobPayload(model.BackendLTX, cfg, *cfg.VideoGeneration, "ltxv-13b-mlx:lab", "a fox", nil, time.Now().UTC(), kf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload13.Env["LTX_MODEL"] != "13b" {
+		t.Fatalf("13b model: %s", payload13.Env["LTX_MODEL"])
+	}
+	if payload13.Env["LTX_SIZE"] != ltxMlx13BDefaultSize {
+		t.Fatalf("13b size: %s", payload13.Env["LTX_SIZE"])
+	}
+	if payload13.Env["LTX_STEPS"] != "8" {
+		t.Fatalf("13b steps: %s", payload13.Env["LTX_STEPS"])
+	}
+	if payload13.Env["LTX_FRAMES"] != "41" {
+		t.Fatalf("13b frames: %s", payload13.Env["LTX_FRAMES"])
+	}
+	if payload13.Env["LTX_IMAGE"] != still {
+		t.Fatalf("13b image: %s want %s", payload13.Env["LTX_IMAGE"], still)
+	}
+}
+
 func TestBuildVideoJobPayloadLTXMissingPaths(t *testing.T) {
 	root := findRepoRoot(t)
 	t.Setenv("ZEROLLAMA_REPO", root)

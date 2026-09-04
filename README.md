@@ -361,6 +361,7 @@ Ordered by how often operators need them. Full index: [docs/README.md](docs/READ
 - [CUDA lanes](docs/cuda-lanes.md) · [5080 runbook](docs/5080-runbook.md) · [GPU operator guide](docs/gpu-5080-operator-guide.md)
 - [Arc (Vulkan) runbook](docs/a380-runbook.md)
 - [MLX agent prompts](docs/mlx-agent-prompts.md) · [MLX routing](docs/mlx-routing-policy.md)
+- [MLX DeepSeek-V4 Flash](docs/mlx-deepseek-v4-flash.md) · [findings](docs/mlx-deepseek-v4-flash-findings.md)
 - [Runtime embed](docs/runtime-embed.md) · [GPU training](docs/gpu-training.md)
 - [Fleet](docs/fleet-management.md) · [Eliza Cloud](docs/eliza-cloud.md)
 - [Remote model storage](docs/remote-model-storage.md) — central blobs + HMAC + fetch-on-miss

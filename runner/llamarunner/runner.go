@@ -102,6 +102,7 @@ type Sequence struct {
 	shift bool
 
 	doneReason llm.DoneReason
+	stopSequence string
 
 	// logprobs configuration
 	logprobs    bool
@@ -770,6 +771,7 @@ func (s *Server) processBatch(tokenBatch *llama.Batch, embedBatch *llama.Batch) 
 			}
 			seq.cache.Inputs = seq.cache.Inputs[:tokenLen]
 
+			seq.stopSequence = stop
 			s.removeSequence(i, llm.DoneReasonStop)
 			continue
 		}
@@ -923,6 +925,7 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 				if err := json.NewEncoder(w).Encode(&llm.CompletionResponse{
 					Done:                 true,
 					DoneReason:           seq.doneReason,
+					StopSequence:         seq.stopSequence,
 					PromptEvalCount:      seq.numPromptInputs,
 					PromptEvalDuration:   seq.processingDuration,
 					EvalCount:            seq.numDecoded,

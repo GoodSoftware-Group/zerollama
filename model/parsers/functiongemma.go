@@ -55,7 +55,7 @@ func (functionGemmaEventToolCall) isFunctionGemmaEvent() {}
 
 func (p *FunctionGemmaParser) Add(s string, done bool) (content string, thinking string, calls []api.ToolCall, err error) {
 	p.buffer.WriteString(s)
-	events := p.parseEvents()
+	events := p.parseEvents(done)
 
 	var toolCalls []api.ToolCall
 	var contentSb strings.Builder
@@ -76,13 +76,13 @@ func (p *FunctionGemmaParser) Add(s string, done bool) (content string, thinking
 	return contentSb.String(), "", toolCalls, nil
 }
 
-func (p *FunctionGemmaParser) parseEvents() []functionGemmaEvent {
+func (p *FunctionGemmaParser) parseEvents(done bool) []functionGemmaEvent {
 	var all []functionGemmaEvent
 
 	keepLooping := true
 	for keepLooping {
 		var events []functionGemmaEvent
-		events, keepLooping = p.eat()
+		events, keepLooping = p.eat(done)
 		if len(events) > 0 {
 			all = append(all, events...)
 		}
@@ -100,7 +100,7 @@ func (p *FunctionGemmaParser) emitWithPartialCheck(bufStr, tag string) (unambigu
 	return bufStr, ""
 }
 
-func (p *FunctionGemmaParser) eat() ([]functionGemmaEvent, bool) {
+func (p *FunctionGemmaParser) eat(done bool) ([]functionGemmaEvent, bool) {
 	bufStr := p.buffer.String()
 	if bufStr == "" {
 		return nil, false
@@ -144,28 +144,36 @@ func (p *FunctionGemmaParser) eat() ([]functionGemmaEvent, bool) {
 			}
 			return events, true
 		}
+		if done && strings.TrimSpace(bufStr) != "" {
+			p.buffer.Reset()
+			p.state = FunctionGemmaCollectingContent
+			var events []functionGemmaEvent
+			if tc, err := p.parseToolCall(bufStr); err == nil && tc.Function.Name != "" {
+				events = append(events, functionGemmaEventToolCall{toolCall: tc})
+			}
+			return events, false
+		}
 		return nil, false
 	}
 
 	return nil, false
 }
 
-// Matches call:function_name{args}
-var functionGemmaCallRegex = regexp.MustCompile(`call:([^{]+)\{(.*)\}`)
+// Matches call:function_name{args} — closing } may be missing (delimiter-drop).
+var functionGemmaCallRegex = regexp.MustCompile(`(?s)call:([^{]+)\{(.*)$`)
 
 func (p *FunctionGemmaParser) parseToolCall(content string) (api.ToolCall, error) {
 	toolCall := api.ToolCall{}
 
-	// Extract function name and arguments
+	content = strings.TrimSpace(content)
 	match := functionGemmaCallRegex.FindStringSubmatch(content)
 	if len(match) < 3 {
 		return toolCall, nil
 	}
 
-	toolCall.Function.Name = match[1]
-	argsStr := match[2]
-
-	// Parse arguments
+	toolCall.Function.Name = strings.TrimSpace(match[1])
+	argsStr := strings.TrimSpace(match[2])
+	argsStr = strings.TrimSuffix(argsStr, "}")
 	toolCall.Function.Arguments = p.parseArguments(argsStr)
 
 	return toolCall, nil

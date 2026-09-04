@@ -98,11 +98,14 @@ func Execute(args []string) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
+		tune, _ := LastRunTuneReport()
 		if err := json.NewEncoder(w).Encode(statusResponse{
 			Status:        0,
 			Progress:      100,
 			ContextLength: runner.contextLength,
 			Memory:        memoryCache.Memory(),
+			Knobs:         KnobSnapshot(),
+			Tune:          tune,
 		}); err != nil {
 			slog.Error("Failed to encode response", "error", err)
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -144,6 +147,7 @@ func Execute(args []string) error {
 			Temperature:      request.Options.Temperature,
 			TopP:             request.Options.TopP,
 			MinP:             request.Options.MinP,
+			TypicalP:         request.Options.TypicalP,
 			TopK:             request.Options.TopK,
 			RepeatLastN:      request.Options.RepeatLastN,
 			RepeatPenalty:    request.Options.RepeatPenalty,

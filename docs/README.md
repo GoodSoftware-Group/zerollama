@@ -53,6 +53,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Upstream Ollama comparison](./upstream-ollama-diff.md) — **why** vanilla Ollama dropped ggml for GGUF; pin gaps; cherry-pick map; Phase 17 alignment.
 * [Phase 17 — Go → llama-server](./phase17-llama-server.md) — **why** upstream GGUF path is cherry-picked for mergeability; Mac keeps ggml default (M7 bench).
 * [Flash-MoE (anemll)](./flash-moe.md) — **why** slot-bank + SSD sidecar for MoE models larger than unified RAM; Phase 17 llama-server passthrough (not ggml Metal default).
+* [FreeToken MoE lab](./freetoken-moe-lab.md) — offline sim of edge MoE policies (LRU cache, \(q^\star\) CPU/PCIe split, prefill overlap, semantic checkpoints); [arXiv:2608.16157](https://arxiv.org/abs/2608.16157).
 * [ANE probe (maderix)](./ane-probe.md) — **why** subprocess smoke for private ANE APIs before hybrid inference; not on hot path.
 * [ANE dflash in-process (B1–B6)](./ane-draft-inprocess.md) — **why** same-PID IOSurface handoff on llama-server dflash draft decode; lab port 11435; draft tokens still Metal until B7.
 * [ANE hybrid path (lab)](./ane-hybrid-path.md) — crossover sweeps, prefill proxy, operator tooling index.
@@ -66,14 +67,17 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 ### Apple Silicon (repo)
 
 * [Apple Silicon & Metal operator guide](./apple-silicon-metal.md) — onboarding tiers (M14); unified memory; L1 profiles; GPU bootstrap; sched_reserve; **`metal_signoff.sh` + qwen35 (`eliza-1-2b:latest`)**; manifest vs `/api/ps` context.
+* [m4-prefill-engine borrowings](./m4-prefill-borrowings.md) — Metal prefill borrowings: **MTL FA recognition** + FA/`q8_0` KV (useful); fused SwiGLU / native Q8 FA opt-in but regress on M4 Max; P2–P3 staged. [findings](./m4-prefill-borrowings-findings.md).
 * [Qwen 3.5/3.6 on Mac](./qwen35-apple-silicon.md) — **why** compat + Metal embed; Go ollama-engine; **full `metal_signoff.sh` + qwen35** (qwen35 before Phase 15; canonical **`eliza-1-2b:latest`**); manifest `num_ctx` vs request options; thinking-model fields.
 * [Mac dev setup](./mac-dev-setup.md) — **`dev_bootstrap.sh`** tier 0–3; **prereqs:** Go **1.24.1+**, full Xcode.app (or Homebrew Python), **cmake**, uv; script map after reorg; **why** `:11434` daily vs `:8080` CI.
 * [MLX routing policy](./mlx-routing-policy.md) — ggml Metal vs runtime vs mlxrunner; LM Studio MLX disk summary.
+* [MLX DeepSeek-V4 Flash](./mlx-deepseek-v4-flash.md) — **why** CSA/HCA not full MHA; **why** `--link` instead of a 90 GiB blob copy. [findings](./mlx-deepseek-v4-flash-findings.md).
 * [UMA admission overview (Darwin)](./uma-admission.md) — M20–M23 surfaces, multi-unit HOLD, `mac_uma_signoff.sh` ladder, disable knobs.
 * [MLX UMA broker admission (M20)](./mlx-uma-sched.md) — machine-wide `uma_daemon` gate around mlxrunner `Eval` (`BUILD_UMA=auto`, default `ZEROLLAMA_UMA_SCHED=auto`).
 * [GGUF ggml UMA admission (M21)](./ggml-uma-sched.md) — same broker for ollamarunner / llamarunner Metal.
 * [llama-server UMA admission (M22)](./llama-server-uma-sched.md) — vendor `graph_compute` HOLD + sync (`BUILD_UMA` → `libuma_llama.a`).
 * [MLX agent prompts](./mlx-agent-prompts.md) — **why** context cap, tail truncate, `PromptTokens`, tokenize cache, keep-alive floor, SSE keepalive, **M15a live-session + rotating-KV restore** (`fast_path`, `messages_dropped`), and operator logs for agent megaprompts on safetensors models.
+* [mlx-serve borrowings](./mlx-serve-borrowings.md) — **why** PLD (not Zig); spec gates; SWA spec-read trim; vision 1536² cap; what we skipped (app / LAN / 3D).
 * [Megaprompt tokenize benches (README evidence)](./readme-marketing-benches.md) — **why** cite ~3–7× / hundreds-of-ms legacy; Jul 2026 medians; reproduce command.
 * [Faster BPE tokenize](./faster-bpe-tokenize.md) — **why** megaprompt `llama_tokenize` hurt agents; patches `0106–0126`; `mega_1mib_ascii` / `_chat` benches; identity gates.
 * [Faster BPE findings](./faster-bpe-tokenize-findings.md) — **why** not Rust gigatoken; measurement traps (bogus 6–22×); three-tree wiring; Qwen vs Gemma speedup shape.
@@ -88,7 +92,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Inference wishlist — host capacity (Phase A/B)](./inference-wishlist-host.md) — **why** Orient/Decide need capacity APIs; pin/propose with honest single-resident runtime; broker must respect pins; B0 requires ggml-empty; 503 before resume on pin conflicts; `stable_multi_model_swap` still false.
 * [T6 unified queue policy (operator guide)](./t6-unified-queue.md) — idle-wait, defer queue, allowed window, cross-queue FIFO, env table, `/api/status` queue_policy, smoke script.
 * [Open-source shoutouts](./open-source-shoutouts.md) — Gigatoken, vLLM, SGLang, LocalAI, minefield, Hermes, Ollama, llama.cpp — what we borrowed and why.
-* [LocalAI control-plane borrowings](./localai-borrowings.md) — **why** LA1–LA11 (incl. KNN **LA11b**), **LA15**, **LA17–LA20**; env reference.
+* [LocalAI control-plane borrowings](./localai-borrowings.md) — **why** LA1–LA11 (incl. KNN **LA11b**), **LA14–LA15**, **LA17–LA21**; env reference.
 * [Fleet scheduling (multi-node)](./fleet-scheduling.md) — **why** a management node above per-node schedulers; warm-model routing; filter-then-score (F7); anti-patterns (scatter-gather, long quotes).
 * [Fleet management operator guide](./fleet-management.md) — **why** F3 is thin (poll + assign, no remote load); `zerollama fleet serve`; API, env, agent pattern.
 * [Remote model storage](./remote-model-storage.md) — **why** central content-addressed blobs + HMAC LAN auth + fetch-on-miss; RDMA-prefer/TCP fallback; pin/refcount LRU; ephemeral cleanup; tensor catalog language for later streaming (spec-only in v1).

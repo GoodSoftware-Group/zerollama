@@ -104,7 +104,7 @@ func (s *Server) scoreCandidateLocked(prompt, candidate string, lengthNormalize,
 		joint += lp
 		if includeTokens {
 			piece, _ := tok.Decode([]int32{token})
-			tokenLPs = append(tokenLPs, llm.TokenLogprob{Token: piece, Logprob: lp})
+			tokenLPs = append(tokenLPs, llm.TokenLogprob{Token: piece, Logprob: lp, ID: llm.IntPtr(int(token))})
 		}
 		logits, err = s.scoreDecodeLocked(slot, token, true)
 		if err != nil {

@@ -2,6 +2,7 @@ package parsers
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ollama/ollama/api"
@@ -1188,6 +1189,75 @@ celsius
 		if got != tc.want {
 			t.Errorf("got %q, want %q", got, tc.want)
 		}
+	}
+}
+
+func TestQwen3CoderMissingToolCloseOnDone(t *testing.T) {
+	p := &Qwen3CoderParser{}
+	p.Init([]api.Tool{tool("get_weather", map[string]api.ToolProperty{
+		"location": {Type: api.PropertyType{"string"}},
+	})}, nil, nil)
+
+	body := "<tool_call><function=get_weather><parameter=location>\nOslo\n</parameter></function>"
+	content, _, calls, err := p.Add(body, false)
+	if err != nil {
+		t.Fatalf("Add false: %v", err)
+	}
+	if content != "" || len(calls) != 0 {
+		t.Fatalf("expected no emit before done, got content=%q calls=%d", content, len(calls))
+	}
+
+	content, _, calls, err = p.Add("", true)
+	if err != nil {
+		t.Fatalf("Add done: %v", err)
+	}
+	if content != "" {
+		t.Fatalf("expected empty content, got %q", content)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "get_weather" {
+		t.Fatalf("expected get_weather, got %#v", calls)
+	}
+	location, ok := calls[0].Function.Arguments.Get("location")
+	if !ok || location != "Oslo" {
+		t.Fatalf("expected Oslo, got %v", location)
+	}
+}
+
+func TestQwen3CoderPluralToolCallsWrapper(t *testing.T) {
+	p := &Qwen3CoderParser{}
+	p.Init([]api.Tool{tool("get_weather", map[string]api.ToolProperty{
+		"location": {Type: api.PropertyType{"string"}},
+	})}, nil, nil)
+
+	body := "<tool_calls:0>\n<function=get_weather><parameter=location>\nKyoto\n</parameter></function>\n</tool_calls>"
+	content, _, calls, err := p.Add(body, true)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if content != "" {
+		t.Fatalf("expected empty content, got %q", content)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "get_weather" {
+		t.Fatalf("expected get_weather, got %#v", calls)
+	}
+	location, ok := calls[0].Function.Arguments.Get("location")
+	if !ok || location != "Kyoto" {
+		t.Fatalf("expected Kyoto, got %v", location)
+	}
+}
+
+func TestQwen3CoderUnsuffixedToolCallsIsContent(t *testing.T) {
+	p := &Qwen3CoderParser{}
+	p.Init(nil, nil, nil)
+	content, _, calls, err := p.Add("see <tool_calls> in the docs", true)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("expected no tool calls, got %#v", calls)
+	}
+	if !strings.Contains(content, "<tool_calls>") {
+		t.Fatalf("expected literal wrapper in content, got %q", content)
 	}
 }
 

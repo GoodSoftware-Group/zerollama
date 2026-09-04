@@ -371,6 +371,15 @@ func TestMinistralParserStreaming(t *testing.T) {
 				}},
 			},
 		},
+		{
+			desc:  "truncated tool args on done",
+			tools: []api.Tool{{Function: api.ToolFunction{Name: "get_weather"}}},
+			steps: []step{
+				{input: `[TOOL_CALLS]get_weather[ARGS]{"location": "San Fran`, wantEvents: []ministralEvent{
+					ministralEventToolCall{name: "get_weather", args: `{}`},
+				}},
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -381,7 +390,8 @@ func TestMinistralParserStreaming(t *testing.T) {
 
 			for i, step := range tc.steps {
 				parser.buffer.WriteString(step.input)
-				gotEvents := parser.parseEvents()
+				done := i == len(tc.steps)-1
+				gotEvents := parser.parseEvents(done)
 
 				if len(gotEvents) == 0 && len(step.wantEvents) == 0 {
 					// avoid deep equal on empty vs. nil slices

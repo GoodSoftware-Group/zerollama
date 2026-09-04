@@ -14,6 +14,8 @@ BMTL_UMA_TOOLKIT ?= $(BMTL_ROOT)/hardware_lab/lanes/m4/uma_toolkit
 SDK   = $(shell xcrun --sdk macosx --show-sdk-path)
 CLANG = $(shell xcrun -f clang)
 
+UMA_CLIENT_C := $(firstword $(wildcard $(BMTL_UMA_TOOLKIT)/src/uma_client.c $(BMTL_UMA_TOOLKIT)/uma_client.c))
+
 CFLAGS = -O2 -std=c11 -isysroot $(SDK) -I$(BMTL_UMA_TOOLKIT)/include \
 	-I$(CURDIR) -fPIC
 
@@ -24,11 +26,11 @@ all: libuma_embed.a
 llama: libuma_llama.a
 
 check-paths:
-	@test -f "$(BMTL_UMA_TOOLKIT)/uma_client.c" || \
-	  (echo "missing BMTL_UMA_TOOLKIT=$(BMTL_UMA_TOOLKIT)"; exit 1)
+	@test -n "$(UMA_CLIENT_C)" || \
+	  (echo "missing uma_client.c under BMTL_UMA_TOOLKIT=$(BMTL_UMA_TOOLKIT)"; exit 1)
 
-uma_client.o: $(BMTL_UMA_TOOLKIT)/uma_client.c check-paths
-	$(CLANG) $(CFLAGS) -c -o $@ $(BMTL_UMA_TOOLKIT)/uma_client.c
+uma_client.o: $(UMA_CLIENT_C) check-paths
+	$(CLANG) $(CFLAGS) -c -o $@ $(UMA_CLIENT_C)
 
 uma_glue.o: embed/uma_glue.c uma_glue.h check-paths
 	$(CLANG) $(CFLAGS) -c -o $@ embed/uma_glue.c

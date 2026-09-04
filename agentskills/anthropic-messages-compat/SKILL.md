@@ -65,7 +65,9 @@ rather than assuming the request shape is wrong.
   translated live from the underlying `api.ChatResponse` stream.
 - **Tool use**: tool calls in the underlying model's response are mapped to
   Anthropic `tool_use` content blocks; tool results sent back must use
-  Anthropic's `tool_result` message shape.
+  Anthropic's `tool_result` message shape. `tool_choice.type=none` omits
+  tools; `type=tool` + `name` keeps that function only (unknown name 400).
+  `type=any` and named `type=tool` also append a last-user “must invoke a tool” line.
 - **Errors**: mapped to Anthropic's `ErrorResponse` envelope, not a raw
   zerollama error object.
 
@@ -113,6 +115,18 @@ curl -N http://localhost:11434/v1/messages \
   differences (thinking/relax-thinking flags, streaming buffering) are
   possible between the two compat surfaces even against the same model;
   don't assume perfect parity.
+- **Cut-off replies** — a trailing assistant text turn (no tool calls)
+  is continued, same as mlx-serve. Tool-call last turns are not.
+- **Stop sequences** — `stop_reason` is `stop_sequence` and
+  `stop_sequence` is the matched string (non-stream and `message_delta`).
+- **Chat compression / `elide_from`** — top-level `compression` or
+  `extra_body.compression` (same object as `/api/chat`). Echo
+  `usage.compression_meta.elide_from` on the next append-only turn.
+  Streaming `message_delta.usage` carries the same meta.
+- **Claude Code `output_config`** — `effort` maps to think
+  (`high`/`medium`/`low`/`max`; `xhigh`→`max`). `format.type: json_schema`
+  is constrained decoding, not ignored markdown. Explicit
+  `thinking.type: disabled` still wins over effort.
 
 ## Related
 

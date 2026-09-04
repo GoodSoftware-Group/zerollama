@@ -20,7 +20,7 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 |-------|--------|
 | **Vendor pin** | **`b10615`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-b10615/` |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` (same as runtime sibling) |
-| **Ollama patches** | Same series as runtime table (**121** format-patches on **b10615**). Rebase from b10488 dropped absorbed Metal ports (monolithic `ggml-metal.metal` is gone; kernels live in `ggml/src/ggml-metal/kernels/*.metal`). Eliza QJL/Polar/TBQ shaders stay in `eliza-shipped/` and link into `default.metallib`. Pretok lives in **`src/unicode.*`**. Mac CGO: `llama/cgo_vendor_hash.cpp` + `llama_print_build_info(const char *)`. |
+| **Ollama patches** | Same series as runtime table (**121** format-patches on **b10615**). Rebase from b10488 dropped absorbed Metal ports (monolithic `ggml-metal.metal` is gone; kernels live in `ggml/src/ggml-metal/kernels/*.metal`). Eliza QJL/Polar/TBQ shaders stay in `eliza-shipped/` and are concatenated onto the `misc` UTF-8 embed (`gen_ggml_metal_embed.sh`). Pretok lives in **`src/unicode.*`**. Mac CGO: `llama/cgo_vendor_hash.cpp` + `llama_print_build_info(const char *)`. |
 | **In-tree Metal dig** | Upstream split Metal kernels (`kernels/*.metal`). Eliza SET_ROWS + fused QJL+Polar attn remain as extra AIR objects. Native FP8 weight types **51/52**. FA-vec per-device tables are upstream. |
 | **Rebase helper** | `./scripts/vendor/rebase_vendor_unified.sh --sync` |
 
@@ -32,7 +32,7 @@ Upstream also ships **`llama/compat/`** — in-memory GGUF translation at CMake 
 
 | Field | Value |
 |-------|--------|
-| **MLX_VERSION** | `27fec909a3df9e572f5195607a453e273e7d80d0` (sibling `../mlx` HEAD used for Metal v3/v4 rebuilds; mlx-c stays `fba4470b`) |
+| **MLX_VERSION** | `1f8e74e3f12f31365464a6867c6579f0e9b29d85` (sibling `../mlx` HEAD used for Metal v3/v4 rebuilds; mlx-c stays `fba4470b`) |
 | **MLX_C_VERSION** | `fba4470b89073180056c9ea46c443051375f7399` (upstream Ollama) |
 | **Fetch** | `./scripts/mlx/ensure_mlx_sources.sh` (sibling `../mlx`, `../mlx-c`) |
 

@@ -391,6 +391,35 @@ func TestFunctionGemmaParser(t *testing.T) {
 			},
 			expectedText: "Some text here",
 		},
+		{
+			name: "missing_end_function_call_on_done",
+			chunks: []string{
+				"<start_function_call>call:get_weather{city:<escape>Paris<escape>}",
+			},
+			tools: []api.Tool{
+				{
+					Type: "function",
+					Function: api.ToolFunction{
+						Name: "get_weather",
+						Parameters: api.ToolFunctionParameters{
+							Type: "object",
+							Properties: testPropsMap(map[string]api.ToolProperty{
+								"city": {Type: api.PropertyType{"string"}},
+							}),
+						},
+					},
+				},
+			},
+			expectedCalls: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Name:      "get_weather",
+						Arguments: testArgs(map[string]any{"city": "Paris"}),
+					},
+				},
+			},
+			expectedText: "",
+		},
 	}
 
 	for _, tt := range tests {

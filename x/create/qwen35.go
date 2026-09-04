@@ -58,10 +58,6 @@ func qwen35InspectSource(modelDir string) (qwen35SourceInfo, error) {
 				info.hasPrequantizedWeights = true
 				return info, nil
 			}
-			if strings.Contains(name, "mtp.") {
-				info.shouldShiftNormWeights = true
-				continue
-			}
 			if info.shouldShiftNormWeights || !strings.Contains(name, "conv1d.weight") {
 				continue
 			}
@@ -272,11 +268,12 @@ func (t qwen35ImportTransform) canonicalTensorName(name string) string {
 }
 
 func qwen35ShouldShiftNormKey(key string) bool {
+	if strings.Contains(key, "mtp.") || strings.HasPrefix(key, "draft.") {
+		return false
+	}
 	for _, suffix := range []string{
 		".input_layernorm.weight",
 		".post_attention_layernorm.weight",
-		"mtp.pre_fc_norm_embedding.weight",
-		"mtp.pre_fc_norm_hidden.weight",
 		"model.norm.weight",
 		".q_norm.weight",
 		".k_norm.weight",

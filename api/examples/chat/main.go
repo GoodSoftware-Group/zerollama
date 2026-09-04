@@ -34,7 +34,8 @@ func main() {
 	}
 
 	ctx := context.Background()
-	req := &api.ChatRequest{
+	thread := &api.ChatThread{
+		Client:   client,
 		Model:    "llama3.2",
 		Messages: messages,
 	}
@@ -44,7 +45,7 @@ func main() {
 		return nil
 	}
 
-	err = client.Chat(ctx, req, respFunc)
+	err = thread.Chat(ctx, respFunc)
 	if err != nil {
 		log.Fatal(err)
 	}

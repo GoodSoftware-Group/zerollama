@@ -100,10 +100,20 @@ type Sequence struct {
 	// true if an embedding are to be returned instead of text generation
 	embeddingOnly bool
 
+	// last in-checkpoint MTP draft ids; mtpVerify means the next graph includes the draft
+	mtpDraft   []int32
+	mtpHits    int
+	mtpSeen    int
+	mtpVerify    bool
+	mtpIBatch0   int
+	mtpSkipDraft bool
+
 	// shift if context window is exceeded
 	shift bool
 
 	doneReason llm.DoneReason
+	// stopSequence is the matched request stop string, if any.
+	stopSequence string
 
 	// logprobs configuration
 	logprobs    bool
@@ -702,6 +712,10 @@ func (s *Server) forwardBatch(pendingBatch batchState) (nextBatch batchState, er
 			seq.cache.Inputs = []*input.Input{}
 		}
 
+		if seq.mtpVerify {
+			seq.mtpIBatch0 = -1
+		}
+
 		batchSize := s.batchSize
 
 		for i, inp := range seq.inputs {
@@ -768,8 +782,13 @@ func (s *Server) forwardBatch(pendingBatch batchState) (nextBatch batchState, er
 			batch.Sequences = append(batch.Sequences, seq.cache.Id)
 
 			seq.iBatch = len(batchOutputs)
-			if i+1 == len(seq.inputs) || seq.embeddingOnly {
+			emitLogits := i+1 == len(seq.inputs) || seq.embeddingOnly || seq.mtpVerify
+			if emitLogits {
 				batchOutputs = append(batchOutputs, int32(len(batchInputs)-1))
+				if seq.mtpVerify && seq.mtpIBatch0 < 0 {
+					seq.mtpIBatch0 = len(batchOutputs) - 1
+				}
+				seq.iBatch = len(batchOutputs) - 1
 			}
 			logutil.Trace("forwardBatch iBatch", "batchID", s.batchID, "seqIdx", seqIdx, "seq.iBatch", seq.iBatch, "i+1", i+1, "len(seq.inputs)", len(seq.inputs))
 			seq.pendingInputs = append(seq.pendingInputs, inp)
@@ -803,6 +822,16 @@ func (s *Server) forwardBatch(pendingBatch batchState) (nextBatch batchState, er
 	batch.Inputs = nextBatch.ctx.Input().Empty(ml.DTypeI32, len(batchInputs))
 	batch.Outputs = nextBatch.ctx.Input().FromInts(batchOutputs, len(batchOutputs))
 	nextBatch.ctx.SetBatchSize(len(batchInputs))
+	if c, ok := s.model.Config().Cache.(mtpPairCache); ok {
+		pair := false
+		for _, seq := range nextBatch.seqs {
+			if seq != nil && seq.mtpVerify {
+				pair = true
+				break
+			}
+		}
+		c.SetMTPPair(pair)
+	}
 	nextBatch.modelOutput, err = model.Forward(nextBatch.ctx, s.model, batch)
 	if err != nil {
 		err = fmt.Errorf("failed to build graph: %w", err)
@@ -965,6 +994,13 @@ func (s *Server) computeBatch(activeBatch batchState) {
 		}
 
 		nextBatchTokens[i].Token = token
+		if emit, next, used := s.maybeAcceptMTP(seq, outputs, vocabSize, iBatches[i]); used {
+			token = emit
+			nextBatchTokens[i].Token = next
+			s.maybeObserveMTP(seq, next, activeBatch.ctx)
+		} else {
+			s.maybeObserveMTP(seq, token, activeBatch.ctx)
+		}
 
 		// if it's an end of sequence token, break
 		if s.model.(tokenizer.Tokenizer).Is(token, tokenizer.SpecialEOS) {
@@ -1031,6 +1067,7 @@ func (s *Server) computeBatch(activeBatch batchState) {
 
 			seq.cache.Inputs = seq.cache.Inputs[:tokenLen]
 
+			seq.stopSequence = stop
 			s.removeSequence(i, llm.DoneReasonStop)
 			continue
 		}
@@ -1243,6 +1280,7 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 				if err := json.NewEncoder(w).Encode(&llm.CompletionResponse{
 					Done:                   true,
 					DoneReason:             seq.doneReason,
+					StopSequence:           seq.stopSequence,
 					PromptEvalCount:        seq.numPromptInputs,
 					PromptEvalCachedCount:  seq.cachedPromptInputs,
 					PromptEvalDuration:     seq.processingDuration,

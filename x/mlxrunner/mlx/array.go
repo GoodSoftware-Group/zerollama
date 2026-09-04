@@ -121,7 +121,14 @@ func FromValues[S ~[]E, E arrayTypes](s S, shape ...int) *Array {
 	}
 
 	tt := New("")
-	tt.ctx = C.mlx_array_new_data(unsafe.Pointer(&bts[0]), unsafe.SliceData(cShape), C.int(len(cShape)), C.mlx_dtype(dtype))
+	var data unsafe.Pointer
+	if len(bts) == 0 {
+		var dummy byte
+		data = unsafe.Pointer(&dummy)
+	} else {
+		data = unsafe.Pointer(&bts[0])
+	}
+	tt.ctx = C.mlx_array_new_data(data, unsafe.SliceData(cShape), C.int(len(cShape)), C.mlx_dtype(dtype))
 	return tt
 }
 
@@ -237,6 +244,7 @@ func (t *Array) DType() DType {
 // data utilities
 
 func (t *Array) Int() int {
+	Eval(t)
 	switch dt := t.DType(); dt {
 	case DTypeInt32:
 		var item C.int32_t
@@ -260,6 +268,7 @@ func (t *Array) Int() int {
 }
 
 func (t *Array) Float() float64 {
+	Eval(t)
 	switch dt := t.DType(); dt {
 	case DTypeFloat32:
 		var item C.float
@@ -275,6 +284,7 @@ func (t *Array) Float() float64 {
 }
 
 func (t *Array) Ints() []int {
+	Eval(t)
 	if dt := t.DType(); dt != DTypeInt32 {
 		panic(fmt.Sprintf("mlx: Ints requires DTypeInt32, got %v", dt))
 	}
@@ -286,6 +296,7 @@ func (t *Array) Ints() []int {
 }
 
 func (t *Array) Floats() []float32 {
+	Eval(t)
 	if dt := t.DType(); dt != DTypeFloat32 {
 		panic(fmt.Sprintf("mlx: Floats requires DTypeFloat32, got %v", dt))
 	}

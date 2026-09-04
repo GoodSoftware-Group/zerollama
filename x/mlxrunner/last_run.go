@@ -14,19 +14,20 @@ const lastRunKeep = 8
 // LastRun is one completed MLX decode, persisted so doctor can tune without
 // scraping serve logs.
 type LastRun struct {
-	Model        string    `json:"model"`
-	At           time.Time `json:"at"`
-	Iterations   int       `json:"iterations"`
-	Drafted      int       `json:"drafted"`
-	Accepted     int       `json:"accepted"`
-	MaxDraft     int       `json:"max_draft"`
-	Scheduled    int       `json:"scheduled"`
-	Acceptance   float64   `json:"acceptance"`
-	Enabled      bool      `json:"enabled"`
-	PLD          bool      `json:"pld"`
-	PromptTokens int       `json:"prompt_tokens,omitempty"`
-	CtxBucket    int       `json:"ctx_bucket,omitempty"`
-	Hint         string    `json:"hint,omitempty"`
+	Model         string    `json:"model"`
+	At            time.Time `json:"at"`
+	Iterations    int       `json:"iterations"`
+	Drafted       int       `json:"drafted"`
+	Accepted      int       `json:"accepted"`
+	MaxDraft      int       `json:"max_draft"`
+	Scheduled     int       `json:"scheduled"`
+	Acceptance    float64   `json:"acceptance"`
+	Enabled       bool      `json:"enabled"`
+	PLD           bool      `json:"pld"`
+	PromptTokens  int       `json:"prompt_tokens,omitempty"`
+	CtxBucket     int       `json:"ctx_bucket,omitempty"`
+	GreedyCoupled bool      `json:"greedy_coupled,omitempty"`
+	Hint          string    `json:"hint,omitempty"`
 }
 
 type lastRunFile struct {
@@ -70,19 +71,20 @@ func (s *speculationSession) saveLastRun(acceptance float64) {
 		scheduled = s.spec.depth.scheduled
 	}
 	f := LastRun{
-		Model:        s.spec.r.modelName,
-		At:           time.Now().UTC(),
-		Iterations:   s.stats.iterations,
-		Drafted:      s.stats.drafted,
-		Accepted:     s.stats.accepted,
-		MaxDraft:     s.stats.maxDraft,
-		Scheduled:    scheduled,
-		Acceptance:   acceptance,
-		Enabled:      s.enabled,
-		PLD:          s.pld,
-		PromptTokens: s.promptTokens,
-		CtxBucket:    ctxBucket(s.promptTokens),
-		Hint:         s.tuneHint(acceptance),
+		Model:         s.spec.r.modelName,
+		At:            time.Now().UTC(),
+		Iterations:    s.stats.iterations,
+		Drafted:       s.stats.drafted,
+		Accepted:      s.stats.accepted,
+		MaxDraft:      s.stats.maxDraft,
+		Scheduled:     scheduled,
+		Acceptance:    acceptance,
+		Enabled:       s.enabled,
+		PLD:           s.pld,
+		PromptTokens:  s.promptTokens,
+		CtxBucket:     ctxBucket(s.promptTokens),
+		GreedyCoupled: s.greedyCoupled(),
+		Hint:          s.tuneHint(acceptance),
 	}
 	runs := append(readLastRuns(path), f)
 	if len(runs) > lastRunKeep {
@@ -123,6 +125,9 @@ func summarizeRuns(runs []LastRun) (detail string, warn bool) {
 	}
 	detail = fmt.Sprintf("%s last %d: %s accept=%.2f drafted=%d/%d width=%d scheduled=%d %s parked=%d/%d ctx=%d",
 		best.Model, len(runs), kind, best.Acceptance, best.Accepted, best.Drafted, best.MaxDraft, best.Scheduled, state, parked, len(runs), best.CtxBucket)
+	if best.GreedyCoupled {
+		detail += " greedy_coupled"
+	}
 	if best.Hint != "" {
 		detail += " — " + best.Hint
 	}

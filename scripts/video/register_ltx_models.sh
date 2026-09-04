@@ -10,3 +10,6 @@ register() {
   "$GO" run ./scripts/register_wan_manifest "$name" "$cfg"
 }
 register ltxv-13b-distilled:16g modelfiles/ltxv-13b-distilled/config.json
+register ltxv-2b-distilled:lab modelfiles/ltxv-2b-distilled/config.json
+register ltxv-2b-mlx:lab modelfiles/ltxv-2b-mlx/config.json
+register ltxv-13b-mlx:lab modelfiles/ltxv-13b-mlx/config.json

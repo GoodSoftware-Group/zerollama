@@ -369,3 +369,47 @@ func TestRotatingKVCacheMLAParity(t *testing.T) {
 		}
 	}
 }
+
+func TestRotatingSpecFusedReadTrimmedToWindow(t *testing.T) {
+	skipIfNoMLX(t)
+	const H, D = 1, 4
+	const window = 8
+	c := NewRotatingKVCache(window)
+	tok := mlx.Zeros(mlx.DTypeFloat32, 1, H, 1, D)
+	mlx.Eval(tok)
+	for pos := range 10 {
+		c.Update(newKVBatch(pos, 1), tok, tok)
+	}
+	const fused = 3
+	k := mlx.Zeros(mlx.DTypeFloat32, 1, H, fused, D)
+	v := mlx.Zeros(mlx.DTypeFloat32, 1, H, fused, D)
+	mlx.Eval(k, v)
+	history := c.Update(newKVBatch(10, fused), k, v)
+	want := window + fused - 1
+	if got := history.K().Dim(2); got != want {
+		t.Fatalf("fused spec attention K=%d, want window+L-1=%d", got, want)
+	}
+	if got := history.V().Dim(2); got != want {
+		t.Fatalf("fused spec attention V=%d, want %d", got, want)
+	}
+}
+
+func TestRotatingPrefillChunkKeepsOversizeK(t *testing.T) {
+	skipIfNoMLX(t)
+	const H, D = 1, 4
+	const window = 8
+	c := NewRotatingKVCache(window)
+	tok := mlx.Zeros(mlx.DTypeFloat32, 1, H, 1, D)
+	mlx.Eval(tok)
+	for pos := range 6 {
+		c.Update(newKVBatch(pos, 1), tok, tok)
+	}
+	const chunk = 40 // prefill: keep window+L-1, not a hard window slice
+	k := mlx.Zeros(mlx.DTypeFloat32, 1, H, chunk, D)
+	v := mlx.Zeros(mlx.DTypeFloat32, 1, H, chunk, D)
+	mlx.Eval(k, v)
+	history := c.Update(newKVBatch(6, chunk), k, v)
+	if got := history.K().Dim(2); got <= window {
+		t.Fatalf("prefill attention K=%d, want > window %d so early queries keep keys", got, window)
+	}
+}

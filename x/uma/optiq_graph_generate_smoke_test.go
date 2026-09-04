@@ -1,4 +1,4 @@
-//go:build darwin && uma
+//go:build darwin && uma && umaoptiq
 
 package uma_test
 

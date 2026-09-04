@@ -197,6 +197,24 @@ func TestCohereParseMalformedActions(t *testing.T) {
 	}
 }
 
+func TestCohereTruncatedActionOnDone(t *testing.T) {
+	p := &CohereParser{}
+	p.Init(nil, nil, nil)
+	_, _, calls := cohereAddAll(t, p, []string{
+		"x<|END_THINKING|><|START_ACTION|>",
+		`[{"tool_call_id":"0","tool_name":"search","parameters":{"q":`,
+	})
+	if len(calls) != 1 || calls[0].Function.Name != "search" {
+		t.Fatalf("calls = %v, want search + {}", calls)
+	}
+	if calls[0].Function.Arguments.Len() != 0 {
+		t.Fatalf("must not ship partial parameters, got %#v", calls[0].Function.Arguments)
+	}
+	if calls[0].ID != "0" {
+		t.Fatalf("id=%q", calls[0].ID)
+	}
+}
+
 func TestCohereParseLegacyResponseMarkers(t *testing.T) {
 	// Models trained on the older Command A template sometimes emit
 	// <|START_RESPONSE|>/<|END_RESPONSE|> instead of START_TEXT/END_TEXT.

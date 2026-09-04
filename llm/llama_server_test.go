@@ -514,7 +514,7 @@ func TestLlamaServerCompletionForwardsRepeatLastNZero(t *testing.T) {
 }
 
 func TestLlamaServerCompletionRejectsPromptOverContext(t *testing.T) {
-	const wantError = "the prompt is longer than the context length currently available to the model; shorten the prompt, adjust the context length in settings, or use a model with a longer context length"
+	wantError := ContextOverflowMessage(10, 8)
 
 	var tokenizeReq struct {
 		Content      string `json:"content"`
@@ -1871,6 +1871,30 @@ func TestLegacyEmbeddingsWereRaw(t *testing.T) {
 	}
 }
 
+func TestConvertLogprobsIDs(t *testing.T) {
+	got := convertLogprobs([]llamaServerTokenProb{
+		{ID: 7, Token: "hi", Logprob: -0.5, TopLogprobs: []llamaServerTokenProb{{ID: 8, Token: "hey", Logprob: -1.2}}},
+	}, true)
+	if len(got) != 1 || got[0].ID == nil || *got[0].ID != 7 {
+		t.Fatalf("chosen id = %+v", got)
+	}
+	if len(got[0].TopLogprobs) != 1 || got[0].TopLogprobs[0].ID == nil || *got[0].TopLogprobs[0].ID != 8 {
+		t.Fatalf("alt id = %+v", got[0].TopLogprobs)
+	}
+}
+
+func TestGgufIsRerank(t *testing.T) {
+	rank := ggml.KV{"general.architecture": "bert", "bert.pooling_type": uint32(4)}
+	mean := ggml.KV{"general.architecture": "bert", "bert.pooling_type": uint32(1)}
+	none := ggml.KV{"general.architecture": "llama"}
+	if !ggufIsRerank(rank) {
+		t.Fatal("RANK pooling should be rerank")
+	}
+	if ggufIsRerank(mean) || ggufIsRerank(none) {
+		t.Fatal("mean/none should not be rerank")
+	}
+}
+
 func TestLlamaServerEmbeddingFallbackFormat(t *testing.T) {
 	// Fallback: non-OAI array format (from "content" field)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1901,6 +1925,37 @@ func TestLlamaServerEmbeddingFallbackFormat(t *testing.T) {
 	}
 	if embedding[0] != 0.4 {
 		t.Errorf("embedding[0] = %v, want 0.4", embedding[0])
+	}
+}
+
+func TestLlamaServerRerank(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			fmt.Fprint(w, `{"status":"ok"}`)
+			return
+		}
+		if r.URL.Path != "/v1/rerank" {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"model":"rr","object":"list","results":[{"index":1,"relevance_score":0.9},{"index":0,"relevance_score":0.2}],"usage":{"prompt_tokens":12,"total_tokens":12}}`)
+	}))
+	defer srv.Close()
+
+	parts := strings.Split(srv.URL, ":")
+	var portInt int
+	fmt.Sscanf(parts[len(parts)-1], "%d", &portInt)
+
+	runner := &llamaServerRunner{
+		port: portInt,
+		cmd:  fakeRunningCmd(),
+		sem:  semaphore.NewWeighted(1),
+	}
+	got, err := runner.Rerank(t.Context(), RerankRequest{Query: "q", Documents: []string{"a", "b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Results) != 2 || got.Results[0].Index != 1 || got.PromptTokens != 12 {
+		t.Fatalf("%+v", got)
 	}
 }
 
@@ -3571,6 +3626,27 @@ func TestLlamaServerChatMessageConvertsToolCalls(t *testing.T) {
 	}
 	if toolCalls[0].Function.Arguments != `{"command":"ls"}` {
 		t.Fatalf("expected string-encoded arguments, got %#v", toolCalls[0])
+	}
+}
+
+func TestLlamaServerChatMessageFillsEmptyToolCallID(t *testing.T) {
+	args := api.NewToolCallFunctionArguments()
+	args.Set("command", "ls")
+	msg, err := llamaServerChatMessage(Message{
+		Role: "assistant",
+		ToolCalls: []api.ToolCall{{
+			Function: api.ToolCallFunction{Name: "bash", Arguments: args},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolCalls, ok := msg["tool_calls"].([]llamaServerChatToolCall)
+	if !ok || len(toolCalls) != 1 {
+		t.Fatalf("got %#v", msg["tool_calls"])
+	}
+	if toolCalls[0].ID != "call_0" {
+		t.Fatalf("id = %q", toolCalls[0].ID)
 	}
 }
 

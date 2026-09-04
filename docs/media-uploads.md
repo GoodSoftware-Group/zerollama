@@ -89,7 +89,7 @@ See [wan-t2v.md § Keyframe → inbetweens](./wan-t2v.md#keyframe--inbetweens-ti
 |--------------|------|--------------|
 | `media_missing` | Label gone, TTL expired, or CAS evicted | Re-PUT listed labels; retry POST |
 | `media_type_mismatch` | Wan keyframe is not `kind=image` | Upload images for Wan; video kinds reserved for future morph |
-| (plain 400) | T2V profile + keyframes, bad refs, etc. | Fix model/profile or options |
+| (plain 400) | T2V profile + keyframes, LTX `last_frame_image`, bad refs, etc. | Fix model/profile or options |
 
 **Why structured codes:** Agents can branch on `media_missing` without scraping English messages. Digests are **not** required on retry — only labels.
 

@@ -39,15 +39,35 @@ def require(name: str) -> str:
     return v
 
 
-def check_weights(ckpt: Path) -> list[str]:
-    need = [
-        "ltxv_0.9.8_13B_distilled_quanto_bf16_int8.safetensors",
+def is_2b(model_type: str) -> bool:
+    t = (model_type or "").lower()
+    return "2b" in t
+
+
+def weight_names(model_type: str) -> list[str]:
+    shared = [
         "ltxv_0.9.7_VAE.safetensors",
-        "ltxv_0.9.7_spatial_upscaler.safetensors",
         "ltxv_scheduler.json",
         "T5_xxl_1.1/T5_xxl_1.1_enc_quanto_bf16_int8.safetensors",
     ]
-    missing = [n for n in need if not (ckpt / n).is_file()]
+    if is_2b(model_type):
+        return [
+            "ltxv-2b-0.9.8-distilled-fp8.safetensors",
+            "ltxv_0.9.8_spatial_upscaler.safetensors",
+            *shared,
+        ]
+    return [
+        "ltxv_0.9.8_13B_distilled_quanto_bf16_int8.safetensors",
+        "ltxv_0.9.7_spatial_upscaler.safetensors",
+        *shared,
+    ]
+
+
+def check_weights(ckpt: Path, model_type: str = "") -> list[str]:
+    missing = [n for n in weight_names(model_type) if not (ckpt / n).is_file()]
+    if is_2b(model_type) and "ltxv_0.9.8_spatial_upscaler.safetensors" in missing:
+        if (ckpt / "ltxv-spatial-upscaler-0.9.8.safetensors").is_file():
+            missing = [n for n in missing if n != "ltxv_0.9.8_spatial_upscaler.safetensors"]
     return missing
 
 
@@ -73,16 +93,23 @@ def build_settings() -> dict:
 
 def dry_run(repo: Path, ckpt: Path, settings: dict) -> int:
     progress(5.0, "dry-run: checking weights")
-    missing = check_weights(ckpt)
+    missing = check_weights(ckpt, str(settings.get("model_type") or ""))
     if missing:
         eprint("missing LTXV weights:")
         for m in missing:
             eprint(f"  {ckpt / m}")
-        eprint("reinstall: ./scripts/video/install_ltx_wan2gp.sh --weights-only")
+        eprint("reinstall: ./scripts/video/install_ltx_wan2gp.sh --weights-only (or --2b-only)")
         return 1
-    defaults = repo / "defaults" / "ltxv_distilled.json"
+    model_type = settings.get("model_type") or env("LTX_MODEL_TYPE", "ltxv_distilled")
+    if is_2b(str(model_type)):
+        defaults = repo / "finetunes" / "ltxv_2b_distilled.json"
+        if not defaults.is_file():
+            defaults = repo / "defaults" / "ltxv_2b_distilled.json"
+    else:
+        defaults = repo / "defaults" / "ltxv_distilled.json"
     if not defaults.is_file():
-        eprint(f"missing Wan2GP defaults at {defaults}")
+        eprint(f"missing Wan2GP model def at {defaults}")
+        eprint("install 2B: ./scripts/video/install_ltx_wan2gp.sh --2b-only")
         return 1
     progress(40.0, "dry-run: settings ok")
     out = {
@@ -119,7 +146,7 @@ def run_generate(repo: Path, ckpt: Path, settings: dict, output: Path) -> int:
         root=repo,
         cli_args=["--attention", attention, "--profile", profile],
     )
-    progress(20.0, "submit ltxv_distilled task")
+    progress(20.0, f"submit {settings.get('model_type', 'ltxv')} task")
     job = session.submit_task(settings)
     last = 20.0
     for event in job.events.iter(timeout=0.5):
@@ -191,9 +218,9 @@ def main() -> int:
     if truthy("LTX_DRY_RUN") or "--dry-run" in sys.argv:
         return dry_run(repo, ckpt, settings)
 
-    missing = check_weights(ckpt)
+    missing = check_weights(ckpt, settings.get("model_type") or env("LTX_MODEL_TYPE"))
     if missing:
-        eprint("missing LTXV weights — run ./scripts/video/install_ltx_wan2gp.sh --weights-only")
+        eprint("missing LTXV weights — run ./scripts/video/install_ltx_wan2gp.sh --weights-only (or --2b-only)")
         for m in missing:
             eprint(f"  {ckpt / m}")
         return 1

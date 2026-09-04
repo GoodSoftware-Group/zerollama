@@ -160,6 +160,21 @@ func TestNewSpeculationPLDDefault(t *testing.T) {
 	}
 }
 
+type parkSpecModel struct{ fakeMTPModel }
+
+func (parkSpecModel) ParkSpeculation() string { return "test: park PLD" }
+
+func TestNewSpeculationParkedByModel(t *testing.T) {
+	t.Setenv("ZEROLLAMA_MLX_PLD", "")
+	r := &Runner{Model: &parkSpecModel{}}
+	if newSpeculation(r, nil) != nil {
+		t.Fatal("ParkSpeculation must disable default PLD")
+	}
+	if newSpeculation(r, &fakeMTPDraft{}) != nil {
+		t.Fatal("ParkSpeculation must disable MTP draft too")
+	}
+}
+
 func TestPLDOpenGatesNovelPrompt(t *testing.T) {
 	t.Setenv("ZEROLLAMA_MLX_PLD", "")
 	s := newSpeculation(&Runner{}, nil)

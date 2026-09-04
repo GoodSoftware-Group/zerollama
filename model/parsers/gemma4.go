@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -304,10 +305,10 @@ func (p *Gemma4Parser) eat(done bool) ([]gemma4Event, bool) {
 			p.buffer.WriteString(remaining)
 			p.state = Gemma4IgnoringPostToolCallNoise
 
-			if toolCall, err := parseGemma4ToolCall(toolCallContent, p.tools); err == nil {
+			if toolCall, ok := gemma4ToolCallOrSalvage(toolCallContent, p.tools); ok {
 				events = append(events, gemma4EventToolCall{toolCall: toolCall})
 			} else {
-				slog.Warn("gemma4 tool call parsing failed", "error", err, "content", toolCallContent)
+				slog.Warn("gemma4 tool call parsing failed", "content", toolCallContent)
 			}
 			return events, true
 		}
@@ -317,10 +318,10 @@ func (p *Gemma4Parser) eat(done bool) ([]gemma4Event, bool) {
 		if done && len(bufStr) > 0 {
 			p.buffer.Reset()
 			p.state = Gemma4CollectingContent
-			if toolCall, err := parseGemma4ToolCall(bufStr, p.tools); err == nil {
+			if toolCall, ok := gemma4ToolCallOrSalvage(bufStr, p.tools); ok {
 				events = append(events, gemma4EventToolCall{toolCall: toolCall})
 			} else {
-				slog.Warn("gemma4 tool call flush on done failed", "error", err, "content", bufStr)
+				slog.Warn("gemma4 tool call flush on done failed", "content", bufStr)
 			}
 			return events, false
 		}
@@ -415,23 +416,56 @@ func parseGemma4ToolCall(content string, tools []api.Tool) (api.ToolCall, error)
 	}, nil
 }
 
+func gemma4ToolCallOrSalvage(content string, tools []api.Tool) (api.ToolCall, bool) {
+	if toolCall, err := parseGemma4ToolCall(content, tools); err == nil {
+		return toolCall, true
+	}
+	return salvageGemma4ToolCall(content)
+}
+
+func salvageGemma4ToolCall(content string) (api.ToolCall, bool) {
+	content = strings.TrimSpace(content)
+	if !strings.HasPrefix(content, "call:") {
+		return api.ToolCall{}, false
+	}
+	rest := strings.TrimSpace(content[len("call:"):])
+	name := rest
+	if i := strings.IndexByte(rest, '{'); i >= 0 {
+		name = strings.TrimSpace(rest[:i])
+	}
+	if name == "" || strings.Contains(name, "<|") {
+		return api.ToolCall{}, false
+	}
+	return api.ToolCall{
+		Function: api.ToolCallFunction{
+			Name:      name,
+			Arguments: api.NewToolCallFunctionArguments(),
+		},
+	}, true
+}
+
 // gemma4ArgsToJSON converts Gemma 4's custom argument format to valid JSON.
 func gemma4ArgsToJSON(s string) string {
 	var quotedStrings []string
 	text := gemma4QuotedStringRe.ReplaceAllStringFunc(s, func(match string) string {
 		submatches := gemma4QuotedStringRe.FindStringSubmatch(match)
 		quotedStrings = append(quotedStrings, submatches[1])
-		return "\x00" + string(rune(len(quotedStrings)-1)) + "\x00"
+		return gemma4StringPlaceholder(len(quotedStrings) - 1)
 	})
 
+	text = quoteGemma4BareValues(text)
 	text = quoteGemma4BareKeys(text)
 
 	for i, value := range quotedStrings {
 		escaped, _ := json.Marshal(value)
-		text = strings.ReplaceAll(text, "\x00"+string(rune(i))+"\x00", string(escaped))
+		text = strings.ReplaceAll(text, gemma4StringPlaceholder(i), string(escaped))
 	}
 
 	return text
+}
+
+func gemma4StringPlaceholder(i int) string {
+	return "\x1e" + strconv.Itoa(i) + "\x1f"
 }
 
 func quoteGemma4BareKeys(s string) string {
@@ -439,6 +473,15 @@ func quoteGemma4BareKeys(s string) string {
 	sb.Grow(len(s) + 16)
 
 	for i := 0; i < len(s); {
+		if s[i] == '\x1e' {
+			if end := strings.IndexByte(s[i+1:], '\x1f'); end != -1 {
+				end = i + 1 + end + 1
+				sb.WriteString(s[i:end])
+				i = end
+				continue
+			}
+		}
+
 		if s[i] == '"' {
 			if end := gemma4JSONQuotedStringEnd(s, i); end != -1 {
 				sb.WriteString(s[i:end])
@@ -472,6 +515,137 @@ func quoteGemma4BareKeys(s string) string {
 	}
 
 	return sb.String()
+}
+
+// quoteGemma4BareValues JSON-quotes dropped `<|"|>` strings. The value runs to
+// the next sibling `key:` or the object's final `}`, never the first comma or
+// brace inside markup (mlx-serve). JSON scalars, objects, arrays, and quoted
+// strings are left alone.
+func quoteGemma4BareValues(s string) string {
+	var sb strings.Builder
+	sb.Grow(len(s) + 16)
+
+	for i := 0; i < len(s); {
+		if s[i] == '\x1e' {
+			if end := strings.IndexByte(s[i+1:], '\x1f'); end != -1 {
+				end = i + 1 + end + 1
+				sb.WriteString(s[i:end])
+				i = end
+				continue
+			}
+		}
+
+		if s[i] == '"' {
+			if end := gemma4JSONQuotedStringEnd(s, i); end != -1 {
+				sb.WriteString(s[i:end])
+				i = end
+				continue
+			}
+		}
+
+		if s[i] != ':' {
+			sb.WriteByte(s[i])
+			i++
+			continue
+		}
+
+		sb.WriteByte(':')
+		i++
+		spaceStart := i
+		i = gemma4SkipSpace(s, i)
+		sb.WriteString(s[spaceStart:i])
+		if i >= len(s) {
+			break
+		}
+
+		if s[i] == '"' || s[i] == '\'' || s[i] == '{' || s[i] == '[' || s[i] == '\x1e' || strings.HasPrefix(s[i:], gemma4StringDelimiter) {
+			continue
+		}
+		if end := gemma4CompleteJSONScalarEnd(s, i); end > i {
+			sb.WriteString(s[i:end])
+			i = end
+			continue
+		}
+
+		valueEnd := gemma4UnquotedValueEnd(s, i)
+		quoted, _ := json.Marshal(s[i:valueEnd])
+		sb.Write(quoted)
+		i = valueEnd
+	}
+
+	return sb.String()
+}
+
+func gemma4CompleteJSONScalarEnd(s string, i int) int {
+	rest := s[i:]
+	for _, lit := range []string{"true", "false", "null"} {
+		if !strings.HasPrefix(rest, lit) {
+			continue
+		}
+		end := i + len(lit)
+		if end == len(s) || s[end] == ',' || s[end] == '}' || s[end] == ']' || unicode.IsSpace(rune(s[end])) {
+			return end
+		}
+		return -1
+	}
+
+	j := i
+	if j < len(s) && s[j] == '-' {
+		j++
+	}
+	if j >= len(s) || s[j] < '0' || s[j] > '9' {
+		return -1
+	}
+	for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+		j++
+	}
+	if j < len(s) && s[j] == '.' {
+		j++
+		if j >= len(s) || s[j] < '0' || s[j] > '9' {
+			return -1
+		}
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+			j++
+		}
+	}
+	if j < len(s) && (s[j] == 'e' || s[j] == 'E') {
+		j++
+		if j < len(s) && (s[j] == '+' || s[j] == '-') {
+			j++
+		}
+		if j >= len(s) || s[j] < '0' || s[j] > '9' {
+			return -1
+		}
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+			j++
+		}
+	}
+	if j == len(s) || s[j] == ',' || s[j] == '}' || s[j] == ']' || unicode.IsSpace(rune(s[j])) {
+		return j
+	}
+	return -1
+}
+
+func gemma4UnquotedValueEnd(s string, start int) int {
+	for i := start; i < len(s); i++ {
+		if s[i] != ',' {
+			continue
+		}
+		keyStart := gemma4SkipSpace(s, i+1)
+		keyEnd := gemma4BareKeyEnd(s, keyStart)
+		if keyEnd == keyStart {
+			continue
+		}
+		colon := gemma4SkipSpace(s, keyEnd)
+		if colon < len(s) && s[colon] == ':' {
+			return i
+		}
+	}
+	end := gemma4TrimRightSpaceIndex(s)
+	if end > start && s[end-1] == '}' {
+		return end - 1
+	}
+	return len(s)
 }
 
 func gemma4BareKeyEnd(s string, start int) int {

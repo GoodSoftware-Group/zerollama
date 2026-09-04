@@ -59,6 +59,7 @@ Also runs model-serving-minefield style checks:
   - model config traps (quant label, generation defaults, chat template, context)
   - serve identity (trap 53), readiness vs liveness (trap 112), spec×slots on UMA (trap 98), thinking gate (trap 29)
   - live serving probes against warm /api/ps models (77, 78, 04/20/25, reasoning, think empty-content, tool_calls)
+  - MLX knob sheet, last decode, and round-cost tables (look for "mlx knobs" in the report)
 
 Model template repair (milkey/moophlo-class + ChatML hygiene):
   Why: empty response / slash loops / missing stops are often Modelfile+parser faults, not bad weights.
@@ -380,6 +381,7 @@ func runDoctorChecks(repo string) []doctorCheck {
 		out = append(out, doctorCheckANE(repo))
 		out = append(out, doctorCheckANEDraftHook(repo))
 		out = append(out, doctorCheckFlashMoE(repo))
+		out = append(out, doctorCheckFreeToken())
 	} else {
 		out = append(out, doctorCheck{
 			Name:   "darwin runtime smoke",
@@ -388,8 +390,15 @@ func runDoctorChecks(repo string) []doctorCheck {
 		})
 	}
 	out = append(out, doctorCheckServeIdentity())
+	out = append(out, doctorCheckPortHijack())
 	out = append(out, doctorCheckModelReadiness())
 	out = append(out, doctorCheckSpeculativeUMA())
+	if runtime.GOOS != "darwin" {
+		out = append(out, doctorCheckFreeToken())
+	}
+	out = append(out, doctorCheckMLXKnobs())
+	out = append(out, doctorCheckMLXLastRun())
+	out = append(out, doctorCheckMLXRoundCost())
 	out = append(out, doctorCheckServingTraps()...)
 	return out
 }

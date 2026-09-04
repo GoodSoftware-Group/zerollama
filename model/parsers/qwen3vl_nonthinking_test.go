@@ -263,6 +263,34 @@ func TestQwen3VLNonThinkingAssignsSequentialToolCallIndices(t *testing.T) {
 	}
 }
 
+func TestQwen3VLMissingToolCloseOnDone(t *testing.T) {
+	parser := Qwen3VLParser{hasThinkingSupport: false}
+	parser.Init([]api.Tool{}, nil, nil)
+
+	content, thinking, calls, err := parser.Add(`<tool_call>{"name":"first","arguments":{"a":"1"}}`, false)
+	if err != nil {
+		t.Fatalf("Add false: %v", err)
+	}
+	if content != "" || thinking != "" || len(calls) != 0 {
+		t.Fatalf("expected no emit before done, got content=%q thinking=%q calls=%d", content, thinking, len(calls))
+	}
+
+	content, thinking, calls, err = parser.Add("", true)
+	if err != nil {
+		t.Fatalf("Add done: %v", err)
+	}
+	if content != "" || thinking != "" {
+		t.Fatalf("expected empty content/thinking, got %q / %q", content, thinking)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "first" {
+		t.Fatalf("expected first, got %#v", calls)
+	}
+	a, ok := calls[0].Function.Arguments.Get("a")
+	if !ok || a != "1" {
+		t.Fatalf("expected a=1, got %v", a)
+	}
+}
+
 func TestQwenOldParserStreaming(t *testing.T) {
 	type step struct {
 		input      string

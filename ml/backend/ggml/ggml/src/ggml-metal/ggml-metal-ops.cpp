@@ -8,11 +8,17 @@
 #include "ggml-metal-common.h"
 #include "ggml-metal-device.h"
 #include "ggml-metal-tuning.h"
+#include "ane_ffn_metal_hook.h"
+#include "m4_prefill_metal_hook.h"
 
 #include <cassert>
 #include <algorithm>
 #include <limits>
 #include <cmath>
+#include <cstring>
+#include <cstdlib>
+#include <cstdio>
+#include <atomic>
 
 static ggml_metal_buffer_id ggml_metal_get_buffer_id(const ggml_tensor * t) {
     if (!t) {
@@ -40,6 +46,7 @@ struct ggml_metal_op {
         int  debug_fusion) {
         this->dev             = dev;
         this->lib             = ggml_metal_device_get_library(dev);
+        this->cmd_buf         = cmd_buf;
         this->enc             = ggml_metal_encoder_init(cmd_buf, use_concurrency);
         this->mem_ranges      = ggml_mem_ranges_init(debug_graph);
         this->idx_start       = idx_start;
@@ -91,6 +98,7 @@ struct ggml_metal_op {
 
     ggml_metal_device_t  dev;
     ggml_metal_library_t lib;
+    ggml_metal_cmd_buf_t cmd_buf;
     ggml_metal_encoder_t enc;
     ggml_mem_ranges_t    mem_ranges;
 
@@ -100,6 +108,15 @@ struct ggml_metal_op {
 
     int debug_graph;
     int debug_fusion;
+
+    bool sync_for_ane_host() {
+        ggml_metal_cmd_buf_t neu = ggml_metal_encoder_sync_and_resume(this->enc, this->dev);
+        if (!neu) {
+            return false;
+        }
+        this->cmd_buf = neu;
+        return true;
+    }
 
 private:
     ggml_cgraph * gf;
@@ -139,6 +156,18 @@ ggml_metal_op_t ggml_metal_op_init(
 
 void ggml_metal_op_free(ggml_metal_op_t ctx) {
     delete ctx;
+}
+
+ggml_metal_cmd_buf_t ggml_metal_op_cmd_buf(ggml_metal_op_t ctx) {
+    return ctx ? ctx->cmd_buf : NULL;
+}
+
+struct ggml_tensor * ggml_metal_op_node(ggml_metal_op_t ctx, int i) {
+    return ctx ? ctx->node(i) : NULL;
+}
+
+bool ggml_metal_op_sync_for_ane_host(ggml_metal_op_t ctx) {
+    return ctx ? ctx->sync_for_ane_host() : false;
 }
 
 int ggml_metal_op_n_nodes(ggml_metal_op_t ctx) {
@@ -2320,6 +2349,8 @@ int ggml_metal_op_pool_2d(ggml_metal_op_t ctx, int idx) {
 // defense in depth: a missing Metal kernel should be a clear, actionable abort instead of
 // a null-pipeline dereference deep in the encoder (ggml_metal_library_compile_pipeline
 // already logs the underlying MTLLibraryErrorDomain error before returning a nil pipeline)
+
+
 static void ggml_metal_op_mul_mat_check_pipeline(const ggml_metal_pipeline_with_params & pipeline, const ggml_tensor * op) {
     if (!pipeline.pipeline) {
         GGML_ABORT("%s: no Metal kernel for op = %s, src0 type = %s, src1 type = %s",
@@ -2355,6 +2386,24 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
     GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
 
     GGML_ASSERT(ne00 == ne10);
+
+    // Lab M4 prefill fused Gate+Up SwiGLU (ZEROLLAMA_M4_PREFILL_SWIGLU=1), then ANE FFN.
+    // build_ffn(PAR) builds up→gate→glu→down; Metal may topo-sort to gate→up→glu→down.
+    // MoE shexp is holey: defer ANE write until down is encoded (early write races MoE scratch).
+    // OVERLAP: sync+kick at fuse stash so ANE eval runs while Metal encodes MoE.
+    {
+        const int ic  = (int)ne00;
+        const int oc  = (int)ne01;
+        const int seq = (int)ne11;
+        const int n_m4 = m4_prefill_metal_op_mul_mat_try(ctx, lib, enc, idx, op, ic, oc, seq);
+        if (n_m4 > 0) {
+            return n_m4;
+        }
+        const int n = ane_ffn_metal_op_mul_mat_try(ctx, idx, op, ic, oc, seq);
+        if (n > 0) {
+            return n;
+        }
+    }
 
     GGML_ASSERT(ne12 % ne02 == 0);
     GGML_ASSERT(ne13 % ne03 == 0);
@@ -2850,6 +2899,67 @@ bool ggml_metal_op_flash_attn_ext_use_vec(const ggml_tensor * op) {
     return (ne01 < 20) && (ne00 % 32 == 0);
 }
 
+// Opt-in: keep native in-kernel Q8_0 flash-attn on prefill instead of dequant→F16 scratch
+// (m4-prefill-engine lesson: Q8 KV + FA that reads Q8). Requires OLLAMA_KV_CACHE_TYPE=q8_0.
+//
+// ZEROLLAMA_M4_PREFILL_Q8_KV:
+//   unset / 0 / false / no → off (stock Q8→F16 when nq≥32)
+//   1 / true / yes / auto  → native Q8 only when head_dim ≤ MAX_HEAD (default 64)
+//   always / force         → always prefer native Q8 FA
+// ZEROLLAMA_M4_PREFILL_Q8_KV_MAX_HEAD — auto-mode head_dim ceiling (default 64).
+// Lab: head=64 (0.5B) won; head=128 (1.5B) lost vs hot stock F16 FA.
+static bool m4_prefill_q8_kv_env_off(const char * e) {
+    if (!e || !e[0] || e[0] == '0') {
+        return true;
+    }
+    if ((e[0] == 'f' || e[0] == 'F') && (e[1] == 'a' || e[1] == 'A')) {
+        return true; // false
+    }
+    if ((e[0] == 'n' || e[0] == 'N') && (e[1] == 'o' || e[1] == 'O' || e[1] == '\0')) {
+        return true; // no / n
+    }
+    return false;
+}
+
+static bool m4_prefill_q8_kv_env_always(const char * e) {
+    if (!e || !e[0]) {
+        return false;
+    }
+    // always / ALWAYS
+    if ((e[0] == 'a' || e[0] == 'A') && (e[1] == 'l' || e[1] == 'L')) {
+        return true;
+    }
+    // force / FORCE
+    if ((e[0] == 'f' || e[0] == 'F') && (e[1] == 'o' || e[1] == 'O')) {
+        return true;
+    }
+    return false;
+}
+
+static bool m4_prefill_q8_kv_native_want(const ggml_tensor * op) {
+    const char * e = getenv("ZEROLLAMA_M4_PREFILL_Q8_KV");
+    if (m4_prefill_q8_kv_env_off(e)) {
+        return false;
+    }
+    if (m4_prefill_q8_kv_env_always(e)) {
+        return true;
+    }
+
+    // 1 / true / yes / auto → head_dim gate
+    int64_t max_head = 64;
+    const char * mh = getenv("ZEROLLAMA_M4_PREFILL_Q8_KV_MAX_HEAD");
+    if (mh && mh[0]) {
+        char * end = nullptr;
+        const long v = strtol(mh, &end, 10);
+        if (end != mh && v > 0) {
+            max_head = (int64_t) v;
+        }
+    }
+
+    const int64_t head = (op && op->src[0]) ? op->src[0]->ne[0] : (int64_t) 0;
+    return head > 0 && head <= max_head;
+}
+
 // ref: https://github.com/ggml-org/llama.cpp/pull/27390
 // dequantize the quantized KV cache to F16 before running the F16 flash attention kernels
 static bool ggml_metal_op_flash_attn_ext_use_kv_f16(const ggml_tensor * op) {
@@ -2867,7 +2977,32 @@ static bool ggml_metal_op_flash_attn_ext_use_kv_f16(const ggml_tensor * op) {
         case GGML_TYPE_Q4_1:
         case GGML_TYPE_Q5_0:
         case GGML_TYPE_Q5_1:
+            return true;
         case GGML_TYPE_Q8_0:
+            // Prefill batch≥32 normally dequants Q8→F16 then runs F16 FA. Opt-in keeps
+            // kernel_flash_attn_ext_q8_0_* when auto head gate (or always) says so.
+            if (m4_prefill_q8_kv_native_want(op)) {
+                if (getenv("ZEROLLAMA_M4_PREFILL_TELEMETRY") &&
+                    getenv("ZEROLLAMA_M4_PREFILL_TELEMETRY")[0] == '1') {
+                    fprintf(stderr,
+                            "m4_prefill: native Q8_0 FA (skip kv_f16) nq=%lld head=%lld\n",
+                            (long long) op->src[0]->ne[1], (long long) op->src[0]->ne[0]);
+                }
+                return false;
+            }
+            if (getenv("ZEROLLAMA_M4_PREFILL_Q8_KV") &&
+                !m4_prefill_q8_kv_env_off(getenv("ZEROLLAMA_M4_PREFILL_Q8_KV")) &&
+                getenv("ZEROLLAMA_M4_PREFILL_TELEMETRY") &&
+                getenv("ZEROLLAMA_M4_PREFILL_TELEMETRY")[0] == '1') {
+                static bool once = false;
+                if (!once) {
+                    once = true;
+                    fprintf(stderr,
+                            "m4_prefill: Q8_KV auto → stock kv_f16 (head=%lld exceeds max; set "
+                            "ZEROLLAMA_M4_PREFILL_Q8_KV=always to force native)\n",
+                            (long long) op->src[0]->ne[0]);
+                }
+            }
             return true;
         default:
             return false;

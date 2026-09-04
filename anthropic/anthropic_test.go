@@ -51,12 +51,28 @@ func TestFromMessagesRequest_Basic(t *testing.T) {
 		t.Fatalf("expected 1 message, got %d", len(result.Messages))
 	}
 
-	if result.Messages[0].Role != "user" || result.Messages[0].Content != "Hello" {
+	if result.Messages[0].Role != "user" || result.Messages[0].Content != "Hello\n\n"+api.OutputBudgetGuidance {
 		t.Errorf("unexpected message: %+v", result.Messages[0])
 	}
 
 	if numPredict, ok := result.Options["num_predict"].(int); !ok || numPredict != 1024 {
 		t.Errorf("expected num_predict 1024, got %v", result.Options["num_predict"])
+	}
+}
+
+func TestFromMessagesRequest_DisableParallelToolUse(t *testing.T) {
+	req := MessagesRequest{
+		Model:      "test-model",
+		MaxTokens:  16,
+		Messages:   []MessageParam{{Role: "user", Content: textContent("Hello")}},
+		ToolChoice: &ToolChoice{Type: "auto", DisableParallelToolUse: true},
+	}
+	result, err := FromMessagesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ParallelToolCalls == nil || *result.ParallelToolCalls {
+		t.Fatalf("ParallelToolCalls = %v", result.ParallelToolCalls)
 	}
 }
 
@@ -177,7 +193,7 @@ func TestFromMessagesRequest_WithImage(t *testing.T) {
 		t.Fatalf("expected 1 message, got %d", len(result.Messages))
 	}
 
-	if result.Messages[0].Content != "What's in this image?" {
+	if result.Messages[0].Content != "What's in this image?\n\n"+api.OutputBudgetGuidance {
 		t.Errorf("expected content 'What's in this image?', got %q", result.Messages[0].Content)
 	}
 
@@ -306,6 +322,69 @@ func TestFromMessagesRequest_WithTools(t *testing.T) {
 	}
 }
 
+func TestFromMessagesRequest_ToolChoiceNoneOmitsTools(t *testing.T) {
+	req := MessagesRequest{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		Messages:  []MessageParam{{Role: "user", Content: textContent("Hello")}},
+		Tools: []Tool{{
+			Name:        "get_weather",
+			Description: "Get current weather",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		}},
+		ToolChoice: &ToolChoice{Type: "none"},
+	}
+	result, err := FromMessagesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Tools) != 0 {
+		t.Fatalf("none must omit tools, got %d", len(result.Tools))
+	}
+}
+
+func TestFromMessagesRequest_ToolChoiceNamed(t *testing.T) {
+	req := MessagesRequest{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		Messages:  []MessageParam{{Role: "user", Content: textContent("Hello")}},
+		Tools: []Tool{
+			{Name: "get_weather", InputSchema: json.RawMessage(`{"type":"object"}`)},
+			{Name: "get_time", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		},
+		ToolChoice: &ToolChoice{Type: "tool", Name: "get_time"},
+	}
+	result, err := FromMessagesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Tools) != 1 || result.Tools[0].Function.Name != "get_time" {
+		t.Fatalf("tools=%v", result.Tools)
+	}
+	if !strings.Contains(result.Messages[0].Content, api.RequiredToolCallHint) {
+		t.Fatalf("named tool should hint, got %q", result.Messages[0].Content)
+	}
+}
+
+func TestFromMessagesRequest_ToolChoiceAnyHints(t *testing.T) {
+	req := MessagesRequest{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		Messages:  []MessageParam{{Role: "user", Content: textContent("Hello")}},
+		Tools: []Tool{
+			{Name: "get_time", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		},
+		ToolChoice: &ToolChoice{Type: "any"},
+	}
+	result, err := FromMessagesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Messages[0].Content, api.RequiredToolCallHint) {
+		t.Fatalf("any should hint, got %q", result.Messages[0].Content)
+	}
+}
+
 func TestFromMessagesRequest_DropsCustomWebSearchWhenBuiltinPresent(t *testing.T) {
 	req := MessagesRequest{
 		Model:     "test-model",
@@ -399,6 +478,81 @@ func TestFromMessagesRequest_WithThinking(t *testing.T) {
 	}
 }
 
+func TestFromMessagesRequest_OutputConfigEffort(t *testing.T) {
+	req := MessagesRequest{
+		Model:        "test-model",
+		MaxTokens:    1024,
+		Messages:     []MessageParam{{Role: "user", Content: textContent("Hello")}},
+		OutputConfig: &OutputConfig{Effort: "high"},
+	}
+	result, err := FromMessagesRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Think == nil {
+		t.Fatal("expected Think from output_config.effort")
+	}
+	if v, ok := result.Think.Value.(string); !ok || v != "high" {
+		t.Fatalf("Think.Value = %#v, want high", result.Think.Value)
+	}
+}
+
+func TestFromMessagesRequest_OutputConfigEffortWinsOverThinkingEnabled(t *testing.T) {
+	req := MessagesRequest{
+		Model:        "test-model",
+		MaxTokens:    1024,
+		Messages:     []MessageParam{{Role: "user", Content: textContent("Hello")}},
+		Thinking:     &ThinkingConfig{Type: "enabled", BudgetTokens: 99999},
+		OutputConfig: &OutputConfig{Effort: "low"},
+	}
+	result, err := FromMessagesRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v, ok := result.Think.Value.(string); !ok || v != "low" {
+		t.Fatalf("Think.Value = %#v, want low (effort, not unbounded enabled)", result.Think.Value)
+	}
+}
+
+func TestFromMessagesRequest_OutputConfigJSONSchema(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
+	req := MessagesRequest{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		Messages:  []MessageParam{{Role: "user", Content: textContent("Hello")}},
+		OutputConfig: &OutputConfig{
+			Format: &OutputFormat{Type: "json_schema", Schema: schema},
+		},
+	}
+	result, err := FromMessagesRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(result.Format) != string(schema) {
+		t.Fatalf("Format = %s", result.Format)
+	}
+}
+
+func TestFromMessagesRequest_OutputConfigNestedJSONSchema(t *testing.T) {
+	inner := json.RawMessage(`{"type":"object"}`)
+	wrap := json.RawMessage(`{"name":"reply","schema":{"type":"object"}}`)
+	req := MessagesRequest{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		Messages:  []MessageParam{{Role: "user", Content: textContent("Hello")}},
+		OutputConfig: &OutputConfig{
+			Format: &OutputFormat{Type: "json_schema", Schema: wrap},
+		},
+	}
+	result, err := FromMessagesRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(result.Format) != string(inner) {
+		t.Fatalf("Format = %s want inner schema %s", result.Format, inner)
+	}
+}
+
 func TestFromMessagesRequest_ThinkingOnlyBlock(t *testing.T) {
 	req := MessagesRequest{
 		Model:     "test-model",
@@ -429,6 +583,50 @@ func TestFromMessagesRequest_ThinkingOnlyBlock(t *testing.T) {
 	assistantMsg := result.Messages[1]
 	if assistantMsg.Thinking != "Let me think about this..." {
 		t.Errorf("expected thinking content, got %q", assistantMsg.Thinking)
+	}
+	if result.ContinueFinalMessage {
+		t.Fatal("thinking-only assistant turn is not continuable")
+	}
+}
+
+func TestFromMessagesRequest_InferContinueFinal(t *testing.T) {
+	req := MessagesRequest{
+		Model:     "test-model",
+		MaxTokens: 64,
+		Messages: []MessageParam{
+			{Role: "user", Content: textContent("Write a list")},
+			{Role: "assistant", Content: textContent("1. apples")},
+		},
+	}
+	result, err := FromMessagesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.ContinueFinalMessage {
+		t.Fatal("trailing assistant text should infer continue (mlx-serve)")
+	}
+
+	tools, err := FromMessagesRequest(MessagesRequest{
+		Model:     "test-model",
+		MaxTokens: 64,
+		Messages: []MessageParam{
+			{Role: "user", Content: textContent("weather?")},
+			{
+				Role: "assistant",
+				Content: []ContentBlock{{
+					Type:  "tool_use",
+					ID:    "call_1",
+					Name:  "get_weather",
+					Input: makeArgs("city", "Paris"),
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tools.ContinueFinalMessage {
+		t.Fatal("tool-call last turn must not infer continue")
 	}
 }
 
@@ -543,6 +741,22 @@ func TestToMessagesResponse_Basic(t *testing.T) {
 	}
 }
 
+func TestToMessagesResponse_StopSequence(t *testing.T) {
+	result := ToMessagesResponse("msg_stop", api.ChatResponse{
+		Model:        "test-model",
+		Message:      api.Message{Role: "assistant", Content: "hello"},
+		Done:         true,
+		DoneReason:   "stop",
+		StopSequence: "END",
+	})
+	if result.StopReason != "stop_sequence" {
+		t.Fatalf("stop_reason=%q", result.StopReason)
+	}
+	if result.StopSequence != "END" {
+		t.Fatalf("stop_sequence=%q", result.StopSequence)
+	}
+}
+
 func TestToMessagesResponse_CacheUsage(t *testing.T) {
 	resp := api.ChatResponse{
 		Model: "test-model",
@@ -569,6 +783,60 @@ func TestToMessagesResponse_CacheUsage(t *testing.T) {
 	}
 	if result.Usage.CacheCreationInputTokens != 100 {
 		t.Fatalf("cache_creation=%d, want 100", result.Usage.CacheCreationInputTokens)
+	}
+}
+
+func TestFromMessagesRequest_extraBodyCompression(t *testing.T) {
+	var req MessagesRequest
+	if err := json.Unmarshal([]byte(`{
+		"model": "m",
+		"max_tokens": 16,
+		"messages": [{"role":"user","content":"hi"}],
+		"extra_body": {"compression": {"elide_from": 3, "mode": "placeholder"}}
+	}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	got, err := FromMessagesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Compression == nil || got.Compression.ElideFrom == nil || *got.Compression.ElideFrom != 3 {
+		t.Fatalf("compression %+v", got.Compression)
+	}
+}
+
+func TestFromMessagesRequest_extraBodyPromptCacheKey(t *testing.T) {
+	var req MessagesRequest
+	if err := json.Unmarshal([]byte(`{
+		"model": "m",
+		"max_tokens": 16,
+		"messages": [{"role":"user","content":"hi"}],
+		"extra_body": {"prompt_cache_key": "hermes:agent:1", "cache_reset": true}
+	}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	got, err := FromMessagesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Options["prompt_cache_key"] != "hermes:agent:1" {
+		t.Fatalf("options=%v", got.Options)
+	}
+	if got.Options["cache_reset"] != true {
+		t.Fatalf("cache_reset=%v", got.Options["cache_reset"])
+	}
+}
+
+func TestToMessagesResponse_compressionMeta(t *testing.T) {
+	result := ToMessagesResponse("msg_1", api.ChatResponse{
+		Model:       "m",
+		Message:     api.Message{Role: "assistant", Content: "ok"},
+		Done:        true,
+		DoneReason:  "stop",
+		Compression: &api.ChatCompressionMeta{Mode: "placeholder", ElideFrom: 2},
+	})
+	if result.Usage.Compression == nil || result.Usage.Compression.ElideFrom != 2 {
+		t.Fatalf("usage %+v", result.Usage)
 	}
 }
 
@@ -642,19 +910,23 @@ func TestMapStopReason(t *testing.T) {
 	tests := []struct {
 		reason       string
 		hasToolCalls bool
+		stopSeq      string
 		want         string
 	}{
-		{"stop", false, "end_turn"},
-		{"length", false, "max_tokens"},
-		{"stop", true, "tool_use"},
-		{"other", false, "stop_sequence"},
-		{"", false, ""},
+		{"stop", false, "", "end_turn"},
+		{"length", false, "", "max_tokens"},
+		{"stop", true, "", "tool_use"},
+		{"length", true, "", "max_tokens"},
+		{"other", false, "", "stop_sequence"},
+		{"", false, "", ""},
+		{"stop", false, "END", "stop_sequence"},
+		{"stop", true, "END", "tool_use"},
 	}
 
 	for _, tt := range tests {
-		got := mapStopReason(tt.reason, tt.hasToolCalls)
+		got := mapStopReason(tt.reason, tt.hasToolCalls, tt.stopSeq)
 		if got != tt.want {
-			t.Errorf("mapStopReason(%q, %v) = %q, want %q", tt.reason, tt.hasToolCalls, got, tt.want)
+			t.Errorf("mapStopReason(%q, %v, %q) = %q, want %q", tt.reason, tt.hasToolCalls, tt.stopSeq, got, tt.want)
 		}
 	}
 }

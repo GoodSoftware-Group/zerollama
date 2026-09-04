@@ -232,6 +232,30 @@ get_weather(location="New York")</function_calls>`,
 				},
 			},
 		},
+		{
+			name:  "missing function_calls close on done",
+			input: `<function_calls>get_weather(location="San Francisco")`,
+			expectedCalls: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Name:      "get_weather",
+						Arguments: testArgs(map[string]any{"location": "San Francisco"}),
+					},
+				},
+			},
+		},
+		{
+			name:  "truncated args on done",
+			input: `<function_calls>get_weather(location="San Fran`,
+			expectedCalls: []api.ToolCall{
+				{
+					Function: api.ToolCallFunction{
+						Name:      "get_weather",
+						Arguments: testArgs(map[string]any{}),
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -349,6 +373,21 @@ func TestOlmo3Parser_Streaming(t *testing.T) {
 				t.Errorf("calls mismatch (-got +want):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestOlmo3Parser_LastChunkDoneParsesTools(t *testing.T) {
+	p := &Olmo3Parser{}
+	p.Init(nil, nil, nil)
+	content, _, calls, err := p.Add(`Hi.<function_calls>get_weather(location="SF")</function_calls>`, true)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if content != "Hi." {
+		t.Fatalf("content = %q", content)
+	}
+	if len(calls) != 1 || calls[0].Function.Name != "get_weather" {
+		t.Fatalf("calls = %#v", calls)
 	}
 }
 

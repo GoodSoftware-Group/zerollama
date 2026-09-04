@@ -130,6 +130,9 @@ func wanOMPThreads() int {
 // Floor defaults to Wan mmgp+GPU-VAE class (12 GiB); raise via ZEROLLAMA_LTX_MIN_HOST_RAM_GIB.
 func admitLtxHostRAM(cfg model.VideoGenerationConfig) error {
 	minGiB := ltxDefaultMinHostGiB
+	if isLtx2BProfile(cfg.Profile) {
+		minGiB = ltx2bMinHostGiB
+	}
 	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_MIN_HOST_RAM_GIB")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			force := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_MIN_HOST_RAM_FORCE"))
@@ -138,7 +141,6 @@ func admitLtxHostRAM(cfg model.VideoGenerationConfig) error {
 			}
 		}
 	}
-	_ = cfg
 	plan := wanHostPlan{
 		VAECPU:         "0",
 		AllowGPUVAE:    true,

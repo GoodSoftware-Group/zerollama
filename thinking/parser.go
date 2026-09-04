@@ -58,6 +58,17 @@ var ImplicitThinkEndMarkers = []string{
 	"<tool_call>",
 	"<|tool_calls_begin|>",
 	"<|tool▁calls▁begin|>",
+	"<|tool_call_start|>",
+}
+
+// toolCallBlocks pair openers with closers so a </think> inside an unclosed
+// tool argument is treated as payload (mlx-serve thinkCloseIsToolCallPayload).
+var toolCallBlocks = [][2]string{
+	{"<tool_call>", "</tool_call>"},
+	{"<tool_calls>", "</tool_calls>"},
+	{"<|tool_call_start|>", "<|tool_call_end|>"},
+	{"<|tool_calls_begin|>", "<|tool_calls_end|>"},
+	{"<|tool▁calls▁begin|>", "<|tool▁calls▁end|>"},
 }
 
 // AddContent returns the thinking content and the non-thinking content that
@@ -143,11 +154,9 @@ func eat(s *Parser) (string, string, bool) {
 		}
 	case thinkingState_Thinking:
 		acc := s.acc.String()
-		if strings.Contains(acc, s.ClosingTag) {
-			split := strings.Split(acc, s.ClosingTag)
-			thinking := split[0]
-			remaining := strings.Join(split[1:], s.ClosingTag)
-			remaining = strings.TrimLeftFunc(remaining, unicode.IsSpace)
+		if i := nextThinkClose(acc, s.ClosingTag); i >= 0 {
+			thinking := acc[:i]
+			remaining := strings.TrimLeftFunc(acc[i+len(s.ClosingTag):], unicode.IsSpace)
 			s.acc.Reset()
 			if remaining == "" {
 				s.state = thinkingState_ThinkingDoneEatingWhitespace
@@ -208,6 +217,50 @@ func overlap(s, delim string) int {
 		}
 	}
 	return 0
+}
+
+func thinkCloseIsToolCallPayload(acc string, closeAt int, closeTag string) bool {
+	if closeAt < 0 || closeTag == "" || closeAt+len(closeTag) > len(acc) {
+		return false
+	}
+	before := acc[:closeAt]
+	after := acc[closeAt+len(closeTag):]
+	best := -1
+	var closer string
+	for _, d := range toolCallBlocks {
+		j := strings.LastIndex(before, d[0])
+		if j < 0 || j < best {
+			continue
+		}
+		if strings.Contains(before[j+len(d[0]):], d[1]) {
+			continue
+		}
+		best = j
+		closer = d[1]
+	}
+	if best < 0 {
+		return false
+	}
+	return strings.Contains(after, closer)
+}
+
+func nextThinkClose(acc, closeTag string) int {
+	if closeTag == "" {
+		return -1
+	}
+	start := 0
+	for {
+		i := strings.Index(acc[start:], closeTag)
+		if i < 0 {
+			return -1
+		}
+		abs := start + i
+		if thinkCloseIsToolCallPayload(acc, abs, closeTag) {
+			start = abs + len(closeTag)
+			continue
+		}
+		return abs
+	}
 }
 
 func earliestMarker(s string, markers []string) (string, int) {

@@ -109,3 +109,11 @@ func (t *Tokenizer) GetSpecialToken(name string) (int32, bool) {
 	id, ok := t.specialTokens[name]
 	return id, ok
 }
+
+// SpecialTokens maps added-token strings to ids (FIM, pad, chat tags).
+func (t *Tokenizer) SpecialTokens() map[string]int32 {
+	if t == nil || t.specialTokens == nil {
+		return nil
+	}
+	return t.specialTokens
+}
