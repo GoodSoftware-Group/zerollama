@@ -26,6 +26,25 @@ func TestBindChatCompletionRequest_ChatTemplateKwargsEnableThinking(t *testing.T
 	}
 }
 
+func TestBindChatCompletionRequest_ChatTemplateKwargsThinking(t *testing.T) {
+	raw := []byte(`{
+		"model": "qwen2.5:0.5b",
+		"messages": [{"role":"user","content":"hi"}],
+		"chat_template_kwargs": {"thinking": false}
+	}`)
+	req, err := BindChatCompletionRequest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := FromChatRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Think == nil || out.Think.Bool() {
+		t.Fatalf("Think=%v, want false from chat_template_kwargs.thinking", out.Think)
+	}
+}
+
 func TestBindChatCompletionRequest_BogusChatTemplateKwargRejected(t *testing.T) {
 	raw := []byte(`{
 		"model": "qwen2.5:0.5b",

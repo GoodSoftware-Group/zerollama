@@ -66,6 +66,7 @@ func doctorCheckServingTraps() []doctorCheck {
 	out = append(out, doctorCheckOversizedNumCtx(base, pick))
 	out = append(out, doctorCheckReasoningField(base, pick))
 	out = append(out, doctorCheckThinkRoundtrip(base, pick))
+	out = append(out, doctorCheckThinkOffSpill(base, pick))
 	out = append(out, doctorCheckTokenCeiling(base, pick))
 	out = append(out, doctorCheckToolCallShape(base, pick))
 	out = append(out, doctorCheckToolMarkup(base, pick))

@@ -11,6 +11,7 @@ import (
 
 // Known nested keys under chat_template_kwargs. Anything else → HTTP 400 (trap 07).
 var knownChatTemplateKwargs = map[string]struct{}{
+	"thinking":         {},
 	"enable_thinking":  {},
 	"reasoning_effort": {},
 }
@@ -79,6 +80,13 @@ func thinkFromEnableThinkingAliases(enableThinking *bool, kwargs map[string]any)
 		b, ok := v.(bool)
 		if !ok {
 			return nil, fmt.Errorf("invalid chat_template_kwargs.enable_thinking: must be boolean")
+		}
+		return &api.ThinkValue{Value: b}, nil
+	}
+	if v, ok := kwargs["thinking"]; ok {
+		b, ok := v.(bool)
+		if !ok {
+			return nil, fmt.Errorf("invalid chat_template_kwargs.thinking: must be boolean")
 		}
 		return &api.ThinkValue{Value: b}, nil
 	}

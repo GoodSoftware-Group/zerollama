@@ -87,7 +87,7 @@ model=qwen2.5:0.5b  build=0.30.11  (pre trap 77/78 fixes)
 - **10/17/21** — need `--hf-repo` or a readable chat template for full upstream checks (native doctor still covers 10/21 from manifests)
 - Core **35 / 53 / 61** — no check in `minefield_doctor.py` (upstream leaves them as hand-runs; see §2.1). Zerollama covers **53** in doctor; **35** / **54** / **61** (+ **60** cold/warm) via lab scripts; **55/61** arithmetic in doctor; **63** via history round-trip doctor; **09** documented (VL).
 
-Coverage lines from the tool are **not** a bill of health for the full registry (124 numbered traps as of 2026-08-21; upstream doctor still implements ~19).
+Coverage lines from the tool are **not** a bill of health for the full registry (138 numbered traps as of 2026-09-09; upstream doctor still implements ~19).
 
 ### 2.1 Core hand-runs (35 / 53 / 61) on zerollama
 
@@ -240,8 +240,9 @@ Zerollama strips **trailing** ` /think` / `/no_think` from assistant `content` /
 1. **Serve identity** ([`cmd/doctor_serve_identity.go`](../cmd/doctor_serve_identity.go)): **53** — who holds the port / version / start time
 2. **Readiness vs liveness** ([`cmd/doctor_readiness.go`](../cmd/doctor_readiness.go)): **112** — TCP/PID is not `/api/version`+`/api/tags`; tags≠warm `/api/ps`
 3. **Spec × slots on UMA** ([`cmd/doctor_spec_uma.go`](../cmd/doctor_spec_uma.go)): **98** — `draft_max × n_parallel` product; warn in the contributor-crash region when speculative env is on
-4. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
-5. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_roundtrip.go`](../cmd/doctor_roundtrip.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go) + [`cmd/doctor_think_toggle.go`](../cmd/doctor_think_toggle.go) + [`cmd/doctor_latency.go`](../cmd/doctor_latency.go) + [`cmd/doctor_orphan_think.go`](../cmd/doctor_orphan_think.go) + [`cmd/doctor_stream.go`](../cmd/doctor_stream.go) + [`cmd/doctor_kwarg_deadness.go`](../cmd/doctor_kwarg_deadness.go) + [`cmd/doctor_tool_markup.go`](../cmd/doctor_tool_markup.go)): **29**, **77**, **07**, **78**, **23**, **04/20/25**, **63**, **02**, **66**, **48**, **55/61** ceilings, **01/03**, **12/64/65**, **19**, **26**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
+4. **N-gram JSON / HTTP concurrency** ([`cmd/doctor_ngram.go`](../cmd/doctor_ngram.go)): **138** warn if n-gram spec env is on; **135** prints engine slots vs client count
+5. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
+6. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_roundtrip.go`](../cmd/doctor_roundtrip.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go) + [`cmd/doctor_think_toggle.go`](../cmd/doctor_think_toggle.go) + [`cmd/doctor_latency.go`](../cmd/doctor_latency.go) + [`cmd/doctor_orphan_think.go`](../cmd/doctor_orphan_think.go) + [`cmd/doctor_stream.go`](../cmd/doctor_stream.go) + [`cmd/doctor_kwarg_deadness.go`](../cmd/doctor_kwarg_deadness.go) + [`cmd/doctor_tool_markup.go`](../cmd/doctor_tool_markup.go) + [`cmd/doctor_think_off_spill.go`](../cmd/doctor_think_off_spill.go)): **29**, **77**, **07**, **78**, **23**, **04/20/25**, **63**, **02**, **66**, **48**, **55/61** ceilings, **01/03**, **12/64/65**, **126**, **19**, **26**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
 
 ```bash
 ./zerollama doctor
@@ -324,6 +325,9 @@ python3 /tmp/zerollama-minefield-lab/minefield_doctor.py --base-url http://127.0
 | **77** | Only one request field validated | **fixed** + `covered via doctor` | Live probe rejects `__minefield_unvalidated_field_probe__` on `/api/chat` + `/v1` |
 | **07** | Accepted-but-unread kwargs | **mitigated** + `covered via doctor` | Unknown `chat_template_kwargs.*` → HTTP 400 ([`api.validateChatTemplateKwargs`](../api/chat_thinking_aliases.go)); doctor paired control |
 | **78** | `tool_choice` fails open | **fixed** + `covered via doctor` | Live `/v1` `tool_choice=none` must not return `tool_calls` |
+| **126** | Think-off spills trace into `content` | **mapped** + `covered via doctor` | `kwargs.thinking` → `Think`; `doctorCheckThinkOffSpill` |
+| **135** | HTTP clients ≠ model concurrency | `covered via doctor` | `doctorCheckHTTPConcurrency` quotes slots |
+| **138** | N-gram structured JSON token dup | `covered via doctor` | Warn if n-gram spec env on; strict-parse JSON |
 
 ### Model config / Core gaps (also in native doctor)
 
@@ -410,6 +414,23 @@ Registry grew from **108 → 124**. Native `minefield_doctor.py` `TRAP_PATHS` is
 | **111** | Greedy spec-decode medians are a content lottery | Document only: pin draft off (or name acceptance estimator — trap **105**) before publishing decode medians |
 | **112** | Process liveness ≠ model readiness | `doctorCheckModelReadiness`: `/api/version`+`/api/tags` 200; TCP-without-API warns; zero `/api/ps` models is “API ready, not loaded” |
 | **119** | Free memory drifts down after churn (wrong node blamed) | Same class as **106/107**: trend vs peak on **this** process; Mac UMA “free” is not a leak proof |
-| **109, 113–118, 120–124** | vLLM/CUDA/RDMA/Ray/MTP/EngineCore/GB10 | **Skip** for Mac Metal primary. Watch [PR #56](https://github.com/Blackwellboy/model-serving-minefield/pull/56) (U17–U26 harvest). |
+| **109, 113–118, 120–124** | vLLM/CUDA/RDMA/Ray/MTP/EngineCore/GB10 | **Skip** for Mac Metal primary. [PR #56](https://github.com/Blackwellboy/model-serving-minefield/pull/56) merged 2026-08-22. |
 
 Apple Silicon L1 `draft_max=16` is **not** vLLM `--max-num-seqs`. Do not copy GB10 seqs=256/32 onto llama-server `-np`.
+
+---
+
+## 9. Upstream traps 125–138 (2026-09-12)
+
+Registry **124 → 138**. Native `TRAP_PATHS` still the original ~19. Mac-actionable:
+
+| Trap | Topic | Zerollama action |
+|------|-------|------------------|
+| **126** | `thinking:false` keeps reasoning work and spills `<think>` into `content` | **Mapped** `chat_template_kwargs.thinking` → `Think` ([`api/chat_thinking_aliases.go`](../api/chat_thinking_aliases.go) + `/v1`). Live `doctorCheckThinkOffSpill`: think-off `content` must not contain think tags. Do not use think-off as a latency win until this probe is CLEAN. Related **02/29/64**. |
+| **129** | Prefix-cache “hit” is the **minimum** across KV groups / SWA horizon | Document: SWA + prefix reuse can look like a hit while the sliding window already dropped the head (trap **60** sibling). Use [`scripts/minefield_cold_ladder.sh`](../scripts/minefield_cold_ladder.sh) cold vs warm; unique nonce at the **front**. |
+| **135** | Concurrent HTTP clients ≠ concurrent model execution | `doctorCheckHTTPConcurrency` prints engine **slots**. Quote `n_parallel` / queue depth, not C1/C2/C4 client count. Lab benches: [`scripts/minefield_bench_screen.sh`](../scripts/minefield_bench_screen.sh) (**110**). |
+| **138** | N-gram prompt lookup duplicates tokens in structured JSON (HTTP 200) | `doctorCheckNgramStructured` warns if `ZEROLLAMA_SPEC_TYPE` contains `ngram` or `ZEROLLAMA_ELIZA_NGRAM` is on. Strict-parse assistant JSON; A/B with n-gram off. |
+| **132** | Spec placeholders corrupt prompt tail on **cold** chunked prefill | Document: do not score first cold turn under speculation; trap **60** cold/warm split. |
+| **125, 127–128, 130–131, 133–134, 136–137** | cgroup/CUDA-UMA, bind-mount crash loops, vLLM admission no-ops, cudagraph, HF refs, DSpark shared expert, NIC path-proof, pipeline `rc`, kernel selector rc | **Skip** Mac Metal primary (methodology **136** is “pipefail”; **137** is native-return ≠ process exit). |
+
+Open upstream: [PR #115](https://github.com/Blackwellboy/model-serving-minefield/pull/115) trap 139 (NCCL HCA), [PR #114](https://github.com/Blackwellboy/model-serving-minefield/pull/114) pin-closure policy.

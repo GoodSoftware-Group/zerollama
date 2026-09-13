@@ -55,6 +55,16 @@ func TestApplyChatThinkingAliases_EnableThinking(t *testing.T) {
 	}
 }
 
+func TestApplyChatThinkingAliases_KwargsThinking(t *testing.T) {
+	req := &ChatRequest{ChatTemplateKwargs: map[string]any{"thinking": false}}
+	if err := ApplyChatThinkingAliases(req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Think == nil || req.Think.Bool() {
+		t.Fatalf("Think=%v", req.Think)
+	}
+}
+
 func TestApplyChatThinkingAliases_BogusKwarg(t *testing.T) {
 	req := &ChatRequest{ChatTemplateKwargs: map[string]any{"bogus_kwarg_zzq": true}}
 	err := ApplyChatThinkingAliases(req)

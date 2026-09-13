@@ -7,6 +7,7 @@ import (
 )
 
 var knownChatTemplateKwargs = map[string]struct{}{
+	"thinking":         {},
 	"enable_thinking":  {},
 	"reasoning_effort": {},
 }
@@ -52,6 +53,16 @@ func applyThinkingAliasFields(think **ThinkValue, enable *bool, kwargs map[strin
 		b, ok := v.(bool)
 		if !ok {
 			return fmt.Errorf("invalid chat_template_kwargs.enable_thinking: must be boolean")
+		}
+		set(&ThinkValue{Value: b})
+		return nil
+	}
+	// Ling / inclusionAI alias (minefield trap 126): thinking:false must actually
+	// map onto Think, not sit unread in kwargs.
+	if v, ok := kwargs["thinking"]; ok {
+		b, ok := v.(bool)
+		if !ok {
+			return fmt.Errorf("invalid chat_template_kwargs.thinking: must be boolean")
 		}
 		set(&ThinkValue{Value: b})
 		return nil
