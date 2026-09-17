@@ -46,12 +46,13 @@ func (te *TimestepEmbedder) Forward(t *mlx.Array) *mlx.Array {
 	// Create sinusoidal embedding
 	half := te.FreqEmbedSize / 2
 
-	// freqs = exp(-log(10000) * arange(half) / half)
+	// freqs = exp(-log(10000) * arange(half) / half) — BF16 to match timestep dtype on CUDA
 	freqs := make([]float32, half)
 	for i := int32(0); i < half; i++ {
 		freqs[i] = float32(math.Exp(-math.Log(10000.0) * float64(i) / float64(half)))
 	}
-	freqsArr := mlx.NewArray(freqs, []int32{1, half})
+	freqsArr := mlx.ToBFloat16(mlx.NewArray(freqs, []int32{1, half}))
+	mlx.Eval(freqsArr)
 
 	// t[:, None] * freqs[None, :] -> [B, half]
 	tExpanded := mlx.ExpandDims(t, 1) // [B, 1]
@@ -236,8 +237,28 @@ func (attn *Attention) Forward(x *mlx.Array, cos, sin *mlx.Array) *mlx.Array {
 	k = mlx.Transpose(k, 0, 2, 1, 3)
 	v = mlx.Transpose(v, 0, 2, 1, 3)
 
-	// SDPA
-	out := mlx.ScaledDotProductAttention(q, k, v, attn.Scale, false)
+	mlx.EvalSync(q, k, v)
+	var out *mlx.Array
+	// WHY skip CUDA fast SDPA: returns empty arrays on Blackwell; trying it first
+	// still allocates and wastes headroom on 16GB before the manual path.
+	if mlx.GPUIsAvailable() && !mlx.MetalIsAvailable() {
+		kt := mlx.Transpose(k, 0, 1, 3, 2)
+		scores := mlx.Matmul(q, kt)
+		scores = mlx.Mul(scores, mlx.NewScalarArray(attn.Scale))
+		weights := mlx.Softmax(scores, -1)
+		out = mlx.Matmul(weights, v)
+		mlx.EvalSync(out)
+	} else {
+		out = mlx.ScaledDotProductAttention(q, k, v, attn.Scale, false)
+		if out == nil || !out.IsValid() || len(out.Shape()) == 0 {
+			kt := mlx.Transpose(k, 0, 1, 3, 2)
+			scores := mlx.Matmul(q, kt)
+			scores = mlx.Mul(scores, mlx.NewScalarArray(attn.Scale))
+			weights := mlx.Softmax(scores, -1)
+			out = mlx.Matmul(weights, v)
+			mlx.EvalSync(out)
+		}
+	}
 
 	// Transpose back and reshape
 	out = mlx.Transpose(out, 0, 2, 1, 3)
@@ -421,9 +442,17 @@ func (m *Transformer) Load(modelManifest *manifest.ModelManifest) error {
 	if err := weights.Load(0); err != nil {
 		return fmt.Errorf("load weights: %w", err)
 	}
-	defer weights.ReleaseAll()
-
-	return m.loadWeights(weights)
+	if err := m.loadWeights(weights); err != nil {
+		weights.ReleaseAll()
+		return err
+	}
+	// WHY skip ReleaseAll on CUDA: Contiguous(mmap) aliases blob storage; freeing
+	// native handles empties weight shapes. Subprocess TE encode + post-denoise
+	// freeTransformer rely on runner recycle / ReleaseStruct best-effort.
+	if !mlx.GPUIsAvailable() || mlx.MetalIsAvailable() {
+		weights.ReleaseAll()
+	}
+	return nil
 }
 
 // loadWeights loads weights from any WeightSource into the model
@@ -542,6 +571,13 @@ func (m *Transformer) PrepareRoPECache(hTok, wTok, capLen int32) *RoPECache {
 
 // Forward runs the Z-Image transformer with precomputed RoPE
 func (m *Transformer) Forward(x *mlx.Array, t *mlx.Array, capFeats *mlx.Array, rope *RoPECache) *mlx.Array {
+	// WHY suppress on CUDA: Eval cleanup after layer checkpoints frees Contiguous
+	// aliases / live residuals and FeedForward panics on empty Shape().
+	if mlx.GPUIsAvailable() && !mlx.MetalIsAvailable() {
+		mlx.SuppressCleanup()
+		defer func() { mlx.ResumeCleanup() }()
+	}
+
 	imgLen := rope.ImgLen
 
 	// Timestep embedding -> [B, 256]
@@ -557,50 +593,69 @@ func (m *Transformer) Forward(x *mlx.Array, t *mlx.Array, capFeats *mlx.Array, r
 	checkpoint := mlx.GPUIsAvailable()
 	if checkpoint {
 		mlx.Keep(temb, x, capEmb)
-		mlx.Eval(temb, x, capEmb)
+		if err := mlx.EvalSync(temb, x, capEmb); err != nil {
+			panic(fmt.Sprintf("transformer embed eval: %v", err))
+		}
 	}
 
 	eps := m.NormEps
 
-	for _, refiner := range m.NoiseRefiners {
+	for i, refiner := range m.NoiseRefiners {
 		prev := x
 		x = refiner.Forward(x, temb, rope.ImgCos, rope.ImgSin, eps)
 		if checkpoint {
-			mlx.Keep(x, temb, rope.ImgCos, rope.ImgSin)
-			mlx.Eval(x)
+			mlx.Keep(x, temb, rope.ImgCos, rope.ImgSin, capEmb)
+			if err := mlx.EvalSync(x); err != nil {
+				panic(fmt.Sprintf("noise refiner %d eval: %v", i, err))
+			}
 			if prev != x {
 				prev.Free()
 			}
+			// Reclaim per-layer SDPA/dequant temps (same pattern as Qwen3 TE).
+			_ = mlx.ResumeCleanup()
+			mlx.SuppressCleanup()
 		}
 	}
 
-	for _, refiner := range m.ContextRefiners {
+	for i, refiner := range m.ContextRefiners {
 		prev := capEmb
 		capEmb = refiner.Forward(capEmb, nil, rope.CapCos, rope.CapSin, eps)
 		if checkpoint {
-			mlx.Keep(capEmb, rope.CapCos, rope.CapSin)
-			mlx.Eval(capEmb)
+			mlx.Keep(capEmb, x, temb, rope.CapCos, rope.CapSin)
+			if err := mlx.EvalSync(capEmb); err != nil {
+				panic(fmt.Sprintf("context refiner %d eval: %v", i, err))
+			}
 			if prev != capEmb {
 				prev.Free()
 			}
+			_ = mlx.ResumeCleanup()
+			mlx.SuppressCleanup()
 		}
 	}
 
 	unified := mlx.Concatenate([]*mlx.Array{x, capEmb}, 1)
 	if checkpoint {
 		mlx.Keep(unified, temb, rope.UnifiedCos, rope.UnifiedSin)
-		mlx.Eval(unified)
+		if err := mlx.EvalSync(unified); err != nil {
+			panic(fmt.Sprintf("unified concat eval: %v", err))
+		}
+		_ = mlx.ResumeCleanup()
+		mlx.SuppressCleanup()
 	}
 
-	for _, layer := range m.Layers {
+	for i, layer := range m.Layers {
 		prev := unified
 		unified = layer.Forward(unified, temb, rope.UnifiedCos, rope.UnifiedSin, eps)
 		if checkpoint {
 			mlx.Keep(unified, temb, rope.UnifiedCos, rope.UnifiedSin)
-			mlx.Eval(unified)
+			if err := mlx.EvalSync(unified); err != nil {
+				panic(fmt.Sprintf("dit layer %d eval: %v", i, err))
+			}
 			if prev != unified {
 				prev.Free()
 			}
+			_ = mlx.ResumeCleanup()
+			mlx.SuppressCleanup()
 		}
 	}
 
@@ -609,8 +664,15 @@ func (m *Transformer) Forward(x *mlx.Array, t *mlx.Array, capFeats *mlx.Array, r
 	B := unifiedShape[0]
 	imgOut := mlx.Slice(unified, []int32{0, 0, 0}, []int32{B, imgLen, unifiedShape[2]})
 
-	// Final layer
-	return m.FinalLayer.Forward(imgOut, temb)
+	// Materialize before any ResumeCleanup frees lazy graph deps.
+	out := m.FinalLayer.Forward(imgOut, temb)
+	if mlx.GPUIsAvailable() {
+		mlx.Keep(out)
+		if err := mlx.EvalSync(out); err != nil {
+			panic(fmt.Sprintf("transformer final eval: %v", err))
+		}
+	}
+	return out
 }
 
 // ForwardWithCache runs the transformer with layer caching for faster inference.
@@ -679,8 +741,15 @@ func (m *Transformer) ForwardWithCache(
 	B := unifiedShape[0]
 	imgOut := mlx.Slice(unified, []int32{0, 0, 0}, []int32{B, imgLen, unifiedShape[2]})
 
-	// Final layer
-	return m.FinalLayer.Forward(imgOut, temb)
+	// Materialize before any ResumeCleanup frees lazy graph deps.
+	out := m.FinalLayer.Forward(imgOut, temb)
+	if mlx.GPUIsAvailable() {
+		mlx.Keep(out)
+		if err := mlx.EvalSync(out); err != nil {
+			panic(fmt.Sprintf("transformer final eval: %v", err))
+		}
+	}
+	return out
 }
 
 // createCoordinateGrid creates 3D positeon grid [1, d0*d1*d2, 3]

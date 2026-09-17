@@ -33,6 +33,7 @@ type mlxSessionSlot struct {
 	parentKey    string
 	projectID    string
 	projectName  string
+	clientIP     string
 	cacheScope   string
 	cacheLevel   string
 	fulfillment  string
@@ -48,6 +49,7 @@ type mlxKeyHotEntry struct {
 	parentKey    string
 	projectID    string
 	projectName  string
+	clientIP     string
 	cacheScope   string
 	cacheLevel   string
 	fulfillment  string
@@ -112,6 +114,9 @@ func applyQoSToSlot(slot *mlxSessionSlot, sessionKey string, class mlxSessionCla
 	if qos.ProjectName != "" {
 		slot.projectName = qos.ProjectName
 	}
+	if qos.ClientIP != "" {
+		slot.clientIP = qos.ClientIP
+	}
 	if qos.CacheScope != "" {
 		slot.cacheScope = qos.CacheScope
 	}
@@ -173,6 +178,9 @@ func (g *mlxAgentGate) upsertKeyHotLocked(modelKey, sessionKey string, class mlx
 	}
 	if qos.ProjectName != "" {
 		entry.projectName = qos.ProjectName
+	}
+	if qos.ClientIP != "" {
+		entry.clientIP = qos.ClientIP
 	}
 	if qos.CacheScope != "" {
 		entry.cacheScope = qos.CacheScope
@@ -238,6 +246,7 @@ func (g *mlxAgentGate) refreshPrimaryFromKeyHotLocked(modelKey string, now time.
 	slot.parentKey = best.parentKey
 	slot.projectID = best.projectID
 	slot.projectName = best.projectName
+	slot.clientIP = best.clientIP
 	slot.cacheScope = best.cacheScope
 	slot.cacheLevel = best.cacheLevel
 	slot.fulfillment = best.fulfillment
@@ -399,6 +408,7 @@ func (s *mlxSessionSlot) processSessionInfo(now time.Time) api.ProcessSessionInf
 		SessionParent: s.parentKey,
 		ProjectID:     s.projectID,
 		ProjectName:   s.projectName,
+		ClientIP:      s.clientIP,
 		CacheScope:    s.cacheScope,
 		CacheLevel:    s.cacheLevel,
 		Fulfillment:   s.fulfillment,
@@ -418,6 +428,7 @@ func (e *mlxKeyHotEntry) processSessionInfo(now time.Time) api.ProcessSessionInf
 		SessionParent: e.parentKey,
 		ProjectID:     e.projectID,
 		ProjectName:   e.projectName,
+		ClientIP:      e.clientIP,
 		CacheScope:    e.cacheScope,
 		CacheLevel:    e.cacheLevel,
 		Fulfillment:   e.fulfillment,

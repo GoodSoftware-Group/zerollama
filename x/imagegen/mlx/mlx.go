@@ -725,10 +725,20 @@ func EvalErr(outputs ...*Array) error {
 // WHY mark all kept first: EvalErr runs cleanup() after each batch. Without a prior
 // keep on later slices, cleanup frees Contiguous() results still waiting in
 // outputs[end:] and the next batch hits empty mlx_vector_array / null handles.
+//
+// WHY SuppressCleanup for the whole loop (and no ResumeCleanup free here):
+// Contiguous(mmap) graphs still reference tracked-but-not-kept source arrays.
+// Mid-batch cleanup frees those sources (~902 TE tensors) and the next batch
+// fails with mlx_eval ret=1. Freeing sources after the last batch is also wrong
+// on CUDA — Contiguous results can alias mmap buffers, so cleanup empties shapes
+// and Attention.Forward panics on Shape(). Caller must OwnedCopy weights before
+// ResumeCleanup or ReleaseAll.
 func EvalErrBatched(batchSize int, outputs []*Array) error {
 	if batchSize <= 0 {
 		batchSize = 16
 	}
+	SuppressCleanup()
+	defer func() { suppressCleanup = false }()
 	for _, o := range outputs {
 		if o != nil {
 			o.kept = true
@@ -800,14 +810,10 @@ func MaterializeOnCPU(a *Array) *Array {
 }
 
 // EvalSync evaluates arrays without running cleanup (caller must ResumeCleanup or Eval later).
-func EvalSync(outputs ...*Array) {
-	for _, o := range outputs {
-		if o != nil {
-			o.kept = true
-		}
-	}
+// Does not mark outputs kept — callers that need survival across ResumeCleanup must Keep() first.
+func EvalSync(outputs ...*Array) error {
 	if len(outputs) == 0 {
-		return
+		return nil
 	}
 	evalHandles = evalHandles[:0]
 	for _, o := range outputs {
@@ -818,12 +824,16 @@ func EvalSync(outputs ...*Array) {
 	if len(evalHandles) > 0 {
 		vec := C.mlx_vector_array_new_data(&evalHandles[0], C.size_t(len(evalHandles)))
 		ret := C.mlx_eval(vec)
+		C.mlx_vector_array_free(vec)
+		syncStreams()
 		if ret != 0 {
 			logMLXEvalError("evalSync", ret)
+			return fmt.Errorf("mlx evalSync failed (ret=%d)", int(ret))
 		}
-		C.mlx_vector_array_free(vec)
+		return nil
 	}
 	syncStreams()
+	return nil
 }
 // Use before reading host data when lazy graph dependencies must stay alive.
 func ForceEval(outputs ...*Array) []*Array {
@@ -1385,6 +1395,28 @@ func Clone(a *Array) *Array {
 	return newArray(res)
 }
 
+// AbandonNonKept removes non-kept arrays from the tracker without freeing them.
+// WHY: CUDA Contiguous(mmap) can alias safetensors buffers; cleanup/ResumeCleanup
+// freeArray on those sources empties kept weight shapes. Call after Keep(weights)
+// so later Eval cleanup cannot destroy mmap-backed sources still needed by weights.
+func AbandonNonKept() int {
+	dropped := 0
+	n := 0
+	for _, a := range arrays {
+		if a == nil {
+			continue
+		}
+		if a.kept {
+			arrays[n] = a
+			n++
+			continue
+		}
+		dropped++
+	}
+	arrays = arrays[:n]
+	return dropped
+}
+
 // OwnedCopy returns an independent materialized GPU copy of a.
 func OwnedCopy(a *Array) *Array {
 	if a == nil || !a.Valid() {
@@ -1397,7 +1429,8 @@ func OwnedCopy(a *Array) *Array {
 	return c
 }
 
-// OwnStructArrays replaces every exported *Array field in v with OwnedCopy.
+// OwnStructArrays replaces every exported *Array field in v with OwnedCopy,
+// releasing the previous handle so Contiguous(mmap) aliases can leave VRAM.
 func OwnStructArrays(v any) {
 	ownValue(reflect.ValueOf(v), make(map[uintptr]bool))
 }
@@ -1416,7 +1449,10 @@ func ownValue(v reflect.Value, seen map[uintptr]bool) {
 			}
 			arr := v.Interface().(*Array)
 			if arr != nil && arr.c.ctx != nil {
-				v.Set(reflect.ValueOf(OwnedCopy(arr)))
+				owned := OwnedCopy(arr)
+				v.Set(reflect.ValueOf(owned))
+				// Drop the Contiguous(mmap) alias immediately so peak stays ~1x.
+				arr.Release()
 			}
 			return
 		}
@@ -2339,11 +2375,15 @@ func ScaledDotProductAttention(q, k, v *Array, scale float32, causalMask bool) *
 }
 
 // ScaledDotProductAttentionWithSinks computes attention with sinks support
-// maskMode: "causal", "sliding_window", or "" for none
-// mask: optional attention mask array (nil for none)
+// maskMode: "causal", "sliding_window", "array", or "" for none
+// mask: optional attention mask array (nil for none); when non-nil and maskMode
+// is empty, maskMode is treated as "array" (MLX fast SDPA requirement).
 // sinks: attention sinks array (nil for none)
 func ScaledDotProductAttentionWithSinks(q, k, v *Array, scale float32, maskMode string, mask, sinks *Array) *Array {
 	res := C.mlx_array_new()
+	if mask != nil && maskMode == "" {
+		maskMode = "array"
+	}
 	cMaskMode := C.CString(maskMode)
 	defer C.free(unsafe.Pointer(cMaskMode))
 	var maskH, sinksH C.mlx_array
@@ -3025,10 +3065,10 @@ func SetMemoryLimit(limit uint64) uint64 {
 
 // ApplyImagegenMemoryLimit sets MLX allocator caps for imagegen runners.
 //
-// WHY: On ~16GB CUDA cards we clamp to 12GiB so denoise+VAE don't hard-OOM the
-// driver. The same clamp on Apple Metal UMA (64–128GB) aborts mid-materialize of
-// Qwen3 text-encoder weights and shows up as empty mlx_stream / fake "GPU OOM".
-// Darwin keeps MLX's default Metal working-set limit unless overridden.
+// WHY: On ~16GB CUDA cards we used to clamp to 12GiB while TE+DiT co-resided.
+// TE now runs in a subprocess, so DiT-only denoise needs closer to full card
+// headroom (manual SDPA activations). Clamp to 15GiB to avoid driver hard-OOM
+// while leaving a small margin. Metal UMA keeps MLX default / env override.
 //
 // Override: ZEROLLAMA_IMAGEGEN_MEMORY_LIMIT (bytes). "0" skips any clamp.
 func ApplyImagegenMemoryLimit() {
@@ -3043,7 +3083,7 @@ func ApplyImagegenMemoryLimit() {
 		return
 	}
 	if runtime.GOOS == "linux" {
-		SetMemoryLimit(12 * 1024 * 1024 * 1024)
+		SetMemoryLimit(15 * 1024 * 1024 * 1024)
 	}
 }
 

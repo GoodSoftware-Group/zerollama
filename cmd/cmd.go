@@ -1163,11 +1163,22 @@ func runningModelRowFromAPI(m api.ProcessModelResponse) runningModelRow {
 }
 
 func primaryProjectSession(m api.ProcessModelResponse) (project, session string) {
-	if m.Zerollama == nil || len(m.Zerollama.Sessions) == 0 {
+	if m.Zerollama == nil {
 		return "", ""
 	}
-	s := m.Zerollama.Sessions[0]
+	var s api.ProcessSessionInfo
+	if len(m.Zerollama.Sessions) > 0 {
+		s = m.Zerollama.Sessions[0]
+	}
 	project = processProjectLabel(s.ProjectID, s.ProjectName)
+	// WHY client_ip fallback: unkeyed GGUF/Hermes traffic often omits project_id;
+	// operators still need “who owns this GPU?” from zerollama ps.
+	if project == "" {
+		project = strings.TrimSpace(s.ClientIP)
+	}
+	if project == "" {
+		project = strings.TrimSpace(m.Zerollama.LastClientIP)
+	}
 	session = s.SessionKey
 	if len(session) > 48 {
 		session = session[:45] + "..."

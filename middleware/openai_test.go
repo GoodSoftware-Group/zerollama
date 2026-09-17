@@ -1237,6 +1237,7 @@ func TestImageGenerationsMiddleware(t *testing.T) {
 			req: api.GenerateRequest{
 				Model:  "test-model",
 				Prompt: "a beautiful sunset",
+				Stream: &[]bool{false}[0],
 			},
 		},
 		{
@@ -1251,6 +1252,7 @@ func TestImageGenerationsMiddleware(t *testing.T) {
 				Prompt: "a beautiful sunset",
 				Width:  512,
 				Height: 768,
+				Stream: &[]bool{false}[0],
 			},
 		},
 		{
@@ -1368,6 +1370,46 @@ func TestImageWriterResponse(t *testing.T) {
 	}
 }
 
+func TestImageWriterErrorOnDoneWithoutImage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	endpoint := func(c *gin.Context) {
+		resp := api.GenerateResponse{
+			Model:     "test-model",
+			CreatedAt: time.Unix(1234567890, 0).UTC(),
+			Done:      true,
+			Response:  "error: reload text encoder: mlx eval failed",
+		}
+		data, _ := json.Marshal(resp)
+		c.Writer.Write(append(data, '\n'))
+	}
+
+	router := gin.New()
+	router.Use(ImageGenerationsMiddleware())
+	router.Handle(http.MethodPost, "/api/generate", endpoint)
+
+	body := `{"model": "test-model", "prompt": "test"}`
+	req, _ := http.NewRequest(http.MethodPost, "/api/generate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500, got %d: %s", resp.Code, resp.Body.String())
+	}
+	var errResp openai.ErrorResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to unmarshal error: %v body=%s", err, resp.Body.String())
+	}
+	if errResp.Error.Type != "api_error" {
+		t.Errorf("type = %q, want api_error", errResp.Error.Type)
+	}
+	if !strings.Contains(errResp.Error.Message, "reload text encoder") {
+		t.Errorf("message = %q, want text-encoder error", errResp.Error.Message)
+	}
+}
+
 func TestImageEditsMiddleware(t *testing.T) {
 	type testCase struct {
 		name string
@@ -1394,6 +1436,7 @@ func TestImageEditsMiddleware(t *testing.T) {
 				Model:  "test-model",
 				Prompt: "make it blue",
 				Images: []api.ImageData{decodedImage},
+				Stream: &[]bool{false}[0],
 			},
 		},
 		{
@@ -1410,6 +1453,7 @@ func TestImageEditsMiddleware(t *testing.T) {
 				Images: []api.ImageData{decodedImage},
 				Width:  512,
 				Height: 768,
+				Stream: &[]bool{false}[0],
 			},
 		},
 		{

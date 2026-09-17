@@ -180,6 +180,7 @@ _probe_cuda_fork_cuda_symbols() {
   local cuda_lib=""
   for cand in \
     "${bindir}/libggml-cuda.so.0.12.0" \
+    "${bindir}/libggml-cuda.so.0.21.0" \
     "${bindir}/libggml-cuda.so.0" \
     "${bindir}/libggml-cuda.so"; do
     if [[ -e "${cand}" ]]; then
@@ -187,6 +188,11 @@ _probe_cuda_fork_cuda_symbols() {
       break
     fi
   done
+  if [[ -z "${cuda_lib}" || ! -f "${cuda_lib}" ]]; then
+    # Newest soname (0.18 / 0.21 / …) — pick any libggml-cuda.so*
+    cuda_lib="$(ls -1 "${bindir}"/libggml-cuda.so* 2>/dev/null | head -1 || true)"
+    [[ -n "${cuda_lib}" ]] && cuda_lib="$(readlink -f "${cuda_lib}")"
+  fi
   if [[ -z "${cuda_lib}" || ! -f "${cuda_lib}" ]]; then
     echo "error: libggml-cuda not found under ${bindir}" >&2
     return 1
@@ -209,6 +215,32 @@ _probe_cuda_fork_cuda_symbols() {
     echo "error: ${cuda_lib} missing fused QJL attn (build with -DGGML_CUDA_FUSED_ATTN_QJL=ON)" >&2
     return 1
   fi
+  _probe_cuda_lib_arch_matches_gpu "${cuda_lib}"
+}
+
+# Fail hard when the host GPU is Blackwell (sm_120) but libggml-cuda only has
+# older cubins (e.g. default 89-real). Symptom: "no kernel image is available".
+_probe_cuda_lib_arch_matches_gpu() {
+  local cuda_lib="$1"
+  local cc arches
+  cc="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+  [[ -n "${cc}" ]] || return 0
+  case "${cc}" in
+    12.*) ;;
+    *) return 0 ;;
+  esac
+  if command -v cuobjdump >/dev/null 2>&1; then
+    arches="$(cuobjdump -lelf "${cuda_lib}" 2>/dev/null | grep -oE 'sm_[0-9]+a?' | sort -u | tr '\n' ' ')"
+  else
+    arches="$(strings "${cuda_lib}" 2>/dev/null | grep -oE 'sm_12[0-9]a?' | sort -u | tr '\n' ' ')"
+  fi
+  if echo " ${arches} " | grep -qE ' sm_120a? '; then
+    echo "OK: ${cuda_lib} has sm_120 for GPU compute ${cc} (${arches})"
+    return 0
+  fi
+  echo "error: ${cuda_lib} missing sm_120* but GPU compute_cap=${cc} (arches=${arches:-none})" >&2
+  echo "  rebuild: CMAKE_CUDA_ARCHITECTURES=120-real ./scripts/build/build_llama_server.sh" >&2
+  return 1
 }
 
 _probe_seq_copy_route() {
@@ -443,9 +475,32 @@ if [[ "${GGML_CUDA:-ON}" == "ON" ]]; then
   fi
   echo "Using CUDACXX=${CUDACXX} (CUDA_HOME=${CUDA_HOME})"
 fi
-# Default sm_89 (RTX 4090). RTX 5080 (Blackwell): CMAKE_CUDA_ARCHITECTURES=120-real
-# needs a toolkit whose nvcc supports sm_120 (often CUDA 12.8+ or 13.x).
-CUDA_ARCH="${CMAKE_CUDA_ARCHITECTURES:-89-real}"
+# Default CUDA arch: auto from nvidia-smi when unset.
+# WHY not hardcode 89: build_zerollama_cuda.sh used to call this without
+# CMAKE_CUDA_ARCHITECTURES → sm_89 cubins on a 5080 → "no kernel image".
+_default_cuda_arch() {
+  if [[ -n "${CMAKE_CUDA_ARCHITECTURES:-}" ]]; then
+    echo "${CMAKE_CUDA_ARCHITECTURES}"
+    return
+  fi
+  local name cc
+  name="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)"
+  cc="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+  case "${cc}" in
+    12.*)
+      echo "120-real"
+      return
+      ;;
+  esac
+  if echo "${name}" | grep -qiE '5080|5090|Blackwell'; then
+    echo "120-real"
+    return
+  fi
+  # Default sm_89 (RTX 4090 / Ada).
+  echo "89-real"
+}
+CUDA_ARCH="$(_default_cuda_arch)"
+echo "Using CMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH}"
 
 _acquire_llama_server_build_lock
 # WHY KEEP_BUILD: failed CUDA builds wipe hours of objects; rebases iterate on late CXX errors.

@@ -1149,6 +1149,7 @@ type runnerRef struct {
 	numParallel  int
 	contextShift bool
 	loadedMeta   api.LoadedModelMetadata
+	lastClientIP string // most recent HTTP client (ps when project_id unset)
 	*api.Options
 }
 
@@ -1954,6 +1955,16 @@ func (s *Scheduler) InferenceFleetSnapshot() InferenceFleetSnapshot {
 	return snap
 }
 
+func (runner *runnerRef) noteLastClientIP(ip string) {
+	ip = normalizeClientIP(ip)
+	if runner == nil || ip == "" {
+		return
+	}
+	runner.refMu.Lock()
+	runner.lastClientIP = ip
+	runner.refMu.Unlock()
+}
+
 // ProcessModelsSnapshot returns loaded runners for GET /api/ps (mutex-safe).
 func (s *Scheduler) ProcessModelsSnapshot() []api.ProcessModelResponse {
 	return s.ProcessSnapshot().Models
@@ -1982,6 +1993,7 @@ func (s *Scheduler) ProcessSnapshot() api.ProcessResponse {
 			continue
 		}
 		mr := buildProcessModelResponse(runner)
+		lastIP := strings.TrimSpace(runner.lastClientIP)
 		runner.refMu.Unlock()
 
 		meta := loadedMetadataForRunner(runner)
@@ -1996,8 +2008,18 @@ func (s *Scheduler) ProcessSnapshot() api.ProcessResponse {
 		if n := pendingByKey[modelKey]; n > 0 {
 			mr.Pending = n
 		}
-		if sessions := sessionSnap[modelKey]; len(sessions) > 0 {
-			mr.Zerollama = &api.ProcessZerollamaInfo{Sessions: sessions}
+		sessions := sessionSnap[modelKey]
+		if len(sessions) > 0 || lastIP != "" {
+			info := &api.ProcessZerollamaInfo{
+				Sessions:     sessions,
+				LastClientIP: lastIP,
+			}
+			// Unkeyed GGUF never claims the session gate — synthesize a row so
+			// zerollama ps can show the last HTTP client as PROJECT.
+			if len(info.Sessions) == 0 && lastIP != "" {
+				info.Sessions = []api.ProcessSessionInfo{{ClientIP: lastIP}}
+			}
+			mr.Zerollama = info
 		}
 		models = append(models, mr)
 	}

@@ -494,6 +494,13 @@ func (ab *VAEAttentionBlock) Forward(x *mlx.Array) *mlx.Array {
 
 		scale := float32(1.0 / math.Sqrt(float64(C)))
 		out = mlx.ScaledDotProductAttention(q, k, v, scale, false)
+		if out == nil || !out.IsValid() || len(out.Shape()) == 0 {
+			kt := mlx.Transpose(k, 0, 1, 3, 2)
+			scores := mlx.Matmul(q, kt)
+			scores = mlx.Mul(scores, mlx.NewScalarArray(scale))
+			weights := mlx.Softmax(scores, -1)
+			out = mlx.Matmul(weights, v)
+		}
 		out = mlx.Squeeze(out, 1)
 		mlx.Eval(out)
 	}
@@ -680,9 +687,15 @@ func (m *VAEDecoder) LoadOnCPU(modelManifest *manifest.ModelManifest) error {
 	if err := weights.LoadOnCPU(0); err != nil {
 		return fmt.Errorf("load weights: %w", err)
 	}
-	m.weights = weights
-
-	return m.loadWeights(weights, &cfg)
+	if err := m.loadWeights(weights, &cfg); err != nil {
+		weights.ReleaseAll()
+		return err
+	}
+	// Own CPU copies so Contiguous(mmap) aliases cannot empty under Eval cleanup.
+	mlx.OwnStructArrays(m)
+	weights.ReleaseAll()
+	m.weights = nil
+	return nil
 }
 
 // loadWeights loads VAE weights from any WeightSource

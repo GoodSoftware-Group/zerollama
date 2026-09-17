@@ -217,16 +217,6 @@ func (m *Model) freeTransformerWeights() {
 	if m.Transformer == nil {
 		return
 	}
-	if mlx.GPUIsAvailable() {
-		// Keep transformer weights resident between CUDA requests. Reloading after
-		// denoise previously leaked handles and the second load OOMs on 16GB cards.
-		// Idle VRAM stays higher until keep_alive expires — acceptable vs reload cost.
-		mlx.ClearCache()
-		mlx.TrimVRAM()
-		fmt.Printf("  [freeTransformer] keeping transformer resident (%.2f GB active)\n",
-			float64(mlx.MetalGetActiveMemory())/(1<<30))
-		return
-	}
 	fmt.Printf("  [freeTransformer] releasing %d arrays\n", len(mlx.Collect(m.Transformer)))
 	before := mlx.MetalGetActiveMemory()
 	if m.VAEDecoder != nil {
@@ -236,9 +226,7 @@ func (m *Model) freeTransformerWeights() {
 	m.Transformer = nil
 	m.needsReload.transformer = true
 	m.qkvFused = false
-	if m.VAEDecoder != nil {
-		m.VAEDecoder.pinWeights()
-	}
+	mlx.ResumeCleanup()
 	mlx.Sync()
 	mlx.TrimVRAM()
 	fmt.Printf("  [freeTransformer] active=%.2fGB→%.2fGB\n",
@@ -312,10 +300,6 @@ func (m *Model) GenerateImage(ctx context.Context, prompt string, width, height 
 
 // generate is the internal denoising pipeline.
 func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, error) {
-	if err := m.ensureTextEncoder(); err != nil {
-		return nil, err
-	}
-
 	// Apply defaults and aspect presets
 	maxSide := maxImageSideForVRAM()
 	var err error
@@ -345,9 +329,32 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 
 	useCFG := cfg.NegativePrompt != ""
 
-	// Text encoding with padding to multiple of 32
+	// Text encoding. On CUDA, run TE in a subprocess so Contiguous(mmap) weight
+	// VRAM is released when the child exits (in-process ReleaseStruct cannot).
 	var posEmb, negEmb *mlx.Array
-	{
+	if mlx.GPUIsAvailable() && !mlx.MetalIsAvailable() {
+		// DiT must not be resident during TE encode — child needs ~6GB and the
+		// parent previously kept the transformer loaded between requests.
+		if m.Transformer != nil {
+			fmt.Printf("  [pre-encode] unloading transformer (%.2f GB active)\n",
+				float64(mlx.MetalGetActiveMemory())/(1<<30))
+			mlx.ReleaseWeights(m.Transformer)
+			m.Transformer = nil
+			m.needsReload.transformer = true
+			m.qkvFused = false
+			mlx.ResumeCleanup()
+			mlx.Sync()
+			mlx.TrimVRAM()
+		}
+		var encErr error
+		posEmb, negEmb, encErr = m.encodePromptSubprocess(cfg.Prompt, cfg.NegativePrompt)
+		if encErr != nil {
+			return nil, encErr
+		}
+	} else {
+		if err := m.ensureTextEncoder(); err != nil {
+			return nil, err
+		}
 		posEmb, _ = m.TextEncoder.EncodePrompt(m.Tokenizer, cfg.Prompt, 512, false)
 		if useCFG {
 			negEmb, _ = m.TextEncoder.EncodePrompt(m.Tokenizer, cfg.NegativePrompt, 512, false)
@@ -365,16 +372,17 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 		posEmb = padToLength(posEmb, maxLen)
 		if useCFG {
 			negEmb = padToLength(negEmb, maxLen)
+			posEmb = mlx.OwnedCopy(posEmb)
+			negEmb = mlx.OwnedCopy(negEmb)
 			mlx.Keep(posEmb, negEmb)
 			mlx.Eval(posEmb, negEmb)
 		} else {
+			posEmb = mlx.OwnedCopy(posEmb)
 			mlx.Keep(posEmb)
 			mlx.Eval(posEmb)
 		}
+		m.freeTextEncoderWeights()
 	}
-
-	// Text encoder (~4.5GB) is not needed during denoise; free after embeddings are materialized.
-	m.freeTextEncoderWeights()
 
 	if err := m.ensureTransformer(); err != nil {
 		return nil, err
@@ -561,14 +569,17 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 		latents = scheduler.Step(noisePred, latents, i)
 
 		if err := mlx.EvalErr(latents); err != nil {
-			oldLatents.Free()
+			oldLatents.Release()
+			noisePred.Release()
 			cleanup()
 			return nil, fmt.Errorf(
 				"denoise step %d failed (%.2fs, %dx%d): %w",
 				i+1, time.Since(stepStart).Seconds(), cfg.Width, cfg.Height, err,
 			)
 		}
-		oldLatents.Free()
+		oldLatents.Release()
+		noisePred.Release()
+		mlx.TrimVRAM()
 
 		stepDur := time.Since(stepStart)
 
@@ -705,6 +716,149 @@ func exportLatentTensor(arr *mlx.Array, prefix string) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// EncodePromptToFiles loads the text encoder, encodes prompt(s), and writes embedding bins.
+// Used by the --imagegen-encode-prompt subprocess entrypoint.
+func (m *Model) EncodePromptToFiles(modelName, prompt, negative, outPath, negOutPath string, maxLen int) error {
+	m.ModelName = modelName
+	mf, err := manifest.LoadManifest(modelName)
+	if err != nil {
+		return fmt.Errorf("load manifest: %w", err)
+	}
+	m.manifest = mf
+
+	tokData, err := mf.ReadConfig("tokenizer/tokenizer.json")
+	if err != nil {
+		return fmt.Errorf("tokenizer: %w", err)
+	}
+	tokConfig := &tokenizer.TokenizerConfig{}
+	if data, err := mf.ReadConfig("tokenizer/tokenizer_config.json"); err == nil {
+		tokConfig.TokenizerConfigJSON = data
+	}
+	if data, err := mf.ReadConfig("tokenizer/generation_config.json"); err == nil {
+		tokConfig.GenerationConfigJSON = data
+	}
+	if data, err := mf.ReadConfig("tokenizer/special_tokens_map.json"); err == nil {
+		tokConfig.SpecialTokensMapJSON = data
+	}
+	tok, err := tokenizer.LoadFromBytesWithConfig(tokData, tokConfig)
+	if err != nil {
+		return fmt.Errorf("tokenizer: %w", err)
+	}
+	m.Tokenizer = tok
+
+	m.TextEncoder = &Qwen3TextEncoder{}
+	if err := m.TextEncoder.Load(mf, "text_encoder/config.json"); err != nil {
+		return fmt.Errorf("text encoder: %w", err)
+	}
+	mlx.UntrackWeights(m.TextEncoder)
+
+	if maxLen <= 0 {
+		maxLen = 512
+	}
+	posEmb, _ := m.TextEncoder.EncodePrompt(m.Tokenizer, prompt, maxLen, false)
+	var negEmb *mlx.Array
+	if negative != "" {
+		negEmb, _ = m.TextEncoder.EncodePrompt(m.Tokenizer, negative, maxLen, false)
+	}
+
+	padLen := posEmb.Shape()[1]
+	if negEmb != nil && negEmb.Shape()[1] > padLen {
+		padLen = negEmb.Shape()[1]
+	}
+	if pad := (32 - (padLen % 32)) % 32; pad > 0 {
+		padLen += pad
+	}
+	posEmb = padToLength(posEmb, padLen)
+	mlx.Keep(posEmb)
+	mlx.Eval(posEmb)
+	if err := mlx.ExportLatentsBin(outPath, posEmb); err != nil {
+		return fmt.Errorf("export pos embedding: %w", err)
+	}
+	if negEmb != nil {
+		negEmb = padToLength(negEmb, padLen)
+		mlx.Keep(negEmb)
+		mlx.Eval(negEmb)
+		if err := mlx.ExportLatentsBin(negOutPath, negEmb); err != nil {
+			return fmt.Errorf("export neg embedding: %w", err)
+		}
+	}
+	fmt.Printf("  Encoded prompt embeddings → %s\n", outPath)
+	return nil
+}
+
+func (m *Model) encodePromptSubprocess(prompt, negative string) (posEmb, negEmb *mlx.Array, err error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, nil, err
+	}
+	if eval, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = eval
+	}
+
+	posFile, err := os.CreateTemp("", "zimage-pos-emb-*.bin")
+	if err != nil {
+		return nil, nil, err
+	}
+	posPath := posFile.Name()
+	posFile.Close()
+	defer os.Remove(posPath)
+
+	var negPath string
+	args := []string{
+		"runner", "--imagegen-encode-prompt",
+		"--model", m.ModelName,
+		"--prompt", prompt,
+		"--output", posPath,
+	}
+	if negative != "" {
+		negFile, nerr := os.CreateTemp("", "zimage-neg-emb-*.bin")
+		if nerr != nil {
+			return nil, nil, nerr
+		}
+		negPath = negFile.Name()
+		negFile.Close()
+		defer os.Remove(negPath)
+		args = append(args, "--negative-prompt", negative, "--negative-output", negPath)
+	}
+
+	fmt.Println("  Text encode via subprocess (isolates TE VRAM)...")
+	cmd := exec.Command(exe, args...)
+	cmd.Env = os.Environ()
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode subprocess: %w", err)
+	}
+	var status struct {
+		OK bool `json:"ok"`
+	}
+	if json.Unmarshal(out, &status) != nil || !status.OK {
+		return nil, nil, fmt.Errorf("encode subprocess bad status: %s", string(out))
+	}
+
+	posEmb, err = latentfile.LoadBin(posPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load pos embedding: %w", err)
+	}
+	posEmb = mlx.ToBFloat16(posEmb)
+	mlx.Keep(posEmb)
+	mlx.Eval(posEmb)
+	if negative != "" {
+		negEmb, err = latentfile.LoadBin(negPath)
+		if err != nil {
+			posEmb.Release()
+			return nil, nil, fmt.Errorf("load neg embedding: %w", err)
+		}
+		negEmb = mlx.ToBFloat16(negEmb)
+		mlx.Keep(negEmb)
+		mlx.Eval(negEmb)
+	}
+	mlx.TrimVRAM()
+	fmt.Printf("  [encode subprocess] embeddings loaded shape=%v (%.2f GB active)\n",
+		posEmb.Shape(), float64(mlx.MetalGetActiveMemory())/(1<<30))
+	return posEmb, negEmb, nil
 }
 
 func (m *Model) decodeLatentsSubprocess(latentsPath string, width, height int32) (*mlx.Array, error) {
@@ -854,14 +1008,15 @@ func (m *Model) DecodeLatentsFromFile(modelName, latentsPath string, width, heig
 	}
 	m.manifest = mf
 
+	// CPU decode: set device before LoadBin so latents Eval on CPU with VAE weights.
+	mlx.SetDefaultDeviceCPU()
+
 	latentsArr, err := latentfile.LoadBin(latentsPath)
 	if err != nil {
 		return nil, err
 	}
 	defer latentsArr.Release()
 
-	// Fresh subprocess: decode on CPU to avoid CUDA heap issues after denoise.
-	mlx.SetDefaultDeviceCPU()
 	if err := m.ensureVAEDecoderCPU(); err != nil {
 		return nil, err
 	}

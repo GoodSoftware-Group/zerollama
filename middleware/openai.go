@@ -719,12 +719,31 @@ func (w *ImageWriter) writeResponse(data []byte) (int, error) {
 		return len(data), json.NewEncoder(w.ResponseWriter).Encode(openai.ToImageGenerationResponse(generateResponse))
 	}
 
+	// WHY: OpenAI clients expect {"error":{...}} — never an empty 200. Done-without-
+	// image used to be swallowed (NDJSON default + silent return), which crashed
+	// Discord agents on data.data. Load-only (empty prompt) is DoneReason "load".
+	if generateResponse.Done && generateResponse.DoneReason != "load" && generateResponse.Image == "" {
+		msg := "image generation finished without image data"
+		if strings.HasPrefix(generateResponse.Response, "error:") {
+			msg = strings.TrimSpace(strings.TrimPrefix(generateResponse.Response, "error:"))
+		} else if strings.TrimSpace(generateResponse.Response) != "" {
+			msg = strings.TrimSpace(generateResponse.Response)
+		}
+		code := w.ResponseWriter.Status()
+		if code == 0 || code == http.StatusOK {
+			w.ResponseWriter.WriteHeader(http.StatusInternalServerError)
+			code = http.StatusInternalServerError
+		}
+		w.ResponseWriter.Header().Set("Content-Type", "application/json")
+		return len(data), json.NewEncoder(w.ResponseWriter).Encode(openai.NewError(code, msg))
+	}
+
 	return len(data), nil
 }
 
 func (w *ImageWriter) Write(data []byte) (int, error) {
 	code := w.ResponseWriter.Status()
-	if code != http.StatusOK {
+	if code != 0 && code != http.StatusOK {
 		return w.writeError(data)
 	}
 

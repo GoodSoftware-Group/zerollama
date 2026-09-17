@@ -72,6 +72,7 @@ curl -s http://127.0.0.1:11434/api/version | jq '{
 | `session_parent` | Parent thread `prompt_cache_key` | `wait_parent` while parent key is hot (multiplex-aware); Radix prefers that donor on equal-length ties |
 | `project_id` | Stable client id | Fleet / `zerollama ps` — which app owns GPU time |
 | `project_name` | Human label (Discord channel, audit phase) | Operator grep without parsing cache keys |
+| *(automatic)* | HTTP `client_ip` | Logged on every inference request; shown on `zerollama ps` PROJECT when `project_id`/`project_name` are unset (unkeyed GGUF/Hermes). Prefer setting project fields when you can. |
 | `cache_scope` | `thread` \| `shared` \| `auto` | MLX trie vs shared branch policy |
 | `cache_level` | `auto` \| `gpu` \| `dram` \| `disk` | KV tier (`auto` = heuristics; `gpu`/`dram` = no disk; `disk` = allow blobs when policy permits) |
 | `cache_reset` | `true` | Force miss under the **same** `prompt_cache_key` this request |

@@ -36,6 +36,13 @@ source "${_ROOT}/scripts/runtime/sched_watchdog_env.sh"
 export OLLAMA_TRAINING_PYTHONPATH="${OLLAMA_TRAINING_PYTHONPATH:-${ZEROLLAMA_REPO}}"
 export ZEROLLAMA_REPO="${ZEROLLAMA_REPO:-${OLLAMA_TRAINING_PYTHONPATH}}"
 
+# run/zerollama resolves LibOllamaPath as ../lib/ollama (ml/path.go). Distro CUDA
+# plugins live in /usr/lib/ollama; without this link discovery is CPU-only.
+if [[ ! -e "${ZEROLLAMA_REPO}/lib/ollama" && -d /usr/lib/ollama ]]; then
+  mkdir -p "${ZEROLLAMA_REPO}/lib"
+  ln -sfn /usr/lib/ollama "${ZEROLLAMA_REPO}/lib/ollama"
+fi
+
 export OLLAMA_HOST="${OLLAMA_HOST:-0.0.0.0:8080}"
 # Runtime → Go /internal/* (cross-queue-seq, render-chat) must use loopback, not the bind address.
 export ZEROLLAMA_GO_URL="${ZEROLLAMA_GO_URL:-http://127.0.0.1:8080}"

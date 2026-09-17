@@ -1633,10 +1633,15 @@ func FromImageGenerationRequest(r ImageGenerationRequest) (api.GenerateRequest, 
 	if err := rejectUnsupportedImageOpenAI(r.N, "", r.ResponseFormat, nil); err != nil {
 		return api.GenerateRequest{}, err
 	}
+	// WHY stream=false: OpenAI /v1/images/generations is a single JSON response.
+	// Leaving Stream nil makes GenerateHandler default to NDJSON streaming; on
+	// failure ImageWriter then sees Done-without-Image and writes an empty 200.
+	stream := false
 	req := api.GenerateRequest{
 		Model:   r.Model,
 		Prompt:  r.Prompt,
 		Options: r.Options,
+		Stream:  &stream,
 	}
 	// Parse size if provided (e.g., "1024x768")
 	if r.Size != "" {
@@ -1816,10 +1821,14 @@ func FromImageEditRequest(r ImageEditRequest) (api.GenerateRequest, error) {
 	if err := rejectUnsupportedImageOpenAI(n, r.Mask, r.ResponseFormat, r.Stream); err != nil {
 		return api.GenerateRequest{}, err
 	}
+	// WHY stream=false: same as FromImageGenerationRequest — OpenAI image edits
+	// return one JSON object; NDJSON default produced empty 200 on errors.
+	stream := false
 	req := api.GenerateRequest{
 		Model:   r.Model,
 		Prompt:  r.Prompt,
 		Options: r.Options,
+		Stream:  &stream,
 	}
 
 	// Decode the input image

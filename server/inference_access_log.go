@@ -31,6 +31,7 @@ type inferenceAccessMeta struct {
 	model              string
 	stream             bool
 	promptCacheKey     string
+	clientIP           string // HTTP client — ops attribution when project_id unset
 	start              time.Time
 	queueIn            inferenceQueueSnapshot
 	doneReason         string
@@ -80,12 +81,17 @@ func (s *Server) inferenceAccessLogMiddleware(route string) gin.HandlerFunc {
 		}
 
 		model, stream, cacheKey := inferencePeekRequest(c)
+		clientIP := requestClientIP(c)
+		if clientIP != "" {
+			c.Request = c.Request.WithContext(contextWithClientIP(c.Request.Context(), clientIP))
+		}
 		queueIn := s.inferenceQueueSnapshot()
 		meta := &inferenceAccessMeta{
 			route:          route,
 			model:          model,
 			stream:         stream,
 			promptCacheKey: cacheKey,
+			clientIP:       clientIP,
 			start:          time.Now(),
 			queueIn:        queueIn,
 		}
@@ -94,6 +100,9 @@ func (s *Server) inferenceAccessLogMiddleware(route string) gin.HandlerFunc {
 		attrs := []any{"route", route, "stream", stream}
 		if model != "" {
 			attrs = append(attrs, "model", model)
+		}
+		if clientIP != "" {
+			attrs = append(attrs, "client_ip", clientIP)
 		}
 		attrs = append(attrs, inferenceQueueLogAttrs(queueIn)...)
 		slog.Info("inference request in", attrs...)
@@ -304,6 +313,9 @@ func (m *inferenceAccessMeta) logResponseOut(status int, queueOut inferenceQueue
 	}
 	if m.model != "" {
 		attrs = append(attrs, "model", m.model)
+	}
+	if m.clientIP != "" {
+		attrs = append(attrs, "client_ip", m.clientIP)
 	}
 	attrs = append(attrs, inferenceQueueLogAttrs(queueOut)...)
 	if m.queueIn != queueOut {

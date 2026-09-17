@@ -41,6 +41,35 @@ type Attention struct {
 	RopeTheta float32
 }
 
+func linearWeightShape(layer nn.LinearLayer) []int32 {
+	switch l := layer.(type) {
+	case *nn.Linear:
+		if l.Weight != nil {
+			return l.Weight.Shape()
+		}
+	case *nn.QuantizedLinear:
+		if l.Weight != nil {
+			return l.Weight.Shape()
+		}
+	}
+	return nil
+}
+
+// manualScaledDotProductAttention is a CUDA-safe fallback when fast SDPA returns
+// empty arrays. q/k/v are [B, H, L, D]; mask is optional additive [1,1,L,L].
+func manualScaledDotProductAttention(q, k, v *mlx.Array, scale float32, mask *mlx.Array) *mlx.Array {
+	kt := mlx.Transpose(k, 0, 1, 3, 2) // [B,H,D,L]
+	scores := mlx.Matmul(q, kt) // [B,H,L,L]
+	scores = mlx.Mul(scores, mlx.NewScalarArray(scale))
+	if mask != nil {
+		scores = mlx.Add(scores, mask)
+	} else {
+		scores = nn.ApplyCausalMask(scores)
+	}
+	weights := mlx.Softmax(scores, -1)
+	return mlx.Matmul(weights, v)
+}
+
 // applyRoPEQwen3 applies the custom RoPE for Qwen3 text encoder
 func applyRoPEQwen3(x *mlx.Array, seqLen int32, theta float32) *mlx.Array {
 	shape := x.Shape()
@@ -84,6 +113,10 @@ func applyRoPEQwen3(x *mlx.Array, seqLen int32, theta float32) *mlx.Array {
 // Forward computes attention with causal masking and optional padding mask
 func (attn *Attention) Forward(x *mlx.Array, mask *mlx.Array, maskMode string) *mlx.Array {
 	shape := x.Shape()
+	if len(shape) < 2 {
+		panic(fmt.Sprintf("qwen3 attention: expected rank>=2 activations, got shape=%v valid=%v qproj=%v",
+			shape, x != nil && x.IsValid(), attn.QProj != nil))
+	}
 	B := shape[0]
 	L := shape[1]
 
@@ -112,7 +145,23 @@ func (attn *Attention) Forward(x *mlx.Array, mask *mlx.Array, maskMode string) *
 		v = repeatKV(v, repeats)
 	}
 
-	out := mlx.ScaledDotProductAttentionWithSinks(q, k, v, attn.Scale, maskMode, mask, nil)
+	// Materialize without cleanup — ResumeCleanup mid-block frees residual `x`
+	// (and other live activations) on CUDA Contiguous/mmap graphs.
+	mlx.SuppressCleanup()
+	mlx.EvalSync(q, k, v)
+	if mask != nil {
+		mlx.EvalSync(mask)
+	}
+
+	// Prefer manual SDPA on CUDA: fast SDPA returns empty arrays on sm_120.
+	var out *mlx.Array
+	if mlx.MetalIsAvailable() {
+		out = mlx.ScaledDotProductAttentionWithSinks(q, k, v, attn.Scale, maskMode, mask, nil)
+	}
+	if out == nil || !out.IsValid() || len(out.Shape()) == 0 {
+		out = manualScaledDotProductAttention(q, k, v, attn.Scale, mask)
+		mlx.EvalSync(out)
+	}
 
 	out = mlx.Transpose(out, 0, 2, 1, 3)
 	out = mlx.Reshape(out, B, L, attn.NHeads*attn.HeadDim)
@@ -198,9 +247,17 @@ func (m *TextEncoder) Load(modelManifest *manifest.ModelManifest, configPath str
 	if err := weights.Load(0); err != nil {
 		return fmt.Errorf("load weights: %w", err)
 	}
-	defer weights.ReleaseAll()
-
-	return m.loadWeights(weights)
+	if err := m.loadWeights(weights); err != nil {
+		weights.ReleaseAll()
+		return err
+	}
+	// WHY skip ReleaseAll on CUDA: Contiguous(mmap) aliases blob storage; freeing
+	// native handles empties TE weight shapes (Forward panics ndim=0). Metal eval
+	// fully copies, so ReleaseAll is safe there. Runner/subprocess exit frees maps.
+	if !mlx.GPUIsAvailable() || mlx.MetalIsAvailable() {
+		weights.ReleaseAll()
+	}
+	return nil
 }
 
 // loadWeights loads weights from any WeightSource into the model
@@ -234,16 +291,31 @@ func (m *TextEncoder) initComputedFields() {
 
 // Forward encodes text tokens with provided attention mask (LxL) and mask mode.
 func (te *TextEncoder) Forward(tokens *mlx.Array, attnMask *mlx.Array, maskMode string) *mlx.Array {
+	if te.EmbedTokens == nil || te.EmbedTokens.Weight == nil || !te.EmbedTokens.Weight.IsValid() {
+		panic(fmt.Sprintf("qwen3 TE: embed weight missing valid=%v", te.EmbedTokens != nil && te.EmbedTokens.Weight != nil && te.EmbedTokens.Weight.IsValid()))
+	}
+	mlx.SuppressCleanup()
+	defer func() { mlx.ResumeCleanup() }()
+
 	h := te.EmbedTokens.Forward(tokens)
 	eps := te.RMSNormEps
 
 	for _, layer := range te.Layers {
 		h = layer.Forward(h, eps, attnMask, maskMode)
+		// Reclaim per-layer SDPA/dequant temps without freeing the residual.
+		mlx.Keep(h)
+		if attnMask != nil {
+			mlx.Keep(attnMask)
+		}
+		mlx.EvalSync(h)
+		_ = mlx.ResumeCleanup()
+		mlx.SuppressCleanup()
 	}
 
 	// Apply final RMS norm
 	h = te.FinalNorm.Forward(h, eps)
-
+	mlx.Keep(h)
+	mlx.EvalSync(h)
 	return h
 }
 
@@ -291,8 +363,21 @@ func (te *TextEncoder) EncodePrompt(tok *tokenizer.Tokenizer, prompt string, max
 		tokens = tokens[:maxLen]
 	}
 
-	maskData := make([]float32, maxLen)
-	for i := 0; i < len(tokens); i++ {
+	// Pad only to next multiple of 32 (not always maxLen) so DiT attention
+	// stays small on 16GB CUDA cards.
+	seqLen := len(tokens)
+	if seqLen < 1 {
+		seqLen = 1
+	}
+	if pad := (32 - (seqLen % 32)) % 32; pad > 0 {
+		seqLen += pad
+	}
+	if seqLen > maxLen {
+		seqLen = maxLen
+	}
+
+	maskData := make([]float32, seqLen)
+	for i := 0; i < len(tokens) && i < seqLen; i++ {
 		maskData[i] = 1.0
 	}
 
@@ -302,18 +387,18 @@ func (te *TextEncoder) EncodePrompt(tok *tokenizer.Tokenizer, prompt string, max
 		padToken = tok.EOS() // fallback
 	}
 
-	paddedTokens := make([]int32, maxLen)
+	paddedTokens := make([]int32, seqLen)
 	copy(paddedTokens, tokens)
-	for i := len(tokens); i < maxLen; i++ {
+	for i := len(tokens); i < seqLen; i++ {
 		paddedTokens[i] = padToken
 	}
 
-	tokensArr := mlx.NewArrayInt32(paddedTokens, []int32{1, int32(maxLen)})
-	maskArr := mlx.NewArray(maskData, []int32{1, int32(maxLen)})
+	tokensArr := mlx.NewArrayInt32(paddedTokens, []int32{1, int32(seqLen)})
+	maskArr := mlx.NewArray(maskData, []int32{1, int32(seqLen)})
 
 	// Build combined causal + PAD mask [L, L]
 	// mask[i,j] = 0 if (j <= i AND valid[j]) else -inf
-	L := int32(maxLen)
+	L := int32(seqLen)
 	validLen := int32(len(tokens))
 	combinedMaskData := make([]float32, L*L)
 	negInf := float32(-1e9)
@@ -327,9 +412,12 @@ func (te *TextEncoder) EncodePrompt(tok *tokenizer.Tokenizer, prompt string, max
 			}
 		}
 	}
-	maskMat := mlx.NewArray(combinedMaskData, []int32{L, L})
+	maskMat := mlx.NewArray(combinedMaskData, []int32{1, 1, L, L})
 
-	embeddings := te.Forward(tokensArr, maskMat, "")
+	// WHY "array": MLX fast SDPA requires maskMode="array" when passing an
+	// additive mask tensor; empty mode + non-nil mask yields empty outputs on CUDA.
+	// WHY [1,1,L,L]: fast SDPA expects a broadcastable 4D additive mask.
+	embeddings := te.Forward(tokensArr, maskMat, "array")
 
 	return embeddings, maskArr
 }
@@ -375,9 +463,9 @@ func (te *TextEncoder) EncodePromptWithLayers(tok *tokenizer.Tokenizer, prompt s
 			}
 		}
 	}
-	maskMat := mlx.NewArray(maskData, []int32{L, L})
+	maskMat := mlx.NewArray(maskData, []int32{1, 1, L, L})
 
-	layerOutputs := te.ForwardWithLayerOutputs(tokensArr, layerIndices, maskMat, "")
+	layerOutputs := te.ForwardWithLayerOutputs(tokensArr, layerIndices, maskMat, "array")
 
 	// Concatenate layer outputs along the hidden dimension
 	// Each output is [B, L, hidden_dim], result is [B, L, num_layers * hidden_dim]

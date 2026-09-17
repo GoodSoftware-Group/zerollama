@@ -70,6 +70,7 @@ type mlxQoS struct {
 	ParentKey    string // parent prompt_cache_key — wait_parent (keyHot + inject candidates) + Radix prefer
 	ProjectID    string // client harness id (zerollama ps / fleet)
 	ProjectName  string // human label (repo, Discord bot, etc.)
+	ClientIP     string // HTTP client IP (logs + ps when project unset)
 	CacheScope   string // auto | thread | shared
 	CacheLevel   string // auto | gpu | dram | disk — WHY auto default: no surprise vs heuristics; gpu≈dram forbids disk
 	CacheReset   bool   // force miss under same prompt_cache_key this request (skips Radix too)

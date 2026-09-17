@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fix — Z-Image Turbo CUDA image generation (16GB)
+
+- OpenAI `/v1/images/generations` no longer returns empty 200 on failure; forces `stream=false` and emits standard `error` JSON
+- TE encode runs in a short-lived GPU subprocess (Contiguous mmap weights would not free in-process); DiT uses manual SDPA + per-layer reclaim; VAE decode stays CPU subprocess
+- Recycle MLX image runner after each success so the next TE encode gets a clean card; sticky `HasExited` so the scheduler reloads
+
+### Fix — llama-server CUDA arch on 5080 (`sm_120`)
+
+- **Cause:** `build_llama_server.sh` defaulted to `89-real` and `build_zerollama_cuda.sh` did not pass `CUDA_ARCHS=120-real` → `libggml-cuda` lacked Blackwell cubins → `CUDA error: no kernel image is available for execution on the device` at warmup (`ggml_cuda_kernel_can_use_pdl`).
+- **Fix:** export `CMAKE_CUDA_ARCHITECTURES` from `build_zerollama_cuda.sh`; auto-detect compute 12.x / 5080 → `120-real`; post-build probe fails if GPU is sm_120 but the `.so` is not.
+- Rebuild: `CMAKE_CUDA_ARCHITECTURES=120-real LLAMA_CPP_ROOT=vendor/llama-cpp-<pin> ./scripts/build/build_llama_server.sh`
+
 ### Metal FA on `Library=MTL` + m4-prefill borrowings closed — Sep 2026
 
 **Why:** Discovery reports Apple GPUs as `Library=MTL`, but `FlashAttentionSupported` only matched `Metal`, so FA stayed off and quantized KV was cleared. m4-prefill-engine kernels looked like free TTFT wins; lab A/B on M4 Max showed otherwise.
@@ -239,6 +251,12 @@ was a misdiagnosis of correct-model behavior at small canvases; ComfyUI's own
 - `training.py` expands `{job_id}` in **all** run_script env strings (not only `WAN_OUTPUT_PATH`); default python `.venv-music`
 - Explicit `duration` wins over `max_new_tokens`; exclusive GPU hold like Wan
 - Docs: [music-c.md](./docs/music-c.md), [music-c-findings.md](./docs/music-c-findings.md)
+
+### Ops — client IP on logs and `zerollama ps`
+
+- Inference access logs include `client_ip` on request in / response out
+- `/api/ps` exposes `zerollama.last_client_ip` and session `client_ip`; `zerollama ps` shows the IP in PROJECT when `project_id`/`project_name` are unset (covers unkeyed GGUF/Hermes)
+- Doc: [agent-qos-and-project-tracking.md](./docs/agent-qos-and-project-tracking.md)
 
 ### Training T9 (Partial) — stock Trainer efficiency (unified backend)
 

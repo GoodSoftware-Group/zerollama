@@ -1351,7 +1351,8 @@ type ProcessModelResponse struct {
 
 // ProcessZerollamaInfo is zerollama-specific /api/ps metadata for loaded runners.
 type ProcessZerollamaInfo struct {
-	Sessions []ProcessSessionInfo `json:"sessions,omitempty"`
+	Sessions     []ProcessSessionInfo `json:"sessions,omitempty"`
+	LastClientIP string               `json:"last_client_ip,omitempty"` // most recent HTTP client; set even when unkeyed
 }
 
 // ProcessSessionInfo describes a hot or in-flight prompt_cache_key session on a runner.
@@ -1362,6 +1363,7 @@ type ProcessSessionInfo struct {
 	SessionParent string    `json:"session_parent,omitempty"`
 	ProjectID     string    `json:"project_id,omitempty"`
 	ProjectName   string    `json:"project_name,omitempty"`
+	ClientIP      string    `json:"client_ip,omitempty"` // HTTP source when project_id unset
 	CacheScope    string    `json:"cache_scope,omitempty"`
 	CacheLevel    string    `json:"cache_level,omitempty"`
 	Fulfillment   string    `json:"fulfillment,omitempty"`

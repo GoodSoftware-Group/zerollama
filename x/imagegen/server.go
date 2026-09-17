@@ -40,6 +40,7 @@ type Server struct {
 	modelName   string
 	vramSize    uint64
 	done        chan error
+	exited      bool // sticky; Close/Wait set this so HasExited stays true after draining done
 	client      *http.Client
 	lastErr     string // Last stderr line for error reporting
 	lastErrLock sync.Mutex
@@ -145,11 +146,18 @@ func (s *Server) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start mlx runner: %w", err)
 	}
+	s.exited = false
 
 	// Reap subprocess when it exits
 	go func() {
 		err := cmd.Wait()
-		s.done <- err
+		s.mu.Lock()
+		s.exited = true
+		s.mu.Unlock()
+		select {
+		case s.done <- err:
+		default:
+		}
 	}()
 
 	return nil, nil
@@ -363,6 +371,11 @@ func (s *Server) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 			if cresp.Image == "" {
 				return fmt.Errorf("image generation finished without image data")
 			}
+			// WHY recycle: Contiguous(mmap) DiT weights do not return VRAM on
+			// ReleaseStruct, so the next TE encode subprocess OOMs on 16GB.
+			// Scheduler reloads a fresh runner on the following request.
+			slog.Info("recycling mlx image runner after successful generate")
+			_ = s.Close()
 			return nil
 		}
 	}
@@ -397,8 +410,15 @@ func (s *Server) Close() error {
 		case <-s.done:
 		case <-time.After(5 * time.Second):
 			s.cmd.Process.Kill()
+			select {
+			case <-s.done:
+			case <-time.After(2 * time.Second):
+			}
 		}
 		s.cmd = nil
+		s.exited = true
+		// Fresh done channel so a later Load() can reap the next process.
+		s.done = make(chan error, 1)
 	}
 	return nil
 }
@@ -459,8 +479,21 @@ func (s *Server) GetDeviceInfos(ctx context.Context) []ml.DeviceInfo {
 
 // HasExited returns whether the subprocess has exited.
 func (s *Server) HasExited() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.exited {
+		return true
+	}
+	if s.cmd == nil {
+		return false // not started yet
+	}
 	select {
-	case <-s.done:
+	case err := <-s.done:
+		s.exited = true
+		select {
+		case s.done <- err:
+		default:
+		}
 		return true
 	default:
 		return false

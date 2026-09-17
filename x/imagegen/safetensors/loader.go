@@ -13,6 +13,9 @@ import (
 // CUDA transformer loads disable this to avoid QuantizedMatmul deadlocks on sm120.
 var quantizedLoadEnabled = true
 
+// loggedEagerDequant ensures we print the CUDA eager-dequant path once per process.
+var loggedEagerDequant bool
+
 // SetQuantizedLoadEnabled toggles QuantizedLinear vs lazy-dequant loading for quantized layers.
 func SetQuantizedLoadEnabled(enabled bool) {
 	quantizedLoadEnabled = enabled
@@ -339,7 +342,7 @@ func LoadMultiLinearLayer(weights WeightSource, path string) (nn.MultiLinearLaye
 	return nn.NewMultiLinear(weight), nil
 }
 
-// preferQuantizedLinear keeps mmap quantized weights when QMM kernels are reliable.
+// preferQuantizedLinear keeps mmap quantized weights when possible.
 func preferQuantizedLinear(mode string) bool {
 	if !quantizedLoadEnabled {
 		return false
@@ -347,7 +350,10 @@ func preferQuantizedLinear(mode string) bool {
 	if mode == "nvfp4" {
 		return false
 	}
-	return mlx.MetalIsAvailable() || mlx.GPUIsAvailable()
+	// WHY keep QuantizedLinear on CUDA too: eager BF16 of TE+DiT OOMs a 16GB
+	// card (~15GB active). QuantizedLinear.Forward falls back to dequant+BF16
+	// matmul when mxfp8/affine QMM returns empty on Blackwell.
+	return true
 }
 
 func releaseQuantizedSources(weight, scales, qbiases *mlx.Array) {
@@ -363,6 +369,10 @@ func releaseQuantizedSources(weight, scales, qbiases *mlx.Array) {
 func eagerDequantLinear(weight, scales, qbiases *mlx.Array, groupSize, bits int, mode string, bias *mlx.Array) nn.LinearLayer {
 	dequantized := mlx.Dequantize(weight, scales, qbiases, groupSize, bits, mode)
 	mlx.EvalMaterialize(dequantized)
+	if dequantized == nil || !dequantized.IsValid() || len(dequantized.Shape()) == 0 {
+		panic(fmt.Sprintf("eagerDequantLinear: dequant produced empty array mode=%s gs=%d bits=%d", mode, groupSize, bits))
+	}
+	mlx.Keep(dequantized)
 	mlx.Untrack(dequantized)
 	releaseQuantizedSources(weight, scales, qbiases)
 	return nn.NewLinear(dequantized, bias)
@@ -459,6 +469,10 @@ func LoadLinearLayer(weights WeightSource, path string) (nn.LinearLayer, error) 
 		}
 
 		if mlx.GPUIsAvailable() {
+			if !loggedEagerDequant {
+				loggedEagerDequant = true
+				fmt.Printf("  [te-load] eager BF16 dequant mode=%s gs=%d bits=%d (CUDA QMM bypass)\n", mode, groupSize, bits)
+			}
 			return eagerDequantLinear(weight, scales, qbiases, groupSize, bits, mode, bias), nil
 		}
 

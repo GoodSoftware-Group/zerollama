@@ -475,12 +475,16 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 	} else {
 		select {
 		case runner = <-runnerCh:
-			slog.Info("scheduleRunner: runner acquired",
+			attrs := []any{
 				"model", name,
 				"elapsed", time.Since(schedStart),
 				"pid", runner.pid,
 				"loading", runner.loading,
-			)
+			}
+			if ip := clientIPFromContext(ctx); ip != "" {
+				attrs = append(attrs, "client_ip", ip)
+			}
+			slog.Info("scheduleRunner: runner acquired", attrs...)
 		case err = <-errCh:
 			releaseQoS()
 			slog.Warn("scheduleRunner: failed",
@@ -503,6 +507,10 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 	// Reflect effective load-time runner options (num_ctx may be clamped to n_ctx_train).
 	if runner.Options != nil {
 		opts.Runner = runner.Options.Runner
+	}
+
+	if ip := clientIPFromContext(ctx); ip != "" {
+		runner.noteLastClientIP(ip)
 	}
 
 	return runner.llama, model, &opts, ggmlCtx, releaseQoS, nil

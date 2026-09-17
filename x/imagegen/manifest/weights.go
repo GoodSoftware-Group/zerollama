@@ -196,11 +196,15 @@ func (mw *ManifestWeights) load(dtype mlx.Dtype, open func(string) (*mlx.Safeten
 		}
 		return fmt.Errorf("materialize weights: %w", err)
 	}
+	// WHY Keep + AbandonNonKept (not ResumeCleanup): on CUDA, Contiguous(mmap)
+	// aliases safetensors buffers. Freeing sources (cleanup) or ReleaseAll empties
+	// weight shapes and TE Forward panics (ndim=0). Keep materialized weights;
+	// drop mmap source wrappers from the tracker without freeing them — nativeCache
+	// owns the file handles until ReleaseAll.
 	for _, arr := range arrays {
-		mlx.Untrack(arr)
+		mlx.Keep(arr)
 	}
-	// Keep mmap handles alive until ReleaseAll(); freeing immediately after Eval can
-	// invalidate weight buffers still referenced by model structs on CUDA.
+	mlx.AbandonNonKept()
 	mw.nativeCache = append(mw.nativeCache, nativeHandles...)
 
 	return nil

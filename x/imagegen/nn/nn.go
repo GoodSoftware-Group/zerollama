@@ -97,7 +97,21 @@ type QuantizedLinear struct {
 // Forward applies the quantized linear transformation.
 func (ql *QuantizedLinear) Forward(x *mlx.Array) *mlx.Array {
 	out := mlx.QuantizedMatmul(x, ql.Weight, ql.Scales, ql.QBiases, true, ql.GroupSize, ql.Bits, ql.Mode)
-	if ql.Bias != nil {
+	// WHY CUDA fallback: Blackwell QMM can return an empty/invalid array.
+	// Dequant one layer at a time and free the BF16 temp immediately so 36 TE
+	// layers do not accumulate ~GBs under SuppressCleanup.
+	if out == nil || !out.IsValid() || len(out.Shape()) == 0 {
+		w := mlx.Dequantize(ql.Weight, ql.Scales, ql.QBiases, ql.GroupSize, ql.Bits, ql.Mode)
+		mlx.EvalSync(w)
+		wt := mlx.Transpose(w, 1, 0)
+		if ql.Bias != nil {
+			out = mlx.AddMM(ql.Bias, x, wt, 1.0, 1.0)
+		} else {
+			out = mlx.Linear(x, wt)
+		}
+		mlx.EvalSync(out)
+		w.Free()
+	} else if ql.Bias != nil {
 		out = mlx.Add(out, ql.Bias)
 	}
 	return out

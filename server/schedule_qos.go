@@ -82,6 +82,9 @@ func (s *Server) reserveScheduleQoS(ctx context.Context, m *Model, opts map[stri
 		return func() {}, nil
 	}
 	sessionKey, class, qos := scheduleSessionMeta(ctx, m, opts)
+	if ip := clientIPFromContext(ctx); ip != "" {
+		qos.ClientIP = ip
+	}
 	modelKey := schedulerModelKey(m)
 
 	// Fulfillment opts into the gate even when modelSupportsSessionQoS would skip,

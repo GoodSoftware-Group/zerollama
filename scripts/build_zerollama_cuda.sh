@@ -279,8 +279,11 @@ _build_llama_server() {
 		script="${ROOT}/scripts/build_llama_server.sh"
 	fi
 	[[ -x "${script}" ]] || _die "missing build_llama_server.sh under scripts/build/ or scripts/"
-	echo ">>> building llama-server (${script})" >&2
-	"${script}"
+	# WHY export: build_llama_server.sh defaults to 89-real; CT 1564 / 5080 needs
+	# the same CUDA_ARCHS as the ggml runners (120-real) or llama-server aborts
+	# with "no kernel image is available for execution on the device".
+	echo ">>> building llama-server (${script}, CMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS})" >&2
+	CMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHS}" "${script}"
 }
 
 _build_go() {
