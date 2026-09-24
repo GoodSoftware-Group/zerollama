@@ -25,6 +25,8 @@ add_library(${TARGET} STATIC
     server-schema.h
     server-loop-guard.cpp
     server-loop-guard.h
+    server-laya.cpp
+    server-laya.h
 )
 
 if (BUILD_SHARED_LIBS)

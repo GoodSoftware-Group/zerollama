@@ -13,7 +13,7 @@ info:
     voice catalog, and video generation).
 
     LocalAI control plane (LA7/LA9/LA11/LA11b/LA15/LA16/LA17/LA21/LA22): `/api/repair`,
-    `/api/score`, `/v1/rerank`, `/api/router/*`, `/api/aliases`, `/api/load`, `/api/unload`, experimental web_search/fetch.
+    `/api/score`, `/v1/rerank`, `/v1/decisions`, `/api/router/*`, `/api/aliases`, `/api/load`, `/api/unload`, experimental web_search/fetch.
     In-band alias and router rewrite may set `X-Zerollama-*` response headers.
     Failed-load cooldown (LA18) returns 503 with `Retry-After`.
 
@@ -1488,6 +1488,150 @@ components:
             prompt_tokens:
               type: integer
             total_tokens:
+              type: integer
+    DecisionsRequest:
+      type: object
+      required: [model, state, questions]
+      description: >
+        Jev/Laya typed System-1 decisions (LAYA2). Non-autoregressive: one forward
+        pass answers every question — not chat, not `/api/score` continuations, not
+        `/v1/rerank` RANK pooling. WHY a dedicated route: chat would force sampling
+        free text; score/rerank return one scalar per candidate, not calibrated
+        choice/score/noul + act head. `state` is string|object|array; `questions`
+        maps stable ids → typed defs. Requires a Laya GGUF (`general.architecture=laya`).
+      properties:
+        model:
+          type: string
+          description: Laya tag or alias (must load as arch=laya)
+        state:
+          description: Conversation/state payload (string | object | array)
+        questions:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/DecisionQuestion"
+          description: >
+            Map of question_id → definition. WHY map not array: clients key answers
+            by id; Go packs in sorted question_id order for stable server alignment.
+        keep_alive:
+          oneOf:
+            - type: string
+            - type: number
+        options:
+          type: object
+          additionalProperties: true
+      example:
+        model: laya
+        state:
+          body: billed twice, refund please
+        questions:
+          dept:
+            type: choice
+            instructions: Which team?
+            criteria:
+              billing: refunds
+              tech: bugs
+    DecisionQuestion:
+      type: object
+      required: [type, instructions]
+      description: >
+        One typed question. `criteria` is a JSON object for choice/noul (key order
+        must be preserved — logit ↔ label alignment) or an array of ordered levels
+        for score.
+      properties:
+        type:
+          type: string
+          enum: [choice, score, noul]
+        instructions:
+          type: string
+        criteria:
+          description: Object for choice/noul; array of levels for score
+        labels:
+          type: object
+          description: Optional noul display labels keyed false/true
+          additionalProperties:
+            type: string
+    DecisionAction:
+      type: object
+      description: >
+        Softmax over the act head (act vs escalate). WHY attached to every answer:
+        System-1 can abstain / escalate without a second model call.
+      properties:
+        act_probability:
+          type: number
+          format: float
+    ChoiceAnswer:
+      type: object
+      required: [type, choice, probabilities, confidence, action]
+      properties:
+        type:
+          type: string
+          enum: [choice]
+        choice:
+          type: string
+        probabilities:
+          type: object
+          additionalProperties:
+            type: number
+        confidence:
+          type: number
+          format: float
+        action:
+          $ref: "#/components/schemas/DecisionAction"
+    ScoreAnswer:
+      type: object
+      required: [type, score, probabilities, confidence, action]
+      properties:
+        type:
+          type: string
+          enum: [score]
+        score:
+          type: number
+          format: float
+        probabilities:
+          type: object
+          additionalProperties:
+            type: number
+        confidence:
+          type: number
+          format: float
+        action:
+          $ref: "#/components/schemas/DecisionAction"
+    NoulAnswer:
+      type: object
+      required: [type, noul, probabilities, confidence, action]
+      properties:
+        type:
+          type: string
+          enum: [noul]
+        noul:
+          type: boolean
+        probabilities:
+          type: object
+          additionalProperties:
+            type: number
+        confidence:
+          type: number
+          format: float
+        action:
+          $ref: "#/components/schemas/DecisionAction"
+    DecisionsResponse:
+      type: object
+      description: >
+        Calibrated typed answers keyed by question_id. Each value is one of
+        ChoiceAnswer | ScoreAnswer | NoulAnswer (discriminated by `type`).
+      properties:
+        model:
+          type: string
+        answers:
+          type: object
+          additionalProperties: true
+          description: Per-question typed answers (choice|score|noul)
+        usage:
+          type: object
+          properties:
+            input_tokens:
+              type: integer
+            output_tokens:
               type: integer
     RouterDecideRequest:
       type: object
@@ -4564,6 +4708,66 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InferenceError"
+  /v1/decisions:
+    post:
+      summary: Typed System-1 decisions (Laya)
+      description: >
+        Non-autoregressive choice/score/noul answers (LAYA2). WHY not chat: Laya is
+        an encoder + decision head (ModernBERT-class) — one pass, calibrated
+        probabilities, act/escalate. WHY not `/v1/rerank`: RANK pooling returns a
+        single scalar; Laya needs per-MASK logits + act head. Go packs
+        `{state,questions}` (LA16-style); llama-server runs with `--decisions` when
+        GGUF `general.architecture=laya`. Alias `/v1/systemone`. Lab docs:
+        docs/laya-llama-cpp.md. Never confuse with production `:11434` smokes —
+        use lab ports when agents test.
+      operationId: decisionsV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecisionsRequest"
+      responses:
+        "200":
+          description: Calibrated typed answers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionsResponse"
+        "400":
+          description: Missing model/state/questions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "501":
+          description: >
+            Runner or GGUF does not support decisions (wrong arch, or llama-server
+            built without patches 0127–0128 / not started with `--decisions`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /v1/systemone:
+    post:
+      summary: Alias for /v1/decisions
+      description: >
+        Same contract as `/v1/decisions`. WHY alias: Jev/System-1 clients may look
+        for `/v1/systemone`; keep one Decider path underneath.
+      operationId: systemOneV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecisionsRequest"
+      responses:
+        "200":
+          description: Calibrated typed answers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionsResponse"
   /v1/images/generations:
     post:
       tags: [OpenAI]

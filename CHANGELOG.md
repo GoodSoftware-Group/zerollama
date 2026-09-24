@@ -16,6 +16,16 @@ All notable changes to this project are documented in this file. The format is b
 - **Fix:** export `CMAKE_CUDA_ARCHITECTURES` from `build_zerollama_cuda.sh`; auto-detect compute 12.x / 5080 → `120-real`; post-build probe fails if GPU is sm_120 but the `.so` is not.
 - Rebuild: `CMAKE_CUDA_ARCHITECTURES=120-real LLAMA_CPP_ROOT=vendor/llama-cpp-<pin> ./scripts/build/build_llama_server.sh`
 
+### Typed decisions (Laya) — llama.cpp + `/v1/decisions` — Sep 2026
+
+**Why:** System-1 typed answers (`choice` / `score` / `noul`) need calibrated probabilities + act/escalate in one encoder pass — not chat sampling, not `/api/score` continuations, not `/v1/rerank` RANK scalars. Overloading ModernBERT RANK cannot expose per-MASK logits.
+
+**Shipped:** `LLM_ARCH_LAYA` + `models/laya.cpp` (ModernBERT-shaped encoder; decision head on CPU in `server-laya.cpp`); llama-server `--decisions` + `POST /v1/decisions` (tokenized batch; echoes `question_id`); Go Decider packing/calibration (`llm/laya_pack.go`, `llm/llama_server_decisions.go`); public `POST /v1/decisions` + `/v1/systemone`; `scripts/convert_laya_to_gguf.py`; patches **0127–0128**. OpenAPI schemas + skill `typed-decisions`. MLX sidecar **parked** (LAYA4).
+
+**Audit fixes:** SWA key `laya.rope.freq_base_swa` (not `…attention.rope…`); head eps prefers `laya.attention.layer_norm_epsilon`; `n_act` from config when set.
+
+Docs: [laya-llama-cpp.md](docs/laya-llama-cpp.md) · [findings](docs/laya-llama-cpp-findings.md) · ROADMAP **Typed decisions (Laya)**. Lab ports only (`11435` / `18082`).
+
 ### Metal FA on `Library=MTL` + m4-prefill borrowings closed — Sep 2026
 
 **Why:** Discovery reports Apple GPUs as `Library=MTL`, but `FlashAttentionSupported` only matched `Metal`, so FA stayed off and quantized KV was cleared. m4-prefill-engine kernels looked like free TTFT wins; lab A/B on M4 Max showed otherwise.

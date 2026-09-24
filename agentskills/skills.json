@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "skill_count": 29,
+  "skill_count": 30,
   "skills": [
     {
       "name": "account-auth",
@@ -665,7 +665,8 @@
       ],
       "related_skills": [
         "zerollama-integration",
-        "generate-embeddings"
+        "generate-embeddings",
+        "typed-decisions"
       ],
       "path": "rerank-candidates/SKILL.md"
     },
@@ -722,6 +723,33 @@
         "download-model"
       ],
       "path": "text-to-speech/SKILL.md"
+    },
+    {
+      "name": "typed-decisions",
+      "description": "Answer typed System-1 questions (choice / score / noul) in one forward pass via zerollama POST /v1/decisions (Laya), with calibrated probabilities and act/escalate \u2014 not chat, not score, not rerank.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "laya",
+        "decisions",
+        "systemone",
+        "classification",
+        "routing",
+        "calibrated"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "rerank-candidates",
+        "download-model"
+      ],
+      "path": "typed-decisions/SKILL.md"
     },
     {
       "name": "video-understanding-chat",

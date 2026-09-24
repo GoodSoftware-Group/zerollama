@@ -141,6 +141,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_EAGLE3,           "eagle3"           },
     { LLM_ARCH_DFLASH,           "dflash"           },
     { LLM_ARCH_DFLASH_DRAFT,     "dflash-draft"     }, // milady DFlash speculative draft
+    { LLM_ARCH_LAYA,             "laya"             },
     { LLM_ARCH_MISTRAL4,         "mistral4"         },
     { LLM_ARCH_PADDLEOCR,        "paddleocr"        },
     { LLM_ARCH_MIMO2,            "mimo2"            },
@@ -662,6 +663,18 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_DSPARK_MARKOV_W1,                       "markov_w1" },
     { LLM_TENSOR_DSPARK_MARKOV_W2,                       "markov_w2" },
     { LLM_TENSOR_DSPARK_CONF_PROJ,                       "conf_proj" },
+    { LLM_TENSOR_LAYA_TYPE_EMBD,                         "laya.type_embd" },
+    { LLM_TENSOR_LAYA_HEAD_ATTN_NORM,                    "laya.head.%d.attn_norm" },
+    { LLM_TENSOR_LAYA_HEAD_ATTN_QKV,                     "laya.head.%d.attn_qkv" },
+    { LLM_TENSOR_LAYA_HEAD_ATTN_OUT,                     "laya.head.%d.attn_out" },
+    { LLM_TENSOR_LAYA_HEAD_FFN_NORM,                     "laya.head.%d.ffn_norm" },
+    { LLM_TENSOR_LAYA_HEAD_FFN_UP,                       "laya.head.%d.ffn_up" },
+    { LLM_TENSOR_LAYA_HEAD_FFN_DOWN,                     "laya.head.%d.ffn_down" },
+    { LLM_TENSOR_LAYA_SCORER_NORM,                       "laya.scorer.norm" },
+    { LLM_TENSOR_LAYA_SCORER_FC1,                        "laya.scorer.fc1" },
+    { LLM_TENSOR_LAYA_SCORER_FC2,                        "laya.scorer.fc2" },
+    { LLM_TENSOR_LAYA_ACT_FC1,                           "laya.act.fc1" },
+    { LLM_TENSOR_LAYA_ACT_FC2,                           "laya.act.fc2" },
 };
 
 // declare information about the model weight tensors:
@@ -930,6 +943,18 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_DSPARK_MARKOV_W1,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
     {LLM_TENSOR_DSPARK_MARKOV_W2,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
     {LLM_TENSOR_DSPARK_CONF_PROJ,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LAYA_TYPE_EMBD,             {LLM_TENSOR_LAYER_INPUT,     GGML_OP_GET_ROWS}},
+    {LLM_TENSOR_LAYA_HEAD_ATTN_NORM,        {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_LAYA_HEAD_ATTN_QKV,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LAYA_HEAD_ATTN_OUT,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LAYA_HEAD_FFN_NORM,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_LAYA_HEAD_FFN_UP,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LAYA_HEAD_FFN_DOWN,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LAYA_SCORER_NORM,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
+    {LLM_TENSOR_LAYA_SCORER_FC1,            {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LAYA_SCORER_FC2,            {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LAYA_ACT_FC1,               {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_LAYA_ACT_FC2,               {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
 };
 
 LLM_KV::LLM_KV(llm_arch arch, const char * suffix) : arch(arch), suffix(suffix) {}

@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [zerollama, score, rerank, classification, logprob, routing]
     category: mlops
-    related_skills: [zerollama-integration, generate-embeddings]
+    related_skills: [zerollama-integration, generate-embeddings, typed-decisions]
 ---
 
 # Rerank / Score Candidates Skill
@@ -25,6 +25,10 @@ scoring a shortlist as continuations).
 Dedicated **cross-encoder rerank** (Jina / llama.cpp `--reranking` RANK GGUF)
 is a different route: `POST /v1/rerank` (aliases `/v1/reranking`, `/rerank`,
 `/api/rerank`). That needs a reranker model, not a chat continuation score.
+
+**Typed System-1 decisions** (Laya `choice`/`score`/`noul`) are yet another route:
+`POST /v1/decisions` — see skill `typed-decisions`. Not interchangeable with score
+or rerank.
 
 ## Compatibility check
 
@@ -118,6 +122,8 @@ lengths).
 - **Not a substitute for a dedicated cross-encoder** — `/api/score` is a
   general-purpose scoring primitive against any local chat model. Use
   `/v1/rerank` when you actually have a RANK GGUF.
+- **Not typed System-1 decisions** — calibrated choice/score/noul + act head
+  belongs on `/v1/decisions` (`typed-decisions` skill), not score/rerank.
 - **`include_token_logprobs` adds payload size** — only request it when you
   actually need per-token detail (e.g. debugging why one candidate scored
   low).

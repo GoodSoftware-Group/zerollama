@@ -1088,6 +1088,34 @@ type RerankRequest struct {
 }
 
 // RerankResult is one scored document (llama.cpp Jina shape).
+// DecisionsRequest is POST /v1/decisions (Jev/Laya typed System-1 decisions).
+// WHY not ChatRequest: calibrated choice/score/noul + act head; see docs/laya-llama-cpp.md.
+type DecisionsRequest struct {
+	Model     string                      `json:"model"`
+	State     any                         `json:"state"`
+	Questions map[string]DecisionQuestion `json:"questions"`
+	KeepAlive *Duration                   `json:"keep_alive,omitempty"`
+	Options   map[string]any              `json:"options"`
+}
+
+// DecisionQuestion is one choice / score / noul question.
+type DecisionQuestion struct {
+	Type         string            `json:"type"`
+	Instructions string            `json:"instructions"`
+	Criteria     json.RawMessage   `json:"criteria,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
+}
+
+// DecisionsResponse is POST /v1/decisions.
+type DecisionsResponse struct {
+	Model   string                     `json:"model"`
+	Answers map[string]json.RawMessage `json:"answers"`
+	Usage   struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
+}
+
 type RerankResult struct {
 	Index          int     `json:"index"`
 	RelevanceScore float64 `json:"relevance_score"`

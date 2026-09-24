@@ -35,6 +35,7 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"/api/aliases", "/api/score", "/api/router/decide", "/api/router/corpus",
 		"/api/repair", "/api/experimental/web_search", "/api/experimental/web_fetch",
 		"/v1/chat/completions", "/v1/chat/completions/batch",
+		"/v1/decisions", "/v1/systemone",
 		"/v1/responses", "/v1/messages",
 	} {
 		if _, ok := paths[p]; !ok {
@@ -54,6 +55,8 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"OpenAIResponsesRequest", "OpenAIResponsesResponse",
 		"ProposeLoadRequest", "ProposeLoadResponse", "ZerollamaQoS", "ZerollamaVersionQoS",
 		"AliasInfo", "ScoreRequest", "ScoreResponse", "RouterDecision",
+		"DecisionsRequest", "DecisionQuestion", "DecisionsResponse",
+		"DecisionAction", "ChoiceAnswer", "ScoreAnswer", "NoulAnswer",
 		"RouterCorpusEntry", "RepairRequest", "RepairResponse",
 		"LoadRequest", "LoadResponse", "UnloadRequest", "UnloadResponse",
 	} {

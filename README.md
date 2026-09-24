@@ -182,8 +182,11 @@ curl -s http://127.0.0.1:11434/api/version | jq '{distribution, capabilities: .z
 | Bound `/v1` `think` + `response_format` / GBNF | No accept-and-drop; schemas reach the runner |
 | — | `done_reason=preempted` + `preempted_reason` — **retry**, don’t treat eviction as `stop` |
 | — | `/api/can-load`, `/api/propose-load`, `/api/pin`, `/api/cache/pin`, `/v1/.../batch` |
+| Typed System-1 (Laya) | `POST /v1/decisions` / `/v1/systemone` — calibrated choice/score/noul + act (not chat) |
 
 Progressive ladder: vanilla Ollama → Tier 1 fields only; zerollama → + `options.zerollama`; capabilities → Orient / Decide / Act.
+
+**Why `/v1/decisions` exists:** triage/routing needs calibrated labels in one encoder pass — chat sampling and RANK rerank are the wrong tools. → [laya-llama-cpp.md](docs/laya-llama-cpp.md) · [findings](docs/laya-llama-cpp-findings.md)
 
 → [agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md) · [hermes-zerollama-gap.md](docs/hermes-zerollama-gap.md)
 

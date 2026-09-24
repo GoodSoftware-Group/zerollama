@@ -439,6 +439,15 @@ func (c *Client) Rerank(ctx context.Context, req *RerankRequest) (*RerankRespons
 	return &resp, nil
 }
 
+// Decisions evaluates typed System-1 questions (POST /v1/decisions).
+func (c *Client) Decisions(ctx context.Context, req *DecisionsRequest) (*DecisionsResponse, error) {
+	var resp DecisionsResponse
+	if err := c.do(ctx, http.MethodPost, "/v1/decisions", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // Load prewarms a local model until the runner is resident (POST /api/load).
 func (c *Client) Load(ctx context.Context, req *LoadRequest) (*LoadResponse, error) {
 	var resp LoadResponse

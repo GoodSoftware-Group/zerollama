@@ -578,6 +578,9 @@ extern "C" {
     LLAMA_API const struct llama_vocab * llama_model_get_vocab(const struct llama_model * model);
     LLAMA_API enum llama_rope_type       llama_model_rope_type(const struct llama_model * model);
 
+    // Lookup a named tensor in the loaded model (e.g. "laya.type_embd.weight"). Returns nullptr if missing.
+    LLAMA_API struct ggml_tensor * llama_model_get_tensor(const struct llama_model * model, const char * name);
+
     LLAMA_API int32_t llama_model_n_ctx_train  (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_embd       (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_embd_inp   (const struct llama_model * model);

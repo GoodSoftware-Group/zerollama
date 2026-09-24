@@ -1,0 +1,906 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@localhost>
+Date: Wed, 23 Sep 2026 12:00:00 -0700
+Subject: [PATCH] server: --decisions and POST /v1/decisions for Laya
+
+Tokenized-batch decisions endpoint; CPU decision head in server-laya.cpp.
+---
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 8b498bb7a..55a0e5ea5 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -3508,6 +3508,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.pooling_type = LLAMA_POOLING_TYPE_RANK;
+         }
+     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_RERANKING"));
++    add_opt(common_arg(
++        {"--decisions"},
++        string_format("enable typed-decisions endpoint on server (default: %s)", "disabled"),
++        [](common_params & params) {
++            params.decisions = true;
++            params.embedding = true;
++            params.pooling_type = LLAMA_POOLING_TYPE_NONE;
++        }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISIONS"));
+     add_opt(common_arg(
+         {"--api-key"}, "KEY",
+         "API key to use for authentication, multiple keys can be provided as a comma-separated list (default: none)",
+diff --git a/common/common.h b/common/common.h
+index 45d8b8dc9..d03bcf906 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -633,6 +633,7 @@ struct common_params {
+ 
+     // embedding
+     bool embedding         = false; // get only sentence embedding
++    bool decisions         = false; // enable /v1/decisions (Laya typed-decision head)
+     int32_t embd_normalize = 2;     // normalisation for embeddings (-1=none, 0=max absolute int16, 1=taxicab, 2=euclidean, >2=p-norm)
+     std::string embd_out   = "";    // empty = default, "array" = [[],[]...], "json" = openai style, "json+" = same "json" + cosine similarity matrix
+     std::string embd_sep   = "\n";  // separator of embeddings
+diff --git a/tools/server/CMakeLists.txt b/tools/server/CMakeLists.txt
+index 418897c71..738869868 100644
+--- a/tools/server/CMakeLists.txt
++++ b/tools/server/CMakeLists.txt
+@@ -25,6 +25,8 @@ add_library(${TARGET} STATIC
+     server-schema.h
+     server-loop-guard.cpp
+     server-loop-guard.h
++    server-laya.cpp
++    server-laya.h
+ )
+ 
+ if (BUILD_SHARED_LIBS)
+diff --git a/tools/server/README.md b/tools/server/README.md
+index 93736c3ed..de9d54c7c 100644
+--- a/tools/server/README.md
++++ b/tools/server/README.md
+@@ -205,6 +205,7 @@ For the full list of features, please refer to [server's changelog](https://gith
+ | `--ui, --webui, --no-ui, --no-webui` | whether to enable the Web UI (default: enabled)<br/>(env: LLAMA_ARG_UI) |
+ | `--embedding, --embeddings` | restrict to only support embedding use case; use only with dedicated embedding models (default: disabled)<br/>(env: LLAMA_ARG_EMBEDDINGS) |
+ | `--rerank, --reranking` | enable reranking endpoint on server (default: disabled)<br/>(env: LLAMA_ARG_RERANKING) |
++| `--decisions` | enable typed-decisions endpoint (`POST /v1/decisions`) for Laya models (default: disabled)<br/>(env: LLAMA_ARG_DECISIONS) |
+ | `--api-key KEY` | API key to use for authentication, multiple keys can be provided as a comma-separated list (default: none)<br/>(env: LLAMA_API_KEY) |
+ | `--api-key-file FNAME` | path to file containing API keys, one per line; lines starting with a hash are treated as comments (default: none)<br/>(env: LLAMA_ARG_API_KEY_FILE) |
+ | `--ssl-key-file FNAME` | path to file a PEM-encoded SSL private key<br/>(env: LLAMA_ARG_SSL_KEY_FILE) |
+@@ -787,6 +788,36 @@ curl http://127.0.0.1:8012/v1/rerank \
+     }' | jq
+ ```
+ 
++### POST `/v1/decisions`: Laya typed decisions (tokenized)
++
++Requires a Laya (`LLM_ARCH_LAYA`) model and `--decisions` (or a model that ships `laya.*` head tensors). Encoder runs in embeddings mode (`pooling none`); the decision head is applied on CPU.
++
++*Options (tokenized v1):*
++
++`inputs`: array of objects:
++- `tokens`: token ids for the packed sequence
++- `marker_pos`: indices of choice/score markers in `tokens`
++- `qtype`: question type id (0..2), default 0
++
++High-level `{state, questions}` payloads return **501** — packing stays in the Go client.
++
++*Aliases:*
++  - `/decisions`
++
++*Example:*
++
++```shell
++curl http://127.0.0.1:18082/v1/decisions \
++    -H "Content-Type: application/json" \
++    -d '{
++        "inputs": [
++            {"tokens": [1, 2, 3, 4, 5], "marker_pos": [2, 4], "qtype": 0}
++        ]
++    }' | jq
++```
++
++Response shape: `{ "results": [ { "logits": [...], "act": [...], "n_tokens": N } ] }`.
++
+ ### POST `/infill`: For code infilling.
+ 
+ Takes a prefix and a suffix and returns the predicted completion as stream.
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 2658ccb15..f65fc1336 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -8,6 +8,7 @@
+ #include "server-stream.h"
+ #include "server-loop-guard.h"
+ #include "server-adaptive-dm.h"
++#include "server-laya.h"
+ 
+ #include "build-info.h"
+ #include "common.h"
+@@ -872,6 +873,14 @@ public:
+     //  - and, with thread-safe APIs (e.g., tokenizer calls)
+     llama_model * model_tgt = nullptr;
+ 
++    // Laya /v1/decisions: sync encode+CPU head (serialized; dedicated --decisions servers)
++    std::mutex mutex_laya;
++    std::unique_ptr<laya_head_weights> laya_weights;
++
++    llama_context * get_ctx_tgt() {
++        return ctx_tgt;
++    }
++
+     mtmd_context * mctx = nullptr;
+     const llama_vocab * vocab = nullptr;
+ 
+@@ -977,6 +986,7 @@ private:
+ 
+         ctx_tgt = nullptr;
+         model_tgt = nullptr;
++        laya_weights.reset();
+ 
+         mtmd_free(mctx);
+         mctx = nullptr;
+@@ -5547,6 +5557,99 @@ void server_routes::init_routes() {
+         return res;
+     };
+ 
++    this->post_decisions = [this](const server_http_req & req) {
++        auto res = create_response();
++
++        const json body = json::parse(req.body);
++
++        // High-level {state, questions} packing is owned by Go (LAYA2); C++ v1 is tokenized-only.
++        if (body.contains("state") || body.contains("questions")) {
++            res->error(format_error_response(
++                "High-level decisions payload not implemented in llama-server; send tokenized inputs",
++                ERROR_TYPE_NOT_SUPPORTED));
++            return res;
++        }
++
++        if (!body.contains("inputs") || !body.at("inputs").is_array() || body.at("inputs").empty()) {
++            res->error(format_error_response("\"inputs\" must be a non-empty array", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++
++        std::vector<laya_decision_input> inputs;
++        inputs.reserve(body.at("inputs").size());
++        for (const auto & item : body.at("inputs")) {
++            if (!item.is_object()) {
++                res->error(format_error_response("each input must be an object", ERROR_TYPE_INVALID_REQUEST));
++                return res;
++            }
++            if (!item.contains("tokens") || !item.at("tokens").is_array() || item.at("tokens").empty()) {
++                res->error(format_error_response("\"tokens\" must be a non-empty array", ERROR_TYPE_INVALID_REQUEST));
++                return res;
++            }
++            if (!item.contains("marker_pos") || !item.at("marker_pos").is_array() || item.at("marker_pos").empty()) {
++                res->error(format_error_response("\"marker_pos\" must be a non-empty array", ERROR_TYPE_INVALID_REQUEST));
++                return res;
++            }
++
++            laya_decision_input in;
++            in.qtype = json_value(item, "qtype", 0);
++            try {
++                in.tokens = item.at("tokens").get<std::vector<llama_token>>();
++                in.marker_pos = item.at("marker_pos").get<std::vector<int32_t>>();
++            } catch (const std::exception & e) {
++                res->error(format_error_response(std::string("invalid tokens/marker_pos: ") + e.what(), ERROR_TYPE_INVALID_REQUEST));
++                return res;
++            }
++            inputs.push_back(std::move(in));
++        }
++
++        queue_tasks.wait_until_no_sleep();
++
++        std::unique_lock<std::mutex> lock(ctx_server.mutex_laya);
++
++        llama_context * lctx = ctx_server.get_ctx_tgt();
++        if (lctx == nullptr || ctx_server.model_tgt == nullptr) {
++            res->error(format_error_response("model context is not available", ERROR_TYPE_UNAVAILABLE));
++            return res;
++        }
++
++        const bool has_laya = laya_model_has_head(ctx_server.model_tgt);
++        if (!params.decisions && !has_laya) {
++            res->error(format_error_response(
++                "This server does not support decisions. Start it with `--decisions` (or load a Laya model)",
++                ERROR_TYPE_NOT_SUPPORTED));
++            return res;
++        }
++
++        if (!ctx_server.laya_weights) {
++            auto weights = std::make_unique<laya_head_weights>();
++            std::string err;
++            if (!laya_head_load(ctx_server.model_tgt, *weights, err)) {
++                res->error(format_error_response("failed to load Laya head: " + err, ERROR_TYPE_SERVER));
++                return res;
++            }
++            ctx_server.laya_weights = std::move(weights);
++        }
++
++        json results = json::array();
++        for (const auto & in : inputs) {
++            laya_decision_result out;
++            std::string err;
++            if (!laya_decide(lctx, *ctx_server.laya_weights, in, out, err)) {
++                res->error(format_error_response(err, ERROR_TYPE_SERVER));
++                return res;
++            }
++            results.push_back({
++                {"logits",   out.logits},
++                {"act",      out.act},
++                {"n_tokens", out.n_tokens},
++            });
++        }
++
++        res->ok({{"results", results}});
++        return res;
++    };
++
+     this->get_lora_adapters = [this](const server_http_req & req) {
+         auto res = create_response();
+ 
+diff --git a/tools/server/server-context.h b/tools/server/server-context.h
+index 0411fed10..6238b0ee5 100644
+--- a/tools/server/server-context.h
++++ b/tools/server/server-context.h
+@@ -156,6 +156,7 @@ struct server_routes {
+     server_http_context::handler_t post_embeddings;
+     server_http_context::handler_t post_embeddings_oai;
+     server_http_context::handler_t post_rerank;
++    server_http_context::handler_t post_decisions;
+     server_http_context::handler_t get_lora_adapters;
+     server_http_context::handler_t post_lora_adapters;
+ 
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index 4a08e9132..986be0a94 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -242,6 +242,7 @@ int llama_server(common_params & params, int argc, char ** argv) {
+         routes.post_embeddings             = models_routes->proxy_post;
+         routes.post_embeddings_oai         = models_routes->proxy_post;
+         routes.post_rerank                 = models_routes->proxy_post;
++        routes.post_decisions              = models_routes->proxy_post;
+         routes.post_tokenize               = models_routes->proxy_post;
+         routes.post_detokenize             = models_routes->proxy_post;
+         routes.post_apply_template         = models_routes->proxy_post;
+@@ -296,6 +297,8 @@ int llama_server(common_params & params, int argc, char ** argv) {
+     ctx_http.post("/reranking",                ex_wrapper(routes.post_rerank));
+     ctx_http.post("/v1/rerank",                ex_wrapper(routes.post_rerank));
+     ctx_http.post("/v1/reranking",             ex_wrapper(routes.post_rerank));
++    ctx_http.post("/v1/decisions",             ex_wrapper(routes.post_decisions));
++    ctx_http.post("/decisions",                ex_wrapper(routes.post_decisions));
+     ctx_http.post("/tokenize",                 ex_wrapper(routes.post_tokenize));
+     ctx_http.post("/detokenize",               ex_wrapper(routes.post_detokenize));
+     ctx_http.post("/apply-template",           ex_wrapper(routes.post_apply_template));
+diff --git a/tools/server/server-laya.cpp b/tools/server/server-laya.cpp
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/tools/server/server-laya.cpp
+@@ -0,0 +1,     536 @@
++#include "server-laya.h"
++
++#include "common.h"
++#include "log.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstring>
++
++namespace {
++
++static bool tensor_to_f32(const ggml_tensor * t, std::vector<float> & out) {
++    if (t == nullptr) {
++        return false;
++    }
++
++    const int64_t ne = ggml_nelements(t);
++    out.resize((size_t) ne);
++
++    if (t->type == GGML_TYPE_F32) {
++        ggml_backend_tensor_get(t, out.data(), 0, (size_t) ne * sizeof(float));
++        return true;
++    }
++
++    std::vector<uint8_t> buf(ggml_nbytes(t));
++    ggml_backend_tensor_get(t, buf.data(), 0, buf.size());
++
++    const ggml_type_traits * traits = ggml_get_type_traits(t->type);
++    if (t->type == GGML_TYPE_F16) {
++        ggml_fp16_to_fp32_row((const ggml_fp16_t *) buf.data(), out.data(), ne);
++    } else if (t->type == GGML_TYPE_BF16) {
++        ggml_bf16_to_fp32_row((const ggml_bf16_t *) buf.data(), out.data(), ne);
++    } else if (ggml_is_quantized(t->type) && traits->to_float != nullptr) {
++        traits->to_float(buf.data(), out.data(), ne);
++    } else {
++        return false;
++    }
++    return true;
++}
++
++static bool load_linear(const llama_model * model, const char * wname, const char * bname, laya_linear & out) {
++    ggml_tensor * tw = llama_model_get_tensor(model, wname);
++    if (tw == nullptr || tw->ne[0] <= 0 || tw->ne[1] <= 0) {
++        return false;
++    }
++    out.n_in  = tw->ne[0];
++    out.n_out = tw->ne[1];
++    if (!tensor_to_f32(tw, out.weight)) {
++        return false;
++    }
++    out.bias.clear();
++    if (bname != nullptr) {
++        ggml_tensor * tb = llama_model_get_tensor(model, bname);
++        if (tb != nullptr) {
++            if (!tensor_to_f32(tb, out.bias) || (int64_t) out.bias.size() != out.n_out) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
++static bool load_ln(const llama_model * model, const char * wname, const char * bname, laya_ln & out) {
++    ggml_tensor * tw = llama_model_get_tensor(model, wname);
++    if (tw == nullptr) {
++        return false;
++    }
++    if (!tensor_to_f32(tw, out.weight)) {
++        return false;
++    }
++    out.bias.clear();
++    if (bname != nullptr) {
++        ggml_tensor * tb = llama_model_get_tensor(model, bname);
++        if (tb != nullptr && !tensor_to_f32(tb, out.bias)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static void linear_forward(const laya_linear & L, const float * x, float * y) {
++    for (int64_t o = 0; o < L.n_out; ++o) {
++        float sum = L.bias.empty() ? 0.0f : L.bias[(size_t) o];
++        const float * col = L.weight.data() + o * L.n_in;
++        for (int64_t i = 0; i < L.n_in; ++i) {
++            sum += col[i] * x[i];
++        }
++        y[o] = sum;
++    }
++}
++
++static void layernorm(const laya_ln & ln, const float * x, float * y, int n, float eps) {
++    float mean = 0.0f;
++    for (int i = 0; i < n; ++i) {
++        mean += x[i];
++    }
++    mean /= (float) n;
++
++    float var = 0.0f;
++    for (int i = 0; i < n; ++i) {
++        const float d = x[i] - mean;
++        var += d * d;
++    }
++    var /= (float) n;
++    const float inv = 1.0f / std::sqrt(var + eps);
++
++    for (int i = 0; i < n; ++i) {
++        float v = (x[i] - mean) * inv;
++        if (!ln.weight.empty()) {
++            v *= ln.weight[(size_t) i];
++        }
++        if (!ln.bias.empty()) {
++            v += ln.bias[(size_t) i];
++        }
++        y[i] = v;
++    }
++}
++
++static float gelu(float x) {
++    // tanh approximation
++    const float k = 0.7978845608028654f; // sqrt(2/pi)
++    const float x3 = x * x * x;
++    return 0.5f * x * (1.0f + std::tanh(k * (x + 0.044715f * x3)));
++}
++
++static void softmax_inplace(std::vector<float> & x) {
++    if (x.empty()) {
++        return;
++    }
++    float m = x[0];
++    for (size_t i = 1; i < x.size(); ++i) {
++        m = std::max(m, x[i]);
++    }
++    float sum = 0.0f;
++    for (size_t i = 0; i < x.size(); ++i) {
++        x[i] = std::exp(x[i] - m);
++        sum += x[i];
++    }
++    const float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
++    for (size_t i = 0; i < x.size(); ++i) {
++        x[i] *= inv;
++    }
++}
++
++static void mha_forward(
++        const float * x, // [T, d] after LN
++        const laya_linear & qkv,
++        const laya_linear & out_proj,
++        int n_tokens,
++        int n_embd,
++        int n_head,
++        std::vector<float> & y) { // [T, d]
++    const int head_dim = n_embd / n_head;
++    GGML_ASSERT(head_dim * n_head == n_embd);
++    GGML_ASSERT(qkv.n_in == n_embd && qkv.n_out == 3 * n_embd);
++    GGML_ASSERT(out_proj.n_in == n_embd && out_proj.n_out == n_embd);
++
++    std::vector<float> qkv_buf((size_t) n_tokens * (size_t) qkv.n_out);
++    for (int t = 0; t < n_tokens; ++t) {
++        linear_forward(qkv, x + (size_t) t * n_embd, qkv_buf.data() + (size_t) t * qkv.n_out);
++    }
++
++    const float scale = 1.0f / std::sqrt((float) head_dim);
++    std::vector<float> attn_out((size_t) n_tokens * (size_t) n_embd, 0.0f);
++    std::vector<float> scores((size_t) n_tokens);
++
++    for (int h = 0; h < n_head; ++h) {
++        for (int t = 0; t < n_tokens; ++t) {
++            const float * q = qkv_buf.data() + (size_t) t * qkv.n_out + (size_t) h * head_dim;
++            float m = -INFINITY;
++            for (int s = 0; s < n_tokens; ++s) {
++                const float * k = qkv_buf.data() + (size_t) s * qkv.n_out + n_embd + (size_t) h * head_dim;
++                float dot = 0.0f;
++                for (int d = 0; d < head_dim; ++d) {
++                    dot += q[d] * k[d];
++                }
++                scores[(size_t) s] = dot * scale;
++                m = std::max(m, scores[(size_t) s]);
++            }
++            float sum = 0.0f;
++            for (int s = 0; s < n_tokens; ++s) {
++                scores[(size_t) s] = std::exp(scores[(size_t) s] - m);
++                sum += scores[(size_t) s];
++            }
++            const float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
++            float * o = attn_out.data() + (size_t) t * n_embd + (size_t) h * head_dim;
++            for (int d = 0; d < head_dim; ++d) {
++                o[d] = 0.0f;
++            }
++            for (int s = 0; s < n_tokens; ++s) {
++                const float a = scores[(size_t) s] * inv;
++                const float * v = qkv_buf.data() + (size_t) s * qkv.n_out + 2 * n_embd + (size_t) h * head_dim;
++                for (int d = 0; d < head_dim; ++d) {
++                    o[d] += a * v[d];
++                }
++            }
++        }
++    }
++
++    y.resize((size_t) n_tokens * (size_t) n_embd);
++    for (int t = 0; t < n_tokens; ++t) {
++        linear_forward(out_proj, attn_out.data() + (size_t) t * n_embd, y.data() + (size_t) t * n_embd);
++    }
++}
++
++static void ffn_relu_forward(
++        const float * x,
++        const laya_linear & up,
++        const laya_linear & down,
++        int n_embd,
++        std::vector<float> & y) {
++    std::vector<float> mid((size_t) up.n_out);
++    linear_forward(up, x, mid.data());
++    for (size_t i = 0; i < mid.size(); ++i) {
++        mid[i] = mid[i] > 0.0f ? mid[i] : 0.0f;
++    }
++    y.resize((size_t) n_embd);
++    linear_forward(down, mid.data(), y.data());
++}
++
++} // namespace
++
++bool laya_model_has_head(const llama_model * model) {
++    return model != nullptr && llama_model_get_tensor(model, "laya.type_embd.weight") != nullptr;
++}
++
++bool laya_head_load(const llama_model * model, laya_head_weights & out, std::string & err) {
++    out = laya_head_weights{};
++    if (model == nullptr) {
++        err = "null model";
++        return false;
++    }
++
++    out.n_embd = llama_model_n_embd(model);
++    out.n_head = std::max(1, llama_model_n_head(model));
++    if (out.n_embd % out.n_head != 0) {
++        out.n_head = 1;
++    }
++
++    ggml_tensor * type_t = llama_model_get_tensor(model, "laya.type_embd.weight");
++    if (type_t == nullptr) {
++        err = "missing laya.type_embd.weight";
++        return false;
++    }
++    if (type_t->ne[0] != out.n_embd || type_t->ne[1] < 1) {
++        err = "invalid laya.type_embd.weight shape";
++        return false;
++    }
++    if (!tensor_to_f32(type_t, out.type_embd)) {
++        err = "failed to read laya.type_embd.weight";
++        return false;
++    }
++
++    // Count head layers by probing attn_qkv weights.
++    out.n_head_layers = 0;
++    for (int i = 0; i < 64; ++i) {
++        const std::string name = string_format("laya.head.%d.attn_qkv.weight", i);
++        if (llama_model_get_tensor(model, name.c_str()) == nullptr) {
++            break;
++        }
++        out.n_head_layers++;
++    }
++    if (out.n_head_layers <= 0) {
++        err = "no laya.head.*.attn_qkv.weight tensors";
++        return false;
++    }
++
++    out.layers.resize((size_t) out.n_head_layers);
++    for (int i = 0; i < out.n_head_layers; ++i) {
++        auto & layer = out.layers[(size_t) i];
++        const std::string p = string_format("laya.head.%d.", i);
++        if (!load_ln(model, (p + "attn_norm.weight").c_str(), (p + "attn_norm.bias").c_str(), layer.attn_norm) ||
++            !load_linear(model, (p + "attn_qkv.weight").c_str(), (p + "attn_qkv.bias").c_str(), layer.attn_qkv) ||
++            !load_linear(model, (p + "attn_out.weight").c_str(), (p + "attn_out.bias").c_str(), layer.attn_out) ||
++            !load_ln(model, (p + "ffn_norm.weight").c_str(), (p + "ffn_norm.bias").c_str(), layer.ffn_norm) ||
++            !load_linear(model, (p + "ffn_up.weight").c_str(), (p + "ffn_up.bias").c_str(), layer.ffn_up) ||
++            !load_linear(model, (p + "ffn_down.weight").c_str(), (p + "ffn_down.bias").c_str(), layer.ffn_down)) {
++            err = string_format("failed to load laya.head.%d tensors", i);
++            return false;
++        }
++    }
++
++    if (!load_ln(model, "laya.scorer.norm.weight", "laya.scorer.norm.bias", out.scorer_norm) ||
++        !load_linear(model, "laya.scorer.fc1.weight", "laya.scorer.fc1.bias", out.scorer_fc1) ||
++        !load_linear(model, "laya.scorer.fc2.weight", "laya.scorer.fc2.bias", out.scorer_fc2)) {
++        err = "failed to load laya.scorer.* tensors";
++        return false;
++    }
++
++    if (!load_linear(model, "laya.act.fc1.weight", "laya.act.fc1.bias", out.act_fc1) ||
++        !load_linear(model, "laya.act.fc2.weight", "laya.act.fc2.bias", out.act_fc2)) {
++        err = "failed to load laya.act.* tensors";
++        return false;
++    }
++    out.n_act = (int) out.act_fc2.n_out;
++    if (out.n_act <= 0) {
++        err = "invalid act head output dim";
++        return false;
++    }
++
++    // Optional eps from GGUF metadata
++    char buf[64];
++    if (llama_model_meta_val_str(model, "laya.norm_eps", buf, sizeof(buf)) >= 0 ||
++        llama_model_meta_val_str(model, "attention.layernorm_eps", buf, sizeof(buf)) >= 0) {
++        try {
++            out.eps = std::stof(buf);
++        } catch (...) {
++            // keep default
++        }
++    }
++
++    return true;
++}
++
++bool laya_encode_embeddings(
++        llama_context * ctx,
++        const std::vector<llama_token> & tokens,
++        std::vector<float> & embd_out,
++        std::string & err) {
++    if (ctx == nullptr) {
++        err = "null context";
++        return false;
++    }
++    if (tokens.empty()) {
++        err = "empty tokens";
++        return false;
++    }
++
++    const llama_model * model = llama_get_model(ctx);
++    const int n_embd = llama_model_n_embd(model);
++    const int n_tokens = (int) tokens.size();
++    const int n_ubatch = (int) llama_n_ubatch(ctx);
++
++    if (n_tokens > n_ubatch) {
++        err = string_format("input (%d tokens) exceeds n_ubatch (%d); increase -ub", n_tokens, n_ubatch);
++        return false;
++    }
++    if (n_tokens > (int) llama_n_ctx(ctx)) {
++        err = string_format("input (%d tokens) exceeds n_ctx (%u)", n_tokens, llama_n_ctx(ctx));
++        return false;
++    }
++
++    llama_memory_t mem = llama_get_memory(ctx);
++    if (mem) {
++        llama_memory_clear(mem, true);
++    }
++
++    llama_set_embeddings(ctx, true);
++
++    llama_batch batch = llama_batch_init(n_tokens, 0, 1);
++    for (int i = 0; i < n_tokens; ++i) {
++        common_batch_add(batch, tokens[(size_t) i], i, {0}, /*logits*/ true);
++    }
++
++    const int rc = llama_decode(ctx, batch);
++    if (rc != 0) {
++        llama_batch_free(batch);
++        err = string_format("llama_decode failed with code %d", rc);
++        return false;
++    }
++
++    embd_out.resize((size_t) n_tokens * (size_t) n_embd);
++    for (int i = 0; i < n_tokens; ++i) {
++        float * e = llama_get_embeddings_ith(ctx, i);
++        if (e == nullptr) {
++            llama_batch_free(batch);
++            err = string_format("llama_get_embeddings_ith failed at token %d", i);
++            return false;
++        }
++        std::memcpy(embd_out.data() + (size_t) i * n_embd, e, (size_t) n_embd * sizeof(float));
++    }
++
++    llama_batch_free(batch);
++    return true;
++}
++
++bool laya_head_apply(
++        const laya_head_weights & w,
++        const float * H_in,
++        int n_tokens,
++        const laya_decision_input & input,
++        laya_decision_result & out,
++        std::string & err) {
++    out = laya_decision_result{};
++    out.n_tokens = n_tokens;
++
++    if (H_in == nullptr || n_tokens <= 0) {
++        err = "empty embeddings";
++        return false;
++    }
++    if (input.marker_pos.empty()) {
++        err = "marker_pos must be non-empty";
++        return false;
++    }
++    if (input.qtype < 0 || input.qtype > 2) {
++        err = "qtype must be 0..2";
++        return false;
++    }
++
++    const int n_embd = w.n_embd;
++    const size_t type_cols = w.type_embd.size() / (size_t) n_embd;
++    if (type_cols < 3 || (size_t) input.qtype >= type_cols) {
++        err = "type_embd missing qtype column";
++        return false;
++    }
++
++    for (int32_t p : input.marker_pos) {
++        if (p < 0 || p >= n_tokens) {
++            err = string_format("marker_pos %d out of range for n_tokens=%d", (int) p, n_tokens);
++            return false;
++        }
++    }
++
++    // Working copy of H
++    std::vector<float> H((size_t) n_tokens * (size_t) n_embd);
++    std::memcpy(H.data(), H_in, H.size() * sizeof(float));
++
++    // a. H[t] += type_embd[qtype]
++    const float * te = w.type_embd.data() + (size_t) input.qtype * n_embd;
++    for (int t = 0; t < n_tokens; ++t) {
++        float * row = H.data() + (size_t) t * n_embd;
++        for (int i = 0; i < n_embd; ++i) {
++            row[i] += te[i];
++        }
++    }
++
++    // b. head layers: pre-LN MHA + ReLU FFN
++    std::vector<float> tmp_ln((size_t) n_embd);
++    std::vector<float> tmp_attn;
++    std::vector<float> tmp_ffn;
++
++    for (const auto & layer : w.layers) {
++        std::vector<float> ln_all((size_t) n_tokens * (size_t) n_embd);
++        for (int t = 0; t < n_tokens; ++t) {
++            layernorm(layer.attn_norm, H.data() + (size_t) t * n_embd, ln_all.data() + (size_t) t * n_embd, n_embd, w.eps);
++        }
++        mha_forward(ln_all.data(), layer.attn_qkv, layer.attn_out, n_tokens, n_embd, w.n_head, tmp_attn);
++        for (int t = 0; t < n_tokens; ++t) {
++            float * row = H.data() + (size_t) t * n_embd;
++            const float * a = tmp_attn.data() + (size_t) t * n_embd;
++            for (int i = 0; i < n_embd; ++i) {
++                row[i] += a[i];
++            }
++        }
++
++        for (int t = 0; t < n_tokens; ++t) {
++            float * row = H.data() + (size_t) t * n_embd;
++            layernorm(layer.ffn_norm, row, tmp_ln.data(), n_embd, w.eps);
++            ffn_relu_forward(tmp_ln.data(), layer.ffn_up, layer.ffn_down, n_embd, tmp_ffn);
++            for (int i = 0; i < n_embd; ++i) {
++                row[i] += tmp_ffn[(size_t) i];
++            }
++        }
++    }
++
++    // c+d. scorer on marker positions
++    const int k = (int) input.marker_pos.size();
++    out.logits.assign((size_t) k, 0.0f);
++    std::vector<float> sc_mid((size_t) w.scorer_fc1.n_out);
++    std::vector<float> sc_out(1);
++
++    for (int i = 0; i < k; ++i) {
++        const float * hm = H.data() + (size_t) input.marker_pos[(size_t) i] * n_embd;
++        layernorm(w.scorer_norm, hm, tmp_ln.data(), n_embd, w.eps);
++        linear_forward(w.scorer_fc1, tmp_ln.data(), sc_mid.data());
++        for (size_t j = 0; j < sc_mid.size(); ++j) {
++            sc_mid[j] = gelu(sc_mid[j]);
++        }
++        linear_forward(w.scorer_fc2, sc_mid.data(), sc_out.data());
++        out.logits[(size_t) i] = sc_out[0];
++    }
++
++    // e. softmax + dist features (mask unused with -1e4 — N/A when only real markers)
++    std::vector<float> probs = out.logits;
++    // If caller pads beyond k, they would send fewer markers; we only have k.
++    softmax_inplace(probs);
++
++    float top1 = 0.0f;
++    float top2 = 0.0f;
++    for (float p : probs) {
++        if (p >= top1) {
++            top2 = top1;
++            top1 = p;
++        } else if (p > top2) {
++            top2 = p;
++        }
++    }
++    float ent = 0.0f;
++    for (float p : probs) {
++        if (p > 0.0f) {
++            ent -= p * std::log(p);
++        }
++    }
++    const float logk = k > 1 ? std::log((float) k) : 1.0f;
++    const float feats[4] = {
++        top1,
++        top1 - top2,
++        ent / logk,
++        (float) k / 255.0f,
++    };
++
++    // f. act_head on concat(H[0], feats)
++    std::vector<float> act_in((size_t) n_embd + 4);
++    std::memcpy(act_in.data(), H.data(), (size_t) n_embd * sizeof(float));
++    for (int i = 0; i < 4; ++i) {
++        act_in[(size_t) n_embd + i] = feats[i];
++    }
++    if ((int64_t) act_in.size() != w.act_fc1.n_in) {
++        err = string_format("act_fc1 expects in=%lld got %zu", (long long) w.act_fc1.n_in, act_in.size());
++        return false;
++    }
++
++    std::vector<float> act_hid((size_t) w.act_fc1.n_out);
++    linear_forward(w.act_fc1, act_in.data(), act_hid.data());
++    for (size_t i = 0; i < act_hid.size(); ++i) {
++        act_hid[i] = gelu(act_hid[i]);
++    }
++    out.act.assign((size_t) w.n_act, 0.0f);
++    linear_forward(w.act_fc2, act_hid.data(), out.act.data());
++    softmax_inplace(out.act);
++
++    return true;
++}
++
++bool laya_decide(
++        llama_context * ctx,
++        const laya_head_weights & w,
++        const laya_decision_input & input,
++        laya_decision_result & out,
++        std::string & err) {
++    std::vector<float> embd;
++    if (!laya_encode_embeddings(ctx, input.tokens, embd, err)) {
++        return false;
++    }
++    return laya_head_apply(w, embd.data(), (int) input.tokens.size(), input, out, err);
++}
+diff --git a/tools/server/server-laya.h b/tools/server/server-laya.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/tools/server/server-laya.h
+@@ -0,0 +1,      89 @@
++#pragma once
++
++#include "llama.h"
++
++#include <string>
++#include <vector>
++
++// CPU post for LLM_ARCH_LAYA decision head (encoder embeddings → choice logits + act).
++
++struct laya_linear {
++    std::vector<float> weight; // [ne0=in, ne1=out] column-major ggml layout
++    std::vector<float> bias;   // empty if absent
++    int64_t n_in  = 0;
++    int64_t n_out = 0;
++};
++
++struct laya_ln {
++    std::vector<float> weight;
++    std::vector<float> bias; // empty if absent
++};
++
++struct laya_head_layer {
++    laya_ln     attn_norm;
++    laya_linear attn_qkv;
++    laya_linear attn_out;
++    laya_ln     ffn_norm;
++    laya_linear ffn_up;
++    laya_linear ffn_down;
++};
++
++struct laya_head_weights {
++    int n_embd        = 0;
++    int n_head        = 1;
++    int n_head_layers = 0;
++    int n_act         = 2;
++    float eps         = 1e-5f;
++
++    std::vector<float> type_embd; // [n_embd, 3]
++    std::vector<laya_head_layer> layers;
++
++    laya_ln     scorer_norm;
++    laya_linear scorer_fc1;
++    laya_linear scorer_fc2;
++
++    laya_linear act_fc1;
++    laya_linear act_fc2;
++};
++
++struct laya_decision_input {
++    std::vector<llama_token> tokens;
++    std::vector<int32_t>     marker_pos;
++    int32_t                  qtype = 0;
++};
++
++struct laya_decision_result {
++    std::vector<float> logits; // per-marker scorer logits
++    std::vector<float> act;    // softmax over act head
++    int                n_tokens = 0;
++};
++
++// True if model carries Laya decision-head tensors.
++bool laya_model_has_head(const llama_model * model);
++
++// Load (and dequantize) head weights from the model. Returns false on missing/invalid tensors.
++bool laya_head_load(const llama_model * model, laya_head_weights & out, std::string & err);
++
++// Encoder pass: embeddings mode, all-token outputs → embd_out[n_tokens * n_embd].
++bool laya_encode_embeddings(
++        llama_context * ctx,
++        const std::vector<llama_token> & tokens,
++        std::vector<float> & embd_out,
++        std::string & err);
++
++// Apply decision head on per-token embeddings H[t].
++bool laya_head_apply(
++        const laya_head_weights & w,
++        const float * H,
++        int n_tokens,
++        const laya_decision_input & input,
++        laya_decision_result & out,
++        std::string & err);
++
++// Encode + head for one tokenized input.
++bool laya_decide(
++        llama_context * ctx,
++        const laya_head_weights & w,
++        const laya_decision_input & input,
++        laya_decision_result & out,
++        std::string & err);

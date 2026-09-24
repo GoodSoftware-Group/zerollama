@@ -453,6 +453,21 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 
 **Relationship to Fleet F-track:** LA6 extends [F3 management node](./fleet-management.md) routing; LA5 feeds future capacity-aware scores; **LA13** ships as **L3-R8** (status mirror + soft residency) + **L3-R9** (content-hash longest-prefix assign).
 
+### Typed decisions (Laya)
+
+Non-autoregressive System-1 models (`choice` / `score` / `noul`) — Jev-shaped `POST /v1/decisions`, not chat.
+
+**Why a separate track:** Agents need **calibrated triage** (route, urgency, score bands) without paying for autoregressive decode or inventing brittle “JSON-in-chat” prompts. Chat cannot honestly return per-option probs + act/escalate; `/v1/rerank` returns one scalar. Product surface is a **decisions modality**, not another chat template.
+
+| Milestone | Goal | Owner | Status |
+|-----------|------|--------|--------|
+| **LAYA1** | **llama.cpp `LLM_ARCH_LAYA` + GGUF convert** | C++ / scripts | **Active** — ModernBERT encoder + decision head; CPU/CUDA via ggml; patches **0127–0128**; [laya-llama-cpp.md](./laya-llama-cpp.md) · [findings](./laya-llama-cpp-findings.md) |
+| **LAYA2** | **llama-server `--decisions` + Go `/v1/decisions`** | C++ + Go | **Active** — tokenized-batch Decider; packing/calibration in Go (LA16-style); OpenAPI + skill `typed-decisions` |
+| **LAYA3** | **HF pull + multilingual / typed-decisions polish** | Go | Later — english `convaiinnovations/laya` first |
+| **LAYA4** | **laya-mlx sidecar / mlxrunner graph** | Mac | **Parked** — prefer external `ZEROLLAMA_LAYA_URL` when unparked; see [mlx-serve-borrowings.md](./mlx-serve-borrowings.md) |
+
+**Non-goals (this track):** bolting Laya onto `/api/chat`; reusing RANK pooling for decisions; production binds on `:11434` / `:8081` for lab smokes; Darwin-managed MLX spawn before LAYA1–2 are solid on CPU/CUDA.
+
 ---
 
 ## Fleet scheduling (multi-node)

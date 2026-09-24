@@ -1070,6 +1070,9 @@ func appendBatchArgs(params []string, opts api.Options, embedding bool, numParal
 func appendBatchArgsWithUBatch(params []string, opts api.Options, embedding bool, numParallel, ubatch int) []string {
 	if embedding {
 		params = append(params, "--embedding")
+	if ggufIsLaya(launch.ggufKV) {
+		params = append(params, "--decisions")
+	}
 		if batchSize := embeddingBatchSize(opts, numParallel); batchSize > 0 {
 			params = append(params, "-b", strconv.Itoa(batchSize), "-ub", strconv.Itoa(batchSize))
 		}
@@ -1631,6 +1634,11 @@ func cloneStringMap(src map[string]string) map[string]string {
 }
 
 // ggufIsRerank is true when GGUF pooling_type is RANK (llama.cpp enum 4).
+// ggufIsLaya is true when the GGUF architecture is Laya typed-decisions.
+func ggufIsLaya(kv ggml.KV) bool {
+	return kv.Architecture() == "laya"
+}
+
 func ggufIsRerank(kv ggml.KV) bool {
 	arch := kv.Architecture()
 	if _, ok := kv[fmt.Sprintf("%s.pooling_type", arch)]; !ok {

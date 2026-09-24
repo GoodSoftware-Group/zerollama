@@ -1895,6 +1895,15 @@ func TestGgufIsRerank(t *testing.T) {
 	}
 }
 
+func TestGgufIsLaya(t *testing.T) {
+	if !ggufIsLaya(ggml.KV{"general.architecture": "laya"}) {
+		t.Fatal("laya arch should enable decisions")
+	}
+	if ggufIsLaya(ggml.KV{"general.architecture": "bert"}) {
+		t.Fatal("bert should not be laya")
+	}
+}
+
 func TestLlamaServerEmbeddingFallbackFormat(t *testing.T) {
 	// Fallback: non-OAI array format (from "content" field)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

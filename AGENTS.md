@@ -67,5 +67,6 @@ Canonical guide: **[docs/mac-dev-setup.md](./docs/mac-dev-setup.md)**.
 - Training borrowings (Unsloth → T7–T11): [ROADMAP § GPU training](./docs/ROADMAP.md#gpu-training-fine-tuning)
 - Doctor Modelfile repair (empty `response` / slash-collapse / ChatML hygiene): `zerollama doctor --repair-models [--all-local] [--apply]` — **why** not `doctor --fix`: [docs/doctor-model-repair.md](./docs/doctor-model-repair.md)
 - Hermes `/v1` gaps (M15e/M15f): [docs/hermes-zerollama-gap.md](./docs/hermes-zerollama-gap.md) (§8 batch wire) · [findings](./docs/hermes-gap-closure-findings.md) · OpenAPI `server/openapi/openapi.yaml` (`ChatCompletionsBatchResponse`)
+- Typed decisions (Laya): `POST /v1/decisions` — **why** not chat/RANK; patches **0127–0128**; [docs/laya-llama-cpp.md](./docs/laya-llama-cpp.md) · [findings](./docs/laya-llama-cpp-findings.md) · skill `agentskills/typed-decisions/`
 - Product diffs vs Ollama (README hero): **megaprompts** (Gigatoken-inspired tokenize + L3) + visuals + harness — [README.md § Why](./README.md#2-why-zerollama) · [Tour](./README.md#4-tour--what-makes-us-different)
 - MiniMax Music 3 (mlx hear → C later): [docs/music-c.md](./docs/music-c.md) — **why** not Comfy / not H3 VAE / not blocking TTS

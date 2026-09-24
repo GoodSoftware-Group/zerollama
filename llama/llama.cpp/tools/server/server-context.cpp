@@ -8,6 +8,7 @@
 #include "server-stream.h"
 #include "server-loop-guard.h"
 #include "server-adaptive-dm.h"
+#include "server-laya.h"
 
 #include "build-info.h"
 #include "common.h"
@@ -872,6 +873,14 @@ public:
     //  - and, with thread-safe APIs (e.g., tokenizer calls)
     llama_model * model_tgt = nullptr;
 
+    // Laya /v1/decisions: sync encode+CPU head (serialized; dedicated --decisions servers)
+    std::mutex mutex_laya;
+    std::unique_ptr<laya_head_weights> laya_weights;
+
+    llama_context * get_ctx_tgt() {
+        return ctx_tgt;
+    }
+
     mtmd_context * mctx = nullptr;
     const llama_vocab * vocab = nullptr;
 
@@ -977,6 +986,7 @@ private:
 
         ctx_tgt = nullptr;
         model_tgt = nullptr;
+        laya_weights.reset();
 
         mtmd_free(mctx);
         mctx = nullptr;
@@ -5544,6 +5554,106 @@ void server_routes::init_routes() {
             top_n);
 
         res->ok(root);
+        return res;
+    };
+
+    this->post_decisions = [this](const server_http_req & req) {
+        auto res = create_response();
+
+        const json body = json::parse(req.body);
+
+        // High-level {state, questions} packing is owned by Go (LAYA2); C++ v1 is tokenized-only.
+        if (body.contains("state") || body.contains("questions")) {
+            res->error(format_error_response(
+                "High-level decisions payload not implemented in llama-server; send tokenized inputs",
+                ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        if (!body.contains("inputs") || !body.at("inputs").is_array() || body.at("inputs").empty()) {
+            res->error(format_error_response("\"inputs\" must be a non-empty array", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        std::vector<laya_decision_input> inputs;
+        inputs.reserve(body.at("inputs").size());
+        for (const auto & item : body.at("inputs")) {
+            if (!item.is_object()) {
+                res->error(format_error_response("each input must be an object", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+            if (!item.contains("tokens") || !item.at("tokens").is_array() || item.at("tokens").empty()) {
+                res->error(format_error_response("\"tokens\" must be a non-empty array", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+            if (!item.contains("marker_pos") || !item.at("marker_pos").is_array() || item.at("marker_pos").empty()) {
+                res->error(format_error_response("\"marker_pos\" must be a non-empty array", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+
+            laya_decision_input in;
+            in.qtype = json_value(item, "qtype", 0);
+            if (item.contains("question_id") && item.at("question_id").is_string()) {
+                in.question_id = item.at("question_id").get<std::string>();
+            }
+            try {
+                in.tokens = item.at("tokens").get<std::vector<llama_token>>();
+                in.marker_pos = item.at("marker_pos").get<std::vector<int32_t>>();
+            } catch (const std::exception & e) {
+                res->error(format_error_response(std::string("invalid tokens/marker_pos: ") + e.what(), ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+            inputs.push_back(std::move(in));
+        }
+
+        queue_tasks.wait_until_no_sleep();
+
+        std::unique_lock<std::mutex> lock(ctx_server.mutex_laya);
+
+        llama_context * lctx = ctx_server.get_ctx_tgt();
+        if (lctx == nullptr || ctx_server.model_tgt == nullptr) {
+            res->error(format_error_response("model context is not available", ERROR_TYPE_UNAVAILABLE));
+            return res;
+        }
+
+        const bool has_laya = laya_model_has_head(ctx_server.model_tgt);
+        if (!params.decisions && !has_laya) {
+            res->error(format_error_response(
+                "This server does not support decisions. Start it with `--decisions` (or load a Laya model)",
+                ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        if (!ctx_server.laya_weights) {
+            auto weights = std::make_unique<laya_head_weights>();
+            std::string err;
+            if (!laya_head_load(ctx_server.model_tgt, *weights, err)) {
+                res->error(format_error_response("failed to load Laya head: " + err, ERROR_TYPE_SERVER));
+                return res;
+            }
+            ctx_server.laya_weights = std::move(weights);
+        }
+
+        json results = json::array();
+        for (const auto & in : inputs) {
+            laya_decision_result out;
+            std::string err;
+            if (!laya_decide(lctx, *ctx_server.laya_weights, in, out, err)) {
+                res->error(format_error_response(err, ERROR_TYPE_SERVER));
+                return res;
+            }
+            json r = {
+                {"logits",   out.logits},
+                {"act",      out.act},
+                {"n_tokens", out.n_tokens},
+            };
+            if (!in.question_id.empty()) {
+                r["question_id"] = in.question_id;
+            }
+            results.push_back(std::move(r));
+        }
+
+        res->ok({{"results", results}});
         return res;
     };
 

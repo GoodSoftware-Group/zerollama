@@ -127,6 +127,7 @@ Learned spec width lives in `mlx-round-cost/` next to `OLLAMA_MODELS`, **keyed b
 
 | Item | Note |
 |------|------|
+| Laya `POST /v1/decisions` | **Parked (MLX sidecar / mlxrunner).** Active path is llama.cpp — [laya-llama-cpp.md](./laya-llama-cpp.md). |
 | Gemma 4 HF sibling auto-download (`*-drafter`) | We load if the companion is **in the manifest**; no Bonjour/app auto-fetch |
 | Live MLX KV quant 4/8 | Default off upstream; needs fused packed SDPA or decode regresses |
 | Same-weight bench vs mlx-serve / LM Studio | lab `:11435` vs their `:11234` |

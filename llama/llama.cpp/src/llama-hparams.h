@@ -226,6 +226,10 @@ struct llama_hparams {
     // for Classifiers
     uint32_t n_cls_out = 1;
 
+    // Laya decision head (LLM_ARCH_LAYA)
+    uint32_t n_laya_head_layers = 2;
+    uint32_t n_laya_act         = 2;
+
     // input embedding dimension (0 = use n_embd)
     uint32_t n_embd_inp_impl = 0;
 
