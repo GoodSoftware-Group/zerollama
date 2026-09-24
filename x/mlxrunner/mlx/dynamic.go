@@ -64,12 +64,12 @@ func tryLoadFromDir(dir string) bool {
 		defer C.free(unsafe.Pointer(cPath))
 
 		var handle C.mlx_dynamic_handle
-		if C.mlx_dynamic_load(&handle, cPath) != 0 {
-			initLoadError = fmt.Sprintf("failed to load MLX dynamic library: path=%s", path)
+		if err := mlxError(C.mlx_dynamic_load(&handle, cPath)); err != nil {
+			initLoadError = fmt.Sprintf("failed to load MLX dynamic library: path=%s err=%v", path, err)
 			continue
 		}
-		if C.mlx_dynamic_load_symbols(handle) != 0 {
-			initLoadError = fmt.Sprintf("failed to load MLX dynamic library symbols: path=%s", path)
+		if err := mlxError(C.mlx_dynamic_load_symbols(handle)); err != nil {
+			initLoadError = fmt.Sprintf("failed to load MLX dynamic library symbols: path=%s err=%v", path, err)
 			C.mlx_dynamic_unload(&handle)
 			continue
 		}

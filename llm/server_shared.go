@@ -261,6 +261,10 @@ type CompletionRequest struct {
 	PreservedTokens []string
 	ToolCallTag     string
 	LeadingBOS      string
+	// ThinkingClose holds the strings any of which ends the thinking the
+	// response begins with, which Format leaves free; none when the response
+	// starts in content.
+	ThinkingClose []string
 
 	Logprobs    bool
 	TopLogprobs int

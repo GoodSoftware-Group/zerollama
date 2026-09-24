@@ -1,20 +1,24 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/fs/ggml"
+	"github.com/ollama/ollama/fs/gguf"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/template"
 	"github.com/ollama/ollama/types/model"
@@ -58,6 +62,63 @@ func TestPruneLayersSkipsRecentOrphans(t *testing.T) {
 	}
 	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
 		t.Fatalf("old orphan still exists: %v", err)
+	}
+}
+
+func TestGenerationDefaultsFromGGUF(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "model-*.gguf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ggml.WriteGGUF(file, ggml.KV{
+		"general.architecture":             "llama",
+		"general.sampling.top_k":           uint32(40),
+		"general.sampling.top_p":           int32(1),
+		"general.sampling.min_p":           float32(0),
+		"general.sampling.typ_p":           float32(0.95),
+		"general.sampling.temp":            uint32(1),
+		"general.sampling.penalty_last_n":  float32(64),
+		"general.sampling.penalty_repeat":  float32(1.05),
+		"general.sampling.penalty_freq":    uint32(0),
+		"general.sampling.penalty_present": int32(0),
+		"general.sampling.xtc_threshold":   float32(0.5),
+		"general.sampling.mirostat_tau":    float32(5),
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := gguf.Open(file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	defaults := generationDefaultsFromGGUF(f)
+	check := func(key string, want any) {
+		t.Helper()
+		if got := defaults[key]; got != want {
+			t.Fatalf("%s = %#v, want %#v", key, got, want)
+		}
+	}
+
+	check("top_k", int64(40))
+	check("top_p", float64(1))
+	check("min_p", float64(0))
+	check("typical_p", float64(float32(0.95)))
+	check("temperature", float64(1))
+	check("repeat_last_n", int64(64))
+	check("repeat_penalty", float64(float32(1.05)))
+	check("frequency_penalty", float64(0))
+	check("presence_penalty", float64(0))
+	if _, ok := defaults["mirostat_tau"]; ok {
+		t.Fatal("mirostat_tau should not be mapped to an Ollama option")
+	}
+	if _, ok := defaults["xtc_threshold"]; ok {
+		t.Fatal("xtc_threshold should not be mapped to an Ollama option")
 	}
 }
 
@@ -529,5 +590,126 @@ func TestTextSurfaceWrongModalityMessage(t *testing.T) {
 	}, "llama", "chat")
 	if got != `"llama" does not support chat` {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// TestPullManifestRejectsCrossHostRedirect: a registry can't redirect a
+// pull at an internal address; cross-host redirects to public addresses
+// (hf.co's CDN) are fine. --insecure opts out.
+func TestPullManifestRejectsCrossHostRedirect(t *testing.T) {
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
+
+	var internalHit atomic.Bool
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		internalHit.Store(true)
+	}))
+	defer internal.Close()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, internal.URL+r.URL.Path, http.StatusFound)
+	}))
+	defer ts.Close()
+
+	requestURL, err := url.Parse(ts.URL + "/v2/test/attack/manifests/latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockedResp, err := makeRequest(t.Context(), http.MethodGet, requestURL, nil, nil, &registryOptions{})
+	if blockedResp != nil && blockedResp.Body != nil {
+		blockedResp.Body.Close()
+	}
+	if !errors.Is(err, errBlockedRedirect) {
+		t.Fatalf("makeRequest = %v, want errBlockedRedirect", err)
+	}
+	if internalHit.Load() {
+		t.Fatal("internal host received a request despite the blocked redirect")
+	}
+
+	resp, err := makeRequest(t.Context(), http.MethodGet, requestURL, nil, nil, &registryOptions{Insecure: true})
+	if err != nil {
+		t.Fatalf("makeRequest with Insecure = %v, want redirect followed", err)
+	}
+	resp.Body.Close()
+	if !internalHit.Load() {
+		t.Fatal("redirect target was not reached with Insecure set")
+	}
+}
+
+// TestPullManifestRedirectPolicy: cross-host redirects are blocked by
+// default except between allowlisted hosts.
+func TestPullManifestRedirectPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		origin  string
+		target  string
+		allowed bool
+	}{
+		{name: "hf to cdn sibling", origin: "hf.co", target: "us.aws.cdn.hf.co", allowed: true},
+		{name: "hf to huggingface", origin: "hf.co", target: "huggingface.co", allowed: true},
+		{name: "ollama registry to cdn", origin: "registry.ollama.ai", target: "cdn.ollama.com", allowed: true},
+		{name: "public third party", origin: "hf.co", target: "93.184.216.34", allowed: false},
+		{name: "other registry cross-host", origin: "registry.example.com", target: "cdn.example.com", allowed: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var hit bool
+			cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hit = true
+				w.Write([]byte("ok"))
+			}))
+			defer cdn.Close()
+			_, cdnPort, err := net.SplitHostPort(strings.TrimPrefix(cdn.URL, "http://"))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, "http://"+net.JoinHostPort(tc.target, cdnPort)+r.URL.Path, http.StatusFound)
+			}))
+			defer ts.Close()
+
+			prev := testMakeRequestDialContext
+			testMakeRequestDialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				host, _, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
+				}
+				if host == tc.target {
+					addr = net.JoinHostPort("127.0.0.1", cdnPort)
+				} else {
+					_, port, _ := net.SplitHostPort(strings.TrimPrefix(ts.URL, "http://"))
+					addr = net.JoinHostPort("127.0.0.1", port)
+				}
+				return new(net.Dialer).DialContext(ctx, network, addr)
+			}
+			defer func() { testMakeRequestDialContext = prev }()
+
+			requestURL, err := url.Parse(ts.URL + "/v2/unsloth/model/manifests/latest")
+			if err != nil {
+				t.Fatal(err)
+			}
+			requestURL.Host = net.JoinHostPort(tc.origin, requestURL.Port())
+
+			resp, err := makeRequest(t.Context(), http.MethodGet, requestURL, nil, nil, &registryOptions{})
+			if tc.allowed {
+				if err != nil {
+					t.Fatalf("makeRequest = %v, want %s -> %s followed", err, tc.origin, tc.target)
+				}
+				resp.Body.Close()
+				if !hit {
+					t.Fatal("redirect target not reached")
+				}
+				return
+			}
+			if resp != nil && resp.Body != nil {
+				resp.Body.Close()
+			}
+			if !errors.Is(err, errBlockedRedirect) {
+				t.Fatalf("makeRequest = %v, want errBlockedRedirect", err)
+			}
+			if hit {
+				t.Fatal("blocked redirect target received a request")
+			}
+		})
 	}
 }

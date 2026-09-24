@@ -80,6 +80,8 @@ BUILD_UMA=0 ./scripts/build/build_llama_server.sh
 
 Default remains **`auto`** (gate only when `uma_daemon` is up). Doctor still reports broker health; it does not force the gate on.
 
+**Darwin MLX residency:** `ZEROLLAMA_MLX_EXCLUSIVE` defaults **on** — at most one safetensors/MLX runner. Free-memory probes often look fine while dual large MLX still jetsam. Set `=0` only if you accept co-residency risk. Lease/jetsam load failures return HTTP **503** with `error_code` and do not enter load cooldown.
+
 ## Runtime (`ZEROLLAMA_UMA_SCHED`)
 
 | Value | Behavior |

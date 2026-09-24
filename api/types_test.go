@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/ollama/ollama/types/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -165,6 +168,22 @@ func TestUseMmapParsingFromJSON(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, test.exp, opts.UseMMap)
 		})
+	}
+}
+
+func TestGenerationDefaultMappingsAreOptions(t *testing.T) {
+	jsonOpts := make(map[string]struct{})
+	for _, field := range reflect.VisibleFields(reflect.TypeOf(Options{})) {
+		jsonTag := strings.Split(field.Tag.Get("json"), ",")[0]
+		if jsonTag != "" {
+			jsonOpts[jsonTag] = struct{}{}
+		}
+	}
+
+	for _, option := range model.GenerationDefaultOptions() {
+		if _, ok := jsonOpts[option]; !ok {
+			t.Fatalf("%s should be defined on api.Options", option)
+		}
 	}
 }
 

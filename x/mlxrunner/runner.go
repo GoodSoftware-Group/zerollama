@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -34,6 +35,8 @@ type Request struct {
 	Ctx         context.Context //nolint:containedctx // Queued requests carry caller cancellation to the runner.
 	Tokens      []int32
 	SamplerOpts sample.Options
+	// compiledGrammar is set by Prepare when Format asks for structured output.
+	compiledGrammar *grammarCompilation
 }
 
 type Runner struct {
@@ -47,6 +50,9 @@ type Runner struct {
 	// spec is the speculative-decoding subsystem (MTP and/or PLD).
 	spec      *speculation
 	modelName string
+	// grammarEngine is the structured-output subsystem; nil when the grammar
+	// library is unavailable (plain inference still works).
+	grammarEngine *grammarEngine
 }
 
 func (r *Runner) Load(modelName string) error {
@@ -76,6 +82,24 @@ func (r *Runner) Load(modelName string) error {
 		}
 		defer uma.LeaseEnd()
 		defer mlx.Synchronize() // drain Metal before RELEASE (wishlist)
+
+		// On Metal, materialize loaded tensors with CPU reads before any
+		// weight graph exists so later Eval never commits a command buffer
+		// that waits on file data (#17902). Chunk like the post-load eval:
+		// one giant Eval of a 60GiB MoE is a Metal timeout / jetsam.
+		if mlx.MetalIsAvailable() {
+			vals := make([]*mlx.Array, 0, len(tensors))
+			for t := range maps.Values(tensors) {
+				if t != nil && t.Valid() {
+					vals = append(vals, t)
+				}
+			}
+			const evalChunk = 32
+			for i := 0; i < len(vals); i += evalChunk {
+				end := min(i+evalChunk, len(vals))
+				mlx.Eval(vals[i:end]...)
+			}
+		}
 
 		// Assign weights to model (model-specific logic). Target and draft weights
 		// must be loaded before sweeping so tensors from a combined manifest are
@@ -117,6 +141,10 @@ func (r *Runner) Load(modelName string) error {
 				slog.Info("mlx load eval", "done", end, "total", len(collected), "peak", mlx.PrettyBytes(mlx.PeakMemory()))
 			}
 		}
+		// LoadWeights / MoE fuse / linear-attn pack leave transform buffers
+		// in MLX's allocator pool until something clears it. Drop them now so
+		// idle post-load memory matches the pinned weights (upstream b68b112b).
+		mlx.ClearCache()
 		configureWiredMemory()
 
 		r.Model = m
@@ -153,6 +181,8 @@ func (r *Runner) Load(modelName string) error {
 					"mode", os.Getenv("ZEROLLAMA_UMA_OPTIQ_TOKEN_TAIL"))
 			}
 		}
+
+		r.grammarEngine = newGrammarEngine(logitsWidth(m), r.Tokenizer)
 
 		mlx.EnableCompile()
 		return nil

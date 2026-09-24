@@ -32,8 +32,8 @@ Upstream also ships **`llama/compat/`** — in-memory GGUF translation at CMake 
 
 | Field | Value |
 |-------|--------|
-| **MLX_VERSION** | `1f8e74e3f12f31365464a6867c6579f0e9b29d85` (sibling `../mlx` HEAD used for Metal v3/v4 rebuilds; mlx-c stays `fba4470b`) |
-| **MLX_C_VERSION** | `fba4470b89073180056c9ea46c443051375f7399` (upstream Ollama) |
+| **MLX_VERSION** | `59d600b5e64c238427d0f8d897ab7c682ef4d3d2` (Ollama tip; sibling `../mlx`) |
+| **MLX_C_VERSION** | `ebc88f10caa1b625e6b581437a8dea6df8a70085` (Ollama tip; carry patches in `mlx/compat/mlx-c/`) |
 | **Fetch** | `./scripts/mlx/ensure_mlx_sources.sh` (sibling `../mlx`, `../mlx-c`) |
 
 **Why separate from llama.cpp:** MLX drives **safetensors** via `mlxrunner`, not GGUF ggml. Pin bumps require a **native dylib rebuild** — use `BUILD_MLX=1 ./scripts/build/build_zerollama_mac.sh` (dev) or `./scripts/build/build_production_mac.sh` (release).

@@ -1448,6 +1448,10 @@ func (s *llmServer) Completion(ctx context.Context, req CompletionRequest, fn fu
 		}
 	}
 
+	if len(req.ThinkingClose) > 0 && req.Grammar != "" {
+		req.Grammar = thinkingGrammar(req.ThinkingClose, req.Grammar)
+	}
+
 	if req.Options == nil {
 		opts := api.DefaultOptions()
 		req.Options = &opts
@@ -1561,10 +1565,10 @@ func (s *llmServer) Completion(ctx context.Context, req CompletionRequest, fn fu
 				tokenRepeat = 0
 			}
 
-			// 30 picked as an arbitrary max token repeat limit, modify as needed
-			if tokenRepeat > 30 {
+			// 100 picked as an arbitrary max token repeat limit, modify as needed
+			if tokenRepeat > 100 {
 				slog.Debug("prediction aborted, token repeat limit reached")
-				return ctx.Err()
+				return fmt.Errorf("prediction aborted, token repeat limit reached")
 			}
 
 			if c.Content != "" {

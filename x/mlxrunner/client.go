@@ -43,6 +43,7 @@ type Client struct {
 	status            *llm.StatusWriter
 	mu                sync.Mutex
 	cmd               *exec.Cmd
+	closed            bool
 	tokenizeCache     tokenizeCache
 }
 
@@ -81,9 +82,14 @@ func (c *Client) WaitUntilRunning(ctx context.Context) error {
 			return ctx.Err()
 		case <-c.done:
 			if msg := c.status.LastError(); msg != "" {
+				// Keep broker / jetsam keywords in the message so the scheduler can
+				// classify HOLD_GPU and signal:killed as 503 (not model-missing).
 				return fmt.Errorf("mlx runner failed: %s (exit: %v)", msg, c.doneErr)
 			}
-			return fmt.Errorf("mlx runner exited unexpectedly: %w", c.doneErr)
+			if c.doneErr != nil {
+				return fmt.Errorf("mlx runner exited unexpectedly: %w", c.doneErr)
+			}
+			return errors.New("mlx runner exited unexpectedly")
 		case <-timeout:
 			if msg := c.status.LastError(); msg != "" {
 				return fmt.Errorf("timeout waiting for mlx runner: %s", msg)
@@ -141,18 +147,57 @@ func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.closed = true
 	if c.cmd != nil && c.cmd.Process != nil {
 		slog.Info("stopping mlx runner subprocess", "pid", c.cmd.Process.Pid)
-		c.cmd.Process.Signal(os.Interrupt)
-
-		select {
-		case <-c.done:
-		case <-time.After(5 * time.Second):
-			c.cmd.Process.Kill()
-		}
+		// The runner has no signal handler, so SIGINT was already a kill.
+		// Wait until reaped before the scheduler starts the next load
+		// (upstream f09d55d0).
+		c.cmd.Process.Kill()
+		<-c.done
 		c.cmd = nil
 	}
 	return nil
+}
+
+// requestGrammar returns the structural tag the runner decodes under: the
+// API's format as a json_schema tag, behind the free thinking the response
+// begins with when there is any.
+func requestGrammar(req llm.CompletionRequest) json.RawMessage {
+	schema := req.Format
+	switch string(schema) {
+	case ``, `null`, `""`:
+		return nil
+	case `"json"`:
+		// The API documents "json" as producing a JSON object.
+		schema = json.RawMessage(`{"type":"object"}`)
+	}
+	format := `{"type":"json_schema","json_schema":` + string(schema) + `}`
+	if len(req.ThinkingClose) > 0 {
+		excludes := make([]string, len(req.ThinkingClose))
+		closings := make([]string, len(req.ThinkingClose))
+		for i, closing := range req.ThinkingClose {
+			excludes[i] = jsonString(closing)
+			closings[i] = `{"type":"const_string","value":` + excludes[i] + `}`
+		}
+		closing := closings[0]
+		if len(closings) > 1 {
+			closing = `{"type":"or","elements":[` + strings.Join(closings, ",") + `]}`
+		}
+		// The tail is optional so EOS stays legal mid-thinking.
+		format = `{"type":"sequence","elements":[{"type":"any_text","excludes":[` + strings.Join(excludes, ",") + `]},` +
+			`{"type":"optional","content":{"type":"sequence","elements":[` + closing + `,` + format + `]}}]}`
+	}
+	return json.RawMessage(`{"type":"structural_tag","format":` + format + `}`)
+}
+
+// jsonString quotes s without escaping the HTML characters tags carry.
+func jsonString(s string) string {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(s)
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 // Completion implements llm.LlamaServer.
@@ -163,7 +208,7 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 		CacheReset:     req.CacheReset,
 		Logprobs:       req.Logprobs,
 		TopLogprobs:    req.TopLogprobs,
-		Format:         req.Format,
+		Format:         requestGrammar(req),
 		Grammar:        req.Grammar,
 		EnablePLD:      req.EnablePLD,
 		EnableMTP:      req.EnableMTP,
@@ -327,11 +372,17 @@ func (c *Client) LastStatusError() string {
 }
 
 // Load checks whether the model fits in GPU memory and starts the subprocess.
-func (c *Client) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo, requireFull bool) ([]ml.DeviceID, error) {
+func (c *Client) Load(ctx context.Context, systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, requireFull bool) ([]ml.DeviceID, error) {
 	if len(gpus) > 0 {
 		modelSize := c.memory.Load()
 		// We currently only use the first GPU with MLX
 		available := gpus[0].FreeMemory
+		// While other runners are loaded (requireFull eviction path), bound by
+		// system free memory on UMA so we do not ignore other apps' footprint
+		// (upstream 1548f78c). First loads keep the working-set figure alone.
+		if requireFull && gpus[0].Integrated && systemInfo.FreeMemory > 0 && systemInfo.FreeMemory < available {
+			available = systemInfo.FreeMemory
+		}
 		overhead := gpus[0].MinimumMemory() + envconfig.GpuOverhead()
 		if available > overhead {
 			available -= overhead
@@ -431,7 +482,11 @@ func (c *Client) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 		}
 	}
 
-	c.cmd = cmd
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil, errors.New("mlx runner client is closed")
+	}
 
 	status := llm.NewStatusWriter(os.Stderr)
 	c.status = status
@@ -445,6 +500,7 @@ func (c *Client) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start mlx runner: %w", err)
 	}
+	c.cmd = cmd
 
 	// Reap subprocess when it exits
 	go func() {

@@ -74,8 +74,11 @@ type ConfigV2 struct {
 	ModelFamilies []string `json:"model_families"`
 	ModelType     string   `json:"model_type"` // shown as Parameter Size
 	FileType      string   `json:"file_type"`  // shown as Quantization Level
-	Renderer      string   `json:"renderer,omitempty"`
-	Parser        string   `json:"parser,omitempty"`
+	// GenerationDefaults stores model-authored sampler defaults. These are
+	// lower precedence than Modelfile PARAMETERs and request options.
+	GenerationDefaults GenerationDefaults `json:"generation_defaults,omitempty"`
+	Renderer           string             `json:"renderer,omitempty"`
+	Parser             string             `json:"parser,omitempty"`
 	// ConcurrencyGroups declare mutual exclusion with other loaded models (LocalAI pattern).
 	// Why: on tight GPUs, imagegen + chat must not stay resident together.
 	ConcurrencyGroups []string `json:"concurrency_groups,omitempty"`

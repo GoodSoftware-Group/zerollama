@@ -32,10 +32,11 @@ const (
 )
 
 type GLM46Parser struct {
-	state     glm46ParserState
-	buffer    strings.Builder
-	tools     []api.Tool
-	callIndex int
+	state           glm46ParserState
+	buffer          strings.Builder
+	tools           []api.Tool
+	callIndex       int
+	thinkingEnabled bool
 }
 
 func (p *GLM46Parser) HasToolSupport() bool {
@@ -46,10 +47,18 @@ func (p *GLM46Parser) HasThinkingSupport() bool {
 	return true
 }
 
+func (p *GLM46Parser) ThinkingClose() []string {
+	if p.thinkingEnabled {
+		return []string{glm46ThinkingCloseTag}
+	}
+	return nil
+}
+
 // func (p *GLM46Parser) Init(tools []api.Tool, lastMessage *api.Message) []api.Tool {
 func (p *GLM46Parser) Init(tools []api.Tool, lastMessage *api.Message, thinkValue *api.ThinkValue) []api.Tool {
 	p.tools = tools
 	p.callIndex = 0
+	p.thinkingEnabled = thinkValue == nil || thinkValue.Bool()
 	return tools
 }
 

@@ -22,37 +22,27 @@ refuse_prod() {
 
 print_env() {
   cat <<EOF
-# Lab serve only — copy into a new shell; do NOT use :11434
+# Canonical ANE FFN lab serve (shexp force+SwiGLU) — never :11434 / :8081
 export OLLAMA_HOST=127.0.0.1:11435
 export ZEROLLAMA_ANE_FFN=1
 export ZEROLLAMA_ANE_FFN_MODE=force
 export ZEROLLAMA_ANE_FFN_FORCE_ENABLE=1
-export ZEROLLAMA_ANE_FFN_NAME=ffn
-# MoE experts: NAME=shexp + INT8_IN + OC=512  |  dense (eliza): NAME=ffn
-# Lab tags: ane-ffn-lab-eliza (dense) | ane-ffn-lab-shexp (mtp blob, spec_type=off)
 export ZEROLLAMA_ANE_FFN_SWIGLU=1
-# INT8_IN + Metal layout: expert-width only (hidden/OC=512). Dense eliza is 6144 — omit INT8_* for fp16 force.
-# export ZEROLLAMA_ANE_FFN_INT8=1
-# export ZEROLLAMA_ANE_FFN_W8A8=1
-# export ZEROLLAMA_ANE_FFN_W8A8_X=1
-# export ZEROLLAMA_ANE_FFN_INT8_IN=1
-# Geometry filter (exact match). Unset for dense eliza (hidden=6144); use OC=512 for expert.
-# export ZEROLLAMA_ANE_FFN_IC=2048
-# export ZEROLLAMA_ANE_FFN_OC=512
+export ZEROLLAMA_ANE_FFN_NAME=shexp
+export ZEROLLAMA_ANE_FFN_IC=2048
+export ZEROLLAMA_ANE_FFN_OC=512
 export ZEROLLAMA_ANE_FFN_SEQ_MAX=512
 export ZEROLLAMA_ANE_FFN_LAB_PORT=11435
 export ZEROLLAMA_ANE_FFN_TELEMETRY=1
 export ZEROLLAMA_ANE_FFN_REPLACE_DYLIB=${OUT}/libane_ffn_force.dylib
-# OVERLAP is experimental — early sync before MoE breaks quality on current pin; leave unset.
-# export ZEROLLAMA_ANE_FFN_OVERLAP=1
-# Rebuild lab binary (Metal + ANE FFN hooks; does not replace production ./zerollama):
+# Leave OVERLAP unset (quality broken on current pin).
+# Dense eliza instead of shexp: NAME=ffn and omit IC/OC/INT8_*.
+# Rebuild lab binary:
 #   BUILD_MLX=0 BUILD_LLAMA_SERVER=0 BUILD_RUNTIME_KV_EXT=0 \\
 #     ./scripts/build/build_zerollama_mac.sh ./zerollama-ane-ffn-lab
-# Reinstall force dylib (Metal layout symbols): ANE_REPO=… ./scripts/ane/ane_probe_build.sh
+# Reinstall force dylib: ANE_REPO=… ./scripts/ane/ane_probe_build.sh
 # OLLAMA_HOST=127.0.0.1:11435 ./zerollama-ane-ffn-lab serve
-# Look for: swiglu_fp16_replaced#N seq=66 + scache … seq=128 (pad);
-#   with INT8_IN+OC=512: metal_layout_replaced#N
-# Shexp A/B (Jul 2026): Metal ~255 ms eval vs force ~290–350 ms — Metal wins; gap ≪ dense.
+# Expect: metal_layout_replaced#N / swiglu_fp16_replaced#N (never on :11434)
 EOF
 }
 

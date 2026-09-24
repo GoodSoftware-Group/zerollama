@@ -125,6 +125,9 @@ func applyGGUFGuessToModel(m *Model, f *ggml.GGML) {
 	// Prefer metadata already loaded for list/GetModel — avoids a second gguf.Open
 	// just to probe tokenizer.chat_template (dominant /api/tags cost with many GGUFs).
 	m.HasChatTemplate = f.KV().ChatTemplate() != ""
+	if defaults := generationDefaultsFromGGMLKV(f.KV()); len(defaults) > 0 {
+		m.GenerationDefaults = defaults
+	}
 	if m.Options == nil {
 		m.Options = make(map[string]any)
 	}

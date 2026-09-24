@@ -104,6 +104,8 @@ func cloneInferenceModel(src *Model) *Model {
 	dst.ProjectorPaths = slices.Clone(src.ProjectorPaths)
 	dst.License = slices.Clone(src.License)
 	dst.Options = maps.Clone(src.Options)
+	dst.GenerationDefaults = maps.Clone(src.GenerationDefaults)
+	dst.Config.GenerationDefaults = maps.Clone(src.Config.GenerationDefaults)
 	dst.GenSampling = maps.Clone(src.GenSampling)
 	dst.Messages = slices.Clone(src.Messages)
 

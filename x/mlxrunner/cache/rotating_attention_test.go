@@ -95,22 +95,20 @@ func TestRotatingKVCacheDecodeParity(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := nn.ScaledDotProductAttention(b, q, scale,
-				nn.WithKVHistory(history),
-				nn.WithMask(tc.model))
+		got := nn.ScaledDotProductAttention(b, q, scale,
+			nn.WithKVHistory(history),
+			nn.WithMask(tc.model))
 
-			want := mlx.FastScaledDotProductAttention(q, kLogical, vLogical, scale,
-				tc.refMode, tc.refMask)
+		want := mlx.FastScaledDotProductAttention(q, kLogical, vLogical, scale,
+			tc.refMode, tc.refMask)
 
-			mlx.Eval(got, want)
-			gs, ws := got.Floats(), want.Floats()
-			for i := range ws {
-				if math.Abs(float64(gs[i]-ws[i])) > 1e-5 {
-					t.Fatalf("index %d: got %v, want %v", i, gs[i], ws[i])
-				}
+		mlx.Eval(got, want)
+		gs, ws := got.Floats(), want.Floats()
+		for i := range ws {
+			if math.Abs(float64(gs[i]-ws[i])) > 1e-5 {
+				t.Fatalf("%s: index %d: got %v, want %v", tc.name, i, gs[i], ws[i])
 			}
-		})
+		}
 	}
 }
 
@@ -153,18 +151,16 @@ func TestAssistantSharedHistoryL1MasksMatchNoMask(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := nn.ScaledDotProductAttention(b, q, scale, nn.WithKVHistory(tc.h), nn.WithMask(tc.mask))
-			want := mlx.FastScaledDotProductAttention(q, tc.h.K(), tc.h.V(), scale, "", nil)
+		got := nn.ScaledDotProductAttention(b, q, scale, nn.WithKVHistory(tc.h), nn.WithMask(tc.mask))
+		want := mlx.FastScaledDotProductAttention(q, tc.h.K(), tc.h.V(), scale, "", nil)
 
-			mlx.Eval(got, want)
-			gs, ws := got.Floats(), want.Floats()
-			for i := range ws {
-				if math.Abs(float64(gs[i]-ws[i])) > 1e-5 {
-					t.Fatalf("index %d: got %v, want %v", i, gs[i], ws[i])
-				}
+		mlx.Eval(got, want)
+		gs, ws := got.Floats(), want.Floats()
+		for i := range ws {
+			if math.Abs(float64(gs[i]-ws[i])) > 1e-5 {
+				t.Fatalf("%s: index %d: got %v, want %v", tc.name, i, gs[i], ws[i])
 			}
-		})
+		}
 	}
 }
 
@@ -205,7 +201,7 @@ func TestRotatingKVCachePrefillParity(t *testing.T) {
 
 	negInf := float32(math.Inf(-1))
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		func() {
 			c := NewRotatingKVCache(window)
 			history := c.Update(b, k, v)
 
@@ -244,10 +240,10 @@ func TestRotatingKVCachePrefillParity(t *testing.T) {
 			gs, ws := got.Floats(), want.Floats()
 			for i := range ws {
 				if math.Abs(float64(gs[i]-ws[i])) > 1e-4 {
-					t.Fatalf("index %d: got %v, want %v", i, gs[i], ws[i])
+					t.Fatalf("%s: index %d: got %v, want %v", tc.name, i, gs[i], ws[i])
 				}
 			}
-		})
+		}()
 	}
 }
 

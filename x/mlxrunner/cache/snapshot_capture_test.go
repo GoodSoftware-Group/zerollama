@@ -219,8 +219,6 @@ func TestKVCaptureMergeSplit(t *testing.T) {
 // observable as wrong positions, not just wrong shapes; the wrapped regime
 // forces concat's linearize branch to run on entry.
 func TestRotatingPerTokenSnapshotRestore(t *testing.T) {
-	skipIfNoMLX(t)
-
 	cases := []struct {
 		name   string
 		window int
@@ -234,6 +232,7 @@ func TestRotatingPerTokenSnapshotRestore(t *testing.T) {
 	const draft = 4
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			skipIfNoMLX(t)
 			for accepted := 0; accepted <= draft; accepted++ {
 				c := NewRotatingKVCache(tc.window)
 				fillTagged(c, tc.before)
@@ -294,7 +293,6 @@ func TestRotatingPerTokenSnapshotRestore(t *testing.T) {
 // same window data. Covers the restored content, a following decode write, and
 // the snapshot copying out correctly afterward, across wrap regimes.
 func TestRotatingRestoreLazyOwnSnapshotSlices(t *testing.T) {
-	skipIfNoMLX(t)
 
 	cases := []struct {
 		name   string
@@ -309,6 +307,7 @@ func TestRotatingRestoreLazyOwnSnapshotSlices(t *testing.T) {
 	const draft, accepted = 4, 2
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			skipIfNoMLX(t)
 			c := NewRotatingKVCache(tc.window)
 			fillTagged(c, tc.before)
 
@@ -451,7 +450,6 @@ func TestRotatingRestoreHookedSnapshotStaysLazy(t *testing.T) {
 // not-yet-wrapped and wrapped regimes; the wrapped one exercises the ring-clone
 // fallback.
 func TestRotatingSnapshotSingleTokenWrite(t *testing.T) {
-	skipIfNoMLX(t)
 
 	cases := []struct {
 		name   string
@@ -464,6 +462,7 @@ func TestRotatingSnapshotSingleTokenWrite(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			skipIfNoMLX(t)
 			c := NewRotatingKVCache(tc.window)
 			fillTagged(c, tc.before)
 

@@ -81,10 +81,35 @@ Placeholder **fits** by eliding the newest fat tools (~15 tokens of new prefill)
 
 Do **not** load `qwen3.6-mtp` on this Mac while production Metal serve is up (22 GiB GGUF would contend for GPU).
 
+
+## Expert-bank byte estimate (FreeToken rematch)
+
+`AdviseSlotBankDims` / `flash-moe-resolve` size `bank~` as:
+
+- **measured:** sum of GGUF `*_exps` tensor bytes × `recommend / expert_count`
+- **estimate:** FreeToken `bank_bytes_estimate` — `layers × experts × BytesPerExpertLayer(format, H, I)` when tensors are missing; formats `q4_0` (default), `bf16`, `fp8_block`, `nvfp4`, `mxfp4`, `ds_fp4`
+
+`BytesPerExpertSlot` is one expert across all MoE layers (`estimate / experts`). Still **not** auto-exported as `ZEROLLAMA_FLASH_MOE_SLOT_BANK`.
+
+
+
+## Pin budget / split residency (FreeToken rematch)
+
+FreeToken caps `cudaHostRegister` on **WSL** at **40% of host RAM** (`FREETOKEN_PIN_BUDGET_GB` overrides anywhere). Plain Linux and Darwin are uncapped.
+
+When full expert banks exceed that budget, `--moe-cpu-layers auto` locks just enough **head+tail** MoE layers for CPU decode (U-shaped miss rates). Rematch in `x/freetokenlab`:
+
+| Helper | Role |
+|--------|------|
+| `PinBudgetBytes` / `AdvisePin` | WSL 40% or `ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB` |
+| `AutoCPULayerIDs` | head+tail layer ids |
+
+`zerollama doctor` / `freetoken` / `flash-moe-resolve` print `pin-over cpu-layers~N` when capped and over budget. **anemll has no `--moe-cpu-layers`** — shrink `--moe-slot-bank` instead. Mac UMA stays all-fill (uncapped). Advice only; does not auto-export slot-bank env.
+
 ## Next
 
 1. Operator capture of a MoE trace when GPU is free (`llama-cli --moe-trace`, not `:11434`).
-2. CUDA **5080-est** (`BP=49`, `BH=63.2`) is an interpolation until CT 1564 measures expert DMA vs host GEMM. `AdviseProfile("5080-est")` still wants a CPU miss-split that anemll does not expose.
+2. CUDA **5080-est** (`BP=49`, `BH=63.2`) is an interpolation until CT 1564 measures expert DMA vs host GEMM. `AdviseProfile("5080-est")` still wants a CPU miss-split that anemll does not expose. Pin-budget / `--moe-cpu-layers auto` advice is live for WSL + `ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB`.
 3. `zerollama doctor` `freetoken MoE policy` uses local GGUF `expert_count` / `expert_used_count` when present (this host: 256 / k=8 → slots~19). Prefetch stays off on Mac UMA unless a real trace is i.i.d.
 4. `./zerollama freetoken` prints MoE header advice plus the agent prefill table (placeholder vs summary vs suffix-strip). Do not load `qwen3.6-mtp` on production Metal serve.
 5. Native `zerollama run` / `--experimental` / Go `api.ChatThread` echo `elide_from`. HTTP agents with a stable `prompt_cache_key` (including `/v1/responses` and `/v1/messages` extra_body) get the same cut server-side (per model, 256-key LRU, 30m; `cache_reset` clears). Explicit `compression.elide_from` still wins.

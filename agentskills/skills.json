@@ -240,7 +240,7 @@
     },
     {
       "name": "doctor-model",
-      "description": "Diagnose a specific local model's manifest/blob health (ok/repairable/orphaned/broken) and config-level footguns (quant label, missing generation config, context mismatch, no chat template) with zerollama doctor --models and the model-serving-minefield trap registry.",
+      "description": "Diagnose a specific local model's manifest/blob health (ok/repairable/orphaned/broken), config-level footguns, live minefield traps, and Modelfile repair for empty-response / slash-collapse (zerollama doctor --models / --repair-models).",
       "version": "1.0.0",
       "author": "Hermes Agent",
       "license": "MIT",
@@ -478,7 +478,9 @@
         "provider"
       ],
       "related_skills": [
-        "zerollama-integration"
+        "zerollama-integration",
+        "batch",
+        "serving-llms-vllm"
       ],
       "path": "hermes-provider/SKILL.md"
     },

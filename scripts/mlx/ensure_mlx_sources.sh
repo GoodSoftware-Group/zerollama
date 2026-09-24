@@ -89,12 +89,35 @@ ensure_mlx_sources() {
   _ensure_commit "MLX (zerollama pin)" "${OLLAMA_MLX_SOURCE}" "${MLX_PIN}"
   _ensure_commit "MLX-C (zerollama pin)" "${OLLAMA_MLX_C_SOURCE}" "${MLX_C_PIN}"
 
-  local head
-  head="$(git -C "${OLLAMA_MLX_SOURCE}" rev-parse HEAD)"
-  _ensure_commit "MLX (HEAD)" "${OLLAMA_MLX_SOURCE}" "${head}"
+  # Detached pin checkout so sibling HEAD matches MLX_*_VERSION (FetchContent
+  # local overrides do not check out for us). Carry patches re-apply below.
+  if [[ "$(git -C "${OLLAMA_MLX_SOURCE}" rev-parse HEAD)" != "${MLX_PIN}" ]]; then
+    echo ">>> checking out MLX pin ${MLX_PIN:0:12}" >&2
+    git -C "${OLLAMA_MLX_SOURCE}" checkout -f "${MLX_PIN}"
+  fi
+  if [[ "$(git -C "${OLLAMA_MLX_C_SOURCE}" rev-parse HEAD)" != "${MLX_C_PIN}" ]]; then
+    echo ">>> checking out MLX-C pin ${MLX_C_PIN:0:12}" >&2
+    git -C "${OLLAMA_MLX_C_SOURCE}" checkout -f "${MLX_C_PIN}"
+  fi
 
-  head="$(git -C "${OLLAMA_MLX_C_SOURCE}" rev-parse HEAD)"
-  _ensure_commit "MLX-C (HEAD)" "${OLLAMA_MLX_C_SOURCE}" "${head}"
+  # Local OLLAMA_MLX_C_SOURCE overrides skip FetchContent PATCH_COMMAND.
+  # Apply carry patches idempotently onto the sibling checkout.
+  _apply_mlx_c_compat_patches
+}
+
+_apply_mlx_c_compat_patches() {
+  local patch_dir="${ROOT}/mlx/compat/mlx-c"
+  [[ -d "${patch_dir}" ]] || return 0
+  local patch
+  for patch in "${patch_dir}"/*.patch; do
+    [[ -f "${patch}" ]] || continue
+    if git -C "${OLLAMA_MLX_C_SOURCE}" apply --reverse --check "${patch}" >/dev/null 2>&1; then
+      echo "ok MLX-C patch already applied: $(basename "${patch}")" >&2
+      continue
+    fi
+    echo ">>> applying MLX-C carry patch: $(basename "${patch}")" >&2
+    git -C "${OLLAMA_MLX_C_SOURCE}" apply --whitespace=nowarn "${patch}"
+  done
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

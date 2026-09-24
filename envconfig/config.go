@@ -371,6 +371,20 @@ func RunnerBusyTimeout() time.Duration {
 	return d
 }
 
+// MLXExclusive is true when at most one safetensors/MLX runner may be resident.
+// Default on Darwin (UMA jetsam under dual large MLX); set ZEROLLAMA_MLX_EXCLUSIVE=0
+// to allow co-residency (operator accepts OOM risk).
+func MLXExclusive() bool {
+	if s := Var("ZEROLLAMA_MLX_EXCLUSIVE"); s != "" {
+		b, err := strconv.ParseBool(s)
+		if err != nil {
+			return true
+		}
+		return b
+	}
+	return runtime.GOOS == "darwin"
+}
+
 // LoadCooldownInitial is the first failed-load cooldown (LocalAI LA18).
 // Default 10s. Zero disables (`ZEROLLAMA_LOAD_COOLDOWN=0`).
 func LoadCooldownInitial() time.Duration {
@@ -641,6 +655,7 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_FLASH_MOE_SLOT_BANK":            {"ZEROLLAMA_FLASH_MOE_SLOT_BANK", Var("ZEROLLAMA_FLASH_MOE_SLOT_BANK"), "Resident expert slots per MoE layer"},
 		"ZEROLLAMA_FLASH_MOE_TOPK":                 {"ZEROLLAMA_FLASH_MOE_TOPK", Var("ZEROLLAMA_FLASH_MOE_TOPK"), "Routed expert top-k override (0=model default)"},
 		"ZEROLLAMA_FLASH_MOE_PREFETCH":             {"ZEROLLAMA_FLASH_MOE_PREFETCH", FlashMoEPrefetchTemporal(), "One-step temporal expert prefetch (1/on)"},
+		"ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB":         {"ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB", FlashMoEPinBudgetGiB(), "Lab pin-budget GiB override (FreeToken FREETOKEN_PIN_BUDGET_GB; advice only)"},
 		"ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN":     {"ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN", FlashMoELlamaServerBin(), "Override Flash-MoE llama-server binary path"},
 		"FLASH_MOE_REPO":                           {"FLASH_MOE_REPO", FlashMoERepo(), "anemll-flash-llama.cpp checkout for build script"},
 		"ANE_REPO":                                 {"ANE_REPO", ANERepo(), "maderix/ane checkout for ANE probe bridge"},
@@ -654,6 +669,7 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_RUNNER_BUSY_TIMEOUT":            {"ZEROLLAMA_RUNNER_BUSY_TIMEOUT", RunnerBusyTimeout(), "Force-unload runners busy longer than this; 0=off"},
 		"ZEROLLAMA_LOAD_COOLDOWN":                  {"ZEROLLAMA_LOAD_COOLDOWN", LoadCooldownInitial(), "Failed-load cooldown initial delay (default 10s; 0=off)"},
 		"ZEROLLAMA_LOAD_COOLDOWN_MAX":              {"ZEROLLAMA_LOAD_COOLDOWN_MAX", LoadCooldownMax(), "Failed-load cooldown cap (default 5m)"},
+		"ZEROLLAMA_MLX_EXCLUSIVE":                  {"ZEROLLAMA_MLX_EXCLUSIVE", MLXExclusive(), "At most one MLX/safetensors runner (default on Darwin; 0=allow co-residency)"},
 		"ZEROLLAMA_BACKEND_PARENT_WATCH":           {"ZEROLLAMA_BACKEND_PARENT_WATCH", BackendParentWatch(), "Linux: SIGKILL runner subprocesses if the parent dies (default on)"},
 		"ZEROLLAMA_ROUTER_CONFIG":                  {"ZEROLLAMA_ROUTER_CONFIG", RouterConfigPath(), "LA11 router YAML (default ~/.ollama/router.yaml; 0=off)"},
 		"ZEROLLAMA_ROUTER_REWRITE":                 {"ZEROLLAMA_ROUTER_REWRITE", RouterRewrite(), "Rewrite chat/generate model when the name is a router (default on)"},

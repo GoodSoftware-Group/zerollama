@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -58,6 +59,14 @@ ZEROLLAMA_FLASH_MOE_SLOT_BANK. Sidecar-missing blobs print a commented export.`,
 			if len(rep.Notes) > 0 {
 				fmt.Println(rep.Notes[0])
 			}
+			for i := len(rep.Notes) - 1; i >= 0; i-- {
+				if strings.Contains(rep.Notes[i], "pin budget") || strings.Contains(rep.Notes[i], "expert banks") {
+					if i != 0 {
+						fmt.Println(rep.Notes[i])
+					}
+					break
+				}
+			}
 			if len(rep.Inventory) == 0 {
 				fmt.Println("no local MoE tags — paper defaults 256/k=6; pull a MoE GGUF to size the slot-bank")
 			} else {
@@ -91,6 +100,16 @@ func buildFreetokenReport() (freetokenReport, error) {
 		}
 	}
 	a := freetokenlab.AdviseProfileFor(profile, nExp, k)
+	fullBank := int64(0)
+	layers := 8
+	if len(entries) > 0 {
+		sb := flashMoEAdvise(entries[0], ram)
+		fullBank = sb.FullBankBytes
+		if entries[0].MoELayers > 0 {
+			layers = int(entries[0].MoELayers)
+		}
+	}
+	a = a.WithPin(freetokenlab.AdvisePin(flashMoEPinOpts(), fullBank, layers))
 	rows := make([]flashMoEResolveRow, 0, len(entries))
 	for _, e := range entries {
 		rows = append(rows, flashMoEResolveRowFrom(e, ram))

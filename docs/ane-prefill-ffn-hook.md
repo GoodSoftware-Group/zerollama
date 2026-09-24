@@ -1,10 +1,40 @@
 # ANE prefill FFN ggml intercept (lab policy)
 
-**Status:** policy + session parity + Metal shadow + host force + pack + sync-and-resume + **shexp/dense name filter**.
+**Status:** policy + session parity + Metal shadow + host force + pack + sync-and-resume + **shexp/dense name filter**. Productized lab path for MLP/SwiGLU offload during prefill (mlx-serve Zig ANE is skipped; this is the ggml Metal steal).
 
 **Audience:** lab on non-production ports. Never enable on **:11434** / **:8081**.
 
 Related: [ane-hybrid-path.md](./ane-hybrid-path.md), [ane-ggml-iosurface-hook.md](./ane-ggml-iosurface-hook.md), `ml/backend/ggml/ggml/src/ggml-metal/ane_ffn_policy.h`.
+
+---
+
+## Canonical lab serve (shexp force + SwiGLU)
+
+Fail-closed on production ports. Use the lab binary + force dylib on **:11435** only:
+
+```bash
+./scripts/ane/ane_ffn_lab_smoke.sh --print-env   # prints the block below
+# or:
+export OLLAMA_HOST=127.0.0.1:11435
+export ZEROLLAMA_ANE_FFN=1
+export ZEROLLAMA_ANE_FFN_MODE=force
+export ZEROLLAMA_ANE_FFN_FORCE_ENABLE=1
+export ZEROLLAMA_ANE_FFN_SWIGLU=1
+export ZEROLLAMA_ANE_FFN_NAME=shexp
+export ZEROLLAMA_ANE_FFN_IC=2048
+export ZEROLLAMA_ANE_FFN_OC=512
+export ZEROLLAMA_ANE_FFN_SEQ_MAX=512
+export ZEROLLAMA_ANE_FFN_LAB_PORT=11435
+export ZEROLLAMA_ANE_FFN_TELEMETRY=1
+export ZEROLLAMA_ANE_FFN_REPLACE_DYLIB=$PWD/build/ane-probe-darwin/bin/libane_ffn_force.dylib
+# Leave ZEROLLAMA_ANE_FFN_OVERLAP unset (quality broken).
+# BUILD_MLX=0 BUILD_LLAMA_SERVER=0 BUILD_RUNTIME_KV_EXT=0 \
+#   ./scripts/build/build_zerollama_mac.sh ./zerollama-ane-ffn-lab
+# ANE_REPO=… ./scripts/ane/ane_probe_build.sh
+# ./zerollama-ane-ffn-lab serve
+```
+
+Dense eliza: `NAME=ffn`, omit `IC`/`OC`/`INT8_*`. Shexp is the intended speed target (still often slightly behind Metal; not a prod default).
 
 ---
 

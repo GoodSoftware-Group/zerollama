@@ -28,6 +28,16 @@ func doctorCheckFreeToken() doctorCheck {
 		}
 	}
 	a := freetokenlab.AdviseProfileFor(profile, nExp, k)
+	fullBank := int64(0)
+	layers := 8
+	if inv, err := doctorMoEInventory(); err == nil && len(inv) > 0 {
+		sb := flashMoEAdvise(inv[0], 0)
+		fullBank = sb.FullBankBytes
+		if inv[0].MoELayers > 0 {
+			layers = int(inv[0].MoELayers)
+		}
+	}
+	a = a.WithPin(freetokenlab.AdvisePin(flashMoEPinOpts(), fullBank, layers))
 	status := "ok"
 	fix := ""
 	detail := a.DoctorLine()
@@ -35,6 +45,12 @@ func doctorCheckFreeToken() doctorCheck {
 		status = "warn"
 		fix = "unset ZEROLLAMA_FLASH_MOE_PREFETCH — lab: LRU already holds sticky experts"
 		detail += "; PREFETCH env is on"
+	}
+	if a.BankOverPin {
+		status = "warn"
+		if fix == "" {
+			fix = "banks exceed pin budget — FreeToken would --moe-cpu-layers auto; anemll: shrink --moe-slot-bank"
+		}
 	}
 	if len(a.Notes) > 0 {
 		detail += "; " + strings.Join(a.Notes[:1], "")
@@ -54,10 +70,20 @@ func doctorFreeTokenInventoryHint() string {
 		ram = float64(m.TotalMemory) / float64(1<<30)
 	}
 	e := inv[0]
-	b := freetokenlab.AdviseSlotBankK(int(e.ExpertCount), int(e.ExpertUsedCount), ram, e.ExpertWeightBytes)
+	b := flashMoEAdvise(e, ram)
 	hint := fmt.Sprintf("; local %s k=%d recommend=%d sticky-miss≈%.3f", e.Tag, e.ExpertUsedCount, b.Recommend, b.MissRate)
 	if b.BankBytes > 0 {
-		hint += fmt.Sprintf(" bank~%s", format.HumanBytes2(uint64(b.BankBytes)))
+		src := b.BankSource
+		if src != "" {
+			src = "/" + src
+		}
+		hint += fmt.Sprintf(" bank~%s%s", format.HumanBytes2(uint64(b.BankBytes)), src)
+	}
+	pin := flashMoEPinAdvice(e, b.FullBankBytes)
+	if pin.OverBudget {
+		hint += fmt.Sprintf(" pin-over cpu-layers~%d", pin.SuggestedCPULayers)
+	} else if pin.Capped {
+		hint += " pin=capped"
 	}
 	if !e.SidecarReady {
 		hint += " sidecar=missing (do not export on Metal serve)"

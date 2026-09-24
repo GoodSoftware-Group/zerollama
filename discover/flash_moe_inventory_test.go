@@ -86,3 +86,17 @@ func TestFlashMoEDefaultSidecarPathUsesHome(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestMoeExpertQuantFormat(t *testing.T) {
+	q4 := &ggml.Tensor{Name: "blk.0.ffn_gate_exps.weight", Kind: uint32(ggml.TensorTypeQ4_0)}
+	if got := moeExpertQuantFormat([]*ggml.Tensor{q4}); got != "q4_0" {
+		t.Fatalf("got %q", got)
+	}
+	f16 := &ggml.Tensor{Name: "blk.0.ffn_up_exps.weight", Kind: uint32(ggml.TensorTypeF16)}
+	if got := moeExpertQuantFormat([]*ggml.Tensor{f16}); got != "bf16" {
+		t.Fatalf("f16 got %q", got)
+	}
+	if moeExpertQuantFormat(nil) != "q4_0" {
+		t.Fatal("default")
+	}
+}

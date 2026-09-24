@@ -218,19 +218,23 @@ curl -s http://localhost:11434/api/metrics
 - **`num_predict` wall** — `max_tokens` reserves decode space. `num_ctx −
   max_tokens` is the real prompt ceiling. Cap `max_tokens`, don't inflate
   `num_ctx` to compensate.
-- **`HOLD_GPU failed` / `uma lease begin (gpu)`** — transient GPU/lease
-  contention on zerollama; retry or free loaded models. Can also mean the
-  model doesn't fit at the requested `num_ctx`. If it persists with free
-  memory and no resident runner (`/api/ps` empty), the machine broker may
-  hold a wedged lease: query `STATUS` / `JOBS` / `QUEUE` over
-  `/tmp/uma_daemon.sock` — a `mlxrunner-load` job stuck in
-  `running`/`holding` with a dead owner blocks the whole GPU queue (queued
-  waiters time out after ~90s each and the jam is self-sustaining).
-  `RELEASE <id>` the dead holder. Note the server-side load cooldown
-  (`model load in cooldown: retry after ...`): blind client retries inside
-  the window always 503 — wait it out, then try once.
-- **`model not found`** — model name mismatch. Names include the tag
-  (`qwen3-coder-next:6bit`). Confirm against `GET /api/tags`.
+- **`HOLD_GPU failed` / `uma lease begin (gpu)` / `error_code: gpu_lease`** —
+  Metal broker contention (not a missing model). Server returns **503** with
+  `error_code` (`gpu_lease` / `mlx_jetsam` / `mlx_exclusive`) and does **not**
+  put the model in load cooldown. Retry after unloading other Metal/MLX
+  runners. If it persists with free memory and empty `/api/ps`, the machine
+  broker may hold a wedged lease: query `STATUS` / `JOBS` / `QUEUE` over
+  `/tmp/uma_daemon.sock` — a `mlxrunner-load` job stuck in `running`/`holding`
+  with a dead owner blocks the GPU queue; `RELEASE <id>` the dead holder.
+  Darwin default: **one MLX resident** (`ZEROLLAMA_MLX_EXCLUSIVE`, on by
+  default) so dual large MLX does not jetsam mid-turn. Do **not** map these
+  503s to "model not found".
+- **`model not found` (HTTP 404)** — genuine missing tag / digest. Confirm
+  against `GET /api/tags` or `GET /v1/models`. A 503 with `error_code` is
+  never "not found".
+- **`load_cooldown` (HTTP 503)** — repeated *non-transient* load failures
+  (corrupt weights, etc.). Blind retries inside `Retry-After` stay 503; wait
+  it out. Lease/jetsam failures no longer enter this cooldown.
 - **Prompt cache not reused** — `prompt_cache_key` must stay stable across
   turns. Changing `num_ctx` or other options invalidates the prefix cache key,
   so bump allocation only when needed. After placeholder compression, echo

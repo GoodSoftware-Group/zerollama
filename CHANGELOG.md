@@ -16,6 +16,12 @@ All notable changes to this project are documented in this file. The format is b
 - **Fix:** export `CMAKE_CUDA_ARCHITECTURES` from `build_zerollama_cuda.sh`; auto-detect compute 12.x / 5080 → `120-real`; post-build probe fails if GPU is sm_120 but the `.so` is not.
 - Rebuild: `CMAKE_CUDA_ARCHITECTURES=120-real LLAMA_CPP_ROOT=vendor/llama-cpp-<pin> ./scripts/build/build_llama_server.sh`
 
+### Darwin one-MLX residency + clearer Metal load errors — Sep 2026
+
+**Why:** Co-resident large MLX models (e.g. `gemma4:26b-optiq` + `qwen3.6:35b-a3b-mlx`) looked like they fit (~87 GiB free) then jetsam/`SIGKILL`'d mid-turn. Reloads hit wedged `HOLD_GPU`, entered geometric load cooldown, and clients rewrote 500/503 as "model not found".
+
+**Shipped:** `ZEROLLAMA_MLX_EXCLUSIVE` (default **on** Darwin) evicts other safetensors/MLX runners before load. `HOLD_GPU` / `signal: killed` map to typed **503** with `error_code` (`gpu_lease` / `mlx_jetsam` / `mlx_exclusive`) and **skip** load cooldown. Docs/skill: do not treat these as missing tags.
+
 ### Typed decisions (Laya) — llama.cpp + `/v1/decisions` — Sep 2026
 
 **Why:** System-1 typed answers (`choice` / `score` / `noul`) need calibrated probabilities + act/escalate in one encoder pass — not chat sampling, not `/api/score` continuations, not `/v1/rerank` RANK scalars. Overloading ModernBERT RANK cannot expose per-MASK logits.
@@ -25,6 +31,55 @@ All notable changes to this project are documented in this file. The format is b
 **Audit fixes:** SWA key `laya.rope.freq_base_swa` (not `…attention.rope…`); head eps prefers `laya.attention.layer_norm_epsilon`; `n_act` from config when set.
 
 Docs: [laya-llama-cpp.md](docs/laya-llama-cpp.md) · [findings](docs/laya-llama-cpp-findings.md) · ROADMAP **Typed decisions (Laya)**. Lab ports only (`11435` / `18082`).
+
+### MLX xgrammar structured output (path-filter) — Sep 2026
+
+**Why:** MLX `format` / JSON schema was unconstrained; biggest product gap vs upstream tip.
+
+**Shipped:** `x/mlxrunner/xgrammar/` (v0.2.5 → `libollama_xgrammar`) + `grammar.go` engine; client `requestGrammar` (json/schema + ThinkingClose structural tags); Prepare overlaps compile with prefill; pipelinedDecoder masks/accepts when constraining. Spec under format still disabled. Rebuild: `BUILD_MLX=1 ./scripts/build/build_mlx_dylibs_mac.sh` (installs `libollama_xgrammar.dylib` next to `libmlx`). Doc: [upstream-ollama-diff.md](docs/upstream-ollama-diff.md).
+
+### MLX / MLX-C pin bump to Ollama tip — Sep 2026
+
+**Why:** Stay aligned with upstream Ollama tip for gather_qmm global-scale and native gated-delta; old `0001-mlx-c-regen-0.32.1` no longer applies on mlx-c `ebc88f10`.
+
+**Shipped:** `MLX_VERSION` → `59d600b5`, `MLX_C_VERSION` → `ebc88f10`. Carry patches in `mlx/compat/mlx-c/` (qmm global_scale + `mlx_fast_gated_delta_update`) via `apply-git-patches.cmake` (and `ensure_mlx_sources.sh` for sibling overrides). `GatherQMM` passes null global_scale; `Cumsum` uses tip `mlx_cumsum_axis` + optional dtype; `FastGatedDelta` prefers the native MLX-C path. Rebuild: `BUILD_MLX=1 ./scripts/build/build_zerollama_mac.sh` (or `./scripts/build/build_mlx_dylibs_mac.sh`). Doc: [upstream-ollama-diff.md](docs/upstream-ollama-diff.md).
+
+### Upstream Ollama MLX pageOut whole-state (path-filter) — Sep 2026
+
+**Why:** A node split out of a cached edge at close could already hold a KV snapshot, so `pageOut` skipped capture and left recurrent/rotating layers empty — later resumes looked like hits with incomplete state.
+
+**Shipped:** `hasAllSnapshots(node, caches)` + `pageOut` / rewind leaf capture fill only missing layers (`8d66f083`). Non-causal media boundary fix (`45a02807`) deferred until `mlxrunner/media.go` lands. Doc: [upstream-ollama-diff.md](docs/upstream-ollama-diff.md).
+
+### Upstream Ollama MLX memory hygiene (path-filter) — Sep 2026
+
+**Why:** Speculative decode skipped ClearCache by stepping over 256-token boundaries; second MLX loads ignored other apps' UMA footprint; trie eviction never reclaimed a chat's own turn checkpoints.
+
+**Shipped:** ClearCache when generated tokens *cross* a 256 multiple (`ec3cc230`); `Client.Load` caps available by `systemInfo.FreeMemory` on integrated GPUs under `requireFull` (`1548f78c`); eviction protects only frontier + branch points + user/pin (`6137793a`); path trim splits a live edge so the reused head stays on the active path (`b859a945`). Doc: [upstream-ollama-diff.md](docs/upstream-ollama-diff.md).
+
+### Upstream Ollama path-filter (MLX hygiene + gemma3n + names) — Sep 2026
+
+**Why:** MLX load left fuse/pack buffers in the allocator pool; Close returned before the subprocess was reaped so the next model load overlapped VRAM; gemma3n's MobileNetV5 projector silently corrupts on CPU; `getExistingName` lacked prefix casing for new tags.
+
+**Shipped:** `mlx.ClearCache` after weight Eval (`b68b112b`); MLX client Kill+Wait + Load under mutex (`f09d55d0`); `requiresMMProjGPUOffload` for gemma3n (#18376); `getExistingName` longest host→ns→model prefix (#18438). Doc: [upstream-ollama-diff.md](docs/upstream-ollama-diff.md).
+
+### Upstream Ollama #17943 / #18550 (path-filter) — Sep 2026
+
+**Why:** Prefill tok/s inflated when KV cache hits were counted; NVFP4/dense Qwen3.5 MLPs paid two materializations for global scale then SwiGLU.
+
+**Shipped:** `Metrics.Summary` + `cmd/bench` exclude `CachedPromptTokens` from prefill rate. `mlx.SwiGLUScaled` + `nn.SwiGLU` defer `QuantizedLinear.GlobalScale` into the fused activation; `qwen3_5.DenseMLP` uses it. Scales are direct Mul (our GlobalScale path), not upstream Nvfp4MaxProduct. Gated-delta long-scan from #18550 skipped — `FastGatedDelta` already covers it. Doc: [upstream-ollama-diff.md](docs/upstream-ollama-diff.md).
+
+### FreeToken pin-budget / split-residency advice — Sep 2026
+
+**Why:** FreeToken locks head+tail MoE layers when expert banks exceed the WSL pin cap (40% RAM / `FREETOKEN_PIN_BUDGET_GB`); doctor had no equivalent for CUDA 5080-est / WSL labs.
+
+**Shipped:** `x/freetokenlab` `PinBudgetBytes` / `AdvisePin` / `AutoCPULayerIDs`; `ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB` (advice only); doctor / `freetoken` / `flash-moe-resolve` surface `pin-over cpu-layers~N`. anemll still has no `--moe-cpu-layers` — prefer smaller slot-bank. Mac UMA uncapped.
+
+### FreeToken expert-bank byte estimate — Sep 2026
+
+**Why:** Slot-bank `bank~` was empty when GGUF `*_exps` headers were missing; FreeToken sizes pin/slot budgets from config dims alone.
+
+**Shipped:** `x/freetokenlab` ports `_BANK_BYTES_PER_EXPERT` / `bank_bytes_estimate`; inventory reads `embedding_length` + `expert_feed_forward_length` + layers; `AdviseSlotBankDims` falls back to estimate. Doctor / `flash-moe-resolve` label `measured` vs `estimate`. Still not auto `--moe-slot-bank`.
+
 
 ### Metal FA on `Library=MTL` + m4-prefill borrowings closed — Sep 2026
 

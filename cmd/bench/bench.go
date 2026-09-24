@@ -37,10 +37,11 @@ type flagOptions struct {
 }
 
 type Metrics struct {
-	Model    string
-	Step     string
-	Count    int
-	Duration time.Duration
+	Model             string
+	Step              string
+	Count             int
+	CachedPromptCount int
+	Duration          time.Duration
 }
 
 type ModelInfo struct {
@@ -195,7 +196,7 @@ func outputFormatHeader(w io.Writer, format string, verbose bool) {
 			fmt.Fprintf(w, "goarch: %s\n", runtime.GOARCH)
 		}
 	case "csv":
-		headings := []string{"NAME", "STEP", "COUNT", "NS_PER_COUNT", "TOKEN_PER_SEC"}
+		headings := []string{"NAME", "STEP", "COUNT", "NS_PER_COUNT", "TOKEN_PER_SEC", "CACHED_PROMPT_COUNT"}
 		fmt.Fprintln(w, strings.Join(headings, ","))
 	}
 }
@@ -222,14 +223,21 @@ func OutputMetrics(w io.Writer, format string, metrics []Metrics, verbose bool) 
 	case "benchstat":
 		for _, m := range metrics {
 			if m.Step == "generate" || m.Step == "prefill" {
+				var promptCounts string
+				if m.Step == "prefill" {
+					promptCounts = fmt.Sprintf(" %d processed-prompt-token", m.Count)
+					if m.CachedPromptCount > 0 {
+						promptCounts += fmt.Sprintf(" %d cached-prompt-token", m.CachedPromptCount)
+					}
+				}
 				if m.Count > 0 {
 					nsPerToken := float64(m.Duration.Nanoseconds()) / float64(m.Count)
 					tokensPerSec := float64(m.Count) / (float64(m.Duration.Nanoseconds()) + 1e-12) * 1e9
-					fmt.Fprintf(w, "BenchmarkModel/name=%s/step=%s 1 %.2f ns/token %.2f token/sec\n",
-						m.Model, m.Step, nsPerToken, tokensPerSec)
+					fmt.Fprintf(w, "BenchmarkModel/name=%s/step=%s 1 %.2f ns/token %.2f token/sec%s\n",
+						m.Model, m.Step, nsPerToken, tokensPerSec, promptCounts)
 				} else {
-					fmt.Fprintf(w, "BenchmarkModel/name=%s/step=%s 1 0 ns/token 0 token/sec\n",
-						m.Model, m.Step)
+					fmt.Fprintf(w, "BenchmarkModel/name=%s/step=%s 1 0 ns/token 0 token/sec%s\n",
+						m.Model, m.Step, promptCounts)
 				}
 			} else if m.Step == "ttft" {
 				fmt.Fprintf(w, "BenchmarkModel/name=%s/step=ttft 1 %d ns/op\n",
@@ -241,6 +249,10 @@ func OutputMetrics(w io.Writer, format string, metrics []Metrics, verbose bool) 
 		}
 	case "csv":
 		for _, m := range metrics {
+			cachedPromptCount := ""
+			if m.CachedPromptCount > 0 || m.Step == "prefill" {
+				cachedPromptCount = fmt.Sprint(m.CachedPromptCount)
+			}
 			if m.Step == "generate" || m.Step == "prefill" {
 				var nsPerToken float64
 				var tokensPerSec float64
@@ -248,9 +260,9 @@ func OutputMetrics(w io.Writer, format string, metrics []Metrics, verbose bool) 
 					nsPerToken = float64(m.Duration.Nanoseconds()) / float64(m.Count)
 					tokensPerSec = float64(m.Count) / (float64(m.Duration.Nanoseconds()) + 1e-12) * 1e9
 				}
-				fmt.Fprintf(w, "%s,%s,%d,%.2f,%.2f\n", m.Model, m.Step, m.Count, nsPerToken, tokensPerSec)
+				fmt.Fprintf(w, "%s,%s,%d,%.2f,%.2f,%s\n", m.Model, m.Step, m.Count, nsPerToken, tokensPerSec, cachedPromptCount)
 			} else {
-				fmt.Fprintf(w, "%s,%s,1,%d,0\n", m.Model, m.Step, m.Duration.Nanoseconds())
+				fmt.Fprintf(w, "%s,%s,1,%d,0,%s\n", m.Model, m.Step, m.Duration.Nanoseconds(), cachedPromptCount)
 			}
 		}
 	default:
@@ -275,7 +287,7 @@ func BenchmarkModel(fOpt flagOptions) error {
 		fmt.Fprintf(os.Stderr, "Read file '%s'\n", *fOpt.imageFile)
 	}
 
-	if *fOpt.host != "" {
+	if fOpt.host != nil && *fOpt.host != "" {
 		if err := os.Setenv("OLLAMA_HOST", *fOpt.host); err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: Couldn't set OLLAMA_HOST: %v\n", err)
 			return err
@@ -439,10 +451,11 @@ func BenchmarkModel(fOpt flagOptions) error {
 
 			metrics := []Metrics{
 				{
-					Model:    model,
-					Step:     "prefill",
-					Count:    responseMetrics.PromptEvalCount,
-					Duration: responseMetrics.PromptEvalDuration,
+					Model:             model,
+					Step:              "prefill",
+					Count:             max(0, responseMetrics.PromptEvalCount-responseMetrics.CachedPromptTokens),
+					CachedPromptCount: responseMetrics.CachedPromptTokens,
+					Duration:          responseMetrics.PromptEvalDuration,
 				},
 				{
 					Model:    model,

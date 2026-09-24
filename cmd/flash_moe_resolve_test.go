@@ -62,3 +62,16 @@ func TestGroupFlashMoERowsByGGUF(t *testing.T) {
 		t.Fatalf("aliases %+v", g[0].tags)
 	}
 }
+
+func TestFlashMoEResolveRowEstimate(t *testing.T) {
+	est := flashMoEResolveRowFrom(discover.FlashMoEInventoryEntry{
+		ExpertCount: 256, ExpertUsedCount: 8,
+		HiddenSize: 2048, ExpertFFN: 768, MoELayers: 40, ExpertBankFormat: "q4_0",
+	}, 128)
+	if est.BankSource != "estimate" || est.SlotBankBytes < 1 || est.BytesPerSlot < 1 {
+		t.Fatalf("%+v", est)
+	}
+	if got := flashMoESlotBankEnvLine(est); !strings.Contains(got, "est. experts") {
+		t.Fatalf("env %q", got)
+	}
+}

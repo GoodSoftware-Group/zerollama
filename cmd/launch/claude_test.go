@@ -105,6 +105,21 @@ func TestClaudeArgs(t *testing.T) {
 	}
 }
 
+func TestClaudeLaunchEnvDisablesTokenReminder(t *testing.T) {
+	c := &Claude{}
+	got := map[string]string{}
+	for _, e := range c.launchEnv("llama3.2") {
+		k, v, _ := strings.Cut(e, "=")
+		got[k] = v
+	}
+	if got["CLAUDE_CODE_TOTAL_TOKENS_REMINDER"] != "off" {
+		t.Errorf("CLAUDE_CODE_TOTAL_TOKENS_REMINDER = %q, want off", got["CLAUDE_CODE_TOTAL_TOKENS_REMINDER"])
+	}
+	if got["ANTHROPIC_DEFAULT_OPUS_MODEL"] != "llama3.2" {
+		t.Errorf("OPUS = %q, want llama3.2", got["ANTHROPIC_DEFAULT_OPUS_MODEL"])
+	}
+}
+
 func TestClaudeModelEnvVars(t *testing.T) {
 	c := &Claude{}
 

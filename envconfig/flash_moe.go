@@ -57,6 +57,20 @@ func FlashMoELlamaServerBin() string {
 	return strings.TrimSpace(Var("ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN"))
 }
 
+// FlashMoEPinBudgetGiB mirrors FreeToken FREETOKEN_PIN_BUDGET_GB for lab
+// advice only (WSL 40% RAM auto-cap otherwise). Does not change anemll flags.
+func FlashMoEPinBudgetGiB() float64 {
+	v := strings.TrimSpace(Var("ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB"))
+	if v == "" {
+		return 0
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f <= 0 {
+		return 0
+	}
+	return f
+}
+
 // FlashMoERepo returns the anemll-flash-llama.cpp checkout used by build scripts.
 func FlashMoERepo() string {
 	return localRepoPath("FLASH_MOE_REPO", "anemll-flash-llama.cpp")

@@ -57,6 +57,13 @@ func (p *MinistralParser) HasThinkingSupport() bool {
 	return p.hasThinkingSupport
 }
 
+func (p *MinistralParser) ThinkingClose() []string {
+	if p.state == ministralCollectingThinkingContent {
+		return []string{ministralThinkEndTag}
+	}
+	return nil
+}
+
 func (p *MinistralParser) setInitialState(lastMessage *api.Message) {
 	prefill := lastMessage != nil && lastMessage.Role == "assistant"
 	if !p.HasThinkingSupport() {

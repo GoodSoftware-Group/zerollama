@@ -3,6 +3,7 @@ package cache
 import (
 	"slices"
 
+	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/x/mlxrunner/batch"
 	"github.com/ollama/ollama/x/mlxrunner/mlx"
 	"github.com/ollama/ollama/x/models/nn"
@@ -23,6 +24,9 @@ type Attention interface {
 
 type KVCache struct {
 	keys, values *mlx.Array
+	affine       affineBuffers
+	quant        KVQuantConfig
+	denseElem    mlx.DType
 	offset       int
 	step         int
 
@@ -35,7 +39,12 @@ type KVCache struct {
 }
 
 func NewKVCache() *KVCache {
-	return &KVCache{step: 256}
+	return &KVCache{step: 256, quant: KVQuantFromEnv()}
+}
+
+// NewKVCacheWithQuant is for tests that pin a scheme without env.
+func NewKVCacheWithQuant(cfg KVQuantConfig) *KVCache {
+	return &KVCache{step: 256, quant: cfg}
 }
 
 // Assumes B = 1; heterogeneous batches are not supported.
@@ -48,22 +57,30 @@ func (c *KVCache) Update(_ *batch.Batch, keys, values *mlx.Array) *nn.KVHistory 
 
 // appendKV is the raw write path shared by Update and Restore.
 func (c *KVCache) appendKV(keys, values *mlx.Array) (*mlx.Array, *mlx.Array) {
+	if c.keys == nil && c.affine.kq == nil && c.quant.IsAffine() {
+		if !headDimOK(keys.Dim(3), c.quant.GroupSize) || !headDimOK(values.Dim(3), c.quant.GroupSize) {
+			logutil.Warn("mlx KV quant disabled: head_dim not divisible by group size",
+				"k_dim", keys.Dim(3), "v_dim", values.Dim(3), "group", c.quant.GroupSize)
+			c.quant = DenseKVQuantConfig()
+		}
+	}
+	if c.quant.IsAffine() {
+		return c.appendKVAffine(keys, values)
+	}
+	return c.appendKVDense(keys, values)
+}
+
+func (c *KVCache) appendKVDense(keys, values *mlx.Array) (*mlx.Array, *mlx.Array) {
 	B, H, L, Dk, Dv := keys.Dim(0), keys.Dim(1), keys.Dim(2), keys.Dim(3), values.Dim(3)
 
 	prev := c.offset
 
-	// This write fills slots [prev, prev+L). Copy out any still-lazy snapshot
-	// whose slots it would overwrite — only appends refilling after a rewind
-	// find any, since ordinary appends stay above every snapshot. copyOut
-	// removes the snapshot from c.lazySnapshots, so range over a clone to
-	// avoid skipping entries as the slice shrinks.
 	for _, s := range slices.Clone(c.lazySnapshots) {
 		if s.fromOffset < prev+L && s.toOffset > prev {
 			s.copyOut()
 		}
 	}
 
-	// Grow buffer if needed
 	if c.keys == nil || (prev+L) > c.keys.Dim(2) {
 		steps := (c.step + L - 1) / c.step
 		newKeys := mlx.Zeros(keys.DType(), B, H, steps*c.step, Dk)
@@ -78,6 +95,7 @@ func (c *KVCache) appendKV(keys, values *mlx.Array) (*mlx.Array, *mlx.Array) {
 			c.values.Set(c.values.Concatenate(2, newValues))
 		} else {
 			c.keys, c.values = newKeys, newValues
+			c.denseElem = keys.DType()
 			mlx.Pin(c.keys, c.values)
 		}
 	}
@@ -90,13 +108,59 @@ func (c *KVCache) appendKV(keys, values *mlx.Array) (*mlx.Array, *mlx.Array) {
 		c.values.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(0, c.offset), mlx.Slice())
 }
 
+func (c *KVCache) appendKVAffine(keys, values *mlx.Array) (*mlx.Array, *mlx.Array) {
+	B, H, L := keys.Dim(0), keys.Dim(1), keys.Dim(2)
+	prev := c.offset
+
+	for _, s := range slices.Clone(c.lazySnapshots) {
+		if s.fromOffset < prev+L && s.toOffset > prev {
+			s.copyOut()
+		}
+	}
+
+	kq := quantizeAffine(keys, c.quant)
+	vq := quantizeAffine(values, c.quant)
+
+	if !c.affine.initialized() || (prev+L) > c.affine.seqCap() {
+		steps := (c.step + L - 1) / c.step
+		grown := growAffineZeros(B, H, steps*c.step,
+			kq.Q.Dim(3), vq.Q.Dim(3), kq.Scales.Dim(3), vq.Scales.Dim(3))
+
+		if c.affine.initialized() {
+			if prev%c.step != 0 {
+				c.affine.setSliceSeq(c.affine.sliceSeq(0, prev))
+			}
+			c.affine.concatenate(2, grown)
+		} else {
+			c.affine = grown
+			c.denseElem = keys.DType()
+			c.affine.pin()
+		}
+	}
+
+	c.offset += L
+	c.affine.writeAt(prev, c.offset, kq, vq)
+
+	return c.affine.denseSlice(c.quant, c.denseElem, 0, c.offset)
+}
+
 // View returns the current cache contents as attention history without writing.
 func (c *KVCache) View(_ *batch.Batch) *nn.KVHistory {
 	state := c.State()
+	if state == nil {
+		return nn.NewKVHistory(nil, nil, nil)
+	}
 	return nn.NewKVHistory(state[0], state[1], nil)
 }
 
 func (c *KVCache) State() []*mlx.Array {
+	if c.quant.IsAffine() {
+		if !c.affine.initialized() || c.offset == 0 {
+			return nil
+		}
+		k, v := c.affine.denseSlice(c.quant, c.denseElem, 0, c.offset)
+		return []*mlx.Array{k, v}
+	}
 	if c.keys == nil || c.values == nil {
 		return nil
 	}
@@ -109,40 +173,20 @@ func (c *KVCache) State() []*mlx.Array {
 func (c *KVCache) PrepareSnapshots(offsets []int) { c.snapshots.prepare(c.offset, offsets) }
 func (c *KVCache) TakeSnapshots() []Snapshot      { return c.snapshots.take() }
 
-// captureLazySnapshots records edge-local snapshots for the scheduled offsets the
-// write [start, end) reached. A KVCache snapshot is a pure index into the
-// contiguous append-only buffer, so the write needs no segmenting: one appendKV
-// lays down [start, end), then each scheduled offset o captures the edge
-// [base, o) by arithmetic, where base is the previous boundary (running cursor).
-// Offsets are ascending, so the edges match what segmentation would produce. An
-// offset scheduled at start captures a zero-width range and stays nil; rolling
-// back there is a live rewind.
 func (c *KVCache) captureLazySnapshots(start, end int) {
 	for _, o := range c.snapshots.scheduledIn(start, end) {
 		c.snapshots.captureReached(o, func(int) Snapshot { return c.lazySnapshot(c.snapshots.base, o) })
 	}
 }
 
-// kvSnapshot holds paged-out KV data for a range [fromOffset, toOffset).
-//
-// A snapshot is initially lazy: keys/values are nil and the data lives in the
-// issuing cache's buffer at [fromOffset, toOffset). It costs nothing to capture
-// and, holding no MLX handle on that buffer, never blocks the in-place append
-// donation. The cache copies the range into owned keys/values (copyOut) before
-// it overwrites or frees those slots, after which the snapshot is independent
-// and cache is nil.
 type kvSnapshot struct {
 	keys, values         *mlx.Array
 	fromOffset, toOffset int
-	cache                *KVCache // issuer while lazy; nil once copied out
+	cache                *KVCache
 
-	// packed is set when copyOut stored FP8; elem is the live SDPA dtype.
 	packed bool
 	elem   mlx.DType
 
-	// onMaterialize, if set, is fired once from copyOut with the newly-owned
-	// byte count so an owner (e.g. the trie's pagedOutBytes counter) can pick
-	// up bytes that were free while the snapshot was lazy.
 	onMaterialize func(delta int)
 }
 
@@ -150,8 +194,6 @@ func (s *kvSnapshot) Size() int {
 	if s.keys != nil {
 		return s.keys.NumBytes() + s.values.NumBytes()
 	}
-	// Lazy snapshots own no extra memory: the range still lives in the
-	// issuing cache's buffer.
 	return 0
 }
 
@@ -165,19 +207,22 @@ func (s *kvSnapshot) Close() {
 	}
 }
 
-// copyOut converts a lazy snapshot into an owned [fromOffset, toOffset) copy. It
-// is a no-op once the snapshot already owns its data. The copy is an independent
-// MLX handle on its own bytes, so a following in-place write to the live buffer
-// reallocates rather than mutating data the snapshot still names.
 func (s *kvSnapshot) copyOut() {
 	if s.keys != nil {
 		return
 	}
 	c := s.cache
-	kSlice := c.keys.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(s.fromOffset, s.toOffset), mlx.Slice())
-	vSlice := c.values.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(s.fromOffset, s.toOffset), mlx.Slice())
-	kCopy := mlx.Contiguous(kSlice, false)
-	vCopy := mlx.Contiguous(vSlice, false)
+	var kCopy, vCopy *mlx.Array
+	if c.quant.IsAffine() {
+		dk, dv := c.affine.denseSlice(c.quant, c.denseElem, s.fromOffset, s.toOffset)
+		kCopy = mlx.Contiguous(dk, false)
+		vCopy = mlx.Contiguous(dv, false)
+	} else {
+		kSlice := c.keys.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(s.fromOffset, s.toOffset), mlx.Slice())
+		vSlice := c.values.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(s.fromOffset, s.toOffset), mlx.Slice())
+		kCopy = mlx.Contiguous(kSlice, false)
+		vCopy = mlx.Contiguous(vSlice, false)
+	}
 	mlx.Pin(kCopy, vCopy)
 	mlx.AsyncEval(kCopy, vCopy)
 	kCopy, vCopy, s.packed, s.elem = packOwnedKV(kCopy, vCopy)
@@ -204,11 +249,9 @@ func (c *KVCache) Snapshot(fromOffset int) Snapshot {
 	return c.lazySnapshot(fromOffset, c.offset)
 }
 
-// lazySnapshot records a lazy [fromOffset, toOffset) snapshot indexing into the
-// live buffer. It returns nil for an empty range (the zero-width edge of an
-// offset scheduled at the current position).
 func (c *KVCache) lazySnapshot(fromOffset, toOffset int) Snapshot {
-	if c.keys == nil || toOffset <= fromOffset {
+	live := c.keys != nil || c.affine.initialized()
+	if !live || toOffset <= fromOffset {
 		return nil
 	}
 	s := &kvSnapshot{
@@ -239,25 +282,17 @@ func (c *KVCache) Restore(snapshot Snapshot, target int) bool {
 		return false
 	}
 
-	// A lazy snapshot still in our own set indexes data that is, by construction,
-	// still live in our buffer at [fromOffset, toOffset): appendKV copies out any
-	// lazy snapshot before overwriting its slots, so one that has stayed lazy was
-	// never clobbered.
 	if snap.cache == c && snap.keys == nil {
 		c.offset = min(target, snap.toOffset)
 		return true
 	}
 
-	// Own the data before feeding it: appendKV mutates the buffer a lazy snapshot
-	// may still index into, so copy out first (no-op if already owned).
 	snap.copyOut()
 
-	// Rewind to snapshot start, then feed snapshot.
 	c.offset = snap.fromOffset
 	rk, rv := unpackOwnedKV(snap.keys, snap.values, snap.packed, snap.elem)
 	c.appendKV(rk, rv)
 
-	// Clamp to target if needed (target may be less than full snapshot).
 	if target < c.offset {
 		c.offset = target
 	}
@@ -278,8 +313,6 @@ func (c *KVCache) Merge(parent, child Snapshot) Snapshot {
 	p := parent.(*kvSnapshot)
 	ch := child.(*kvSnapshot)
 
-	// Two adjacent lazy snapshots into the same live buffer merge by arithmetic:
-	// the combined range [p.from, ch.to) is a single contiguous snapshot, no copy.
 	if p.keys == nil && ch.keys == nil && p.cache == ch.cache && p.toOffset == ch.fromOffset {
 		merged := &kvSnapshot{fromOffset: p.fromOffset, toOffset: ch.toOffset, cache: p.cache}
 		p.cache.addLazySnapshot(merged)
@@ -288,8 +321,6 @@ func (c *KVCache) Merge(parent, child Snapshot) Snapshot {
 		return merged
 	}
 
-	// At least one is an owned copy in its own buffer: concatenate so Restore's
-	// single-array appendKV sees one buffer. Own both first.
 	p.copyOut()
 	ch.copyOut()
 
@@ -328,7 +359,6 @@ func (c *KVCache) Split(snapshot Snapshot, at int) (Snapshot, Snapshot) {
 		return snapshot, nil
 	}
 
-	// Lazy: split is pure arithmetic into two adjacent lazy snapshots.
 	if snap.keys == nil {
 		p := &kvSnapshot{fromOffset: snap.fromOffset, toOffset: at, cache: snap.cache}
 		ch := &kvSnapshot{fromOffset: at, toOffset: snap.toOffset, cache: snap.cache}
@@ -370,14 +400,16 @@ func (c *KVCache) Split(snapshot Snapshot, at int) (Snapshot, Snapshot) {
 }
 
 func (c *KVCache) Free() {
-	// Freeing drops the buffer every lazy snapshot indexes into; own their data
-	// first so they survive independently. copyOut drops the snapshot from
-	// c.lazySnapshots, so iterate over a clone to avoid skipping.
 	for _, s := range slices.Clone(c.lazySnapshots) {
 		s.copyOut()
 	}
-	mlx.Unpin(c.keys, c.values)
-	c.keys, c.values = nil, nil
+	if c.quant.IsAffine() {
+		c.affine.unpin()
+		c.affine.clear()
+	} else {
+		mlx.Unpin(c.keys, c.values)
+		c.keys, c.values = nil, nil
+	}
 	c.offset = 0
 	c.snapshots = pendingSnapshots{}
 }

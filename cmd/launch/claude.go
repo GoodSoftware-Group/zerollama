@@ -55,17 +55,22 @@ func (c *Claude) Run(model string, _ []LaunchModel, args []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	env := append(os.Environ(),
-		"ANTHROPIC_BASE_URL="+envconfig.Host().String(),
+	cmd.Env = append(os.Environ(), c.launchEnv(model)...)
+	return cmd.Run()
+}
+
+func (c *Claude) launchEnv(model string) []string {
+	env := []string{
+		"ANTHROPIC_BASE_URL=" + envconfig.Host().String(),
 		"ANTHROPIC_API_KEY=",
 		"ANTHROPIC_AUTH_TOKEN=ollama",
 		"CLAUDE_CODE_ATTRIBUTION_HEADER=0",
-	)
-
-	env = append(env, c.modelEnvVars(model)...)
-
-	cmd.Env = env
-	return cmd.Run()
+		// WHY off: Claude Code injects a "tokens left" system message after
+		// every tool result; we fold system messages to the front, which
+		// busts prefix KV on every turn (#17918).
+		"CLAUDE_CODE_TOTAL_TOKENS_REMINDER=off",
+	}
+	return append(env, c.modelEnvVars(model)...)
 }
 
 // modelEnvVars returns Claude Code env vars that route all model tiers through Ollama.

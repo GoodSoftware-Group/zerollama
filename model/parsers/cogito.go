@@ -46,6 +46,13 @@ func (p *CogitoParser) HasThinkingSupport() bool {
 	return true
 }
 
+func (p *CogitoParser) ThinkingClose() []string {
+	if p.state == CogitoCollectingThinking {
+		return []string{cogitoThinkingCloseTag}
+	}
+	return nil
+}
+
 func (p *CogitoParser) setInitialState(lastMessage *api.Message, tools []api.Tool, thinkValue *api.ThinkValue) {
 	prefill := lastMessage != nil && lastMessage.Role == "assistant"
 

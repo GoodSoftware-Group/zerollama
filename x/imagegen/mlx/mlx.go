@@ -3022,7 +3022,10 @@ func ClearCache() {
 // ClearCompileCache drops cached CUDA graphs from mlx.compile.
 // Call after large model unload or before a new heavy eval phase (e.g. VAE decode).
 func ClearCompileCache() {
-	C.mlx_detail_compile_clear_cache()
+	var cache C.mlx_compile_cache
+	C.mlx_detail_compile_cache(&cache)
+	C.mlx_detail_compile_clear_cache(cache)
+	C.mlx_compile_cache_free(cache)
 }
 
 // TrimVRAM aggressively returns pooled GPU memory and clears compile caches.
@@ -3130,7 +3133,8 @@ func GatherQMM(x, w, scales *Array, biases, lhsIndices, rhsIndices *Array, trans
 	optGroupSize := C.mlx_optional_int{value: C.int(groupSize), has_value: true}
 	optBits := C.mlx_optional_int{value: C.int(bits), has_value: true}
 	res := C.mlx_array_new()
-	C.mlx_gather_qmm(&res, x.c, w.c, scales.c, b, lhs, rhs, C._Bool(transpose), optGroupSize, optBits, cMode, C._Bool(sortedIndices), C.default_stream())
+	var noGlobalScale C.mlx_array
+	C.mlx_gather_qmm(&res, x.c, w.c, scales.c, b, lhs, rhs, C._Bool(transpose), optGroupSize, optBits, cMode, noGlobalScale, C._Bool(sortedIndices), C.default_stream())
 	return newArray(res)
 }
 
@@ -3245,7 +3249,8 @@ func PutAlongAxis(a, indices, values *Array, axis int) *Array {
 // Cumsum computes cumulative sum along an axis
 func Cumsum(a *Array, axis int) *Array {
 	res := C.mlx_array_new()
-	C.mlx_cumsum(&res, a.c, C.int(axis), false, false, C.default_stream())
+	optDtype := C.mlx_optional_dtype{has_value: false}
+	C.mlx_cumsum_axis(&res, a.c, C.int(axis), false, false, optDtype, C.default_stream())
 	return newArray(res)
 }
 

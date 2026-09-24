@@ -1087,7 +1087,6 @@ type RerankRequest struct {
 	Options   map[string]any `json:"options"`
 }
 
-// RerankResult is one scored document (llama.cpp Jina shape).
 // DecisionsRequest is POST /v1/decisions (Jev/Laya typed System-1 decisions).
 // WHY not ChatRequest: calibrated choice/score/noul + act head; see docs/laya-llama-cpp.md.
 type DecisionsRequest struct {
@@ -1116,6 +1115,7 @@ type DecisionsResponse struct {
 	} `json:"usage"`
 }
 
+// RerankResult is one scored document (llama.cpp Jina shape).
 type RerankResult struct {
 	Index          int     `json:"index"`
 	RelevanceScore float64 `json:"relevance_score"`
@@ -1910,9 +1910,16 @@ func (m *Metrics) Summary() {
 		fmt.Fprintf(os.Stderr, "prompt eval count:    %d token(s)\n", m.PromptEvalCount)
 	}
 
+	cached := m.CachedPromptTokens
+	if cached > 0 {
+		fmt.Fprintf(os.Stderr, "prompt eval cached:   %d token(s)\n", cached)
+	}
+
 	if m.PromptEvalDuration > 0 {
 		fmt.Fprintf(os.Stderr, "prompt eval duration: %s\n", m.PromptEvalDuration)
-		fmt.Fprintf(os.Stderr, "prompt eval rate:     %.2f tokens/s\n", float64(m.PromptEvalCount)/m.PromptEvalDuration.Seconds())
+		// Exclude cache hits from the prefill rate — they were not processed this turn.
+		uncached := max(0, m.PromptEvalCount-cached)
+		fmt.Fprintf(os.Stderr, "prompt eval rate:     %.2f tokens/s\n", float64(uncached)/m.PromptEvalDuration.Seconds())
 	}
 
 	if m.EvalCount > 0 {

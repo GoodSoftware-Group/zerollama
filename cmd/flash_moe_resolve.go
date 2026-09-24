@@ -4,23 +4,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ollama/ollama/discover"
+	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/x/freetokenlab"
 )
 
 type flashMoEResolveRow struct {
 	discover.FlashMoEInventoryEntry
-	FreetokenSlotBank int     `json:"freetoken_slot_bank"`
-	RamCapSlots       int     `json:"ram_cap_slots"`
-	RecommendSlotBank int     `json:"recommend_slot_bank"`
-	StickyMissRate    float64 `json:"sticky_miss_rate,omitempty"`
-	SlotBankBytes     int64   `json:"slot_bank_bytes,omitempty"`
-	HostRAMGiB        float64 `json:"host_ram_gib,omitempty"`
+	FreetokenSlotBank  int     `json:"freetoken_slot_bank"`
+	RamCapSlots        int     `json:"ram_cap_slots"`
+	RecommendSlotBank  int     `json:"recommend_slot_bank"`
+	StickyMissRate     float64 `json:"sticky_miss_rate,omitempty"`
+	SlotBankBytes      int64   `json:"slot_bank_bytes,omitempty"`
+	FullBankBytes      int64   `json:"full_bank_bytes,omitempty"`
+	BytesPerSlot       int64   `json:"bytes_per_slot,omitempty"`
+	BankSource         string  `json:"bank_source,omitempty"`
+	HostRAMGiB         float64 `json:"host_ram_gib,omitempty"`
+	PinBudgetBytes     int64   `json:"pin_budget_bytes,omitempty"`
+	PinCapped          bool    `json:"pin_capped,omitempty"`
+	BankOverPin        bool    `json:"bank_over_pin,omitempty"`
+	SuggestedCPULayers int     `json:"suggested_cpu_layers,omitempty"`
+	PinNote            string  `json:"pin_note,omitempty"`
 }
 
 func hostRAMGiB() float64 {
@@ -31,8 +41,63 @@ func hostRAMGiB() float64 {
 	return float64(m.TotalMemory) / float64(1<<30)
 }
 
+func hostRAMBytes() int64 {
+	m, err := discover.GetCPUMem()
+	if err != nil || m.TotalMemory == 0 {
+		return 0
+	}
+	return int64(m.TotalMemory)
+}
+
+// flashMoEIsWSL matches FreeToken _pin_budget_bytes (microsoft in uname.release).
+func flashMoEIsWSL() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	b, err := os.ReadFile("/proc/version")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(b)), "microsoft")
+}
+
+func flashMoEPinOpts() freetokenlab.PinBudgetOpts {
+	return freetokenlab.PinBudgetOpts{
+		HostRAMBytes: hostRAMBytes(),
+		PinBudgetGiB: envconfig.FlashMoEPinBudgetGiB(),
+		WSL:          flashMoEIsWSL(),
+	}
+}
+
+func flashMoEPinAdvice(e discover.FlashMoEInventoryEntry, fullBank int64) freetokenlab.PinAdvice {
+	layers := int(e.MoELayers)
+	if layers < 1 {
+		layers = 8
+	}
+	return freetokenlab.AdvisePin(flashMoEPinOpts(), fullBank, layers)
+}
+
+func flashMoEExpertDims(e discover.FlashMoEInventoryEntry) freetokenlab.ExpertBankDims {
+	return freetokenlab.ExpertBankDims{
+		Layers:  int(e.MoELayers),
+		Experts: int(e.ExpertCount),
+		Hidden:  int(e.HiddenSize),
+		Inter:   int(e.ExpertFFN),
+		Format:  e.ExpertBankFormat,
+	}
+}
+
+func flashMoEAdvise(e discover.FlashMoEInventoryEntry, ramGiB float64) freetokenlab.SlotBankAdvice {
+	return freetokenlab.AdviseSlotBankDims(int(e.ExpertCount), int(e.ExpertUsedCount), ramGiB, e.ExpertWeightBytes, flashMoEExpertDims(e))
+}
+
 func flashMoEResolveRowFrom(e discover.FlashMoEInventoryEntry, ramGiB float64) flashMoEResolveRow {
-	a := freetokenlab.AdviseSlotBankK(int(e.ExpertCount), int(e.ExpertUsedCount), ramGiB, e.ExpertWeightBytes)
+	a := flashMoEAdvise(e, ramGiB)
+	pin := flashMoEPinAdvice(e, a.FullBankBytes)
+	note := ""
+	if len(pin.Notes) > 0 {
+		note = pin.Notes[0]
+	}
 	return flashMoEResolveRow{
 		FlashMoEInventoryEntry: e,
 		FreetokenSlotBank:      a.Routing,
@@ -40,7 +105,15 @@ func flashMoEResolveRowFrom(e discover.FlashMoEInventoryEntry, ramGiB float64) f
 		RecommendSlotBank:      a.Recommend,
 		StickyMissRate:         a.MissRate,
 		SlotBankBytes:          a.BankBytes,
+		FullBankBytes:          a.FullBankBytes,
+		BytesPerSlot:           a.BytesPerSlot,
+		BankSource:             a.BankSource,
 		HostRAMGiB:             ramGiB,
+		PinBudgetBytes:         pin.BudgetBytes,
+		PinCapped:              pin.Capped,
+		BankOverPin:            pin.OverBudget,
+		SuggestedCPULayers:     pin.SuggestedCPULayers,
+		PinNote:                note,
 	}
 }
 
@@ -48,10 +121,17 @@ func flashMoESlotBankEnvLine(row flashMoEResolveRow) string {
 	line := fmt.Sprintf("export ZEROLLAMA_FLASH_MOE_SLOT_BANK=%d", row.RecommendSlotBank)
 	bits := []string{"lab; not auto-passed"}
 	if row.SlotBankBytes > 0 {
-		bits = append([]string{fmt.Sprintf("~%s packed experts", format.HumanBytes2(uint64(row.SlotBankBytes)))}, bits...)
+		label := "packed experts"
+		if row.BankSource == "estimate" {
+			label = "est. experts (FreeToken formula)"
+		}
+		bits = append([]string{fmt.Sprintf("~%s %s", format.HumanBytes2(uint64(row.SlotBankBytes)), label)}, bits...)
 	}
 	if row.StickyMissRate > 0 && row.StickyMissRate < 1 {
 		bits = append(bits, fmt.Sprintf("sticky miss≈%.3f", row.StickyMissRate))
+	}
+	if row.BankOverPin {
+		bits = append(bits, fmt.Sprintf("pin-over cpu-layers~%d (anemll: no flag)", row.SuggestedCPULayers))
 	}
 	return line + "  # " + strings.Join(bits, "; ")
 }

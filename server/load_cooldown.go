@@ -128,6 +128,12 @@ func skipLoadCooldown(err error) bool {
 	if errors.Is(err, ErrDarwinMetalContention) || errors.Is(err, ErrRuntimeInferenceModel) {
 		return true
 	}
+	// Broker contention / jetsam are environmental — geometric cooldown turns
+	// a ~90s HOLD_GPU wait into a multi-minute 503 storm that clients misread
+	// as "model not found".
+	if errors.Is(err, ErrUmaGPULease) || errors.Is(err, ErrMLXRunnerJetsam) || errors.Is(err, ErrMLXExclusiveBusy) {
+		return true
+	}
 	if errors.Is(err, ErrEdgeGgmlRunnerDisabled) || errors.Is(err, llm.ErrGgmlRunnerUnlinked) {
 		return true
 	}

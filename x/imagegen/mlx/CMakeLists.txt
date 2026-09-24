@@ -91,7 +91,11 @@ FetchContent_Declare(
     mlx-c
     GIT_REPOSITORY "https://github.com/ml-explore/mlx-c.git"
     GIT_TAG ${MLX_C_GIT_TAG}
-    PATCH_COMMAND ${CMAKE_COMMAND} -E env GIT_TERMINAL_PROMPT=0 git apply --whitespace=nowarn ${CMAKE_SOURCE_DIR}/mlx/compat/0001-mlx-c-regen-0.32.1.patch
+    # Carry patches until they land in ml-explore/mlx-c (qmm global_scale + gated_delta).
+    PATCH_COMMAND ${CMAKE_COMMAND}
+      -DPATCH_DIR=${CMAKE_SOURCE_DIR}/mlx/compat/mlx-c
+      -DPATCH_LABEL=mlx/compat/mlx-c
+      -P ${CMAKE_SOURCE_DIR}/mlx/compat/apply-git-patches.cmake
 )
 FetchContent_MakeAvailable(mlx-c)
 
@@ -174,3 +178,51 @@ endif()
 
 set_target_output_directory(mlx)
 set_target_output_directory(mlxc)
+
+# --- xgrammar (structured output for mlxrunner) ---
+# Pin matches upstream Ollama tip. Override with OLLAMA_XGRAMMAR_SOURCE or
+# FETCHCONTENT_SOURCE_DIR_XGRAMMAR for a sibling checkout.
+set(XGRAMMAR_VERSION v0.2.5)
+if(DEFINED ENV{OLLAMA_XGRAMMAR_SOURCE} AND NOT "$ENV{OLLAMA_XGRAMMAR_SOURCE}" STREQUAL "")
+    get_filename_component(_xgrammar_src "$ENV{OLLAMA_XGRAMMAR_SOURCE}" ABSOLUTE BASE_DIR ${CMAKE_SOURCE_DIR})
+    set(FETCHCONTENT_SOURCE_DIR_XGRAMMAR "${_xgrammar_src}" CACHE PATH "" FORCE)
+    message(STATUS "Using local XGrammar source: ${_xgrammar_src}")
+endif()
+FetchContent_Declare(xgrammar
+    GIT_REPOSITORY "https://github.com/mlc-ai/xgrammar.git"
+    GIT_TAG ${XGRAMMAR_VERSION}
+    GIT_SHALLOW TRUE
+    GIT_SUBMODULES 3rdparty/dlpack
+    # Do not add XGrammar's Python-oriented CMake project.
+    SOURCE_SUBDIR cmake/ollama)
+FetchContent_MakeAvailable(xgrammar)
+
+file(GLOB_RECURSE XGRAMMAR_SOURCES CONFIGURE_DEPENDS "${xgrammar_SOURCE_DIR}/cpp/*.cc")
+list(FILTER XGRAMMAR_SOURCES EXCLUDE REGEX "/cpp/tvm_ffi/.*\\.cc$")
+add_library(xgrammar STATIC ${XGRAMMAR_SOURCES})
+set_target_properties(xgrammar PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON)
+target_include_directories(xgrammar PUBLIC "${xgrammar_SOURCE_DIR}/include")
+target_include_directories(xgrammar SYSTEM PUBLIC
+    "${xgrammar_SOURCE_DIR}/3rdparty/picojson"
+    "${xgrammar_SOURCE_DIR}/3rdparty/dlpack/include")
+target_compile_definitions(xgrammar PUBLIC
+    XGRAMMAR_ENABLE_CPPTRACE=0
+    XGRAMMAR_ENABLE_INTERNAL_CHECK=0)
+
+add_library(ollama_xgrammar SHARED
+    "${CMAKE_SOURCE_DIR}/x/mlxrunner/xgrammar/native/xgrammar.cpp")
+target_include_directories(ollama_xgrammar PRIVATE
+    "${CMAKE_SOURCE_DIR}/x/mlxrunner/xgrammar/native")
+target_compile_definitions(ollama_xgrammar PRIVATE
+    OLLAMA_XGRAMMAR_BUILD=1
+    OLLAMA_XGRAMMAR_VERSION="${XGRAMMAR_VERSION}")
+# Export only the ollama_xgrammar_* API; xgrammar's own C++ symbols stay hidden.
+set_target_properties(ollama_xgrammar PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON)
+target_link_libraries(ollama_xgrammar PRIVATE xgrammar Threads::Threads)
+set_target_output_directory(ollama_xgrammar)
+

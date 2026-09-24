@@ -87,9 +87,21 @@ func (n *trieNode) hasSnapshots() bool {
 	return slices.ContainsFunc(n.snapshots, func(s cache.Snapshot) bool { return s != nil })
 }
 
-// hasAllSnapshots returns true if every layer has snapshot data.
-func (n *trieNode) hasAllSnapshots() bool {
-	return len(n.snapshots) > 0 && !slices.Contains(n.snapshots, nil)
+// hasAllSnapshots reports whether every non-nil cache layer already has a
+// snapshot on the node (upstream 8d66f083).
+func hasAllSnapshots(n *trieNode, caches []cache.Cache) bool {
+	if len(n.snapshots) == 0 {
+		return false
+	}
+	for i, c := range caches {
+		if c == nil {
+			continue
+		}
+		if i >= len(n.snapshots) || n.snapshots[i] == nil {
+			return false
+		}
+	}
+	return true
 }
 
 // findBestMatch walks the trie matching input tokens, returning the path of
@@ -149,23 +161,17 @@ func findBestMatch(root *trieNode, tokens []trieKey) (path []*trieNode, matched 
 	return path, pos
 }
 
-// appendTokens either creates a new child node or extends the leaf in place,
-// returning the node that now holds the tokens.
-func (n *trieNode) appendTokens(root *trieNode, tokens []trieKey, endOffset int) *trieNode {
-	if n == root || len(n.children) > 0 || n.hasSnapshots() {
-		child := &trieNode{
-			tokens:    make([]trieKey, len(tokens)),
-			endOffset: endOffset,
-			parent:    n,
-			lastUsed:  n.lastUsed,
-		}
-		copy(child.tokens, tokens)
-		n.children = append(n.children, child)
-		return child
+// appendChild creates a child node holding the tokens.
+func (n *trieNode) appendChild(tokens []trieKey, endOffset int) *trieNode {
+	child := &trieNode{
+		tokens:    make([]trieKey, len(tokens)),
+		endOffset: endOffset,
+		parent:    n,
+		lastUsed:  n.lastUsed,
 	}
-	n.tokens = append(n.tokens, tokens...)
-	n.endOffset = endOffset
-	return n
+	copy(child.tokens, tokens)
+	n.children = append(n.children, child)
+	return child
 }
 
 // removeNode removes a leaf node from the trie.

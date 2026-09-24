@@ -5,9 +5,11 @@
 // still render prompts in Go and call /completion. Other GGUF chat models use
 // llama-server's chat_template handling through /v1/chat/completions.
 //
-// For structured output, JSON schemas are passed directly to llama-server via
-// its json_schema field (avoiding the CGO SchemaToGrammar dependency). Raw BNF
-// grammars are passed via the grammar field.
+// For structured output, a JSON schema is passed to llama-server via its
+// json_schema field and the "json" format as a builtin grammar via the grammar
+// field. A format that applies after a response's thinking is sent as a
+// grammar built around the GBNF llama-server itself derives from the schema.
+// M15f also accepts {"type":"gbnf","grammar":"..."}.
 //
 // llama-server auto-detects GPU layers (-ngl), thread count (-t), and flash
 // attention (--flash-attn).
@@ -16,6 +18,7 @@ package llm
 import (
 	"bufio"
 	"bytes"
+	"container/list"
 	"context"
 	crand "crypto/rand"
 	"encoding/base64"
@@ -879,6 +882,9 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 	if launch.embedding && ggufIsRerank(launch.ggufKV) {
 		params = append(params, "--reranking")
 	}
+	if ggufIsLaya(launch.ggufKV) {
+		params = append(params, "--decisions")
+	}
 
 	// GPU layer offloading — only pass an exact count when the caller asked for
 	// a real partial/full pin. Default (-1) and Modelfile/eliza sentinel 999
@@ -1070,9 +1076,6 @@ func appendBatchArgs(params []string, opts api.Options, embedding bool, numParal
 func appendBatchArgsWithUBatch(params []string, opts api.Options, embedding bool, numParallel, ubatch int) []string {
 	if embedding {
 		params = append(params, "--embedding")
-	if ggufIsLaya(launch.ggufKV) {
-		params = append(params, "--decisions")
-	}
 		if batchSize := embeddingBatchSize(opts, numParallel); batchSize > 0 {
 			params = append(params, "-b", strconv.Itoa(batchSize), "-ub", strconv.Itoa(batchSize))
 		}
@@ -1183,6 +1186,9 @@ func llamaServerMTPActive(config LlamaServerConfig, opts api.Options) bool {
 }
 
 func (launch llamaServerLaunchConfig) mmprojOffloadDisabled() (bool, string) {
+	if launch.requiresMMProjGPUOffload() {
+		return false, ""
+	}
 	if launch.forceNoMMProjOffload {
 		return true, "startup-oom-retry"
 	}
@@ -1196,6 +1202,13 @@ func (launch llamaServerLaunchConfig) mmprojOffloadDisabled() (bool, string) {
 		}
 	}
 	return shouldDisableMMProjOffload(launch.opts, launch.gpus, launch.modelLayers, launch.mmprojMemory)
+}
+
+func (launch llamaServerLaunchConfig) requiresMMProjGPUOffload() bool {
+	// Gemma3n's MobileNetV5 projector silently produces corrupted image
+	// embeddings when it runs on the CPU backend, so keep it on the GPU
+	// whenever one is in play.
+	return launch.modelArch == "gemma3n" && launch.opts.NumGPU != 0 && len(launch.gpus) > 0
 }
 
 // inlineMMProjGPUOffloadAllowed reports whether an inline (same-file) mmproj may
@@ -1634,17 +1647,17 @@ func cloneStringMap(src map[string]string) map[string]string {
 }
 
 // ggufIsRerank is true when GGUF pooling_type is RANK (llama.cpp enum 4).
-// ggufIsLaya is true when the GGUF architecture is Laya typed-decisions.
-func ggufIsLaya(kv ggml.KV) bool {
-	return kv.Architecture() == "laya"
-}
-
 func ggufIsRerank(kv ggml.KV) bool {
 	arch := kv.Architecture()
 	if _, ok := kv[fmt.Sprintf("%s.pooling_type", arch)]; !ok {
 		return false
 	}
 	return kv.Uint("pooling_type", 0) == 4
+}
+
+// ggufIsLaya is true when the GGUF architecture is Laya typed-decisions.
+func ggufIsLaya(kv ggml.KV) bool {
+	return kv.Architecture() == "laya"
 }
 
 func legacyEmbeddingsWereRaw(kv ggml.KV) bool {
@@ -1784,6 +1797,9 @@ func (s *llamaServerRunner) shouldRetryMMProjCPUOffload(err error) bool {
 	// Kernel SIGKILL during load usually means CUDA OOM without a cudaMalloc
 	// log line — treat like OOM so we retry with --no-mmproj-offload.
 	if !IsOutOfMemory(err) && !isLlamaServerLikelyVRAMKill(err) {
+		return false
+	}
+	if s.launch.requiresMMProjGPUOffload() {
 		return false
 	}
 	// llama-server --fit can select a text-layer placement that fits before
@@ -2107,6 +2123,85 @@ type llamaServerCompletionRequest struct {
 	LogitBias       [][]float64     `json:"logit_bias,omitempty"`
 }
 
+// schemaGrammars caches the grammars llama-server derives from JSON schemas,
+// most recently used first. The conversion depends only on the llama-server
+// build, which is fixed for the process, so entries are shared by every
+// runner and never expire.
+var schemaGrammars = struct {
+	sync.Mutex
+	entries map[string]*list.Element
+	order   list.List
+}{entries: map[string]*list.Element{}}
+
+const schemaGrammarsSize = 64
+
+type schemaGrammar struct {
+	schema, grammar string
+}
+
+// schemaGrammar converts a JSON schema to GBNF with llama-server's own
+// converter. An empty completion evaluates and generates nothing, but its
+// final response still reports the grammar the schema was converted to.
+func (s *llamaServerRunner) schemaGrammar(ctx context.Context, schema json.RawMessage) (string, error) {
+	key := string(schema)
+	schemaGrammars.Lock()
+	if e, ok := schemaGrammars.entries[key]; ok {
+		schemaGrammars.order.MoveToFront(e)
+		schemaGrammars.Unlock()
+		return e.Value.(*schemaGrammar).grammar, nil
+	}
+	schemaGrammars.Unlock()
+
+	body, err := json.Marshal(struct {
+		Prompt         [][]int         `json:"prompt"`
+		NPredict       int             `json:"n_predict"`
+		JsonSchema     json.RawMessage `json:"json_schema"`
+		ResponseFields []string        `json:"response_fields"`
+	}{Prompt: [][]int{{}}, JsonSchema: schema, ResponseFields: []string{"generation_settings/grammar"}})
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal grammar request: %v", err)
+	}
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/completion", s.port)
+	serverReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("error creating grammar request: %v", err)
+	}
+	serverReq.Header.Set("Content-Type", "application/json")
+	res, err := s.httpClient().Do(serverReq)
+	if err != nil {
+		return "", fmt.Errorf("llama-server grammar request failed: %v", err)
+	}
+	defer res.Body.Close()
+	resBody, err := io.ReadAll(res.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed reading llama-server grammar response: %w", err)
+	}
+	if res.StatusCode >= 400 {
+		return "", api.StatusError{StatusCode: res.StatusCode, ErrorMessage: s.statusErrorMessage(resBody)}
+	}
+	var lsRes struct {
+		Grammar string `json:"generation_settings/grammar"`
+	}
+	if err := json.Unmarshal(resBody, &lsRes); err != nil {
+		return "", fmt.Errorf("error unmarshalling llama-server grammar response: %v", err)
+	}
+	if lsRes.Grammar == "" {
+		return "", errors.New("llama-server returned no grammar for the schema")
+	}
+
+	schemaGrammars.Lock()
+	defer schemaGrammars.Unlock()
+	if _, ok := schemaGrammars.entries[key]; !ok {
+		if schemaGrammars.order.Len() == schemaGrammarsSize {
+			oldest := schemaGrammars.order.Back()
+			delete(schemaGrammars.entries, oldest.Value.(*schemaGrammar).schema)
+			schemaGrammars.order.Remove(oldest)
+		}
+		schemaGrammars.entries[key] = schemaGrammars.order.PushFront(&schemaGrammar{schema: key, grammar: lsRes.Grammar})
+	}
+	return lsRes.Grammar, nil
+}
+
 func llamaServerPreservedTokens(parserTokens []string, toolCallTag string) []string {
 	tokens := append([]string{}, parserTokens...)
 	tokens = append(tokens, llamaServerPreservedTokensForToolTag(toolCallTag)...)
@@ -2322,6 +2417,19 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 		lsReq.Grammar = req.Grammar
 	}
 
+	// A format on a thinking response applies after the closing string, which
+	// only a grammar of our own can express, so a schema is converted first.
+	if len(req.ThinkingClose) > 0 && (lsReq.Grammar != "" || lsReq.JsonSchema != nil) {
+		if lsReq.Grammar == "" {
+			grammar, err := s.schemaGrammar(ctx, lsReq.JsonSchema)
+			if err != nil {
+				return err
+			}
+			lsReq.Grammar, lsReq.JsonSchema = grammar, nil
+		}
+		lsReq.Grammar = thinkingGrammar(req.ThinkingClose, lsReq.Grammar)
+	}
+
 	// Convert media: padded inject uses pretokenized vision blocks; otherwise
 	// replace Ollama's stable [img-N] markers with the per-process llama-server marker.
 	switch p := lsReq.Prompt.(type) {
@@ -2438,9 +2546,9 @@ func (s *llamaServerRunner) Completion(ctx context.Context, req CompletionReques
 				lastToken = strings.TrimSpace(lsResp.Content)
 				tokenRepeat = 0
 			}
-			if tokenRepeat > 30 {
+			if tokenRepeat > 100 {
 				slog.Debug("prediction aborted, token repeat limit reached")
-				return ctx.Err()
+				return fmt.Errorf("prediction aborted, token repeat limit reached")
 			}
 
 			if lsResp.Content != "" && !lsResp.Stop {

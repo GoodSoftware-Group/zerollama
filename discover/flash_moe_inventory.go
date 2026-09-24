@@ -12,6 +12,7 @@ import (
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/types/model"
+	"github.com/ollama/ollama/x/freetokenlab"
 )
 
 // FlashMoEInventoryEntry is a local MoE model zerollama can run with Flash-MoE.
@@ -24,6 +25,12 @@ type FlashMoEInventoryEntry struct {
 	ExpertCount       uint32 `json:"expert_count"`
 	ExpertUsedCount   uint32 `json:"expert_used_count,omitempty"`
 	ExpertWeightBytes int64  `json:"expert_weight_bytes,omitempty"`
+	// Config dims for FreeToken bank_bytes_estimate when *_exps sizes are missing.
+	HiddenSize             uint32 `json:"hidden_size,omitempty"`
+	ExpertFFN              uint32 `json:"expert_ffn,omitempty"`
+	MoELayers              uint32 `json:"moe_layers,omitempty"`
+	ExpertBankFormat       string `json:"expert_bank_format,omitempty"`
+	ExpertBankEstimateBytes int64 `json:"expert_bank_estimate_bytes,omitempty"`
 	Family            string `json:"family"`
 	SizeBytes         int64  `json:"size_bytes"`
 }
@@ -198,17 +205,36 @@ func flashMoEEntryFromManifest(name model.Name, mf *manifest.Manifest) (FlashMoE
 	}
 	ready := flashMoESidecarReady(sidecar)
 
+	tensors := meta.Tensors().Items()
+	measured := moeExpertTensorBytes(tensors)
+	hidden := kv.Uint("embedding_length")
+	inter := kv.Uint("expert_feed_forward_length")
+	if inter == 0 {
+		inter = kv.Uint("feed_forward_length")
+	}
+	layers := uint32(kv.BlockCount())
+	format := moeExpertQuantFormat(tensors)
+	estimate := freetokenlab.BankBytesEstimate(freetokenlab.ExpertBankDims{
+		Layers: int(layers), Experts: int(kv.Uint("expert_count")),
+		Hidden: int(hidden), Inter: int(inter), Format: format,
+	})
+
 	return FlashMoEInventoryEntry{
-		Name:              name.String(),
-		Tag:               tag,
-		GGUFPath:          modelPath,
-		Sidecar:           sidecar,
-		SidecarReady:      ready,
-		ExpertCount:       kv.Uint("expert_count"),
-		ExpertUsedCount:   kv.Uint("expert_used_count"),
-		ExpertWeightBytes: moeExpertTensorBytes(meta.Tensors().Items()),
-		Family:            firstNonEmpty(family, kv.Architecture()),
-		SizeBytes:         modelSize,
+		Name:                    name.String(),
+		Tag:                     tag,
+		GGUFPath:                modelPath,
+		Sidecar:                 sidecar,
+		SidecarReady:            ready,
+		ExpertCount:             kv.Uint("expert_count"),
+		ExpertUsedCount:         kv.Uint("expert_used_count"),
+		ExpertWeightBytes:       measured,
+		HiddenSize:              hidden,
+		ExpertFFN:               inter,
+		MoELayers:               layers,
+		ExpertBankFormat:        format,
+		ExpertBankEstimateBytes: estimate,
+		Family:                  firstNonEmpty(family, kv.Architecture()),
+		SizeBytes:               modelSize,
 	}, true, nil
 }
 
@@ -224,6 +250,31 @@ func moeExpertTensorBytes(tensors []*ggml.Tensor) int64 {
 		}
 	}
 	return int64(sum)
+}
+
+
+func moeExpertQuantFormat(tensors []*ggml.Tensor) string {
+	for _, t := range tensors {
+		if t == nil {
+			continue
+		}
+		n := strings.ToLower(t.Name)
+		if !(strings.Contains(n, "_exps.") || strings.HasSuffix(n, "_exps")) {
+			continue
+		}
+		switch ggml.TensorType(t.Kind) {
+		case ggml.TensorTypeQ4_0:
+			return "q4_0"
+		case ggml.TensorTypeF16, ggml.TensorTypeBF16:
+			return "bf16"
+		case ggml.TensorTypeF32:
+			return "bf16"
+		default:
+			// Unknown quant — FreeToken q4_0 formula is the Flash-MoE lab default.
+			return "q4_0"
+		}
+	}
+	return "q4_0"
 }
 
 func isMoEGGUF(kv ggml.KV, family string) bool {

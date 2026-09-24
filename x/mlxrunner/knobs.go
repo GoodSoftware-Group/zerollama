@@ -147,6 +147,14 @@ func KnobSnapshot() []Knob {
 			Why:        "never sample FIM/reserved tokenizer ids (think/tool tags stay legal)",
 			Tune:       "off only to match a bench that must emit FIM holes",
 		},
+		{
+			Env:        "ZEROLLAMA_MLX_KV_QUANT",
+			Value:      envOr("ZEROLLAMA_MLX_KV_QUANT", "off"),
+			Default:    "off",
+			Overridden: envSet("ZEROLLAMA_MLX_KV_QUANT"),
+			Why:        "live MLX KV affine quant (4|8, group 64); SDPA still denseView",
+			Tune:       "8 for long-ctx UMA; expect decode regress until fused packed attn; head_dim must divide 64",
+		},
 	}
 }
 

@@ -13,6 +13,9 @@ import (
 // RotatingKVCache implements sliding window attention with bounded memory.
 type RotatingKVCache struct {
 	keys, values *mlx.Array
+	affine       affineBuffers
+	quant        KVQuantConfig
+	denseElem    mlx.DType
 	offset       int
 	step         int
 	maxSize      int
@@ -29,7 +32,36 @@ type RotatingKVCache struct {
 }
 
 func NewRotatingKVCache(maxSize int) *RotatingKVCache {
-	return &RotatingKVCache{maxSize: maxSize, step: 256}
+	return &RotatingKVCache{maxSize: maxSize, step: 256, quant: KVQuantFromEnv()}
+}
+
+// NewRotatingKVCacheWithQuant is for tests that pin a scheme without env.
+func NewRotatingKVCacheWithQuant(maxSize int, cfg KVQuantConfig) *RotatingKVCache {
+	return &RotatingKVCache{maxSize: maxSize, step: 256, quant: cfg}
+}
+
+func (c *RotatingKVCache) live() bool {
+	return c.keys != nil || c.affine.initialized()
+}
+
+func (c *RotatingKVCache) seqCap() int {
+	if c.quant.IsAffine() {
+		return c.affine.seqCap()
+	}
+	if c.keys == nil {
+		return 0
+	}
+	return c.keys.Dim(2)
+}
+
+func (c *RotatingKVCache) maybeDisableAffine(keys, values *mlx.Array) {
+	if !c.live() && c.quant.IsAffine() {
+		if !headDimOK(keys.Dim(3), c.quant.GroupSize) || !headDimOK(values.Dim(3), c.quant.GroupSize) {
+			logutil.Warn("mlx KV quant disabled: head_dim not divisible by group size",
+				"k_dim", keys.Dim(3), "v_dim", values.Dim(3), "group", c.quant.GroupSize)
+			c.quant = DenseKVQuantConfig()
+		}
+	}
 }
 
 // Assumes B = 1; heterogeneous batches are not supported.
@@ -76,25 +108,26 @@ func (c *RotatingKVCache) Update(b *batch.Batch, keys, values *mlx.Array) *nn.KV
 
 func (c *RotatingKVCache) concat(keys, values *mlx.Array) (newK *mlx.Array, newV *mlx.Array) {
 	logutil.Trace("(*RotatingKVCache).concat", "keys_dim", keys.Dims(), "values_dim", values.Dims(), "offset", c.offset, "idx", c.idx, "max_size", c.maxSize)
+	c.maybeDisableAffine(keys, values)
+	if c.quant.IsAffine() {
+		return c.concatAffine(keys, values)
+	}
+	return c.concatDense(keys, values)
+}
 
-	// Freeze outstanding lazy snapshots: the linearize/trim/concat below
-	// reorders and drops the slots they name.
+func (c *RotatingKVCache) concatDense(keys, values *mlx.Array) (newK *mlx.Array, newV *mlx.Array) {
 	c.copyOutLazySnapshots()
 
 	if c.keys == nil {
 		c.keys, c.values = keys.Clone(), values.Clone()
+		c.denseElem = keys.DType()
 		mlx.Pin(c.keys, c.values)
 	} else {
 		if c.idx < c.keys.Dim(2) {
 			if c.offset <= c.maxSize {
-				// Not yet wrapped: slots [c.idx, Dim) are grow padding
-				// or stale post-rewind data, not live window content.
 				c.keys.Set(c.keys.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(0, c.idx), mlx.Slice()))
 				c.values.Set(c.values.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(0, c.idx), mlx.Slice()))
 			} else {
-				// Wrapped: logical order is slots[idx..Dim) then slots[0..idx).
-				// Linearize so the trim + concat below operate on contiguous
-				// positions and preserve the last (maxSize - 1) old tokens.
 				tailK := c.keys.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(c.idx, c.keys.Dim(2)), mlx.Slice())
 				tailV := c.values.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(c.idx, c.values.Dim(2)), mlx.Slice())
 				headK := c.keys.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(0, c.idx), mlx.Slice())
@@ -105,7 +138,6 @@ func (c *RotatingKVCache) concat(keys, values *mlx.Array) (newK *mlx.Array, newV
 			}
 		}
 
-		// Trim to max_size to maintain sliding window
 		if trim := c.idx - c.maxSize + 1; trim > 0 {
 			c.keys.Set(c.keys.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(trim, c.keys.Dim(2)), mlx.Slice()))
 			c.values.Set(c.values.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(trim, c.values.Dim(2)), mlx.Slice()))
@@ -120,18 +152,64 @@ func (c *RotatingKVCache) concat(keys, values *mlx.Array) (newK *mlx.Array, newV
 	return c.keys, c.values
 }
 
+func (c *RotatingKVCache) concatAffine(keys, values *mlx.Array) (newK *mlx.Array, newV *mlx.Array) {
+	c.copyOutLazySnapshots()
+
+	kq := quantizeAffine(keys, c.quant)
+	vq := quantizeAffine(values, c.quant)
+	chunk := affineBuffers{
+		kq: kq.Q, kScales: kq.Scales, kBiases: kq.Biases,
+		vq: vq.Q, vScales: vq.Scales, vBiases: vq.Biases,
+	}
+
+	if !c.affine.initialized() {
+		c.affine = chunk
+		c.denseElem = keys.DType()
+		c.affine.pin()
+	} else {
+		cap := c.affine.seqCap()
+		if c.idx < cap {
+			if c.offset <= c.maxSize {
+				c.affine.setSliceSeq(c.affine.sliceSeq(0, c.idx))
+			} else {
+				tail := c.affine.sliceSeq(c.idx, cap)
+				head := c.affine.sliceSeq(0, c.idx)
+				c.affine.setSliceSeq(affineBuffers{
+					kq: tail.kq.Concatenate(2, head.kq), kScales: tail.kScales.Concatenate(2, head.kScales),
+					kBiases: tail.kBiases.Concatenate(2, head.kBiases),
+					vq:      tail.vq.Concatenate(2, head.vq), vScales: tail.vScales.Concatenate(2, head.vScales),
+					vBiases: tail.vBiases.Concatenate(2, head.vBiases),
+				})
+				c.idx = c.affine.seqCap()
+			}
+		}
+		if trim := c.idx - c.maxSize + 1; trim > 0 {
+			c.affine.setSliceSeq(c.affine.sliceSeq(trim, c.affine.seqCap()))
+		}
+		c.affine.concatenate(2, chunk)
+	}
+
+	c.offset += keys.Dim(2)
+	c.idx = c.affine.seqCap()
+	return c.affine.denseSlice(c.quant, c.denseElem, 0, c.affine.seqCap())
+}
+
 func (c *RotatingKVCache) update(keys, values *mlx.Array) (*mlx.Array, *mlx.Array) {
 	logutil.Trace("(*RotatingKVCache).update", "keys_dim", keys.Dims(), "values_dim", values.Dims(), "offset", c.offset, "idx", c.idx, "max_size", c.maxSize)
+	c.maybeDisableAffine(keys, values)
+	if c.quant.IsAffine() {
+		return c.updateAffine(keys, values)
+	}
+	return c.updateDense(keys, values)
+}
 
-	// Freeze outstanding lazy snapshots: the trim/rotate/SliceUpdate below
-	// overwrites the slots they name.
+func (c *RotatingKVCache) updateDense(keys, values *mlx.Array) (*mlx.Array, *mlx.Array) {
 	c.copyOutLazySnapshots()
 
 	B, H, L, Dk, Dv := keys.Dim(0), keys.Dim(1), keys.Dim(2), keys.Dim(3), values.Dim(3)
 
 	prev := c.offset
 
-	// Grow buffer if not yet at max
 	if c.keys == nil || (prev >= c.keys.Dim(2) && c.keys.Dim(2) < c.maxSize) {
 		newSize := min(c.step, c.maxSize-prev)
 		newKeys := mlx.Zeros(keys.DType(), B, H, newSize, Dk)
@@ -141,19 +219,18 @@ func (c *RotatingKVCache) update(keys, values *mlx.Array) (*mlx.Array, *mlx.Arra
 			c.values.Set(c.values.Concatenate(2, newValues))
 		} else {
 			c.keys, c.values = newKeys, newValues
+			c.denseElem = keys.DType()
 			mlx.Pin(c.keys, c.values)
 		}
 		c.idx = prev
 	}
 
-	// Trim to max_size to maintain sliding window
 	if trim := c.keys.Dim(2) - c.maxSize; trim > 0 {
 		c.keys.Set(c.keys.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(trim, c.keys.Dim(2)), mlx.Slice()))
 		c.values.Set(c.values.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(trim, c.values.Dim(2)), mlx.Slice()))
 		c.idx = c.maxSize
 	}
 
-	// Rotate when hitting max
 	if c.idx >= c.maxSize {
 		c.idx = 0
 	}
@@ -169,7 +246,48 @@ func (c *RotatingKVCache) update(keys, values *mlx.Array) (*mlx.Array, *mlx.Arra
 		c.values.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(0, validLen), mlx.Slice())
 }
 
-// View returns the current cache contents as a read-only KV history, used by an
+func (c *RotatingKVCache) updateAffine(keys, values *mlx.Array) (*mlx.Array, *mlx.Array) {
+	c.copyOutLazySnapshots()
+
+	B, H, L := keys.Dim(0), keys.Dim(1), keys.Dim(2)
+	prev := c.offset
+
+	kq := quantizeAffine(keys, c.quant)
+	vq := quantizeAffine(values, c.quant)
+
+	if !c.affine.initialized() || (prev >= c.affine.seqCap() && c.affine.seqCap() < c.maxSize) {
+		newSize := min(c.step, c.maxSize-prev)
+		grown := growAffineZeros(B, H, newSize,
+			kq.Q.Dim(3), vq.Q.Dim(3), kq.Scales.Dim(3), vq.Scales.Dim(3))
+		if c.affine.initialized() {
+			c.affine.concatenate(2, grown)
+		} else {
+			c.affine = grown
+			c.denseElem = keys.DType()
+			c.affine.pin()
+		}
+		c.idx = prev
+	}
+
+	if trim := c.affine.seqCap() - c.maxSize; trim > 0 {
+		c.affine.setSliceSeq(c.affine.sliceSeq(trim, c.affine.seqCap()))
+		c.idx = c.maxSize
+	}
+
+	if c.idx >= c.maxSize {
+		c.idx = 0
+	}
+
+	c.affine.writeAt(c.idx, c.idx+L, kq, vq)
+
+	c.offset += L
+	c.idx += L
+
+	validLen := min(c.offset, c.maxSize)
+	return c.affine.denseSlice(c.quant, c.denseElem, 0, validLen)
+}
+
+// View returns// View returns the current cache contents as a read-only KV history, used by an
 // assistant model that shares this cache. It sets L=1 so rotatingApplier treats
 // the buffer as ring-ordered (its stored layout); L=1 is a layout selector, not
 // a query length. A post-concat oversize buffer (K > maxSize) is already in
@@ -202,6 +320,14 @@ func (c *RotatingKVCache) View(b *batch.Batch) *nn.KVHistory {
 }
 
 func (c *RotatingKVCache) State() []*mlx.Array {
+	if c.quant.IsAffine() {
+		if !c.affine.initialized() {
+			return nil
+		}
+		liveLen := min(c.offset, c.affine.seqCap())
+		k, v := c.affine.denseSlice(c.quant, c.denseElem, 0, liveLen)
+		return []*mlx.Array{k, v}
+	}
 	if c.keys == nil || c.values == nil {
 		return nil
 	}
@@ -213,18 +339,44 @@ func (c *RotatingKVCache) State() []*mlx.Array {
 }
 
 // replaceBuffer swaps in newK/newV as the cache's keys/values, unpinning the old
-// buffer and pinning the new one.
+// buffer and pinning the new one. Under affine quant the dense arrays are
+// re-quantized into the six-buffer store.
 func (c *RotatingKVCache) replaceBuffer(newK, newV *mlx.Array) {
+	if c.quant.IsAffine() {
+		c.affine.unpin()
+		kq := quantizeAffine(newK, c.quant)
+		vq := quantizeAffine(newV, c.quant)
+		c.affine = affineBuffers{
+			kq: kq.Q, kScales: kq.Scales, kBiases: kq.Biases,
+			vq: vq.Q, vScales: vq.Scales, vBiases: vq.Biases,
+		}
+		c.denseElem = newK.DType()
+		c.affine.pin()
+		c.keys, c.values = nil, nil
+		return
+	}
 	mlx.Unpin(c.keys, c.values)
 	c.keys, c.values = newK, newV
 	mlx.Pin(c.keys, c.values)
 }
 
-func (c *RotatingKVCache) Free() {
-	// Freeing drops the buffer lazy snapshots index into; copy them out first.
-	c.copyOutLazySnapshots()
-	mlx.Unpin(c.keys, c.values)
+func (c *RotatingKVCache) replaceAffineSlice(start, end int) {
+	sliced := c.affine.sliceSeq(start, end)
+	c.affine.unpin()
+	c.affine = sliced
+	c.affine.pin()
 	c.keys, c.values = nil, nil
+}
+
+func (c *RotatingKVCache) Free() {
+	c.copyOutLazySnapshots()
+	if c.quant.IsAffine() {
+		c.affine.unpin()
+		c.affine.clear()
+	} else {
+		mlx.Unpin(c.keys, c.values)
+		c.keys, c.values = nil, nil
+	}
 	c.offset = 0
 	c.idx = 0
 	c.snapshots = pendingSnapshots{}
@@ -278,10 +430,10 @@ func (c *RotatingKVCache) captureLazySnapshots(start, end int, batched bool) {
 // slots [sliceStart, sliceEnd), and restoring sets idx == liveLen so the buffer
 // reads back in logical order. Returns nil for a zero-width range.
 func (c *RotatingKVCache) lazyRotatingSnapshot(o int) Snapshot {
-	if c.keys == nil {
+	if !c.live() {
 		return nil
 	}
-	bufBase := c.offset - c.keys.Dim(2)
+	bufBase := c.offset - c.seqCap()
 	liveLen := min(o, c.maxSize)
 	sliceStart := o - liveLen - bufBase
 	sliceEnd := o - bufBase
@@ -348,10 +500,17 @@ func (s *rotatingSnapshot) copyOut() {
 		return
 	}
 	c := s.cache
-	kSlice := c.keys.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(s.sliceStart, s.sliceEnd), mlx.Slice())
-	vSlice := c.values.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(s.sliceStart, s.sliceEnd), mlx.Slice())
-	k := mlx.Contiguous(kSlice, false)
-	v := mlx.Contiguous(vSlice, false)
+	var k, v *mlx.Array
+	if c.quant.IsAffine() {
+		dk, dv := c.affine.denseSlice(c.quant, c.denseElem, s.sliceStart, s.sliceEnd)
+		k = mlx.Contiguous(dk, false)
+		v = mlx.Contiguous(dv, false)
+	} else {
+		kSlice := c.keys.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(s.sliceStart, s.sliceEnd), mlx.Slice())
+		vSlice := c.values.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(s.sliceStart, s.sliceEnd), mlx.Slice())
+		k = mlx.Contiguous(kSlice, false)
+		v = mlx.Contiguous(vSlice, false)
+	}
 	mlx.Pin(k, v)
 	mlx.AsyncEval(k, v)
 	k, v, s.packed, s.elem = packOwnedKV(k, v)
@@ -383,7 +542,7 @@ func (c *RotatingKVCache) copyOutLazySnapshots() {
 }
 
 func (c *RotatingKVCache) Snapshot(fromOffset int) Snapshot {
-	if c.keys == nil || c.offset <= fromOffset {
+	if !c.live() || c.offset <= fromOffset {
 		return nil
 	}
 
@@ -444,10 +603,14 @@ func (c *RotatingKVCache) Restore(snapshot Snapshot, target int) bool {
 		c.dropLazySnapshot(snap)
 		c.copyOutLazySnapshots()
 		liveLen := snap.sliceEnd - snap.sliceStart
-		c.replaceBuffer(
-			c.keys.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(snap.sliceStart, snap.sliceEnd), mlx.Slice()),
-			c.values.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(snap.sliceStart, snap.sliceEnd), mlx.Slice()),
-		)
+		if c.quant.IsAffine() {
+			c.replaceAffineSlice(snap.sliceStart, snap.sliceEnd)
+		} else {
+			c.replaceBuffer(
+				c.keys.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(snap.sliceStart, snap.sliceEnd), mlx.Slice()),
+				c.values.Slice(mlx.Slice(), mlx.Slice(), mlx.Slice(snap.sliceStart, snap.sliceEnd), mlx.Slice()),
+			)
+		}
 		snap.sliceStart, snap.sliceEnd = 0, liveLen
 		c.lazySnapshots = append(c.lazySnapshots, snap)
 		c.offset = snap.toOffset

@@ -139,6 +139,7 @@ Zerollama automatically applies **`-ub 1`** and **`-fit on`** when a sidecar is 
 | `ZEROLLAMA_FLASH_MOE_SLOT_BANK` | omit | Resident slots per layer |
 | `ZEROLLAMA_FLASH_MOE_TOPK` | omit | Routed K override |
 | `ZEROLLAMA_FLASH_MOE_PREFETCH` | off | `--moe-prefetch-temporal` |
+| `ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB` | *(unset)* | Lab-only pin-budget override (FreeToken `FREETOKEN_PIN_BUDGET_GB`; WSL defaults to 40% RAM). Advice in doctor/`freetoken` — not passed to anemll |
 | `ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN` | — | Override Flash-MoE binary path |
 | `FLASH_MOE_REPO` | `~/Sites/inference/anemll-flash-llama.cpp` | Build script source tree |
 | `LLAMA_SERVER_BIN` | — | Overrides **all** llama-server discovery when set |
@@ -156,7 +157,7 @@ Zerollama automatically applies **`-ub 1`** and **`-fit on`** when a sidecar is 
 
 Rule of thumb: **5–15% of RAM** for slot bank.
 
-Per-model **routing** uses GGUF `expert_count` + `expert_used_count`. `ram_cap` is this table (interpolated). `recommend` is min(routing, ram_cap). `bank~` is packed `*_exps` tensor bytes × recommend / experts (header only). **Not** auto-passed (`ZEROLLAMA_FLASH_MOE_SLOT_BANK=0` omits `--moe-slot-bank`). Copy: `./zerollama flash-moe-resolve --print-env`.
+Per-model **routing** uses GGUF `expert_count` + `expert_used_count`. `ram_cap` is this table (interpolated). `recommend` is min(routing, ram_cap). `bank~` is recommend × (bytes per expert across layers). Prefer measured GGUF `*_exps` sizes; if missing, FreeToken `bank_bytes_estimate` from `embedding_length` × `expert_feed_forward_length` × layers × format (`q4_0` default). **Not** auto-passed (`ZEROLLAMA_FLASH_MOE_SLOT_BANK=0` omits `--moe-slot-bank`). Copy: `./zerollama flash-moe-resolve --print-env`.
 
 ---
 

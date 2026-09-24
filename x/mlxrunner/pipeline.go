@@ -35,10 +35,23 @@ func modelSlidingWindow(m base.Model) int {
 // Prepare tokenizes the prompt and validates it against the model's
 // context length. It is safe to call from any goroutine. On success it
 // populates request.Tokens and adjusts request.Options.NumPredict.
-func (r *Runner) Prepare(request *Request) error {
+func (r *Runner) Prepare(request *Request) (err error) {
 	if r.Model == nil {
 		return errors.New("model not loaded")
 	}
+
+	// Launched first so the compile overlaps tokenization and prefill.
+	grammar, err := r.grammarEngine.prepare(request.Format)
+	if err != nil {
+		return err
+	}
+	request.compiledGrammar = grammar
+	defer func() {
+		if err != nil {
+			request.compiledGrammar.close()
+			request.compiledGrammar = nil
+		}
+	}()
 
 	var tokens []int32
 	if len(request.Tokens) > 0 {
@@ -99,6 +112,8 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 	mlx.ResetPeakMemory()
 
 	defer func() {
+		request.compiledGrammar.close()
+		request.compiledGrammar = nil
 		r.Sampler.Remove(pipelineSlot)
 		mlx.Sweep()
 		mlx.ClearCache()
@@ -126,6 +141,11 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 		return err
 	}
 
+	g, err := request.compiledGrammar.resolve(ctx)
+	if err != nil {
+		return err
+	}
+
 	// Sampler registration + first dispatch/prime can Eval before decode's
 	// per-step leases; hold one admission window for that setup.
 	var d decoder
@@ -138,11 +158,12 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 		r.Sampler.Add(pipelineSlot, request.SamplerOpts, inputs)
 		r.Sampler.SetSlotLogitBias(pipelineSlot, request.Options.LogitBias)
 		if spec != nil {
+			// Spec under format stays disabled (specOpenEnabled); keep signature.
 			d = spec.decoder(seed, position)
 		} else {
 			// Prefill seed is 1-D token ids (same layout as sampler.Result.Token);
 			// ExpandDims(0) yields InputIDs [1, L] for Forward.
-			d = r.pipelinedDecoder(nil, caches, seed.ExpandDims(0), position)
+			d = r.pipelinedDecoder(nil, caches, seed.ExpandDims(0), position, g)
 		}
 		return nil
 	}(); err != nil {
@@ -235,6 +256,12 @@ func (r *Runner) prefill(ctx context.Context, request Request, session *cacheSes
 	chunkIdx := 0
 	for body := prefillBodyLen(total - processed); body > 0; body = prefillBodyLen(total - processed) {
 		if err := ctx.Err(); err != nil {
+			// Settle the drafter with the next prompt token so the caches
+			// rest level with the recorded keys and a retry resumes exactly
+			// where this prefill stopped.
+			if processed < total {
+				spec.settle(mlx.FromValues(tokens[processed:processed+1], 1))
+			}
 			return nil, 0, 0, err
 		}
 
@@ -409,7 +436,9 @@ func (r *Runner) decode(ctx context.Context, request Request, session *cacheSess
 	now := time.Now()
 
 	// Release MLX's cached free buffers every clearCacheInterval tokens so the
-	// allocator's pool does not grow unbounded over a long generation.
+	// allocator's pool does not grow unbounded over a long generation. A
+	// speculative round emits several tokens at once, so the clear fires on
+	// crossing a multiple of the interval, not on landing exactly on one.
 	const clearCacheInterval = 256
 
 	generated := 0
@@ -418,6 +447,7 @@ func (r *Runner) decode(ctx context.Context, request Request, session *cacheSess
 			return err
 		}
 
+		before := generated
 		var results []sampler.Result
 		if err := func() error {
 			if err := uma.LeaseBegin("decode"); err != nil {
@@ -493,7 +523,7 @@ func (r *Runner) decode(ctx context.Context, request Request, session *cacheSess
 			break
 		}
 
-		if generated%clearCacheInterval == 0 {
+		if generated/clearCacheInterval != before/clearCacheInterval {
 			mlx.ClearCache()
 		}
 	}
@@ -521,26 +551,50 @@ func (r *Runner) decode(ctx context.Context, request Request, session *cacheSess
 
 // pipelinedDecoder decodes one token per call, one call ahead of emission:
 // the next token's chain is dispatched before the returned one is
-// synchronized, so the device runs ahead of host emission.
+// synchronized, so the device runs ahead of host emission. While no grammar
+// constrains, the next sample is fused onto the forward's chain. A
+// constraining grammar's sample needs a token mask that depends on the
+// returned token's value, so only the forward runs ahead and the host's
+// grammar work overlaps it.
 type pipelinedDecoder struct {
 	r *Runner
 	// spec, when non-nil, receives every forwarded token and settles its
 	// drafter at close, keeping a non-drafting session's draft KV level.
 	spec     *speculationSession
 	caches   []cache.Cache
+	g        *grammar
 	position int
 	sample   sampler.Result // in flight: sampled, not yet forwarded
+	err      error          // deferred grammar fault until the next call
 }
 
-func (r *Runner) pipelinedDecoder(spec *speculationSession, caches []cache.Cache, seed *mlx.Array, position int) *pipelinedDecoder {
-	t := &pipelinedDecoder{r: r, spec: spec, caches: caches, position: position}
-	t.sample = t.dispatch(seed)
+func (r *Runner) pipelinedDecoder(spec *speculationSession, caches []cache.Cache, seed *mlx.Array, position int, g *grammar) *pipelinedDecoder {
+	t := &pipelinedDecoder{r: r, spec: spec, caches: caches, g: g, position: position}
+	if r.grammarEngine.hasGrammar([]*grammar{g}) {
+		logits := t.forward(seed)
+		// Dispatch the forward before the host builds the first masks.
+		mlx.AsyncEval(logits)
+		var errs []error
+		logits, errs = r.grammarEngine.mask([]*grammar{g}, logits, nil)
+		t.err = errors.Join(errs...)
+		t.sample = t.sampleOnly(logits)
+	} else {
+		t.sample = t.dispatch(seed)
+	}
 	return t
 }
 
-// dispatch builds one forward-and-sample chain without reading the token's
-// value, so it is in flight before the previous token is synchronized.
-func (t *pipelinedDecoder) dispatch(token *mlx.Array) sampler.Result {
+// failGrammar clears the grammar after a row fault so it does no further work.
+func (t *pipelinedDecoder) failGrammar(errs []error) error {
+	if errors.Join(errs...) != nil {
+		t.g = nil
+	}
+	return errors.Join(errs...)
+}
+
+// forward runs the model one step over token, shaped [B, L], and returns the
+// final position's [B, 1, V] logits, still lazy.
+func (t *pipelinedDecoder) forward(token *mlx.Array) *mlx.Array {
 	r := t.r
 	hidden := r.Model.Forward(&batch.Batch{
 		InputIDs:     token,
@@ -550,16 +604,43 @@ func (t *pipelinedDecoder) dispatch(token *mlx.Array) sampler.Result {
 	t.spec.committed(token, hidden, t.position)
 	t.position += token.Dim(1)
 	logits := r.Model.Unembed(hidden)
-	next := r.Sampler.Sample([]int{pipelineSlot}, logits.Slice(mlx.Slice(), mlx.Slice(logits.Dim(1)-1), mlx.Slice()).Squeeze(1))
+	return logits.Slice(mlx.Slice(), mlx.Slice(logits.Dim(1)-1), mlx.Slice())
+}
+
+// sampleOnly samples from [B, 1, V] logits without fusing onto a forward.
+func (t *pipelinedDecoder) sampleOnly(logits *mlx.Array) sampler.Result {
+	next := t.r.Sampler.Sample([]int{pipelineSlot}, logits.Squeeze(1))
 	mlx.Pin(next.Arrays()...)
 	mlx.Sweep()
 	mlx.AsyncEval(next.Arrays()...)
 	return next
 }
 
+// dispatch builds one forward-and-sample chain without reading the token's
+// value, so it is in flight before the previous token is synchronized.
+func (t *pipelinedDecoder) dispatch(token *mlx.Array) sampler.Result {
+	logits := t.forward(token)
+	return t.sampleOnly(logits)
+}
+
 func (t *pipelinedDecoder) next(int) ([]sampler.Result, error) {
+	if t.err != nil {
+		return nil, t.err
+	}
 	out := t.sample
-	t.sample = t.dispatch(out.Token.ExpandDims(-1))
+	if t.r.grammarEngine.hasGrammar([]*grammar{t.g}) {
+		logits := t.forward(out.Token.ExpandDims(-1))
+		mlx.AsyncEval(logits)
+
+		err := t.failGrammar(t.r.grammarEngine.accept([]*grammar{t.g}, []int32{int32(out.Token.Int())}))
+
+		var errs []error
+		logits, errs = t.r.grammarEngine.mask([]*grammar{t.g}, logits, nil)
+		t.err = errors.Join(err, t.failGrammar(errs))
+		t.sample = t.sampleOnly(logits)
+	} else {
+		t.sample = t.dispatch(out.Token.ExpandDims(-1))
+	}
 	mlx.Unpin(out.Arrays()...)
 	return []sampler.Result{out}, nil
 }
@@ -568,6 +649,9 @@ func (t *pipelinedDecoder) next(int) ([]sampler.Result, error) {
 // forwarded) and the position its forward would have taken. The decoder
 // keeps the sample for close.
 func (t *pipelinedDecoder) drain() ([]sampler.Result, int) {
+	if t.err == nil && t.r.grammarEngine.hasGrammar([]*grammar{t.g}) {
+		t.err = t.failGrammar(t.r.grammarEngine.accept([]*grammar{t.g}, []int32{int32(t.sample.Token.Int())}))
+	}
 	return []sampler.Result{t.sample}, t.position
 }
 

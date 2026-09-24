@@ -46,3 +46,15 @@ func TraceContext(ctx context.Context, msg string, args ...any) {
 		logger.Handler().Handle(ctx, record)
 	}
 }
+
+// Warn logs at slog.LevelWarn with the same source-skipping style as Trace.
+func Warn(msg string, args ...any) {
+	ctx := context.WithValue(context.TODO(), key("skip"), 1)
+	if logger := slog.Default(); logger.Enabled(ctx, slog.LevelWarn) {
+		skip, _ := ctx.Value(key("skip")).(int)
+		pc, _, _, _ := runtime.Caller(1 + skip)
+		record := slog.NewRecord(time.Now(), slog.LevelWarn, msg, pc)
+		record.Add(args...)
+		_ = logger.Handler().Handle(ctx, record)
+	}
+}

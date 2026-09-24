@@ -55,11 +55,13 @@ Other checkouts under the same parent (`ggml/`, `shard/`, rotorquant labs, …) 
 |----------|-----------------|------|-------|
 | vLLM `main` | `f8e0602713` | 2026-08-20 | **Brought:** #50321 partial LMCache tier load, #48668 zero-output cache metrics, #52216 retention default `0`, #52041 defer ViT on input-cache hit; **watch:** #50507 — [vllm-borrowings.md](./vllm-borrowings.md) |
 | vLLM `main` (prior) | `118bcde44` | 2026-07-28 | **Brought:** #48123 tier filter, #48596/#49671 defer blob finalize, #48535 cache creation tokens, #48911 SWA store filter |
-| SGLang `main` | `896acc8860` | 2026-08-21 | **Brought:** #32914 / #34892 / #31957 / #33898 — [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) |
+| SGLang `main` | `f2eebd5533` | 2026-09-23 | **Bring next:** #37320 (alpha RGB + tool media order), #37967 (whole-request media budget); **watch:** #39120 / #38735 / #34488 — [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) |
+| SGLang `main` (prior) | `896acc8860` | 2026-08-21 | **Brought:** #32914 / #34892 / #31957 / #33898 |
 | SGLang `main` (prior) | `4e5a05148a` | 2026-07-28 | **Brought:** #31417 / #31438 / #31832 / #29436 (`session_id`) |
 | LocalAI | v4.5.6 tree | 2026-07-03 | LA11+ candidates in [localai-borrowings.md](./localai-borrowings.md) |
 | Wan2GP `main` | `7e45fe7e2110` | 2026-08-11 | **Brought:** `mmgp==3.7.12` attach for 16g TI2V — [wangp-borrowings.md](./wangp-borrowings.md) |
 | mlx-serve | README / `pld_index.zig` | 2026-08-24 | **Brought:** PLD + spec gates — [mlx-serve-borrowings.md](./mlx-serve-borrowings.md) |
+| Ollama `main` | `c1737589` (latest tag **v0.34.3**; tip **v0.34.4-rc0**; llama.cpp **b11081**) | 2026-09-22 | Fast-forward + triage — [upstream-ollama-diff.md](./upstream-ollama-diff.md#cherry-pick-status-sep-2026-v0333--v0344-rc0--c1737589); **Done:** #18374 / #18319 / #18533. **Next:** thinking levels + format-after-think; MLX xgrammar before pin bump |
 
 ---
 

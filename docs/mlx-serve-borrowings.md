@@ -1,7 +1,7 @@
 # mlx-serve borrowings
 
 **Upstream:** [ddalcu/mlx-serve](https://github.com/ddalcu/mlx-serve) · sibling `../mlx-serve`  
-**Last checked:** 2026-08-24 (README + `src/pld_index.zig` + performance/cli docs)
+**Last checked:** 2026-09-22 (`origin/main` @ `30f32cc`, CHANGELOG through **v26.9.5**; sparse docs refreshed)
 
 Zig + mlx-c Mac server. **Do not vendor Zig or the MLX Core app.** Steal engine defaults we can land in `x/mlxrunner`.
 
@@ -14,7 +14,8 @@ Zig + mlx-c Mac server. **Do not vendor Zig or the MLX Core app.** Steal engine 
 | **Decode-only attn quant** | `x/models/nn/decode_quant.go`, `MakeLinearLayer` | Dense bf16/fp16/fp32 **Q/K/V/O** get a 4-bit copy used only when L=1. Prefill + speculative fused forwards stay dense. Quantized checkpoints unchanged. |
 | **SWA spec-read trim** | `x/mlxrunner/cache/rotating.go` | Batched attention reads `window+L-1` keys (mlx-serve `slidingViewFor`). Prefill and fused spec share the same view. |
 | **Draft companion layouts** | `readDraftConfig` | Auto-detect `draft/`, `drafter/`, `assistant/` config layers (mlx-serve folder names). |
-| **Paged KV FP8** | `cache/kv_pack.go` | Idle trie snapshots pack to FP8 when large; live decode KV stays dense (no fused kv-attn kernel yet). |
+| **Paged KV FP8** | `cache/kv_pack.go` | Idle trie snapshots pack to FP8 when large. |
+| **Live affine KV quant** | `cache/kv_quant.go`, `KVCache` / `RotatingKVCache` | Opt-in `ZEROLLAMA_MLX_KV_QUANT=4|8` (group 64). Quantize-on-write, `denseView` before SDPA. No fused matmul2d yet — long-ctx decode may regress vs dense. `head_dim` must divide 64. |
 | **Round-cost persist** | `round_cost.go` | Spec width (cost + acceptance) per **context bucket**, under `mlx-round-cost/` next to `OLLAMA_MODELS`; next Load starts tuned. |
 | **Last-run persist** | `last_run.go` | Last 8 decodes in `*.last.json` (accept, PLD park, hint, ctx). Doctor + `GET /v1/status` `Tune` surface it; one parked novel chat is not a warning. |
 | **Loop-stop** | `loop_stop.go` | Triple repeat of an 8–48 token cycle ends decode as length (`repetition_loop` log). |
@@ -120,19 +121,47 @@ Defaults are meant to be left alone. `zerollama doctor` prints the sheet (effect
 | `OLLAMA_MLX_PREFILL_CLEAR_CACHE_EVERY` | 4 | `1` if peak RAM climbs |
 | `OLLAMA_MLX_PREFILL_MATERIALIZE_EVERY` | 4 | `1` on prefill OOM |
 | `ZEROLLAMA_MLX_SUPPRESS_RESERVED` | on | `0` if a FIM bench must emit hole/pad tokens |
+| `ZEROLLAMA_MLX_KV_QUANT` | off | `8` or `4` for live affine KV (gs 64); denseView SDPA until fused attn lands |
 
 Learned spec width lives in `mlx-round-cost/` next to `OLLAMA_MODELS`, **keyed by context bucket** (2k/4k/8k/16k/32k) so a short chat does not overwrite a long-prompt table. Doctor warns if a table is stuck at scheduled=0. After each request, `*.last.json` keeps the last 8 decodes; doctor warns only when parking is the usual path (not a single novel chat). Prefill chunk shrinks also log `mlx tune`.
 
-## Next (research, not started)
+## Next (research / API steals since v26.8.10)
+
+High-value, fits our “API/parser defaults” pattern (do **not** need Zig):
+
+| Item | Upstream | Gap here |
+|------|----------|----------|
+| **Fold non-leading `system`** | `chat.foldSystemMessages` on `/v1/messages` + `/v1/responses` (#461) | Codex/Claude Code put a second system mid-thread; Qwen templates raise → silent fallback loses stop token. We warn on Qwen3.8; do not fold yet. |
+| **`developer` → `system`** | `chat.canonicalRole` (chat + Responses; #348) | Renderers accept `developer` in places; OpenAI parse sites may still pass it through and trip Jinja. |
+| **`top_p: 0` is greedy** | `applyTopP` floors at min float (v26.9.4) | Explicit top_p 0 is accepted; confirm MLX sampler treats it as rank-1 greedy (not empty nucleus). |
+| **API edge 400s** | undecodable image → named 400; schema-less `json_schema` 400; empty embed 400; `stop: ""` skipped (`tests/test_api_edges.sh`) | Partial: MLX already skips empty stops. Image/embed/schema edges worth aligning. |
+| **Hermes param whitespace** | `stripHermesValueFraming` keeps `old_string` indent (#294) | Only if we still have a Hermes XML/param parser path that trims values. |
+| **`<parameter>` may contain close tags** | `hermesValueEnd` = last closer before next opener | Same Hermes dialect. |
+| **Hermes mid-object JSON salvage** | `truncatedJsonCallName` (depth-1 `"name"`) | Overlaps our `salvageJSONToolCall`; confirm Hermes arm uses it. |
+| **NUL in messages** | Jinja `\u0000` truncated prompts via C `char*` | Strip/reject NULs before template render if Go/CGo paths can truncate. |
+| **Decode-time reasoning budget** | `armThinkBound` / `thinkBoundTick` on all three surfaces | We map `reasoning_budget_tokens` → Think on/off; mlx-serve also **caps** thought tokens mid-decode. |
+| **Qwen3.8 default effort budget** | omitted effort → low **and** 2048 think budget | We already default omitted think to low; budget half may be missing. |
+| **Logprobs in f32** | f16 logits → `-inf`/NaN JSON | Worth a sanity check on MLX logprob path. |
+| **Refuse oversized load** | weights past `iogpu.wired_limit` → clear load refusal | Doctor/admission may already cover; compare wording. |
+| **Idle unload** | `--idle-evict-secs` | Optional; we have keep_alive / unload APIs already. |
+
+Engine / model research (kernels, packs, or big surface):
 
 | Item | Note |
 |------|------|
-| Laya `POST /v1/decisions` | **Parked (MLX sidecar / mlxrunner).** Active path is llama.cpp — [laya-llama-cpp.md](./laya-llama-cpp.md). |
-| Gemma 4 HF sibling auto-download (`*-drafter`) | We load if the companion is **in the manifest**; no Bonjour/app auto-fetch |
-| Live MLX KV quant 4/8 | Default off upstream; needs fused packed SDPA or decode regresses |
-| Same-weight bench vs mlx-serve / LM Studio | lab `:11435` vs their `:11234` |
-| LTX-Video 2.5 4-bit MLX pack | vs our LTXV 0.9.8 / 2B MLX |
+| Live MLX KV fused attn (matmul2d) | Affine store + denseView shipped (`ZEROLLAMA_MLX_KV_QUANT`). Fused packed SDPA still open or decode regresses at long ctx. |
+| Concurrent MTP / batched decode | Big scheduler change; skip unless we own multi-stream MLX. |
+| ANE media / Zig ANE | mlx-serve Zig private-ANE skipped. **ggml Metal ANE FFN lab** is our path — [ane-prefill-ffn-hook.md](./ane-prefill-ffn-hook.md), `ZEROLLAMA_ANE_FFN_*` on `:11435` only. |
+| Prefill yield / interleave | Useful if multi-stream; single-stream agent traffic less urgent. |
+| Memory sibling ledger / `--os-reserve-gib` | Admission polish if concurrent MLX loads matter. |
+| Prism Bonsai 2 (Hadamard 2-bit) | Pack + exact 2-bit verify GEMV; see `docs/prism-ternary.md`. |
+| Qwen3.8 Flash Next / n-gram | We already have `x/models/qwen4_exp`; rematch speculative/sparse bits as needed. |
+| Qwen-Image-2.1 MLX packs | Image Gen — prefer Comfy for agent utility unless Mac-only path is wanted. |
+| Laya `POST /v1/decisions` | **Parked (MLX sidecar / mlxrunner).** **Why parked:** CPU/CUDA `LLM_ARCH_LAYA` covers the product path first (LAYA1–2). Active: [laya-llama-cpp.md](./laya-llama-cpp.md) · [findings](./laya-llama-cpp-findings.md). When unparked: external `ZEROLLAMA_LAYA_URL` proxy, same public `/v1/decisions` — no second API. |
+| Gemma 4 HF `*-drafter` auto-download | Still: load if in manifest only. |
+| Same-weight bench vs `:11234` | lab `:11435`. |
+| LTX-Video 2.5 packs | vs our LTXV tags. |
 
 ## Skip
 
-Menu-bar app, Bonjour LAN share, Telegram, Linux VM sandbox, Hunyuan3D, rewriting mlxrunner in Zig. Remote store already covers LAN weights (`docs/remote-model-storage.md`).
+Menu-bar app, Bonjour LAN share, Telegram, Linux VM sandbox, Hunyuan3D, rewriting mlxrunner in Zig, cloud “providers” proxy, Apple Intelligence picker. Remote store already covers LAN weights (`docs/remote-model-storage.md`). TurboQuant KV schemes were **removed** upstream (v26.9.x) — do not chase.

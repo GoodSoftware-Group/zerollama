@@ -64,7 +64,6 @@ func transposeExpertWeightForGatherMM(w *mlx.Array) *mlx.Array {
 	}
 	t := mlx.Transpose(w, 0, 2, 1)
 	cloned := t.Clone()
-	mlx.Eval(cloned)
 	return cloned
 }
 

@@ -27,7 +27,11 @@ FetchContent_Declare(
   mlx-c
   GIT_REPOSITORY "https://github.com/ml-explore/mlx-c.git"
   GIT_TAG ${MLX_C_GIT_TAG}
-  PATCH_COMMAND ${CMAKE_COMMAND} -E env GIT_TERMINAL_PROMPT=0 git apply --whitespace=nowarn ${CMAKE_CURRENT_LIST_DIR}/../../../mlx/compat/0001-mlx-c-regen-0.32.1.patch
+  # Carry patches until they land in ml-explore/mlx-c (qmm global_scale + gated_delta).
+  PATCH_COMMAND ${CMAKE_COMMAND}
+    -DPATCH_DIR=${CMAKE_CURRENT_LIST_DIR}/../../../mlx/compat/mlx-c
+    -DPATCH_LABEL=mlx/compat/mlx-c
+    -P ${CMAKE_CURRENT_LIST_DIR}/../../../mlx/compat/apply-git-patches.cmake
 )
 
 FetchContent_MakeAvailable(mlx-c)

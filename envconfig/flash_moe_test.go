@@ -19,3 +19,14 @@ func TestFlashMoEModeDefault(t *testing.T) {
 		t.Fatalf("mode = %q", FlashMoEMode())
 	}
 }
+
+func TestFlashMoEPinBudgetGiB(t *testing.T) {
+	t.Setenv("ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB", "")
+	if FlashMoEPinBudgetGiB() != 0 {
+		t.Fatal("empty")
+	}
+	t.Setenv("ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB", "12.5")
+	if FlashMoEPinBudgetGiB() != 12.5 {
+		t.Fatalf("got %v", FlashMoEPinBudgetGiB())
+	}
+}

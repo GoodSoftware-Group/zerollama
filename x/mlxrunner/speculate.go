@@ -460,7 +460,7 @@ func (st *speculativeDecoder) resume() []sampler.Result {
 func (st *speculativeDecoder) park(remaining int) ([]sampler.Result, error) {
 	s := st.s
 	if st.inner == nil {
-		st.inner = s.spec.r.pipelinedDecoder(s, s.spec.caches, st.current.Token.ExpandDims(-1), st.position)
+		st.inner = s.spec.r.pipelinedDecoder(s, s.spec.caches, st.current.Token.ExpandDims(-1), st.position, nil)
 	}
 	return st.inner.next(remaining)
 }

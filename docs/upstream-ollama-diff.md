@@ -25,6 +25,8 @@ Clone beside zerollama (no merge into this repo):
 # default: ../ollama-upstream
 ```
 
+**Last pulled:** 2026-09-22 — `../ollama-upstream` `main` @ **`c1737589`** (latest tag **v0.34.3**; tip **v0.34.4-rc0**; `LLAMA_CPP_VERSION` **b11081**; MLX **`59d600b5`** / MLX-C **`ebc88f10`**). Previous lab tip was **v0.33.3** / `b68365a0`.
+
 Build and run on a different port for A/B:
 
 ```bash
@@ -72,10 +74,10 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 | Python runtime | None | `runtime/` FastAPI sidecar/embed |
 | Training | None | `/api/train/*`, `training.py`, pyembed |
 | Remote cloud | ollama.com | **Eliza Cloud** default |
-| llama.cpp pin | `LLAMA_CPP_VERSION` = **`b9888`** (ggml-org) | **`86d86ed4`** (ggml-org master) via `vendor/llama-cpp-86d86ed4` + **79** patch commits | [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
-| Ollama-specific llama fixes | `llama/compat/` + CMake `PATCH_COMMAND` | `llama/patches/` (**79** on 86d86ed4) + compat/kv-ext/seq-copy |
+| llama.cpp pin | **`b11081`** (Ollama tip) | **`b10615`** + `llama/patches/` — [LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) |
+| Ollama-specific llama fixes | `llama/compat/` + CMake `PATCH_COMMAND` | `llama/patches/` + compat/kv-ext/seq-copy |
 | GPU discovery | `discover/llama_server.go` probe | **Hybrid** — llama-server when Linux auto or `ZEROLLAMA_LLAMA_SERVER=1`; ggml `/info` bootstrap otherwise (**why:** Mac default stays ggml; upstream sched inputs on Linux) |
-| MLX MTP / speculation | Draft-cache token-pair trie, flush 256, host speculate | Pin `MLX_VERSION=33c03c48`; M15a live-session retained |
+| MLX MTP / speculation | Draft-cache token-pair trie, flush 256, host speculate + xgrammar | Pin `MLX_VERSION=59d600b5`; M15a live-session retained; xgrammar **ported** (spec under format still off) |
 
 ---
 
@@ -83,11 +85,11 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 
 | Artifact | Upstream | Zerollama | Notes |
 |----------|----------|-----------|-------|
-| Ollama release | **v0.32.15** (`8f912415`) | v0.30.11 base + selective cherry-picks through **v0.32.15** (Qwen 3.8 renderer/parser, repeat_penalty default, skipVerify, parse-error cancel) | Fetch: `./scripts/gpu/clone_upstream_ollama.sh`; compare at `../ollama-upstream` |
-| llama.cpp tag | `b10091` (upstream v0.32.4) | **`86d86ed4`** (ggml-org master tip; past b10064) | Vendor sync via `./scripts/vendor/sync_vendor_llama.sh`; patch doctor: `./scripts/vendor/llama_patch_doctor.sh` |
-| Compat layer | `llama/compat/` | **Partial** — in-tree `llama/compat/` + patches 0015–0017 | Full CMake overlay adoption still incremental; see [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
+| Ollama release | **v0.34.3** / tip **v0.34.4-rc0** (`c1737589`) | Selective cherry-picks through **v0.33.3** MLX/CLI; **v0.34.x not ported** (see Sep 2026 triage below) | Fetch: `./scripts/gpu/clone_upstream_ollama.sh`; compare at `../ollama-upstream` |
+| llama.cpp tag | **`b11081`** | **`b10615`** | Do not fast-forward vendor to b11081 without a patch rebase; [LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) |
+| Compat layer | `llama/compat/` + `cmake/apply-git-patches.cmake` | **Partial** — in-tree `llama/compat/` + patches | Full CMake overlay adoption still incremental; see [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
 | llama-server build | `cmake -S llama/server --preset cpu` (or GPU preset) | `./scripts/build/build_llama_server.sh` on sibling tree | Align presets when porting |
-| MLX | `33c03c48` / `fba4470b` | **Matched** (`MLX_VERSION=33c03c48`) / mlx-c still `fba4470b` | Local overrides: `OLLAMA_MLX_SOURCE`, `OLLAMA_MLX_C_SOURCE` |
+| MLX | **`59d600b5`** / **`ebc88f10`** (tip) | **`59d600b5`** / **`ebc88f10`** (`MLX_VERSION` / `MLX_C_VERSION`) | Pins matched Sep 2026; carry `mlx/compat/mlx-c/`; xgrammar **ported** (`libollama_xgrammar`). Still keep `x/mlxrunner` (no package move); Pin-Sweep still open |
 
 **Phase 15 blocker context:** native tensor page bind depends on llama.cpp APIs; staying on an old pin widens the gap. Bumping toward upstream’s pin is prerequisite work, not optional polish.
 
@@ -103,7 +105,8 @@ Cherry-pick **by package**, not wholesale rebase.
 | Compat overlay | `llama/compat/*`, `llama/server/CMakeLists.txt` | Maintainability vs `llama/patches/` |
 | Root pin file | `LLAMA_CPP_VERSION`, `llama/README.md` runbook | Single source of truth |
 | Discovery | `discover/llama_server.go` | GPU probe via llama-server |
-| MLX MTP / cache | Recent `x/mlxrunner` commits | Speculative decode on safetensors path |
+| MLX MTP / cache / load | Recent `x/mlxrunner` commits | Spec, cancel-safe trie, slow-storage Metal load |
+| MLX structured output | `x/mlxrunner/grammar.go`, `x/mlxrunner/xgrammar/` | **Done (Sep 2026)** — `format` JSON/schema + ThinkingClose via xgrammar masks |
 
 ## How we cherry-pick
 
@@ -111,7 +114,7 @@ Sibling checkout: `./scripts/gpu/clone_upstream_ollama.sh` → `../ollama-upstre
 
 ```bash
 git -C ../ollama-upstream fetch --tags origin
-git -C ../ollama-upstream log --oneline v0.32.1..v0.32.15 -- model/renderers model/parsers x/create llm/llama_server.go server/images.go api/types.go
+git -C ../ollama-upstream log --oneline v0.32.15..v0.33.3 -- model/renderers model/parsers x/create llm/llama_server.go server/images.go api/types.go x/mlxrunner x/models
 
 # Path-filtered patch (preferred). Hand-port when server/sched.go or routes.go diverge.
 git -C ../ollama-upstream format-patch -1 <sha> -- model/renderers model/parsers
@@ -232,13 +235,16 @@ See [apple-silicon-metal.md](./apple-silicon-metal.md#compare-with-upstream-olla
 
 ## What upstream is investing in now (directional)
 
-From recent `ollama-upstream` history (not exhaustive):
+From **v0.33.3** → tip **v0.34.4-rc0** (`c1737589`, +73 commits):
 
-- MLX **MTP / speculation** — draft-cache token-pair trie keys, flush cap 256, host speculative polish
-- **`x/create` rewrite** — pipeline/plan/quantize/writer split (zerollama keeps `imagegen.go`; Qwen3.5 parser/renderer selection ported)
-- **Agent harness + TUI** — new top-level `agent/` + `cmd/tui/chat` (not ported; product call)
-- **llama.cpp bumps** — compat docs, gemma4 projector offload
-- **`cmd/launch`** — third-party agent integrations; deprecated-model warn (not ported)
+- **MLX engine moved** out of `x/` → top-level `mlxrunner/` + package folds; Pin/Sweep → scoped array lifetimes
+- MLX **create** is first-class (server-side safetensors import; GGUF conversion deleted from Go)
+- **Thinking + structured format in one pass** (MLX xgrammar structural tags; llama-server GBNF after think-close)
+- **Thinking levels** advertised on API / renderers / Anthropic+OpenAI middleware
+- MLX polish: Qwen 3.8 gated-delta prefill, Gemma4 dynamic image budget, Nemotron-H vision, KV eviction/spec buffer fixes
+- **GGUF metadata extract-once** (`server/gguf_metadata.go`) replacing dual capability caches
+- **ChatGPT / Codex Desktop** app+proxy (skip for zerollama)
+- llama.cpp **b10760 → b11081**; MLX **`59d600b5`** / MLX-C **`ebc88f10`**
 
 Absent: Python runtime, training API, native KV experiments, Eliza.
 
@@ -265,8 +271,8 @@ Additive ports that **do not** change zerollama architecture (Mac ggml default, 
 | **repeat_penalty default 1.0 (#6a261db)** | **Done (Aug 2026)** | Stop stacking 1.1 on models that omit it (qwen3.5/3.8, gemma4, …). |
 | **skipVerify AND on duplicate digest (#15504)** | **Done (Aug 2026)** | `server/images.go` — always verify if any download of that digest was a cache miss. |
 | **Parser error cancel (#17883)** | **Done (Aug 2026)** | Chat/generate: record parse error, cancel completion, report once (no wedge). |
-| **WebP → PNG for llama-server (#17755)** | **Next** | `llm/llama_server.go` transcode; skip the integration image swap if noisy. |
-| **Model metadata cache (#17752)** | **Next** | Per-request overhead; port if `/api/show` is hot. |
+| **WebP → PNG for llama-server (#17755)** | **Done** | `llm/llama_server.go` transcode + tests |
+| **Model metadata cache (#17752)** | **Done** | `server/model_inference_cache.go` (singleflight resolved-model cache) |
 | **`x/create` rewrite** | **Deferred** | Upstream removes imagegen create path; keep zerollama `imagegen.go` until surgical split |
 | **Agent harness + TUI** | **Skipped** | Product call — not ported |
 | **Launch deprecated-model warn** | **Skipped** | Product call — not ported |
@@ -314,6 +320,65 @@ Additive ports that **do not** change zerollama architecture (Mac ggml default, 
 
 ---
 
+## Cherry-pick status (Sep 2026, `v0.33.3` → **v0.34.4-rc0** / `c1737589`)
+
+Path-filtered **+73** commits on sibling. Do **not** rebase. Prior **v0.32.15 → v0.33.3** bring list is largely **Done** (CLI #17918/#17067/#18039, Metal load, mlx-c errors, cancel-safe trie). Still open from that window: **xgrammar**, **#16471 GGUF sampler defaults**, Gemma4 MM, Qwen4_exp (optional).
+
+### Bring (small / high confidence)
+
+| Area | SHA / PR | Why |
+|------|----------|-----|
+| Token repeat abort | `4512d2b7` **#18374** | **Done (Sep 2026)** — 30→100 + return error in `llm/server.go` + `llama_server.go` |
+| Sched / progress races | `b5d373f3` **#18319** | **Done (Sep 2026)** — progress `loopDone` join; `runnerRef.LogValue` under TryLock |
+| Registry redirect allowlist | `6383a0fa` **#18533** (+ same-host default from `dfabde45`) | **Done (Sep 2026)** — same-host default + ollama/hf allowlist; skip full `x/transfer` rewrite (we lack that package) |
+| Thinking close strings | `a9d8953a` | **Done (Sep 2026)** — `Parser.ThinkingClose()` on builtins + harmony; prerequisite for one-pass format |
+| Format after thinking (llama-server + routes) | `2ff052b7` + `5a0ff311` | **Done (Sep 2026)** — `llm/gbnf.go` + llama-server `schemaGrammar` wrap; ggml `thinkingGrammar` after SchemaToGrammar; chat/generate single-pass via `ThinkingClose` (no two-pass cancel/restart) |
+| gemma3n mmproj GPU | `53fed261` **#18376** | **Done (Sep 2026)** — never `--no-mmproj-offload` / CPU-retry for gemma3n (silent wrong embeddings on CPU) |
+
+### Bring (API / product surface)
+
+| Area | SHA / PR | Why / how |
+|------|----------|-----------|
+| Thinking levels API | `d0c8cdb7` **#18473** | Advertise model thinking levels + defaults on `/api` + Anthropic/OpenAI middleware. We already have effort/renderer quirks; this formalizes discovery — **deferred** (Codex/middleware-heavy) |
+| Format after thinking (MLX) | `1ce2b680` | **Done (Sep 2026)** — `requestGrammar` wraps ThinkingClose as structural sequence ahead of schema |
+| GGUF metadata extract-once | `ea8d6500` **#17858** | Persist `<OLLAMA_MODELS>/metadata/sha256-*.json`; unify Capabilities. We still use `model_inference_cache.go` — good `/api/tags` win, but large |
+| GGUF sampler defaults | `f348c7e3` **#16471** | **Done (Sep 2026)** — `types/model/generation.go`; GGUF `general.sampling.*` + HF `generation_defaults` on create; `modelOptions` applies GenerationDefaults before GenSampling / PARAMETER |
+
+### Bring (MLX — high value, needs pin / layout care)
+
+| Area | SHA / PR | Why / how |
+|------|----------|-----------|
+| Structured `format` (xgrammar) | `147509c0` + `4986e923` + `b68365a0` (+ tip grammar) | **Done core (Sep 2026):** `x/mlxrunner/xgrammar/` + `grammar.go`; client structural tags + ThinkingClose; Prepare/mask/accept on non-spec path. **Still open:** speculation under grammar (`4986e923`) |
+| Qwen 3.8 gated-delta prefill | `c0f8da35` **#18550** | **Partial (Sep 2026):** `mlx.SwiGLUScaled` + `nn.SwiGLU` defer `GlobalScale` (direct Mul, not Nvfp4MaxProduct); `qwen3_5.DenseMLP` wired. **Skipped:** upstream long-scan gated-delta kernel — we already use `FastGatedDelta` |
+| Gemma4 dynamic image budget | `b8c3d1f6` **#18603** | Only after Gemma4 MM lands (we are text-only today) |
+| Nemotron-H vision | `2c731642` **#17714** | Optional; only if we ship that family |
+| Weight-load pool release / KV eviction | `b68b112b`, `ec3cc230`, `1548f78c`…`8d66f083` | **Done core (Sep 2026):** ClearCache / Close wait / speculative ClearCache crossing / UMA fit bound / active-path eviction / resume-edge split / `pageOut` fills missing whole-state (`8d66f083`). **Blocked:** `45a02807` non-causal media boundaries — needs `mlxrunner/media.go` (we lack MM wire yet). Still open: drop Pin/Sweep |
+
+### Watch (partial / large)
+
+| Area | SHA / PR | Notes |
+|------|----------|-------|
+| MLX / MLX-C pins | `f093c6e0`, `4ea34724`, `421d74d2` | **Done (Sep 2026)** — `MLX_VERSION=59d600b5`, `MLX_C_VERSION=ebc88f10`; `mlx/compat/mlx-c/` carry patches; `FastGatedDelta` prefers native `mlx_fast_gated_delta_update` |
+| Move MLX out of `x/` | `2e036e7c` + package folds | Upstream `mlxrunner/` top-level. **Do not** mirror blindly; keep our `x/mlxrunner` until pin+xgrammar land |
+| Drop Pin/Sweep | `13037ecb`, `aeb8f711` | Scoped lifetimes — large behavioral change vs our UMA/lease path |
+| Server-side MLX create | `98acec40` **#14969** | Drops Go GGUF convert. We still want GGUF create/quantize — **adapt**, do not wholesale delete `convert/` |
+| OpenAI Codex compaction / tool search | `3f77cb6d`, `cf8b605b`, … | Useful if Hermes/`/v1` clients need it; product-heavy |
+| Cached prompt tok/s | `855f4bf9` **#17943** | **Done (Sep 2026)** — `Metrics.Summary` + `cmd/bench` exclude `CachedPromptTokens` from prefill rate (field was already collected) |
+| `getExistingName` | `6ae5088c` **#18438** | **Done (Sep 2026)** — full EqualFold first; longest host→ns→model prefix casing; never borrow unrelated tags |
+
+### Skip
+
+| Area | Why |
+|------|-----|
+| llama.cpp **b10864 / b10969 / b11081** | Fights `llama/patches/`; stay on **b10615** until a deliberate vendor rebase |
+| ChatGPT / Codex Desktop `app/` + proxy | Product (ollama.com / desktop) |
+| Remove built-in agent / TUI agent | We never shipped their agent; no-op |
+| Deprecate `typical_p` (`2c29c9f0`) | We still expose `/v1` typical_p for MLX + llama-server |
+| First-run CLI onboarding shared with desktop | Desktop-coupled |
+| CI/docker/docs-only | No product delta |
+
+---
+
 - **Full rebase** onto upstream `main` — conflict surface too large; loses training/runtime work.
 - **Deleting Python runtime** to match upstream — different product; shrink its role on the critical path instead.
 - **Replacing Eliza** with ollama.com cloud.
@@ -330,8 +395,10 @@ Additive ports that **do not** change zerollama architecture (Mac ggml default, 
 5. ~~Cherry-pick MLX MTP commits~~ — **done** (cache snapshots + prefill offsets in `x/mlxrunner/`).
 6. ~~Phase 17 E2E smoke~~ — **done** — `phase17_llama_server_smoke.sh` PASS (Jun 2026); vision opt-in: `phase17_llama_server_vision_smoke.sh`.
 7. ~~Deprecate **`OLLAMA_NEW_ENGINE`** / **`runner/ollamarunner`** for plain text GGUF~~ — **partial**; explicit `--llama-server-backend` now routes vision/thinking GGUF; Linux auto + Mac default vision still ggml.
-8. Path-filter **v0.32.12–v0.32.15**: Qwen 3.8 renderer, repeat_penalty 1.0, skipVerify, parse-error cancel — **done (Aug 2026)**. Next: WebP transcode (#17755), metadata cache (#17752).
-9. Skip llama.cpp pin bumps from those tags until `llama/patches/` rebases; our GGUF pin is independent.
+8. Path-filter **v0.32.12–v0.32.15**: Qwen 3.8 renderer, repeat_penalty 1.0, skipVerify, parse-error cancel — **done (Aug 2026)**. WebP (#17755) + metadata cache (#17752) — **done**.
+9. Path-filter **v0.32.15–v0.33.3** — **done (Sep 2026)** for CLI + MLX load/trie/errors + **#16471**. xgrammar **done** (see item 10).
+10. Path-filter **v0.33.3–v0.34.4-rc0** — **triaged (Sep 2026)**. **Done:** #18374 / #18319 / #18533 / ThinkingClose + format-after-think / **#16471** / **#17943** / **#18550** / **#18376** / **#18438** / MLX memory hygiene through `8d66f083` / **xgrammar core** + ThinkingClose structural tags. **Blocked:** `45a02807` (needs media.go). **Still open:** spec under grammar; thinking-levels `#18473` (deferred); Pin-Sweep.
+11. Skip llama.cpp **b11081** until `llama/patches/` rebases; GGUF pin stays **b10615**.
 
 ---
 

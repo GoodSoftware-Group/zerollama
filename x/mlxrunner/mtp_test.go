@@ -746,7 +746,7 @@ func testDecoder(r *Runner, req Request, caches []cache.Cache, seed []int32, pos
 		}
 		return spec.decoder(seedArr, position)
 	}
-	return r.pipelinedDecoder(nil, caches, seedArr.ExpandDims(0), position)
+	return r.pipelinedDecoder(nil, caches, seedArr.ExpandDims(0), position, nil)
 }
 
 func TestDecodeKVDraft(t *testing.T) {

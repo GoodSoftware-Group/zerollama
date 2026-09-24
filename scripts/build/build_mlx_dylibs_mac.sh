@@ -52,7 +52,7 @@ build_mlx_dylibs_mac() {
     -DOLLAMA_RUNNER_DIR=mlx_metal_v3 \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
     -DCMAKE_INSTALL_PREFIX="${v3_prefix}"
-  cmake --build "${build_dir}" --target mlx mlxc --parallel
+  cmake --build "${build_dir}" --target mlx mlxc ollama_xgrammar --parallel
   cmake --install "${build_dir}" --component MLX
 
   local sdk_major
@@ -86,8 +86,9 @@ build_mlx_dylibs_mac() {
     -DFETCHCONTENT_SOURCE_DIR_MLX-C="${v3_deps}/mlx-c-src" \
     -DFETCHCONTENT_SOURCE_DIR_JSON="${v3_deps}/json-src" \
     -DFETCHCONTENT_SOURCE_DIR_FMT="${v3_deps}/fmt-src" \
-    -DFETCHCONTENT_SOURCE_DIR_METAL_CPP="${v3_deps}/metal_cpp-src"
-  cmake --build "${build_dir_v4}" --target mlx mlxc --parallel
+    -DFETCHCONTENT_SOURCE_DIR_METAL_CPP="${v3_deps}/metal_cpp-src" \
+    -DFETCHCONTENT_SOURCE_DIR_XGRAMMAR="${v3_deps}/xgrammar-src"
+  cmake --build "${build_dir_v4}" --target mlx mlxc ollama_xgrammar --parallel
   cmake --install "${build_dir_v4}" --component MLX
 }
 

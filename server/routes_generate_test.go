@@ -1839,18 +1839,19 @@ func TestChatWithPromptEndingInThinkTag(t *testing.T) {
 		})
 	}
 
-	// Test cases - Note: Template adds <think> at the end, and leading whitespace after <think> is eaten by the parser
+	// Test cases - Note: Template adds <think> at the end, and leading whitespace after <think> is eaten by the parser.
+	// Non-stream chat responses run sanitizeAssistantThinking, which right-trims trailing spaces.
 	testChatRequest(t, "basic thinking response",
 		"Help me solve this problem",
 		" Let me think about this step by step... </think> The answer is 42.",
-		"Let me think about this step by step... ",
+		"Let me think about this step by step...",
 		"The answer is 42.",
 		true)
 
 	testChatRequest(t, "thinking with multiple sentences",
 		"Explain quantum computing",
 		" First, I need to understand the basics. Quantum bits can be in superposition. </think> Quantum computing uses quantum mechanics principles.",
-		"First, I need to understand the basics. Quantum bits can be in superposition. ",
+		"First, I need to understand the basics. Quantum bits can be in superposition.",
 		"Quantum computing uses quantum mechanics principles.",
 		true)
 
@@ -1924,8 +1925,8 @@ func TestChatWithPromptEndingInThinkTag(t *testing.T) {
 		}
 
 		// Note: Leading whitespace after <think> is eaten by the parser
-		if got := allThinking.String(); got != "I need to consider multiple factors here... " {
-			t.Errorf("expected thinking %q, got %q", "I need to consider multiple factors here... ", got)
+		if got := allThinking.String(); got != "I need to consider multiple factors here..." {
+			t.Errorf("expected thinking %q, got %q", "I need to consider multiple factors here...", got)
 		}
 
 		if got := allContent.String(); got != "Based on my analysis, the solution is straightforward." {
@@ -1933,56 +1934,29 @@ func TestChatWithPromptEndingInThinkTag(t *testing.T) {
 		}
 	})
 
-	t.Run("structured outputs restart non-stream", func(t *testing.T) {
+	t.Run("structured outputs single pass non-stream", func(t *testing.T) {
 		var (
 			requestsMu sync.Mutex
 			requests   []llm.CompletionRequest
-			wg         sync.WaitGroup
 		)
-
-		wg.Add(2)
 
 		format := json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}}}`)
 
 		mock.CompletionFn = func(ctx context.Context, r llm.CompletionRequest, fn func(r llm.CompletionResponse)) error {
-			defer wg.Done()
-
 			requestsMu.Lock()
 			requests = append(requests, r)
-			callNum := len(requests)
 			requestsMu.Unlock()
 
-			switch callNum {
-			case 1:
-				fn(llm.CompletionResponse{
-					Content:            " I am thinking through this problem. </think> {\"answer\":\"42\"}",
-					Done:               false,
-					PromptEvalCount:    1,
-					PromptEvalDuration: 1,
-				})
-
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(time.Second):
-					t.Fatalf("timeout waiting for structured outputs cancellation")
-					return nil
-				}
-			case 2:
-				fn(llm.CompletionResponse{
-					Content:            `{"answer":"42"}`,
-					Done:               true,
-					DoneReason:         llm.DoneReasonStop,
-					PromptEvalCount:    1,
-					PromptEvalDuration: 1,
-					EvalCount:          1,
-					EvalDuration:       1,
-				})
-				return nil
-			default:
-				t.Fatalf("unexpected number of completion calls: %d", callNum)
-				return nil
-			}
+			fn(llm.CompletionResponse{
+				Content:            " I am thinking through this problem. </think> {\"answer\":\"42\"}",
+				Done:               true,
+				DoneReason:         llm.DoneReasonStop,
+				PromptEvalCount:    1,
+				PromptEvalDuration: 1,
+				EvalCount:          1,
+				EvalDuration:       1,
+			})
+			return nil
 		}
 
 		think := true
@@ -1995,23 +1969,22 @@ func TestChatWithPromptEndingInThinkTag(t *testing.T) {
 			Format:   format,
 		})
 
-		wg.Wait()
 		mock.CompletionFn = nil
 
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected status 200, got %d", w.Code)
 		}
 
-		if len(requests) != 2 {
-			t.Fatalf("expected two completion calls, got %d", len(requests))
+		if len(requests) != 1 {
+			t.Fatalf("expected one completion call, got %d", len(requests))
 		}
 
-		if requests[0].Format != nil {
-			t.Errorf("expected first completion format to be nil, got %q", requests[0].Format)
+		if !bytes.Equal([]byte(format), []byte(requests[0].Format)) {
+			t.Errorf("expected completion format to match request format")
 		}
 
-		if !bytes.Equal([]byte(format), []byte(requests[1].Format)) {
-			t.Errorf("expected second completion format to match original format")
+		if len(requests[0].ThinkingClose) == 0 {
+			t.Errorf("expected ThinkingClose strings for thinking+format single pass")
 		}
 
 		var resp api.ChatResponse
@@ -2019,8 +1992,8 @@ func TestChatWithPromptEndingInThinkTag(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if resp.Message.Thinking != "I am thinking through this problem. " {
-			t.Errorf("expected thinking %q, got %q", "I am thinking through this problem. ", resp.Message.Thinking)
+		if resp.Message.Thinking != "I am thinking through this problem." {
+			t.Errorf("expected thinking %q, got %q", "I am thinking through this problem.", resp.Message.Thinking)
 		}
 
 		if resp.Message.Content != `{"answer":"42"}` {
@@ -2036,56 +2009,29 @@ func TestChatWithPromptEndingInThinkTag(t *testing.T) {
 		}
 	})
 
-	t.Run("structured outputs restart streaming", func(t *testing.T) {
+	t.Run("structured outputs single pass streaming", func(t *testing.T) {
 		var (
 			requestsMu sync.Mutex
 			requests   []llm.CompletionRequest
-			wg         sync.WaitGroup
 		)
-
-		wg.Add(2)
 
 		format := json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}}}`)
 
 		mock.CompletionFn = func(ctx context.Context, r llm.CompletionRequest, fn func(r llm.CompletionResponse)) error {
-			defer wg.Done()
-
 			requestsMu.Lock()
 			requests = append(requests, r)
-			callNum := len(requests)
 			requestsMu.Unlock()
 
-			switch callNum {
-			case 1:
-				fn(llm.CompletionResponse{
-					Content:            " I am thinking through this problem. </think> {\"answer\":\"42\"}",
-					Done:               false,
-					PromptEvalCount:    1,
-					PromptEvalDuration: 1,
-				})
-
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(time.Second):
-					t.Fatalf("timeout waiting for structured outputs cancellation")
-					return nil
-				}
-			case 2:
-				fn(llm.CompletionResponse{
-					Content:            `{"answer":"42"}`,
-					Done:               true,
-					DoneReason:         llm.DoneReasonStop,
-					PromptEvalCount:    1,
-					PromptEvalDuration: 1,
-					EvalCount:          1,
-					EvalDuration:       1,
-				})
-				return nil
-			default:
-				t.Fatalf("unexpected number of completion calls: %d", callNum)
-				return nil
-			}
+			fn(llm.CompletionResponse{
+				Content:            " I am thinking through this problem. </think> {\"answer\":\"42\"}",
+				Done:               true,
+				DoneReason:         llm.DoneReasonStop,
+				PromptEvalCount:    1,
+				PromptEvalDuration: 1,
+				EvalCount:          1,
+				EvalDuration:       1,
+			})
+			return nil
 		}
 
 		think := true
@@ -2098,53 +2044,43 @@ func TestChatWithPromptEndingInThinkTag(t *testing.T) {
 			Format:   format,
 		})
 
-		wg.Wait()
 		mock.CompletionFn = nil
 
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected status 200, got %d", w.Code)
 		}
 
-		if len(requests) != 2 {
-			t.Fatalf("expected two completion calls, got %d", len(requests))
+		if len(requests) != 1 {
+			t.Fatalf("expected one completion call, got %d", len(requests))
 		}
 
-		if requests[0].Format != nil {
-			t.Errorf("expected first completion format to be nil, got %q", requests[0].Format)
+		if !bytes.Equal([]byte(format), []byte(requests[0].Format)) {
+			t.Errorf("expected completion format to match request format")
 		}
 
-		if !bytes.Equal([]byte(format), []byte(requests[1].Format)) {
-			t.Errorf("expected second completion format to match original format")
+		if len(requests[0].ThinkingClose) == 0 {
+			t.Errorf("expected ThinkingClose strings for thinking+format single pass")
 		}
 
 		events := contentChatStreamChunks(readNDJSONChatResponses(t, w.Body))
 
-		if len(events) < 2 {
-			t.Fatalf("expected at least two streaming events, got %d", len(events))
+		if len(events) < 1 {
+			t.Fatalf("expected at least one streaming event, got %d", len(events))
 		}
 
-		first := events[0]
-		if first.Message.Thinking != "I am thinking through this problem. " {
-			t.Errorf("expected first event thinking %q, got %q", "I am thinking through this problem. ", first.Message.Thinking)
+		var thinking, content strings.Builder
+		for _, e := range events {
+			thinking.WriteString(e.Message.Thinking)
+			content.WriteString(e.Message.Content)
 		}
-
-		if first.Message.Content != "" {
-			t.Errorf("expected first event content to be empty, got %q", first.Message.Content)
+		if thinking.String() != "I am thinking through this problem. " {
+			t.Errorf("expected thinking %q, got %q", "I am thinking through this problem. ", thinking.String())
 		}
-
-		if first.Done {
-			t.Error("expected first event to be non-terminal")
+		if content.String() != `{"answer":"42"}` {
+			t.Errorf("expected content %q, got %q", `{"answer":"42"}`, content.String())
 		}
 
 		last := events[len(events)-1]
-		if last.Message.Thinking != "" {
-			t.Errorf("expected final event thinking to be empty, got %q", last.Message.Thinking)
-		}
-
-		if last.Message.Content != `{"answer":"42"}` {
-			t.Errorf("expected final event content %q, got %q", `{"answer":"42"}`, last.Message.Content)
-		}
-
 		if !last.Done {
 			t.Error("expected final event to be done")
 		}

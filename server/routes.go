@@ -188,6 +188,9 @@ func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Opt
 	draftNumPredictSet := hasOption(requestOpts, "draft_num_predict")
 	if model != nil {
 		draftNumPredictSet = draftNumPredictSet || hasOption(model.Options, "draft_num_predict")
+		if err := opts.FromMap(api.WithoutHFIdentitySampling(model.GenerationDefaults)); err != nil {
+			return api.Options{}, err
+		}
 		if len(model.GenSampling) > 0 {
 			if err := opts.FromMap(api.WithoutHFIdentitySampling(model.GenSampling)); err != nil {
 				return api.Options{}, err
@@ -205,7 +208,8 @@ func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Opt
 	if model != nil && model.IsMLX() &&
 		!hasOption(requestOpts, "top_p") &&
 		!hasOption(api.WithoutHFIdentitySampling(model.Options), "top_p") &&
-		!hasOption(api.WithoutHFIdentitySampling(model.GenSampling), "top_p") {
+		!hasOption(api.WithoutHFIdentitySampling(model.GenSampling), "top_p") &&
+		!hasOption(api.WithoutHFIdentitySampling(model.GenerationDefaults), "top_p") {
 		opts.TopP = 0.95
 	}
 
@@ -215,7 +219,8 @@ func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Opt
 	if isDeepseekV4MLX(model) &&
 		!hasOption(requestOpts, "temperature") &&
 		!hasOption(api.WithoutHFIdentitySampling(model.Options), "temperature") &&
-		!hasOption(api.WithoutHFIdentitySampling(model.GenSampling), "temperature") {
+		!hasOption(api.WithoutHFIdentitySampling(model.GenSampling), "temperature") &&
+		!hasOption(api.WithoutHFIdentitySampling(model.GenerationDefaults), "temperature") {
 		opts.Temperature = 0
 	}
 
@@ -1059,6 +1064,10 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		}
 		ctx, cancel := context.WithCancel(inferCtx)
 		defer cancel()
+		var thinkingClose []string
+		if !req.Raw {
+			thinkingClose = thinkingCloseForCompletion(builtinParser, thinkingState)
+		}
 		genCompletion := llm.CompletionRequest{
 			Prompt:            prompt,
 			PromptTokens:      mlxCompletionPromptTokens(m, promptTokens),
@@ -1069,6 +1078,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			Truncate:          req.Truncate == nil || *req.Truncate,
 			PreservedTokens:   preservedTokensForCompletion(builtinParser),
 			LeadingBOS:        leadingBOS,
+			ThinkingClose:     thinkingClose,
 			Logprobs:          req.Logprobs,
 			TopLogprobs:       req.TopLogprobs,
 			PromptCacheKey:    modality.ExtractPromptCacheKey(req.Options),
@@ -1696,11 +1706,51 @@ func getExistingName(n model.Name) (model.Name, error) {
 	if err != nil {
 		return zero, err
 	}
+	// First pass: full case-insensitive match → return canonical on-disk name.
 	for e := range existing {
-		if e.EqualFold(n) {
+		if strings.EqualFold(e.Host, n.Host) &&
+			strings.EqualFold(e.Namespace, n.Namespace) &&
+			strings.EqualFold(e.Model, n.Model) &&
+			strings.EqualFold(e.Tag, n.Tag) {
 			return e, nil
 		}
 	}
+
+	// Second pass: longest consecutive case-insensitive prefix
+	// (host → namespace → model). Copy only those parts from one manifest so
+	// an unrelated tag (e.g. Q4_K_M on another model) cannot rewrite casing
+	// (#18438). Tag is left as requested for new tags on existing models.
+	var best model.Name
+	bestLen := 0
+	for e := range existing {
+		length := 0
+		if strings.EqualFold(e.Host, n.Host) {
+			length = 1
+			if strings.EqualFold(e.Namespace, n.Namespace) {
+				length = 2
+				if strings.EqualFold(e.Model, n.Model) {
+					length = 3
+				}
+			}
+		}
+		if length > bestLen {
+			bestLen = length
+			best = e
+		}
+	}
+
+	switch bestLen {
+	case 3:
+		n.Host = best.Host
+		n.Namespace = best.Namespace
+		n.Model = best.Model
+	case 2:
+		n.Host = best.Host
+		n.Namespace = best.Namespace
+	case 1:
+		n.Host = best.Host
+	}
+
 	return n, nil
 }
 
@@ -2559,6 +2609,12 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.GET("/api/aliases", s.AliasesHandler)
 	r.POST("/api/aliases", s.AliasesHandler)
 	r.POST("/api/score", s.ScoreHandler)
+	r.POST("/v1/rerank", s.RerankHandler)
+	r.POST("/v1/reranking", s.RerankHandler)
+	r.POST("/rerank", s.RerankHandler)
+	r.POST("/api/rerank", s.RerankHandler)
+	r.POST("/v1/decisions", s.DecisionsHandler)
+	r.POST("/v1/systemone", s.DecisionsHandler)
 	r.POST("/api/router/decide", s.RouterDecideHandler)
 	r.GET("/api/router/corpus", s.RouterCorpusHandler)
 	r.POST("/api/router/corpus", s.RouterCorpusHandler)
@@ -2570,8 +2626,6 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/v1/chat/completions/batch", s.withInferenceRequestLogging("/v1/chat/completions/batch", s.runtimeV1ChatCompletionsBatchProxy())...)
 	r.POST("/v1/completions", s.withInferenceRequestLogging("/v1/completions", s.hostMemGuard(), cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.CompletionsMiddleware(), s.GenerateHandler)...)
 	r.POST("/v1/embeddings", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.EmbeddingsMiddleware(), s.EmbedHandler)
-	r.POST("/v1/decisions", s.DecisionsHandler)
-	r.POST("/v1/systemone", s.DecisionsHandler)
 	r.GET("/v1/models", middleware.ListMiddleware(), s.ListHandler)
 	r.GET("/v1/models/:model", s.maybeProxyElizaV1ModelGet(), middleware.RetrieveMiddleware(), s.ShowHandler)
 	r.POST("/v1/responses", s.withInferenceRequestLogging("/v1/responses", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.ResponsesMiddleware(), s.ChatHandler)...)
@@ -3193,6 +3247,16 @@ func preservedTokensForCompletion(builtinParser parsers.Parser) []string {
 	return nil
 }
 
+func thinkingCloseForCompletion(builtinParser parsers.Parser, thinkTagParser *thinking.Parser) []string {
+	if builtinParser != nil {
+		return builtinParser.ThinkingClose()
+	}
+	if thinkTagParser != nil {
+		return []string{thinkTagParser.ClosingTag}
+	}
+	return nil
+}
+
 func toolCallTagForCompletion(toolParser *tools.Parser) string {
 	if toolParser == nil {
 		return ""
@@ -3668,13 +3732,6 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		toolParser = tools.NewParser(m.Template.Template, req.Tools)
 	}
 
-	type structuredOutputsState int
-	const (
-		structuredOutputsState_None structuredOutputsState = iota
-		structuredOutputsState_ReadyToApply
-		structuredOutputsState_Applying
-	)
-
 	ch := streamCh
 	if ch == nil {
 		ch = make(chan any)
@@ -3698,278 +3755,212 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			close(ch)
 		}()
 
-		structuredOutputsState := structuredOutputsState_None
 		firstToken := true
 		var firstTokenAt time.Time
 		parallelEmitted := 0
+		var tb strings.Builder
 
-		for {
-			var tb strings.Builder
-
-			currentFormat := req.Format
-			// structured outputs via double request is enabled when:
-			// 1. the model supports the thinking capability and
-			// 2. it uses a built-in parser or our generic thinking parser
-
-			// Note that the current approach does not work for (potential future)
-			// non-thinking models that emit anything before actual content. This
-			// current approach uses the transition from parsed thinking content to
-			// parsed non-thinking content as the signal to turn constraining on
-
-			if req.Format != nil && structuredOutputsState == structuredOutputsState_None && ((builtinParser != nil || thinkingState != nil) && slices.Contains(m.Capabilities(), model.CapabilityThinking)) {
-				currentFormat = nil
+		// sets up new context given parent context per request
+		ctx, cancel := context.WithCancel(c.Request.Context())
+		var parserErr error
+		// Soft mid-stream preempt (M15f): interactive may cancel this ctx.
+		if s.sched != nil {
+			s.sched.mlxGate.bindPreemptCancel(schedulerModelKey(m), modality.ExtractPromptCacheKey(req.Options), cancel)
+		}
+		err := r.Completion(ctx, func() llm.CompletionRequest {
+			chatCompletion := llm.CompletionRequest{
+				Prompt:              prompt,
+				PromptTokens:        completionPromptTokens,
+				PaddedLayoutConsume: paddedLayoutConsume,
+				Images:              images,
+				Format:              req.Format,
+				Options:             opts,
+				Shift:               req.Shift == nil || *req.Shift,
+				Truncate:            truncate,
+				PreservedTokens:     preservedTokensForCompletion(builtinParser),
+				ToolCallTag:         toolCallTagForCompletion(toolParser),
+				LeadingBOS:          leadingBOSForModel(m),
+				ThinkingClose:       thinkingCloseForCompletion(builtinParser, thinkingState),
+				Logprobs:            req.Logprobs,
+				TopLogprobs:         req.TopLogprobs,
+				PromptCacheKey:      modality.ExtractPromptCacheKey(req.Options),
+				CacheReset:          mlxQoSFromOptions(req.Options).CacheReset,
+				SessionViTOverlay:   modality.SessionViTOverlayEnabled(req.Options),
+				Gemma4PaddedMedia:   gemma4PaddedMedia,
 			}
-
-			// sets up new context given parent context per request
-			ctx, cancel := context.WithCancel(c.Request.Context())
-			var parserErr error
-			// Soft mid-stream preempt (M15f): interactive may cancel this ctx.
-			if s.sched != nil {
-				s.sched.mlxGate.bindPreemptCancel(schedulerModelKey(m), modality.ExtractPromptCacheKey(req.Options), cancel)
+			applySpecFlags(&chatCompletion, req.Options, req.EnablePLD, req.EnableMTP, req.EnableDrafter)
+			return chatCompletion
+		}(), func(r llm.CompletionResponse) {
+			if emitMLXPrefillStatus(ch, req.Model, r.PrefillProcessed, r.PrefillTotal, r.Content, r.Done) {
+				return
 			}
-			err := r.Completion(ctx, func() llm.CompletionRequest {
-				chatCompletion := llm.CompletionRequest{
-					Prompt:              prompt,
-					PromptTokens:        completionPromptTokens,
-					PaddedLayoutConsume: paddedLayoutConsume,
-					Images:              images,
-					Format:              currentFormat,
-					Options:             opts,
-					Shift:               req.Shift == nil || *req.Shift,
-					Truncate:            truncate,
-					PreservedTokens:     preservedTokensForCompletion(builtinParser),
-					ToolCallTag:         toolCallTagForCompletion(toolParser),
-					LeadingBOS:          leadingBOSForModel(m),
-					Logprobs:            req.Logprobs,
-					TopLogprobs:         req.TopLogprobs,
-					PromptCacheKey:      modality.ExtractPromptCacheKey(req.Options),
-					CacheReset:          mlxQoSFromOptions(req.Options).CacheReset,
-					SessionViTOverlay:   modality.SessionViTOverlayEnabled(req.Options),
-					Gemma4PaddedMedia:   gemma4PaddedMedia,
+			if firstToken {
+				firstToken = false
+				firstTokenAt = time.Now()
+				if streamKeepalive != nil {
+					streamKeepalive.StopKeepalive()
 				}
-				applySpecFlags(&chatCompletion, req.Options, req.EnablePLD, req.EnableMTP, req.EnableDrafter)
-				return chatCompletion
-			}(), func(r llm.CompletionResponse) {
-				if emitMLXPrefillStatus(ch, req.Model, r.PrefillProcessed, r.PrefillTotal, r.Content, r.Done) {
+				logInferencePhase(c, "first_token", req.Model, checkpointPromptReady)
+			}
+			metrics := api.Metrics{
+				PromptEvalCount:            r.PromptEvalCount,
+				PromptEvalDuration:         r.PromptEvalDuration,
+				EvalCount:                  r.EvalCount,
+				EvalDuration:               r.EvalDuration,
+				CachedPromptTokens:         r.PromptEvalCachedCount,
+				CachedTokensHost:           r.PromptEvalCachedHost,
+				CachedTokensStorage:        r.PromptEvalCachedStorage,
+				CachedTokensStorageBackend: r.PromptEvalCachedStorageBackend,
+				CacheCreationTokens:        r.PromptEvalCacheCreationCount,
+			}
+			if mmTokenEstimate.HasValues() {
+				metrics.ImageTokens = mmTokenEstimate.ImageTokens
+				metrics.VideoTokens = mmTokenEstimate.VideoTokens
+				metrics.AudioTokens = mmTokenEstimate.AudioTokens
+			}
+			res := api.ChatResponse{
+				Model:     req.Model,
+				CreatedAt: time.Now().UTC(),
+				Message:   api.Message{Role: "assistant", Content: r.Content},
+				Done:      r.Done,
+				Metrics:   metrics,
+				Logprobs:  toAPILogprobs(r.Logprobs),
+			}
+
+			if r.Done {
+				res.DoneReason = r.DoneReason.String()
+				if r.PreemptedReason != "" {
+					res.PreemptedReason = r.PreemptedReason
+				}
+				if r.FinishDetails != "" {
+					res.FinishDetails = &api.FinishDetails{Type: r.FinishDetails}
+				}
+				if r.StopSequence != "" {
+					res.StopSequence = r.StopSequence
+				}
+				res.TotalDuration = time.Since(checkpointStart)
+				res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+				applyPromptTruncation(&res, r, messagesDropped, originalPromptTokens)
+				applyGgmlNumCtxChatResponse(&res, ggmlCtx)
+				if compressionMeta != nil {
+					res.Compression = compressionMeta
+				}
+				rememberMLXPromptChain(m, req.Options, prompt, msgs, runnerTokenize)
+				recordInferenceCompletionDetails(c, res.DoneReason, r.PromptEvalCount, r.EvalCount, r.PromptEvalCachedCount, r.PromptEvalCachedHost, r.PromptEvalCachedStorage, r.PromptEvalCachedStorageBackend)
+				if r.OriginalPromptTokens > 0 {
+					recordInferencePromptSize(c, r.PromptEvalCount, r.OriginalPromptTokens, messagesDropped)
+				}
+				sentDone = true
+			}
+
+			if builtinParser != nil {
+				slog.Log(context.TODO(), logutil.LevelTrace, "builtin parser input", "parser", m.Config.Parser, "content", r.Content)
+
+				content, thinking, toolCalls, err := builtinParser.Add(r.Content, r.Done)
+				if err != nil {
+					parserErr = err
+					cancel()
 					return
 				}
-				if firstToken {
-					firstToken = false
-					firstTokenAt = time.Now()
-					if streamKeepalive != nil {
-						streamKeepalive.StopKeepalive()
-					}
-					logInferencePhase(c, "first_token", req.Model, checkpointPromptReady)
-				}
-				metrics := api.Metrics{
-					PromptEvalCount:            r.PromptEvalCount,
-					PromptEvalDuration:         r.PromptEvalDuration,
-					EvalCount:                  r.EvalCount,
-					EvalDuration:               r.EvalDuration,
-					CachedPromptTokens:         r.PromptEvalCachedCount,
-					CachedTokensHost:           r.PromptEvalCachedHost,
-					CachedTokensStorage:        r.PromptEvalCachedStorage,
-					CachedTokensStorageBackend: r.PromptEvalCachedStorageBackend,
-					CacheCreationTokens:        r.PromptEvalCacheCreationCount,
-				}
-				if mmTokenEstimate.HasValues() {
-					metrics.ImageTokens = mmTokenEstimate.ImageTokens
-					metrics.VideoTokens = mmTokenEstimate.VideoTokens
-					metrics.AudioTokens = mmTokenEstimate.AudioTokens
-				}
-				res := api.ChatResponse{
-					Model:     req.Model,
-					CreatedAt: time.Now().UTC(),
-					Message:   api.Message{Role: "assistant", Content: r.Content},
-					Done:      r.Done,
-					Metrics:   metrics,
-					Logprobs:  toAPILogprobs(r.Logprobs),
-				}
 
-				if r.Done {
-					res.DoneReason = r.DoneReason.String()
-					if r.PreemptedReason != "" {
-						res.PreemptedReason = r.PreemptedReason
-					}
-					if r.FinishDetails != "" {
-						res.FinishDetails = &api.FinishDetails{Type: r.FinishDetails}
-					}
-					if r.StopSequence != "" {
-						res.StopSequence = r.StopSequence
-					}
-					res.TotalDuration = time.Since(checkpointStart)
-					res.LoadDuration = checkpointLoaded.Sub(checkpointStart)
-					applyPromptTruncation(&res, r, messagesDropped, originalPromptTokens)
-					applyGgmlNumCtxChatResponse(&res, ggmlCtx)
-					if compressionMeta != nil {
-						res.Compression = compressionMeta
-					}
-					rememberMLXPromptChain(m, req.Options, prompt, msgs, runnerTokenize)
-					recordInferenceCompletionDetails(c, res.DoneReason, r.PromptEvalCount, r.EvalCount, r.PromptEvalCachedCount, r.PromptEvalCachedHost, r.PromptEvalCachedStorage, r.PromptEvalCachedStorageBackend)
-					if r.OriginalPromptTokens > 0 {
-						recordInferencePromptSize(c, r.PromptEvalCount, r.OriginalPromptTokens, messagesDropped)
-					}
-					sentDone = true
+				res.Message.Content = content
+				res.Message.Thinking = thinking
+				for i := range toolCalls {
+					toolCalls[i].ID = toolCallId()
 				}
+				toolCalls = finishToolCalls(toolCalls, req, &parallelEmitted)
+				res.Message.ToolCalls = toolCalls
 
-				if builtinParser != nil {
-					slog.Log(context.TODO(), logutil.LevelTrace, "builtin parser input", "parser", m.Config.Parser, "content", r.Content)
+				tb.WriteString(thinking)
 
-					content, thinking, toolCalls, err := builtinParser.Add(r.Content, r.Done)
-					if err != nil {
-						parserErr = err
-						cancel()
-						return
+				if res.Message.Content != "" || res.Message.Thinking != "" || len(res.Message.ToolCalls) > 0 || r.Done || len(res.Logprobs) > 0 {
+					slog.Log(context.TODO(), logutil.LevelTrace, "builtin parser output", "parser", m.Config.Parser, "content", content, "thinking", thinking, "toolCalls", toolCalls, "done", r.Done)
+					if r.Done {
+						applyEmptyGenClassifyChat(&res, opts.NumPredict, !checkpointLoaded.IsZero())
 					}
+					ch <- res
+				} else {
+					slog.Log(context.TODO(), logutil.LevelTrace, "builtin parser empty output", "parser", m.Config.Parser)
+				}
+				return
+			}
 
+			if thinkingState != nil {
+				thinkingContent, remainingContent := thinkingState.AddContent(res.Message.Content)
+				if thinkingContent == "" && remainingContent == "" && !r.Done {
+					// need to accumulate more to decide what to send
+					return
+				}
+				res.Message.Thinking = thinkingContent
+				tb.WriteString(thinkingContent)
+				res.Message.Content = remainingContent
+			}
+
+			if len(req.Tools) > 0 {
+				toolCalls, content := toolParser.Add(res.Message.Content)
+				if len(content) > 0 {
 					res.Message.Content = content
-					res.Message.Thinking = thinking
+				} else if len(toolCalls) > 0 {
 					for i := range toolCalls {
 						toolCalls[i].ID = toolCallId()
 					}
 					toolCalls = finishToolCalls(toolCalls, req, &parallelEmitted)
 					res.Message.ToolCalls = toolCalls
-
-					tb.WriteString(thinking)
-					// we are now receiving content from the model - we should start applying structured outputs
-					if structuredOutputsState == structuredOutputsState_None && req.Format != nil && tb.String() != "" && res.Message.Content != "" {
-						structuredOutputsState = structuredOutputsState_ReadyToApply
-						cancel()
-						return
+					res.Message.Content = ""
+				} else if res.Message.Thinking != "" {
+					// don't return, fall through to send
+				} else {
+					//  Send logprobs while content is being buffered by the parser for tool calls
+					if len(res.Logprobs) > 0 && !r.Done {
+						logprobRes := res
+						logprobRes.Message.Content = ""
+						logprobRes.Message.ToolCalls = nil
+						ch <- logprobRes
 					}
 
-					if res.Message.Content != "" || res.Message.Thinking != "" || len(res.Message.ToolCalls) > 0 || r.Done || len(res.Logprobs) > 0 {
-						slog.Log(context.TODO(), logutil.LevelTrace, "builtin parser output", "parser", m.Config.Parser, "content", content, "thinking", thinking, "toolCalls", toolCalls, "done", r.Done)
-						if r.Done {
-							applyEmptyGenClassifyChat(&res, opts.NumPredict, !checkpointLoaded.IsZero())
-						}
+					if r.Done {
+						res.Message.Content = toolParser.Content()
 						ch <- res
-					} else {
-						slog.Log(context.TODO(), logutil.LevelTrace, "builtin parser empty output", "parser", m.Config.Parser)
 					}
 					return
 				}
+			}
 
-				if thinkingState != nil {
-					thinkingContent, remainingContent := thinkingState.AddContent(res.Message.Content)
-					if thinkingContent == "" && remainingContent == "" && !r.Done {
-						// need to accumulate more to decide what to send
-						return
-					}
-					res.Message.Thinking = thinkingContent
-					tb.WriteString(thinkingContent)
-					// emit the collected thinking text before restarting with structured outputs and clear unstructured content
-					// to avoid leaking mixed tokens like "</think>Hello"
-					if structuredOutputsState == structuredOutputsState_None && req.Format != nil && tb.String() != "" && remainingContent != "" {
-						structuredOutputsState = structuredOutputsState_ReadyToApply
-						res.Message.Content = ""
-						ch <- res
-						cancel()
-						return
-					}
-					res.Message.Content = remainingContent
-				}
+			if r.Done && usesQwenStyleChat(m) {
+				res.Message.Content = sanitizeAssistantContent(res.Message.Content)
+				res.Message.Thinking = sanitizeAssistantThinking(res.Message.Thinking)
+			}
 
-				if len(req.Tools) > 0 {
-					toolCalls, content := toolParser.Add(res.Message.Content)
-					if len(content) > 0 {
-						res.Message.Content = content
-					} else if len(toolCalls) > 0 {
-						for i := range toolCalls {
-							toolCalls[i].ID = toolCallId()
-						}
-						toolCalls = finishToolCalls(toolCalls, req, &parallelEmitted)
-						res.Message.ToolCalls = toolCalls
-						res.Message.Content = ""
-					} else if res.Message.Thinking != "" {
-						// don't return, fall through to send
-					} else {
-						//  Send logprobs while content is being buffered by the parser for tool calls
-						if len(res.Logprobs) > 0 && !r.Done {
-							logprobRes := res
-							logprobRes.Message.Content = ""
-							logprobRes.Message.ToolCalls = nil
-							ch <- logprobRes
-						}
-
-						if r.Done {
-							res.Message.Content = toolParser.Content()
-							ch <- res
-						}
-						return
-					}
-				}
-
-				if r.Done && usesQwenStyleChat(m) {
-					res.Message.Content = sanitizeAssistantContent(res.Message.Content)
-					res.Message.Thinking = sanitizeAssistantThinking(res.Message.Thinking)
-				}
-
-				if r.Done {
-					applyEmptyGenClassifyChat(&res, opts.NumPredict, !checkpointLoaded.IsZero())
-				}
-				ch <- res
-			})
-			if parserErr != nil {
-				enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, parserErr.Error(), http.StatusInternalServerError,
-					errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
+			if r.Done {
+				applyEmptyGenClassifyChat(&res, opts.NumPredict, !checkpointLoaded.IsZero())
+			}
+			ch <- res
+		})
+		if parserErr != nil {
+			enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, parserErr.Error(), http.StatusInternalServerError,
+				errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero()))
+			return
+		}
+		if err != nil {
+			if isContextCanceled(err) && s.maybeEnqueueChatPreempted(
+				ch, m, req.Options, req.Model, "", tb.String(), &sentDone,
+				checkpointStart, checkpointLoaded, ggmlCtx,
+			) {
 				return
 			}
-			if err != nil {
-				if structuredOutputsState == structuredOutputsState_ReadyToApply && strings.Contains(err.Error(), "context canceled") && c.Request.Context().Err() == nil {
-					// only ignores error if it's a context cancellation due to setting structured outputs
-				} else if isContextCanceled(err) && s.maybeEnqueueChatPreempted(
-					ch, m, req.Options, req.Model, "", tb.String(), &sentDone,
-					checkpointStart, checkpointLoaded, ggmlCtx,
-				) {
-					return
-				} else {
-					slog.Error("chat completion failed",
-						"model", req.Model,
-						"error", err,
-						"client_canceled", c.Request.Context().Err() != nil,
-					)
-					extra := errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero())
-					var serr api.StatusError
-					if errors.As(err, &serr) {
-						enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, serr.ErrorMessage, serr.StatusCode, extra)
-					} else {
-						enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0, extra)
-					}
-					return
-				}
+			slog.Error("chat completion failed",
+				"model", req.Model,
+				"error", err,
+				"client_canceled", c.Request.Context().Err() != nil,
+			)
+			extra := errorExtraFromCheckpoints(checkpointStart, checkpointLoaded, firstTokenAt, !firstTokenAt.IsZero())
+			var serr api.StatusError
+			if errors.As(err, &serr) {
+				enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, serr.ErrorMessage, serr.StatusCode, extra)
+			} else {
+				enqueueChatStreamErrorExtra(ch, req.Model, &sentDone, err.Error(), 0, extra)
 			}
-
-			// ignored structured outputs cancellation falls through to here, start a new request with the structured outputs and updated prompt. use the
-			if structuredOutputsState == structuredOutputsState_ReadyToApply {
-				structuredOutputsState = structuredOutputsState_Applying
-				msg := api.Message{
-					Role:     "assistant",
-					Thinking: tb.String(),
-				}
-
-				msgs = append(msgs, msg)
-				prompt, _, _, promptTokens, _, err = chatPrompt(chatCtx, m, r.Tokenize, opts, msgs, processedTools, req.Think, truncate, tokenBudget, detok)
-				if err != nil {
-					slog.Error("chat prompt error applying structured outputs", "error", err)
-					enqueueChatStreamError(ch, req.Model, &sentDone, err.Error(), 0)
-					return
-				}
-				completionPromptTokens = mlxCompletionPromptTokens(m, promptTokens)
-				// force constraining by terminating thinking header, the parser is already at this state
-				// when the last message is thinking, the rendered for gpt-oss cannot disambiguate between having the
-				// model continue thinking or ending thinking and outputting the final message.
-				// TODO(parthsareen): consider adding prefill disambiguation logic to the renderer for structured outputs.
-				if shouldUseHarmony(m) || (builtinParser != nil && m.Config.Parser == "harmony") {
-					prompt += "<|end|><|start|>assistant<|channel|>final<|message|>"
-					if ids, err := runnerTokenize(chatCtx, prompt); err == nil {
-						completionPromptTokens = mlxCompletionPromptTokens(m, ids)
-					}
-				}
-				continue
-			}
-
-			break
+			return
 		}
 	}()
 
@@ -4066,7 +4057,11 @@ func handleScheduleError(c *gin.Context, name string, err error) {
 	// Why 503: runtime sidecar holds Metal; a second ggml runner would contend on the
 	// same device. Caller should unload the runtime model or use runtime routing.
 	case errors.Is(err, ErrDarwinMetalContention):
-		writeBusyUnavailable(c, err.Error(), preemptedReasonFromErr(err))
+		writeBusyUnavailableCoded(c, err.Error(), mlxScheduleErrorCode(err), preemptedReasonFromErr(err))
+	case errors.Is(err, ErrUmaGPULease), errors.Is(err, ErrMLXRunnerJetsam), errors.Is(err, ErrMLXExclusiveBusy):
+		// Why 503 (not 500/404): model exists; Metal/UMA admission failed — clients
+		// should retry after unload/broker repair, not treat as missing tag.
+		writeBusyUnavailableCoded(c, err.Error(), mlxScheduleErrorCode(err), preemptedReasonFromErr(err))
 	case errors.Is(err, ErrLoadCooldown):
 		sec := 1
 		var ce *LoadCooldownError
@@ -4074,22 +4069,36 @@ func handleScheduleError(c *gin.Context, name string, err error) {
 			sec = retryAfterSeconds(ce.RetryAfter())
 		}
 		c.Header("Retry-After", strconv.Itoa(sec))
-		c.JSON(http.StatusServiceUnavailable, gin.H{
+		body := gin.H{
 			"error":       err.Error(),
 			"retry_after": sec,
-		})
+			"error_code":  "load_cooldown",
+		}
+		c.JSON(http.StatusServiceUnavailable, body)
 	case errors.Is(err, ErrEdgeGgmlRunnerDisabled), errors.Is(err, llm.ErrGgmlRunnerUnlinked):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	default:
+		// Last-chance classify for unwrapped mlxrunner strings from older paths.
+		if classified := classifyTransientMLXError(err); classified != err {
+			handleScheduleError(c, name, classified)
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 	}
 }
 
 func writeBusyUnavailable(c *gin.Context, errMsg string, preemptedReason ...string) {
+	writeBusyUnavailableCoded(c, errMsg, "", preemptedReason...)
+}
+
+func writeBusyUnavailableCoded(c *gin.Context, errMsg, errorCode string, preemptedReason ...string) {
 	c.Header("Retry-After", strconv.Itoa(defaultBusyRetryAfterSec))
 	body := gin.H{
 		"error":       errMsg,
 		"retry_after": defaultBusyRetryAfterSec,
+	}
+	if errorCode != "" {
+		body["error_code"] = errorCode
 	}
 	if len(preemptedReason) > 0 && preemptedReason[0] != "" {
 		body["preempted_reason"] = preemptedReason[0]

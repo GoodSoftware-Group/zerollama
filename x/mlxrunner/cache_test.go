@@ -827,7 +827,7 @@ func TestEvictionPreservesActiveConversations(t *testing.T) {
 			t.Fatalf("pagedOutBytes = %d, want <= %d", kvc.pagedOutBytes, maxPagedOutBytes)
 		}
 
-		// Active path should be untouched.
+		// The branch point and the frontier survive.
 		if len(kvc.activePath) < 2 {
 			t.Fatalf("activePath should have >= 2 nodes, got %d", len(kvc.activePath))
 		}
@@ -890,8 +890,29 @@ func TestUserSnapshotResistsAutoMerge(t *testing.T) {
 			t.Fatalf("user node children = %d, want 2", len(userNode.children))
 		}
 
-		// Inflate snapshot sizes and evict. The non-active branch should be
-		// evicted, leaving the user node with one child.
+		// Inflate snapshot sizes so that evicting the non-active branch alone
+		// brings the trie under budget, leaving the user node with one child.
+		var kept, evicted int
+		walkNodes(kvc.root, func(n *trieNode) bool {
+			for _, s := range n.snapshots {
+				if s == nil {
+					continue
+				}
+				if n.parent == userNode && !slices.Contains(kvc.activePath, n) {
+					evicted++
+				} else {
+					kept++
+				}
+			}
+			return true
+		})
+		if evicted == 0 {
+			t.Fatal("no snapshots on the non-active branch")
+		}
+		if kept == 0 {
+			t.Fatal("no snapshots on kept nodes")
+		}
+		size := int(maxPagedOutBytes) / kept
 		walkNodes(kvc.root, func(n *trieNode) bool {
 			if !n.hasSnapshots() {
 				return true
@@ -899,7 +920,7 @@ func TestUserSnapshotResistsAutoMerge(t *testing.T) {
 			snaps := make([]cache.Snapshot, len(n.snapshots))
 			for i, s := range n.snapshots {
 				if s != nil {
-					snaps[i] = &fakeSnapshot{byteSize: 5 * 1024 * 1024 * 1024}
+					snaps[i] = &fakeSnapshot{byteSize: size}
 				}
 			}
 			n.setSnapshots(snaps, &kvc.pagedOutBytes)
@@ -943,12 +964,13 @@ func TestSnapshotBeyondPrefillSkipped(t *testing.T) {
 	})
 }
 
-// TestPrefillSnapshotsDiscardedOnCancel mirrors a prefill canceled after the
-// caches captured interior snapshots but before attachPrefillSnapshots ran. The
-// abandoned captures must be released when the session closes; otherwise the
-// next request's PrepareSnapshots overwrites the schedule without closing them,
-// leaking the snapshots (caught by checkSnapshotLeaks in the env cleanup).
-func TestPrefillSnapshotsDiscardedOnCancel(t *testing.T) {
+// TestPrefillSnapshotsKeptOnCancel mirrors a prefill canceled after the caches
+// captured interior snapshots but before the success-path attach ran. Closing
+// the session attaches the crossed captures so a retry can resume from them,
+// and drains the capture schedule; otherwise the next request's
+// PrepareSnapshots would overwrite it without closing the captures, leaking
+// them (caught by checkSnapshotLeaks in the env cleanup).
+func TestPrefillSnapshotsKeptOnCancel(t *testing.T) {
 	forEachEnv(t, func(t *testing.T, env *testEnv) {
 		kvc := env.kvc
 		inputs := []int32{1, 2, 3, 4, 5}
@@ -956,21 +978,16 @@ func TestPrefillSnapshotsDiscardedOnCancel(t *testing.T) {
 		session := kvc.begin(nil, inputs, "", false)
 		session.schedulePrefillSnapshots([]int{3})
 		// Cross offset 3 so the caches capture it, then close the session as a
-		// canceled prefill would, before the captures are attached to the trie.
+		// canceled prefill would, before the success-path attach.
 		feedAll(kvc.caches, inputs[kvc.minCacheOffset():3])
 		session.close()
 
-		// close advances the trie over the committed tokens, but the abandoned
-		// captures must not be attached as snapshots to any node.
-		walkNodes(kvc.root, func(n *trieNode) bool {
-			if n != kvc.root && n.hasSnapshots() {
-				t.Errorf("abandoned capture attached as snapshot at offset %d", n.endOffset)
-			}
-			return true
-		})
+		if at := 3 - kvc.draftLookahead; !nodeExistsAtOffset(kvc.root, at) {
+			t.Errorf("no trie node at capture point %d after cancel", at)
+		}
 
 		// A second request re-prepares snapshots on the same caches: if the
-		// discarded ones were not closed, prepare() orphans them here.
+		// pending ones were not drained, prepare() orphans them here.
 		simulateRequest(t, kvc, inputs, nil, 4)
 
 		checkTrieInvariants(t, kvc.root)

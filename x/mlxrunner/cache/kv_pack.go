@@ -3,10 +3,10 @@ package cache
 import "github.com/ollama/ollama/x/mlxrunner/mlx"
 
 // Paged-out trie snapshots (not the live decode cache) pack to FP8 when the
-// owned window is large enough. mlx-serve --kv-quant shrinks *live* KV; without
-// fused packed-attention kernels that path is a decode regression, so we only
-// compress idle branches. Live SDPA stays dense. Tiny unit-test snapshots stay
-// unpacked so exact Floats() checks keep working.
+// owned window is large enough. Live affine KV (ZEROLLAMA_MLX_KV_QUANT=4|8)
+// stores packed triples in the cache; copyOut denseViews first so this path
+// still sees activations. Tiny unit-test snapshots stay unpacked so exact
+// Floats() checks keep working.
 const pagedKVPackMinBytes = 64 << 10
 
 func packOwnedKV(k, v *mlx.Array) (ok, ov *mlx.Array, packed bool, elem mlx.DType) {

@@ -41,3 +41,33 @@ func TestGetExistingNameNoCrossModelTagBorrow(t *testing.T) {
 		t.Fatalf("unexpected manifest at %s", tagPath)
 	}
 }
+
+// New tags on an existing model should inherit host/namespace/model casing
+// from the on-disk manifest without borrowing an unrelated tag's casing.
+func TestGetExistingNamePrefixCasing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	modelsRoot := t.TempDir()
+	t.Setenv("OLLAMA_MODELS", modelsRoot)
+
+	var s Server
+	_, digest := createBinFile(t, nil, nil)
+	createRequest(t, s.CreateHandler, api.CreateRequest{
+		Name:  "MyOrg/MyModel:Q4_K_M",
+		Files: map[string]string{"test.gguf": digest},
+	})
+	createRequest(t, s.CreateHandler, api.CreateRequest{
+		Name:  "OtherOrg/OtherModel:Q8_0",
+		Files: map[string]string{"test.gguf": digest},
+	})
+
+	got, err := getExistingName(model.ParseName("myorg/mymodel:q8_0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Namespace != "MyOrg" || got.Model != "MyModel" {
+		t.Fatalf("got %s/%s, want MyOrg/MyModel", got.Namespace, got.Model)
+	}
+	if got.Tag != "q8_0" {
+		t.Fatalf("tag=%q want q8_0 (requested casing, not OtherOrg's Q8_0)", got.Tag)
+	}
+}

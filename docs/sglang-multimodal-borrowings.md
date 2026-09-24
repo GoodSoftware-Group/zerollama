@@ -6,7 +6,19 @@ This document records **what** zerollama adopted from [SGLang](https://github.co
 
 **Related:** [video-understanding.md](./video-understanding.md) (native pipeline), [video-parity.md](./video-parity.md) (matrix), [gpu-profiles-l3.md](./gpu-profiles-l3.md) (KV prefix cache), [ROADMAP.md](./ROADMAP.md) Option 2.
 
-**Last scanned:** 2026-08-21 — sibling `../sglang` tip **`896acc8860`** (was `4e5a05148a`, ~1223 commits). HiCache/Radix in this range remain infrastructure-only.
+**Last scanned:** 2026-09-23 — sibling `../sglang` tip **`f2eebd5533`** (was `896acc8860`, ~1799 commits). Most of the delta is HiCache / unified radix / PD / day-0 model bringup — not Go/ffmpeg portable.
+
+### Upstream delta triage (`896acc8860..f2eebd5533`)
+
+| Priority | SGLang | Action |
+|----------|--------|--------|
+| **Bring** | [#37320](https://github.com/sgl-project/sglang/pull/37320) — alpha-channel → RGB + tool-result media ordering | `smart_to_rgb` edge-brightness composite; canonicalize multi-tool runs by `tool_call_id` when any tool msg has media. We ship tool-result *placeholders* (#33898) but still white-only alpha flatten + no tool-run reorder |
+| **Bring** | [#37967](https://github.com/sgl-project/sglang/pull/37967) — whole-request media byte budget | Per-source remote cap + shared request budget across base64 + URLs. We have `OLLAMA_VIDEO_MAX_BYTES` / allowlist (#34892) but not a single chat-turn media budget |
+| **Watch** | [#39120](https://github.com/sgl-project/sglang/pull/39120) — ViT embed cache must own storage (clone views) | Pattern for `VisionEmbedCache` if we ever admit sliced tensors without copy |
+| **Watch** | [#38735](https://github.com/sgl-project/sglang/pull/38735) — chat body cap 32 MiB for base64 MM | Check Gin / OpenAI path rejects large multimodal JSON with 413 (or raise if operators hit it) |
+| **Watch** | [#34488](https://github.com/sgl-project/sglang/pull/34488) — `sglext.input_ids` / `output_ids` | Optional API parity; we already emit `sglext` cache details |
+| **Watch** | [#37971](https://github.com/sgl-project/sglang/pull/37971) — mixed image/video offsets (GLM4V) | Adjacent to #31957; only if we ship GLM-OCR mixed still+video spans |
+| **Skip** | HiCache / unified radix removal / PP prefetch / CUDA-IPC / Rust MM frontend / PD / day-0 models | Infrastructure or family-specific CUDA |
 
 ### Upstream delta triage (`4e5a05148a..896acc8860`)
 

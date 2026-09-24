@@ -11,7 +11,6 @@ import (
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/llm"
-	"github.com/ollama/ollama/x/freetokenlab"
 )
 
 func doctorCheckFlashMoE(_ string) doctorCheck {
@@ -103,11 +102,15 @@ func flashMoEInventoryHint() string {
 	if m, err := discover.GetCPUMem(); err == nil && m.TotalMemory > 0 {
 		ram = float64(m.TotalMemory) / float64(1<<30)
 	}
-	a := freetokenlab.AdviseSlotBankK(int(inv[0].ExpertCount), int(inv[0].ExpertUsedCount), ram, inv[0].ExpertWeightBytes)
+	a := flashMoEAdvise(inv[0], ram)
 	hint := fmt.Sprintf("; found %d local MoE tag(s) — ./zerollama flash-moe-resolve --list; %s recommend_slot_bank=%d (routing=%d ram_cap=%d; not auto-passed)",
 		len(inv), inv[0].Tag, a.Recommend, a.Routing, a.RamCap)
 	if a.BankBytes > 0 {
-		hint += fmt.Sprintf(" bank~%s", format.HumanBytes2(uint64(a.BankBytes)))
+		src := a.BankSource
+		if src != "" {
+			src = "/" + src
+		}
+		hint += fmt.Sprintf(" bank~%s%s", format.HumanBytes2(uint64(a.BankBytes)), src)
 	}
 	if a.MissRate > 0 && a.MissRate < 1 {
 		hint += fmt.Sprintf(" miss≈%.3f", a.MissRate)

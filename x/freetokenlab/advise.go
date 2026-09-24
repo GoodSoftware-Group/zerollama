@@ -8,15 +8,19 @@ import (
 // Advice turns lab numbers into Flash-MoE / chat settings we can actually set.
 // anemll has no q* CPU-expert flag; slot-bank is already LRU-style.
 type Advice struct {
-	Profile           string
-	CPUSplit          bool
-	PrefetchTemporal  bool
-	SemanticChatMode  string // placeholder | summary (opt-in)
-	SlotsSticky15     int    // LRU slots for ~15% miss on sticky Zipf
-	SlotsSticky15Frac float64
-	Experts           int
-	TopK              int
-	Notes             []string
+	Profile            string
+	CPUSplit           bool
+	PrefetchTemporal   bool
+	SemanticChatMode   string // placeholder | summary (opt-in)
+	SlotsSticky15      int    // LRU slots for ~15% miss on sticky Zipf
+	SlotsSticky15Frac  float64
+	Experts            int
+	TopK               int
+	PinBudgetBytes     int64 // 0 + !PinCapped = uncapped (FreeToken None)
+	PinCapped          bool
+	BankOverPin        bool
+	SuggestedCPULayers int
+	Notes              []string
 }
 
 // AdviseProfile maps a Profiles() key to operator knobs (256 experts, top-k=6).
@@ -120,8 +124,24 @@ func (a Advice) DoctorLine() string {
 	if a.PrefetchTemporal {
 		pf = "prefetch=on"
 	}
-	return fmt.Sprintf("%s %s %s slots~%d k=%d (sticky≤15%% miss) chat=%s",
+	line := fmt.Sprintf("%s %s %s slots~%d k=%d (sticky≤15%% miss) chat=%s",
 		a.Profile, cpu, pf, a.SlotsSticky15, a.TopK, a.SemanticChatMode)
+	if a.PinCapped && a.BankOverPin {
+		line += fmt.Sprintf(" pin-over cpu-layers~%d", a.SuggestedCPULayers)
+	} else if a.PinCapped {
+		line += " pin=capped"
+	}
+	return line
+}
+
+// WithPin merges FreeToken pin-budget / --moe-cpu-layers auto advice.
+func (a Advice) WithPin(p PinAdvice) Advice {
+	a.PinBudgetBytes = p.BudgetBytes
+	a.PinCapped = p.Capped
+	a.BankOverPin = p.OverBudget
+	a.SuggestedCPULayers = p.SuggestedCPULayers
+	a.Notes = append(a.Notes, p.Notes...)
+	return a
 }
 
 // SlotBankForExperts is --moe-slot-bank for a GGUF expert_count (top-k=6).
@@ -158,11 +178,14 @@ func stickyZipfTraces(nExperts, k int) (n, kUse int, pre, dec []TraceStep) {
 // SlotBankAdvice is routing-sized LRU vs anemll RAM table. Serve still omits
 // --moe-slot-bank unless the operator copies Recommend into env/options.
 type SlotBankAdvice struct {
-	Routing   int
-	RamCap    int
-	Recommend int
-	BankBytes int64
-	MissRate  float64 // sticky Zipf LRU miss at Recommend
+	Routing       int
+	RamCap        int
+	Recommend     int
+	BankBytes     int64   // resident expert bank at Recommend slots
+	FullBankBytes int64   // all experts (pin-budget compare; FreeToken bank_bytes)
+	BytesPerSlot  int64   // one expert across all MoE layers
+	BankSource    string  // "measured" | "estimate" | ""
+	MissRate      float64 // sticky Zipf LRU miss at Recommend
 }
 
 // SlotBankBytes is packed expert tensors × slots / expert_count (all MoE layers).
@@ -180,10 +203,20 @@ func AdviseSlotBank(nExperts int, ramGiB float64) SlotBankAdvice {
 
 // AdviseSlotBankK uses GGUF expert_used_count and optional packed expert bytes.
 func AdviseSlotBankK(nExperts, k int, ramGiB float64, expertTensorBytes int64) SlotBankAdvice {
+	return AdviseSlotBankDims(nExperts, k, ramGiB, expertTensorBytes, ExpertBankDims{})
+}
+
+// AdviseSlotBankDims is AdviseSlotBankK plus FreeToken config estimate when
+// measured *_exps bytes are zero (bank_bytes_estimate rematch).
+func AdviseSlotBankDims(nExperts, k int, ramGiB float64, measuredBytes int64, dims ExpertBankDims) SlotBankAdvice {
 	n, _, pre, dec := stickyZipfTraces(nExperts, k)
 	if n < 2 {
 		return SlotBankAdvice{Routing: 1, RamCap: RamCapSlots(ramGiB), Recommend: 1, MissRate: 1}
 	}
+	if dims.Experts < 1 {
+		dims.Experts = n
+	}
+	total, src := ResolveExpertBankBytes(measuredBytes, dims)
 	r, rRate := RecommendSlots(PolicyLRU, n, pre, dec, 0.15)
 	if r < 1 {
 		r = 1
@@ -200,12 +233,19 @@ func AdviseSlotBankK(nExperts, k int, ramGiB float64, expertTensorBytes int64) S
 	if rec != r {
 		miss = SimulateCache(PolicyLRU, n, rec, pre, dec).MissRate
 	}
+	perSlot := int64(0)
+	if total > 0 {
+		perSlot = total / int64(n)
+	}
 	return SlotBankAdvice{
-		Routing:   r,
-		RamCap:    cap,
-		Recommend: rec,
-		BankBytes: SlotBankBytes(rec, expertTensorBytes, n),
-		MissRate:  miss,
+		Routing:       r,
+		RamCap:        cap,
+		Recommend:     rec,
+		BankBytes:     SlotBankBytes(rec, total, n),
+		FullBankBytes: total,
+		BytesPerSlot:  perSlot,
+		BankSource:    src,
+		MissRate:      miss,
 	}
 }
 

@@ -532,10 +532,10 @@ func freeTensorKeys(tensors map[string]*mlx.Array, keys ...string) {
 	}
 }
 
-// fuseEvalChunkExperts is how many stacked experts one Metal Eval may
-// touch during fuse/stack/transpose. A single concat+Eval of a full
-// gate/up stack (coder-next class) hits kIOGPUCommandBufferCallbackErrorTimeout
-// when other MLX models already occupy the GPU — RAM can still look fine.
+// fuseEvalChunkExperts is how many stacked experts one concat/stack/transpose
+// graph may touch. Chunking keeps the unevaluated fold graph small; the
+// runner Eval after LoadWeights materializes it. A single concat of a full
+// gate/up stack (coder-next class) still times out Metal if evaluated at fold.
 var fuseEvalChunkExperts = 8
 
 func sliceAxis0(a *mlx.Array, start, end int) *mlx.Array {
@@ -566,13 +566,11 @@ func concatEval(parts []*mlx.Array, axis int) *mlx.Array {
 				end = len(parts)
 			}
 			c := mlx.Concatenate(parts[i:end], axis).Clone()
-			mlx.Eval(c)
 			next = append(next, c)
 		}
 		return concatEval(next, axis)
 	}
 	out := mlx.Concatenate(parts, axis).Clone()
-	mlx.Eval(out)
 	return out
 }
 
@@ -593,14 +591,12 @@ func stackAndClone(parts []*mlx.Array) *mlx.Array {
 			}
 			st := mlx.Stack(parts[i:end], 0)
 			cl := st.Clone()
-			mlx.Eval(cl)
 			groups = append(groups, cl)
 		}
 		return concatEval(groups, 0)
 	}
 	stacked := mlx.Stack(parts, 0)
 	cloned := stacked.Clone()
-	mlx.Eval(cloned)
 	return cloned
 }
 
@@ -622,14 +618,12 @@ func transposeExpertWeightForGatherMM(w *mlx.Array) *mlx.Array {
 			}
 			t := mlx.Transpose(sliceAxis0(w, start, end), 0, 2, 1)
 			cloned := t.Clone()
-			mlx.Eval(cloned)
 			parts = append(parts, cloned)
 		}
 		return concatEval(parts, 0)
 	}
 	t := mlx.Transpose(w, 0, 2, 1)
 	cloned := t.Clone()
-	mlx.Eval(cloned)
 	return cloned
 }
 
@@ -653,13 +647,11 @@ func fuseExpertStacks(a, b *mlx.Array, axis int) *mlx.Array {
 				sliceAxis0(a, start, end),
 				sliceAxis0(b, start, end),
 			}, axis).Clone()
-			mlx.Eval(fused)
 			parts = append(parts, fused)
 		}
 		return concatEval(parts, 0)
 	}
 	out := mlx.Concatenate([]*mlx.Array{a, b}, axis).Clone()
-	mlx.Eval(out)
 	return out
 }
 
@@ -1464,7 +1456,7 @@ func (g *GatedDeltaNet) Forward(x *mlx.Array, b *batch.Batch, c cache.Cache, B, 
 }
 
 func (m *DenseMLP) Forward(x *mlx.Array, _ *Config) *mlx.Array {
-	return m.DownProj.Forward(mlx.SwiGLU(m.GateProj.Forward(x), m.UpProj.Forward(x)))
+	return m.DownProj.Forward(nn.SwiGLU(m.GateProj, m.UpProj, x))
 }
 
 func (s *SwitchMLP) Forward(x *mlx.Array, indices *mlx.Array, cfg *Config) *mlx.Array {

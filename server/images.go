@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/fs/gguf"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/model/parsers"
@@ -87,12 +89,16 @@ type Model struct {
 	License            []string
 	Digest             string
 	Options            map[string]any
+	// GenerationDefaults are model-authored sampler defaults from GGUF
+	// general.sampling.* or persisted ConfigV2.generation_defaults (HF create).
+	// Applied after server defaults and before GenSampling / Modelfile PARAMETER.
+	GenerationDefaults model.GenerationDefaults
 	Messages           []api.Message
 
 	Template *template.Template
 
 	// GenSampling is HF generation_config.json sampling for MLX (mlx-serve).
-	// Applied after server defaults and before Modelfile PARAMETER / request options.
+	// Applied after GenerationDefaults and before Modelfile PARAMETER / request options.
 	GenSampling       map[string]any `json:"-"`
 	genSamplingLoaded bool
 
@@ -104,6 +110,119 @@ type Model struct {
 
 func (m *Model) IsMLX() bool {
 	return m.Config.ModelFormat == "safetensors"
+}
+
+func generationDefaultsFromGGUF(f *gguf.File) model.GenerationDefaults {
+	return model.ParseGGUFGenerationDefaults(
+		func(key string) (int64, bool) {
+			return ggufIntGenerationDefault(f.KeyValue(key))
+		},
+		func(key string) (float64, bool) {
+			return ggufFloatGenerationDefault(f.KeyValue(key))
+		},
+	)
+}
+
+func generationDefaultsFromGGMLKV(kv ggml.KV) model.GenerationDefaults {
+	return model.ParseGGUFGenerationDefaults(
+		func(key string) (int64, bool) {
+			return ggmlIntGenerationDefault(kv.Value(key))
+		},
+		func(key string) (float64, bool) {
+			return ggmlFloatGenerationDefault(kv.Value(key))
+		},
+	)
+}
+
+func ggufIntGenerationDefault(kv gguf.KeyValue) (int64, bool) {
+	if value, ok := kv.IntOK(); ok {
+		return value, true
+	}
+	if value, ok := kv.UintOK(); ok {
+		if value > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(value), true
+	}
+	if value, ok := kv.FloatOK(); ok {
+		// Match api.Options.FromMap; rounding may be better for near-integers.
+		return int64(value), true
+	}
+	return 0, false
+}
+
+func ggufFloatGenerationDefault(kv gguf.KeyValue) (float64, bool) {
+	if value, ok := kv.FloatOK(); ok {
+		return value, true
+	}
+	if value, ok := kv.IntOK(); ok {
+		return float64(value), true
+	}
+	if value, ok := kv.UintOK(); ok {
+		return float64(value), true
+	}
+	return 0, false
+}
+
+func ggmlIntGenerationDefault(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int:
+		return int64(n), true
+	case int8:
+		return int64(n), true
+	case int16:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int64:
+		return n, true
+	case uint8:
+		return int64(n), true
+	case uint16:
+		return int64(n), true
+	case uint32:
+		return int64(n), true
+	case uint64:
+		if n > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(n), true
+	case float32:
+		return int64(n), true
+	case float64:
+		return int64(n), true
+	default:
+		return 0, false
+	}
+}
+
+func ggmlFloatGenerationDefault(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float32:
+		return float64(n), true
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	default:
+		return 0, false
+	}
 }
 
 // Capabilities returns the capabilities that the model supports
@@ -440,6 +559,7 @@ func loadModelUncached(name string) (*Model, error) {
 		if err := json.NewDecoder(configFile).Decode(&m.Config); err != nil {
 			return nil, err
 		}
+		m.GenerationDefaults = m.Config.GenerationDefaults
 	}
 
 	enrichMLXModelConfig(m)
@@ -1164,6 +1284,20 @@ func makeRequestWithRetry(ctx context.Context, method string, requestURL *url.UR
 // structured in a way that makes this easy, so this will have to do for now.
 var testMakeRequestDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 
+var errBlockedRedirect = errors.New("blocked redirect to a different host")
+
+// isAllowedHost reports whether host may receive cross-host redirects.
+var allowedRedirectHosts = []string{"ollama.com", "ollama.ai", "hf.co", "huggingface.co"}
+
+func isAllowedHost(host string) bool {
+	for _, h := range allowedRedirectHosts {
+		if host == h || strings.HasSuffix(host, "."+h) {
+			return true
+		}
+	}
+	return false
+}
+
 func makeRequest(ctx context.Context, method string, requestURL *url.URL, headers http.Header, body io.Reader, regOpts *registryOptions) (*http.Response, error) {
 	if requestURL.Scheme != "http" && regOpts != nil && regOpts.Insecure {
 		requestURL.Scheme = "http"
@@ -1197,8 +1331,32 @@ func makeRequest(ctx context.Context, method string, requestURL *url.URL, header
 		req.ContentLength = contentLength
 	}
 
+	var checkRedirect func(req *http.Request, via []*http.Request) error
+	if regOpts != nil {
+		checkRedirect = regOpts.CheckRedirect
+	}
+	if checkRedirect == nil {
+		insecure := regOpts != nil && regOpts.Insecure
+		// Default redirect policy: same-host only, so a registry can't steer
+		// manifest or blob requests at internal addresses. CDN-backed
+		// registries redirect among their own hosts, allowed via
+		// isAllowedHost. --insecure opts out for trusted LAN/local registries.
+		checkRedirect = func(req *http.Request, via []*http.Request) error {
+			if len(via) > 10 {
+				return errMaxRedirectsExceeded
+			}
+			if insecure || req.URL.Host == via[0].URL.Host {
+				return nil
+			}
+			if isAllowedHost(via[0].URL.Hostname()) && isAllowedHost(req.URL.Hostname()) {
+				return nil
+			}
+			return errBlockedRedirect
+		}
+	}
+
 	c := &http.Client{
-		CheckRedirect: regOpts.CheckRedirect,
+		CheckRedirect: checkRedirect,
 	}
 	if testMakeRequestDialContext != nil {
 		tr := http.DefaultTransport.(*http.Transport).Clone()
