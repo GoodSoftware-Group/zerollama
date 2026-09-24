@@ -619,11 +619,12 @@ func (v *AutoencoderKLFlux2) Decode(latents *mlx.Array, pH, pW int32) *mlx.Array
 		return vae.DecodeTiled(z, v.Tiling, v.decodeTile)
 	}
 
-	// Direct decode (no tiling)
+	// Direct decode (no tiling). Pack NCHW on the host — mlx.Transpose can leave
+	// HWC bytes under an NCHW shape (period-3 RGB mosaic in ArrayToImage).
 	h := v.decodeTile(z)
 	h = mlx.ClipScalar(h, 0.0, 1.0, true, true)
-	h = mlx.Transpose(h, 0, 3, 1, 2)
-	return h
+	mlx.Eval(h)
+	return vae.ExportNCHWFromNHWC(h)
 }
 
 // decodeTile decodes a single latent tile to pixels (internal helper)

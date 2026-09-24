@@ -804,14 +804,13 @@ func (v *VAEDecoder) Decode(latents *mlx.Array) *mlx.Array {
 		return out
 	}
 
-	// Direct decode
+	// Direct decode. Pack NCHW on the host — mlx.Transpose can leave HWC bytes
+	// under an NCHW shape (period-3 RGB mosaic in ArrayToImage).
 	h := v.decodeTile(z)
 	h = mlx.ClipScalar(h, 0.0, 1.0, true, true)
-	// Convert NHWC -> NCHW for output
-	h = mlx.Transpose(h, 0, 3, 1, 2)
 	mlx.Keep(h)
 	mlx.EvalMaterialize(h)
-	return h
+	return vae.ExportNCHWFromNHWC(h)
 }
 
 // decodeTile decodes a single latent tile to pixels.

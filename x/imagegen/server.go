@@ -135,6 +135,10 @@ func (s *Server) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			line := scanner.Text()
+			// libmlx/libmlxc debug builds spam allocator/destructor traces on stderr.
+			if isMLXAllocatorNoise(line) {
+				continue
+			}
 			slog.Warn("mlx-runner", "msg", line)
 			s.lastErrLock.Lock()
 			s.lastErr = line
@@ -502,3 +506,18 @@ func (s *Server) HasExited() bool {
 
 // Ensure Server implements llm.LlamaServer
 var _ llm.LlamaServer = (*Server)(nil)
+
+// isMLXAllocatorNoise drops libmlx/libmlxc debug-build traces that flood stderr
+// on every free/malloc (see scripts/mlx/patch_mlx_c_debug_cleanup.sh).
+func isMLXAllocatorNoise(line string) bool {
+	switch {
+	case strings.HasPrefix(line, "[Data::~Data]"),
+		strings.HasPrefix(line, "[allocator::"),
+		strings.HasPrefix(line, "[mlx_array_free]"),
+		strings.HasPrefix(line, "[array::~array]"),
+		strings.HasPrefix(line, "[cleanup]"):
+		return true
+	default:
+		return false
+	}
+}

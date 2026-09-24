@@ -13,9 +13,6 @@ import (
 // CUDA transformer loads disable this to avoid QuantizedMatmul deadlocks on sm120.
 var quantizedLoadEnabled = true
 
-// loggedEagerDequant ensures we print the CUDA eager-dequant path once per process.
-var loggedEagerDequant bool
-
 // SetQuantizedLoadEnabled toggles QuantizedLinear vs lazy-dequant loading for quantized layers.
 func SetQuantizedLoadEnabled(enabled bool) {
 	quantizedLoadEnabled = enabled
@@ -469,10 +466,7 @@ func LoadLinearLayer(weights WeightSource, path string) (nn.LinearLayer, error) 
 		}
 
 		if mlx.GPUIsAvailable() {
-			if !loggedEagerDequant {
-				loggedEagerDequant = true
-				fmt.Printf("  [te-load] eager BF16 dequant mode=%s gs=%d bits=%d (CUDA QMM bypass)\n", mode, groupSize, bits)
-			}
+			// Once: fmt.Printf("  [te-load] eager BF16 dequant mode=%s gs=%d bits=%d (CUDA QMM bypass)\n", ...)
 			return eagerDequantLinear(weight, scales, qbiases, groupSize, bits, mode, bias), nil
 		}
 

@@ -48,14 +48,16 @@ func DecodeTiled(latents *mlx.Array, cfg *TilingConfig, decoder func(*mlx.Array)
 	tileLatentSize := cfg.TileSize
 	overlapLatent := cfg.Overlap
 
-	// If image is small enough, decode one tile and return NCHW float32 on GPU.
+	// If image is small enough, decode one tile and pack NCHW on the host.
+	// Do not use mlx.Transpose here: CUDA/CPU Contiguous after Transpose can
+	// leave physical HWC bytes under an NCHW shape, which ArrayToImage reads
+	// as a period-3 RGB mosaic.
 	if H <= tileLatentSize && W <= tileLatentSize {
 		decoded := decoder(latents)
 		decoded = mlx.AsType(decoded, mlx.DtypeFloat32)
 		decoded = mlx.ClipScalar(decoded, 0.0, 1.0, true, true)
-		decoded = mlx.Transpose(decoded, 0, 3, 1, 2) // NHWC -> NCHW
 		mlx.Eval(decoded)
-		return decoded
+		return ExportNCHWFromNHWC(decoded)
 	}
 
 	// Calculate tiling parameters (matching diffusers)
@@ -161,7 +163,8 @@ func finalDataNCHW(totalH, totalW int32, rows [][]decodedTile, colWidths, rowHei
 					for c := int32(0); c < 3; c++ {
 						srcIdx := (y*tile.width + x)*3 + c
 						dstIdx := c*totalH*totalW + (dstY+y)*totalW + (dstX+x)
-						v := tile.data[srcIdx]*0.5 + 0.5
+						// decodeTile already maps VAE [-1,1] → [0,1]
+						v := tile.data[srcIdx]
 						if v < 0 {
 							v = 0
 						} else if v > 1 {
@@ -178,17 +181,21 @@ func finalDataNCHW(totalH, totalW int32, rows [][]decodedTile, colWidths, rowHei
 	return finalData
 }
 
-func exportNCHWFromNHWC(h *mlx.Array) *mlx.Array {
+// ExportNCHWFromNHWC copies a [1,H,W,3] float image to contiguous [1,3,H,W].
+// Values are expected in [0,1] (decodeTile already applied the VAE [-1,1]→[0,1] map).
+// Prefer this over mlx.Transpose for PNG export: transposed views can keep HWC
+// physical order while reporting an NCHW shape.
+func ExportNCHWFromNHWC(h *mlx.Array) *mlx.Array {
 	shape := h.Shape()
 	if len(shape) != 4 || shape[0] != 1 || shape[3] != 3 {
-		fmt.Printf("[exportNCHWFromNHWC] unexpected shape=%v\n", shape)
+		fmt.Printf("[ExportNCHWFromNHWC] unexpected shape=%v\n", shape)
 		return mlx.NewArray([]float32{0}, []int32{1, 3, 1, 1})
 	}
 	tileH, tileW := shape[1], shape[2]
-	nhwc := mlx.GPUToHostFloat32(h)
+	nhwc := mlx.HostFloat32Slice(h)
 	h.Release()
 	if len(nhwc) == 0 {
-		fmt.Printf("[exportNCHWFromNHWC] read failed shape=%v\n", shape)
+		fmt.Printf("[ExportNCHWFromNHWC] read failed shape=%v\n", shape)
 		return mlx.NewArray([]float32{0}, []int32{1, 3, 1, 1})
 	}
 	nchw := make([]float32, 3*tileH*tileW)
@@ -197,7 +204,7 @@ func exportNCHWFromNHWC(h *mlx.Array) *mlx.Array {
 			for c := int32(0); c < 3; c++ {
 				src := (y*tileW + x)*3 + c
 				dst := c*tileH*tileW + y*tileW + x
-				v := nhwc[src]*0.5 + 0.5
+				v := nhwc[src]
 				if v < 0 {
 					v = 0
 				} else if v > 1 {

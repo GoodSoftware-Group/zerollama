@@ -496,11 +496,11 @@ func cleanup() int {
 		}
 	}
 	arrays = arrays[:n]
-	if freed > 0 {
-		// Print caller for debugging
-		_, file, line, _ := runtime.Caller(1)
-		fmt.Printf("[cleanup] freed %d arrays from %s:%d\n", freed, file, line)
-	}
+	// Verbose during VRAM debugging:
+	// if freed > 0 {
+	// 	_, file, line, _ := runtime.Caller(1)
+	// 	fmt.Printf("[cleanup] freed %d arrays from %s:%d\n", freed, file, line)
+	// }
 	return freed
 }
 

@@ -166,14 +166,14 @@ func (m *Model) freeTextEncoderWeights() {
 	if m.TextEncoder == nil {
 		return
 	}
-	fmt.Printf("  [freeTextEncoder] releasing %d arrays\n", len(mlx.Collect(m.TextEncoder)))
-	before := mlx.MetalGetActiveMemory()
+	// fmt.Printf("  [freeTextEncoder] releasing %d arrays\n", len(mlx.Collect(m.TextEncoder)))
+	// before := mlx.MetalGetActiveMemory()
 	mlx.ReleaseWeights(m.TextEncoder)
 	m.TextEncoder = nil
 	mlx.Sync()
 	mlx.TrimVRAM()
-	fmt.Printf("  [freeTextEncoder] active=%.2fGB→%.2fGB\n",
-		float64(before)/(1<<30), float64(mlx.MetalGetActiveMemory())/(1<<30))
+	// fmt.Printf("  [freeTextEncoder] active=%.2fGB→%.2fGB\n",
+	// 	float64(before)/(1<<30), float64(mlx.MetalGetActiveMemory())/(1<<30))
 	runtime.GC()
 	m.needsReload.textEncoder = true
 }
@@ -217,8 +217,8 @@ func (m *Model) freeTransformerWeights() {
 	if m.Transformer == nil {
 		return
 	}
-	fmt.Printf("  [freeTransformer] releasing %d arrays\n", len(mlx.Collect(m.Transformer)))
-	before := mlx.MetalGetActiveMemory()
+	// fmt.Printf("  [freeTransformer] releasing %d arrays\n", len(mlx.Collect(m.Transformer)))
+	// before := mlx.MetalGetActiveMemory()
 	if m.VAEDecoder != nil {
 		m.VAEDecoder.pinWeights()
 	}
@@ -229,8 +229,8 @@ func (m *Model) freeTransformerWeights() {
 	mlx.ResumeCleanup()
 	mlx.Sync()
 	mlx.TrimVRAM()
-	fmt.Printf("  [freeTransformer] active=%.2fGB→%.2fGB\n",
-		float64(before)/(1<<30), float64(mlx.MetalGetActiveMemory())/(1<<30))
+	// fmt.Printf("  [freeTransformer] active=%.2fGB→%.2fGB\n",
+	// 	float64(before)/(1<<30), float64(mlx.MetalGetActiveMemory())/(1<<30))
 	runtime.GC()
 }
 
@@ -336,8 +336,8 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 		// DiT must not be resident during TE encode — child needs ~6GB and the
 		// parent previously kept the transformer loaded between requests.
 		if m.Transformer != nil {
-			fmt.Printf("  [pre-encode] unloading transformer (%.2f GB active)\n",
-				float64(mlx.MetalGetActiveMemory())/(1<<30))
+			// fmt.Printf("  [pre-encode] unloading transformer (%.2f GB active)\n",
+			// 	float64(mlx.MetalGetActiveMemory())/(1<<30))
 			mlx.ReleaseWeights(m.Transformer)
 			m.Transformer = nil
 			m.needsReload.transformer = true
@@ -444,11 +444,11 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 			RescaleFactor:  1.0,
 			SkipEarlySteps: skipEarly,
 		})
-		if useCFG {
-			fmt.Printf("  TeaCache enabled (CFG mode): threshold=%.2f, skip first %d steps\n", cfg.TeaCacheThreshold, skipEarly)
-		} else {
-			fmt.Printf("  TeaCache enabled: threshold=%.2f\n", cfg.TeaCacheThreshold)
-		}
+		// if useCFG {
+		// 	fmt.Printf("  TeaCache enabled (CFG mode): threshold=%.2f, skip first %d steps\n", cfg.TeaCacheThreshold, skipEarly)
+		// } else {
+		// 	fmt.Printf("  TeaCache enabled: threshold=%.2f\n", cfg.TeaCacheThreshold)
+		// }
 	}
 
 	// cleanup frees all kept arrays when we need to abort early
@@ -557,11 +557,11 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 			diff := mlx.Sub(posPred, negPred)
 			scaledDiff := mlx.MulScalar(diff, cfg.CFGScale)
 			noisePred = mlx.Add(negPred, scaledDiff)
-			fmt.Printf("    [TeaCache: reusing cached pos/neg outputs]\n")
+			// fmt.Printf("    [TeaCache: reusing cached pos/neg outputs]\n")
 		} else {
 			// Non-CFG mode: reuse cached noise prediction
 			noisePred = teaCache.GetCached()
-			fmt.Printf("    [TeaCache: reusing cached output]\n")
+			// fmt.Printf("    [TeaCache: reusing cached output]\n")
 		}
 
 		oldLatents := latents
@@ -581,16 +581,14 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 		noisePred.Release()
 		mlx.TrimVRAM()
 
-		stepDur := time.Since(stepStart)
-
 		if cfg.CapturePath != "" && i == 1 {
 			mlx.MetalStopCapture()
 		}
 
-		activeMem := float64(mlx.MetalGetActiveMemory()) / (1024 * 1024 * 1024)
-		peakMem := float64(mlx.MetalGetPeakMemory()) / (1024 * 1024 * 1024)
-		fmt.Printf("  Step %d/%d: t=%.4f (%.2fs) [%.1f GB active, %.1f GB peak]\n",
-			i+1, cfg.Steps, tCurr, stepDur.Seconds(), activeMem, peakMem)
+		// fmt.Printf("  Step %d/%d: t=%.4f (%.2fs) [%.1f GB active, %.1f GB peak]\n",
+		// 	i+1, cfg.Steps, tCurr, time.Since(stepStart).Seconds(),
+		// 	float64(mlx.MetalGetActiveMemory())/(1024*1024*1024),
+		// 	float64(mlx.MetalGetPeakMemory())/(1024*1024*1024))
 
 		if cfg.Progress != nil {
 			cfg.Progress(i+1, cfg.Steps) // Report completed step
@@ -611,7 +609,7 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 			cleanup()
 			return nil, fmt.Errorf("export latents: %w", err)
 		}
-		fmt.Printf("  Exported latents: %s\n", latentsPath)
+		// fmt.Printf("  Exported latents: %s\n", latentsPath)
 		latents.Free()
 		cleanup()
 		m.freeTransformerWeights()
@@ -659,9 +657,9 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 		batchedEmb.Free()
 	}
 	if teaCache != nil {
-		hits, misses := teaCache.Stats()
-		fmt.Printf("  TeaCache stats: %d hits, %d misses (%.1f%% cache rate)\n",
-			hits, misses, float64(hits)/float64(hits+misses)*100)
+		// hits, misses := teaCache.Stats()
+		// fmt.Printf("  TeaCache stats: %d hits, %d misses (%.1f%% cache rate)\n",
+		// 	hits, misses, float64(hits)/float64(hits+misses)*100)
 		teaCache.Free()
 	}
 
@@ -784,7 +782,7 @@ func (m *Model) EncodePromptToFiles(modelName, prompt, negative, outPath, negOut
 			return fmt.Errorf("export neg embedding: %w", err)
 		}
 	}
-	fmt.Printf("  Encoded prompt embeddings → %s\n", outPath)
+	// fmt.Printf("  Encoded prompt embeddings → %s\n", outPath)
 	return nil
 }
 
@@ -856,8 +854,8 @@ func (m *Model) encodePromptSubprocess(prompt, negative string) (posEmb, negEmb 
 		mlx.Eval(negEmb)
 	}
 	mlx.TrimVRAM()
-	fmt.Printf("  [encode subprocess] embeddings loaded shape=%v (%.2f GB active)\n",
-		posEmb.Shape(), float64(mlx.MetalGetActiveMemory())/(1<<30))
+	// fmt.Printf("  [encode subprocess] embeddings loaded shape=%v (%.2f GB active)\n",
+	// 	posEmb.Shape(), float64(mlx.MetalGetActiveMemory())/(1<<30))
 	return posEmb, negEmb, nil
 }
 
