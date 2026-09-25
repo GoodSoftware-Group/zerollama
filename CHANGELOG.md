@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### CLM2 — native Go heads (no Torch at serve) — Sep 2026
+
+**Why:** CLM1 still needed Python `clm-serve`. Agents want System-1 on the same `/v1/systemone` wire without a Torch sidecar.
+
+**Shipped:** `scripts/convert_clm_heads_to_gguf.py`; `ZEROLLAMA_CLM_HEADS` + `ZEROLLAMA_CLM_EMB_URL` (+ optional `ZEROLLAMA_CLM_EMB_MODEL`); Go MLP + schema packing (`llm/clm_*.go`); DecisionsHandler prefers native when heads+emb set (URL remains optional fallback). Docs: [clm.md](docs/clm.md).
+
+### Contrastive-LM (CLM) external Decider proxy — Sep 2026
+
+**Why:** Same System-1 surface as Laya (`choice` / `score` / `noul`) but CLM heads are Torch over Qwen3 embeddings — not an `LLM_ARCH_LAYA` GGUF. Agents should keep one wire (`POST /v1/decisions` / `/v1/systemone`).
+
+**Shipped:** `ZEROLLAMA_CLM_URL` + `ZEROLLAMA_LAYA_URL`; `modality_backends.decisions=clm|laya`; name heuristics (`clm`, `clm-*`, `contrastive-lm/*`); early proxy before `scheduleRunner` (public JSON → clm-serve `/v1/systemone`). Docs: [clm.md](docs/clm.md). Lab ports only. Superseded for default ops by **CLM2** native heads.
+
 ### Fix — Z-Image Turbo CUDA image generation (16GB)
 
 - OpenAI `/v1/images/generations` no longer returns empty 200 on failure; forces `stream=false` and emits standard `error` JSON

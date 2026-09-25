@@ -88,6 +88,6 @@ Full CPU/CUDA parity vs Python `laya` Agent requires a converted GGUF + frozen f
 | Track | Status | Why |
 |-------|--------|-----|
 | LAYA3 HF pull + mmBERT | Later | English convert path first |
-| LAYA4 laya-mlx sidecar | Parked | Prefer external `ZEROLLAMA_LAYA_URL` when unparked; no Darwin-managed spawn |
+| LAYA4 laya-mlx sidecar | Parked | External `ZEROLLAMA_LAYA_URL` wired (same `/v1/decisions`); no Darwin-managed spawn. CLM: [clm.md](./clm.md) |
 
 → [mlx-serve-borrowings.md](./mlx-serve-borrowings.md) · ROADMAP **Typed decisions (Laya)**

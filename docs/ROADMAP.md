@@ -464,9 +464,11 @@ Non-autoregressive System-1 models (`choice` / `score` / `noul`) — Jev-shaped 
 | **LAYA1** | **llama.cpp `LLM_ARCH_LAYA` + GGUF convert** | C++ / scripts | **Active** — ModernBERT encoder + decision head; CPU/CUDA via ggml; patches **0127–0128**; [laya-llama-cpp.md](./laya-llama-cpp.md) · [findings](./laya-llama-cpp-findings.md) |
 | **LAYA2** | **llama-server `--decisions` + Go `/v1/decisions`** | C++ + Go | **Active** — tokenized-batch Decider; packing/calibration in Go (LA16-style); OpenAPI + skill `typed-decisions` |
 | **LAYA3** | **HF pull + multilingual / typed-decisions polish** | Go | Later — english `convaiinnovations/laya` first |
-| **LAYA4** | **laya-mlx sidecar / mlxrunner graph** | Mac | **Parked** — prefer external `ZEROLLAMA_LAYA_URL` when unparked; see [mlx-serve-borrowings.md](./mlx-serve-borrowings.md) |
+| **LAYA4** | **laya-mlx sidecar / mlxrunner graph** | Mac | **Parked** — external `ZEROLLAMA_LAYA_URL` wired (same `/v1/decisions`); see [mlx-serve-borrowings.md](./mlx-serve-borrowings.md) |
+| **CLM1** | **Contrastive-LM external Decider proxy** | Go | **Shipped** — optional `ZEROLLAMA_CLM_URL` → clm-serve; [clm.md](./clm.md) |
+| **CLM2** | **CLM heads GGUF + Go apply** | Go + scripts | **Shipped** — `convert_clm_heads_to_gguf.py`, `ZEROLLAMA_CLM_HEADS` + `ZEROLLAMA_CLM_EMB_URL`; no Torch at serve |
 
-**Non-goals (this track):** bolting Laya onto `/api/chat`; reusing RANK pooling for decisions; production binds on `:11434` / `:8081` for lab smokes; Darwin-managed MLX spawn before LAYA1–2 are solid on CPU/CUDA.
+**Non-goals (this track):** bolting Laya onto `/api/chat`; reusing RANK pooling for decisions; production binds on `:11434` / `:8081` for lab smokes; Darwin-managed MLX spawn before LAYA1–2 are solid on CPU/CUDA; vendoring CLM/vLLM into the repo.
 
 ---
 

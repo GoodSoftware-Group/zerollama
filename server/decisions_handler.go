@@ -10,13 +10,15 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/types/model"
 )
 
-// DecisionsHandler serves POST /v1/decisions and POST /v1/systemone (Jev/Laya typed decisions).
+// DecisionsHandler serves POST /v1/decisions and POST /v1/systemone (Jev/Laya/CLM typed decisions).
 // WHY a dedicated handler: not chat, not /api/score, not /v1/rerank — needs a Decider
-// runner (llama-server --decisions). Alias /v1/systemone keeps Jev clients on one path.
+// runner (llama-server --decisions) or an external URL (ZEROLLAMA_CLM_URL / ZEROLLAMA_LAYA_URL).
+// Alias /v1/systemone keeps Jev/CLM clients on one path.
 func (s *Server) DecisionsHandler(c *gin.Context) {
 	var req api.DecisionsRequest
 	if err := c.ShouldBindJSON(&req); errors.Is(err, io.EOF) {
@@ -56,8 +58,56 @@ func (s *Server) DecisionsHandler(c *gin.Context) {
 		return
 	}
 
-	name, err := getExistingName(modelRef.Name)
-	if err != nil {
+	// Optional local model for modality_backends.decisions=clm|laya. CLM name
+	// heuristics work without a local tag when ZEROLLAMA_CLM_URL is set.
+	var m *Model
+	name, nameErr := getExistingName(modelRef.Name)
+	if nameErr == nil {
+		if loaded, err := GetModel(name.String()); err == nil {
+			m = loaded
+		}
+	}
+
+	if base, err := decisionsExternalResolve(req.Model, m); err != nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	} else if base != "" {
+		out, err := proxyDecisionsExternal(c.Request.Context(), base, req.Model, m, req)
+		if err != nil {
+			var se api.StatusError
+			if errors.As(err, &se) {
+				c.AbortWithStatusJSON(se.StatusCode, gin.H{"error": se.ErrorMessage})
+				return
+			}
+			c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, out)
+		return
+	}
+
+	if clmWantsNative(req.Model, m) {
+		llmReq, err := apiDecisionsToLLM(req)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		resp, err := llm.CLMAnswer(c.Request.Context(), envconfig.CLMHeads(), envconfig.CLMEmbURL(), envconfig.CLMEmbModel(), llmReq, 1)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		out := api.DecisionsResponse{
+			Model:   resp.Model,
+			Answers: resp.Answers,
+		}
+		out.Usage.InputTokens = resp.Usage.InputTokens
+		out.Usage.OutputTokens = resp.Usage.OutputTokens
+		c.JSON(http.StatusOK, out)
+		return
+	}
+
+	if nameErr != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model '%s' not found", req.Model)})
 		return
 	}

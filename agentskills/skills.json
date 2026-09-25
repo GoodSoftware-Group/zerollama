@@ -728,7 +728,7 @@
     },
     {
       "name": "typed-decisions",
-      "description": "Answer typed System-1 questions (choice / score / noul) in one forward pass via zerollama POST /v1/decisions (Laya), with calibrated probabilities and act/escalate \u2014 not chat, not score, not rerank.",
+      "description": "Answer typed System-1 questions (choice / score / noul) via zerollama POST /v1/decisions — Laya GGUF or CLM (ZEROLLAMA_CLM_URL); calibrated probs — not chat, not score, not rerank.",
       "version": "1.0.0",
       "author": "Hermes Agent",
       "license": "MIT",
@@ -740,6 +740,7 @@
       "tags": [
         "zerollama",
         "laya",
+        "clm",
         "decisions",
         "systemone",
         "classification",

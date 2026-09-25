@@ -640,6 +640,11 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_REMOTES":                           {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
 		"ELIZACLOUD_API_KEY":                       {"ELIZACLOUD_API_KEY", ElizaCloudAPIKey(), "API key for Eliza Cloud (X-API-Key); required for remote inference when using Eliza"},
 		"OLLAMA_SGLANG_URL":                        {"OLLAMA_SGLANG_URL", SGLangURL(), "Base URL for SGLang when modality_backends.video_understanding=sglang"},
+		"ZEROLLAMA_CLM_URL":                        {"ZEROLLAMA_CLM_URL", CLMURL(), "Optional clm-serve base URL (fallback when native heads/emb unset)"},
+		"ZEROLLAMA_CLM_HEADS":                      {"ZEROLLAMA_CLM_HEADS", CLMHeads(), "Path to CLM heads GGUF (convert_clm_heads_to_gguf.py); native Go Decider"},
+		"ZEROLLAMA_CLM_EMB_URL":                    {"ZEROLLAMA_CLM_EMB_URL", CLMEmbURL(), "Embeddings URL for native CLM (llama-server --embeddings Qwen3-8B)"},
+		"ZEROLLAMA_CLM_EMB_MODEL":                  {"ZEROLLAMA_CLM_EMB_MODEL", CLMEmbModel(), "Model name for CLM embeddings requests (default qwen3-8b)"},
+		"ZEROLLAMA_LAYA_URL":                       {"ZEROLLAMA_LAYA_URL", LayaURL(), "Base URL for external Laya Decider (same /v1/decisions wire; LAYA4 / sidecar)"},
 		"ZEROLLAMA_RUNTIME_URL":                    {"ZEROLLAMA_RUNTIME_URL", RuntimeURL(), "Base URL for Python GGUF runtime sidecar (PagedAttention)"},
 		"ZEROLLAMA_RUNTIME_EMBED":                  {"ZEROLLAMA_RUNTIME_EMBED", RuntimeEmbedDisplay(), "Embed runtime in-process (CGO); default on if URL unset"},
 		"ZEROLLAMA_RUNTIME_EMBED_PORT":             {"ZEROLLAMA_RUNTIME_EMBED_PORT", Var("ZEROLLAMA_RUNTIME_EMBED_PORT"), "Loopback port for embedded runtime HTTP (default 8081)"},
@@ -849,6 +854,38 @@ func modalityTimeout(envKey string, defaultDur time.Duration) time.Duration {
 // Used when modality_backends.video_understanding=sglang.
 func SGLangURL() string {
 	return strings.TrimSuffix(strings.TrimSpace(Var("OLLAMA_SGLANG_URL")), "/")
+}
+
+// CLMURL is an optional base URL for operator-run clm-serve (fallback when
+// ZEROLLAMA_CLM_HEADS + ZEROLLAMA_CLM_EMB_URL are unset). Prefer native Go heads
+// (docs/clm.md). If set, DecisionsHandler proxies instead of native.
+func CLMURL() string {
+	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_CLM_URL")), "/")
+}
+
+// LayaURL is an optional external Laya Decider base URL (same public
+// /v1/decisions JSON). Used when modality_backends.decisions=laya and local
+// GGUF is not the path (LAYA4 sidecar). Empty means use in-process llama-server.
+func LayaURL() string {
+	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_LAYA_URL")), "/")
+}
+
+// CLMHeads is the path to a Contrastive-LM heads-only GGUF
+// (from scripts/convert_clm_heads_to_gguf.py). With CLMEmbURL, enables native
+// Go Decider (no Torch / clm-serve).
+func CLMHeads() string {
+	return strings.TrimSpace(Var("ZEROLLAMA_CLM_HEADS"))
+}
+
+// CLMEmbURL is the OpenAI-compatible embeddings base or full URL for the CLM
+// encoder (llama-server --embeddings with Qwen3-8B + last-token pooling).
+func CLMEmbURL() string {
+	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_CLM_EMB_URL")), "/")
+}
+
+// CLMEmbModel is the model name sent to the embeddings server (default qwen3-8b).
+func CLMEmbModel() string {
+	return cmp.Or(strings.TrimSpace(Var("ZEROLLAMA_CLM_EMB_MODEL")), "qwen3-8b")
 }
 
 // RuntimeURL is the base URL for the zerollama Python inference sidecar (e.g. http://127.0.0.1:8081).

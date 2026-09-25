@@ -1,26 +1,27 @@
 ---
 name: typed-decisions
-description: "Answer typed System-1 questions (choice / score / noul) in one forward pass via zerollama POST /v1/decisions (Laya), with calibrated probabilities and act/escalate — not chat, not score, not rerank."
+description: "Answer typed System-1 questions (choice / score / noul) via zerollama POST /v1/decisions — Laya GGUF or Contrastive-LM (ZEROLLAMA_CLM_URL); calibrated probs — not chat, not score, not rerank."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
 platforms: [macos, linux]
 metadata:
   hermes:
-    tags: [zerollama, laya, decisions, systemone, classification, routing, calibrated]
+    tags: [zerollama, laya, clm, decisions, systemone, classification, routing, calibrated]
     category: mlops
     related_skills: [zerollama-integration, rerank-candidates, download-model]
 ---
 
-# Typed Decisions (Laya) Skill
+# Typed Decisions Skill
 
-Run [Laya](https://github.com/NandhaKishorM/laya)-class **System-1** models on a
-[zerollama](https://github.com/GoodSoftware-Group/zerollama) server via
-`POST /v1/decisions` (alias `POST /v1/systemone`).
+Run **System-1** typed decisions on
+[zerollama](https://github.com/GoodSoftware-Group/zerollama) via
+`POST /v1/decisions` (alias `POST /v1/systemone`):
 
-One encoder forward answers every question with **calibrated probabilities** and
-an **act vs escalate** head — not free-text chat, not `/api/score` continuations,
-not `/v1/rerank` RANK pooling.
+- **Laya** GGUF (`LLM_ARCH_LAYA`) — in-process llama-server `--decisions` + act/escalate
+- **Contrastive-LM (CLM)** — native Go heads (`ZEROLLAMA_CLM_HEADS` + `ZEROLLAMA_CLM_EMB_URL`); optional `ZEROLLAMA_CLM_URL` — [docs/clm.md](../../docs/clm.md)
+
+Calibrated probabilities — not free-text chat, not `/api/score`, not `/v1/rerank`.
 
 ## Compatibility check
 
@@ -53,15 +54,13 @@ rather than assuming the request shape is wrong.
 - Open-ended generation → `/api/chat` or `/v1/chat/completions`
 - Rank documents with a RANK GGUF → `/v1/rerank`
 - Score candidate **continuations** of a chat model → `/api/score`
-- No Laya GGUF loaded → you will get **501**
+- No Laya GGUF and no `ZEROLLAMA_CLM_URL` for `model=clm` → **501** / **503**
 
 ## Prerequisites
 
-- zerollama server with LAYA1–LAYA2 (llama.cpp patches **0127–0128**, Go Decider)
-- A **Laya** model created from GGUF (`general.architecture=laya`) — convert via
-  `scripts/convert_laya_to_gguf.py` ([docs/laya-llama-cpp.md](../docs/laya-llama-cpp.md))
-- Lab smokes: use non-production ports (`11435`, `18082`) — never bind `:11434` /
-  `:8081` from agent work
+- **Laya path:** zerollama with patches **0127–0128** + a Laya GGUF tag ([docs/laya-llama-cpp.md](../docs/laya-llama-cpp.md))
+- **CLM path:** convert heads GGUF once; set `ZEROLLAMA_CLM_HEADS` + `ZEROLLAMA_CLM_EMB_URL`; use `model=clm` — [docs/clm.md](../docs/clm.md)
+- Lab smokes: non-production ports (`11435`, `18082`, `18700`) — never bind `:11434` / `:8081` from agent work
 
 ## API Contract
 
@@ -69,20 +68,20 @@ rather than assuming the request shape is wrong.
 
 | Field | Required | Notes |
 |---|---|---|
-| `model` | yes | Laya tag / alias |
+| `model` | yes | Laya tag, `clm`, or alias |
 | `state` | yes | string \| object \| array — shared context for all questions |
 | `questions` | yes | map of `question_id` → `{type, instructions, criteria?, labels?}` |
-| `keep_alive` | no | Keep model loaded after the call |
+| `keep_alive` | no | Keep model loaded after the call (Laya local only) |
 | `options` | no | Passthrough runner options |
 
 `questions[id].type` ∈ `choice` | `score` | `noul`.
 
 - **choice** — `criteria` object; keys are option ids (preserve JSON key order)
 - **score** — `criteria` ordered array of levels; answer is expected value
-- **noul** — boolean; optional `labels` for false/true display strings
+- **noul** — P(true) float; optional `labels` for false/true display strings
 
-Response `answers[id]` is discriminated by `type`, each with `probabilities`,
-`confidence`, and `action.act_probability`.
+Response `answers[id]` is discriminated by `type`, each with `probabilities` /
+`confidence`. Laya also returns `action.act_probability`; CLM may omit `action`.
 
 ## How to Run
 

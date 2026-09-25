@@ -1604,7 +1604,9 @@ components:
           type: string
           enum: [noul]
         noul:
-          type: boolean
+          type: number
+          format: float
+          description: Probability the statement is true (P_true), not a boolean
         probabilities:
           type: object
           additionalProperties:

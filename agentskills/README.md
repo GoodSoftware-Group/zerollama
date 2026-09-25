@@ -53,6 +53,6 @@ python3 .tools/add_compat_checks.py   # idempotent; re-scrapes endpoints per ski
 | [`rerank-candidates`](rerank-candidates/SKILL.md) | Score fixed candidate continuations against a shared prompt via a zerollama server, for classification, routing, or reranking without full generation. |
 | [`speech-to-text`](speech-to-text/SKILL.md) | Transcribe audio to text via a zerollama server's OpenAI-compatible transcription API (Whisper or multimodal chat models). |
 | [`text-to-speech`](text-to-speech/SKILL.md) | Synthesize speech audio from text via a zerollama server's OpenAI-compatible speech API (Piper, Chatterbox, Orpheus, Kokoro). |
-| [`typed-decisions`](typed-decisions/SKILL.md) | Answer typed System-1 questions (choice / score / noul) in one forward pass via zerollama POST /v1/decisions (Laya), with calibrated probabilities and act/escalate — not chat, not score, not rerank. |
+| [`typed-decisions`](typed-decisions/SKILL.md) | Answer typed System-1 questions (choice / score / noul) via zerollama POST /v1/decisions — Laya GGUF or CLM (`ZEROLLAMA_CLM_URL`); calibrated probs — not chat, not score, not rerank. |
 | [`video-understanding-chat`](video-understanding-chat/SKILL.md) | Send video clips into a zerollama chat request for vision-language understanding (video_url/videos in /v1/chat/completions), distinct from generating video. |
 | [`zerollama-integration`](zerollama-integration/SKILL.md) | Connect any agent harness to a zerollama server. |

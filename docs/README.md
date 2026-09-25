@@ -94,6 +94,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Open-source shoutouts](./open-source-shoutouts.md) — Gigatoken, vLLM, SGLang, LocalAI, minefield, Hermes, Ollama, llama.cpp — what we borrowed and why.
 * [LocalAI control-plane borrowings](./localai-borrowings.md) — **why** LA1–LA11 (incl. KNN **LA11b**), **LA14–LA15**, **LA17–LA21**; env reference.
 * [Laya (llama.cpp typed decisions)](./laya-llama-cpp.md) — **why** `LLM_ARCH_LAYA` + `/v1/decisions` (not chat, not RANK); convert + lab smokes. [findings](./laya-llama-cpp-findings.md).
+* [Contrastive-LM (CLM)](./clm.md) — **why** native Go heads + llama-server embeds (no Torch serve); optional `ZEROLLAMA_CLM_URL` fallback.
 * [Fleet scheduling (multi-node)](./fleet-scheduling.md) — **why** a management node above per-node schedulers; warm-model routing; filter-then-score (F7); anti-patterns (scatter-gather, long quotes).
 * [Fleet management operator guide](./fleet-management.md) — **why** F3 is thin (poll + assign, no remote load); `zerollama fleet serve`; API, env, agent pattern.
 * [Remote model storage](./remote-model-storage.md) — **why** central content-addressed blobs + HMAC LAN auth + fetch-on-miss; RDMA-prefer/TCP fallback; pin/refcount LRU; ephemeral cleanup; tensor catalog language for later streaming (spec-only in v1).

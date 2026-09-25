@@ -10,6 +10,9 @@ const (
 	ModalityVideoUnderstanding = "video_understanding"
 	// ModalityInference selects the local GPU inference driver (default: built-in ggml runner).
 	ModalityInference = "inference"
+	// ModalityDecisions selects the System-1 typed-decisions driver (Laya GGUF vs external CLM/Laya URL).
+	// WHY a dedicated key: decisions is not chat; see docs/laya-llama-cpp.md and docs/clm.md.
+	ModalityDecisions = "decisions"
 	// ModalityVideoGeneration selects the text-to-video driver (e.g. Wan via run_script).
 	ModalityVideoGeneration = "video_generation"
 )
@@ -26,6 +29,13 @@ const (
 	BackendVideoNative      = "native"            // ffmpeg frame sampling inside Ollama (default when unset)
 	BackendSGLang           = "sglang"            // forward OpenAI chat to SGLang HTTP API
 	BackendZerollamaRuntime = "zerollama-runtime" // Python GGUF runtime sidecar (see runtime/)
+	// BackendCLM routes POST /v1/decisions|/v1/systemone through native Go heads
+	// (ZEROLLAMA_CLM_HEADS + ZEROLLAMA_CLM_EMB_URL) or optional ZEROLLAMA_CLM_URL.
+	// WHY not GGUF chat arch: CLM is dual-embed + MLP heads; see docs/clm.md.
+	BackendCLM = "clm"
+	// BackendLaya marks an external Laya Decider via ZEROLLAMA_LAYA_URL (LAYA4 sidecar).
+	// Local GGUF Laya uses architecture=laya and needs no modality backend.
+	BackendLaya = "laya"
 	BackendWan              = "wan"               // Wan2.x: Python generate.py, or video-cli when backend_paths.video_cli / ZEROLLAMA_VIDEO_CLI is set
 	// BackendLTX is Wan2GP LTXV (13B distilled quanto or 2B distilled FP8) via scripts/video/ltx_video_generate.py.
 	// See docs/ltx-t2v.md — not LTX-2/Gemma on ≤24 GiB hosts.
