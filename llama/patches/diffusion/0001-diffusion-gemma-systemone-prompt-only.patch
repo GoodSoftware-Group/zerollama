@@ -1,0 +1,72 @@
+diff --git a/examples/diffusion-gemma/diffusion-gemma-server.cpp b/examples/diffusion-gemma/diffusion-gemma-server.cpp
+index cb496d38a..d3a2c45a6 100644
+--- a/examples/diffusion-gemma/diffusion-gemma-server.cpp
++++ b/examples/diffusion-gemma/diffusion-gemma-server.cpp
+@@ -1164,6 +1164,67 @@ int main(int argc, char ** argv) {
+         res.set_content(out.dump(), "application/json");
+     });
+ 
++    // POST /v1/systemone (+ /v1/decisions alias) — prompt-only denoise for zerollama DG2.
++    // LA16: Go packs {state,questions} → prompt and parses answers; C++ only denoise + return text.
++    // Do NOT accept high-level state/questions here (that would invent uncalibrated "confidence").
++    auto handle_systemone = [&](const httplib::Request & req, httplib::Response & res) {
++        json body;
++        try { body = json::parse(req.body); }
++        catch (const std::exception & e) {
++            res.status = 400;
++            res.set_content(error_json(std::string("invalid JSON: ") + e.what(), "invalid_request_error", 400).dump(), "application/json");
++            return;
++        }
++
++        std::string chat_prompt;
++        if (body.contains("prompt") && body["prompt"].is_string()) {
++            const std::string prompt = body["prompt"].get<std::string>();
++            json messages = json::array({ json{{"role", "user"}, {"content", prompt}} });
++            try { chat_prompt = srv.format_messages(messages); }
++            catch (const std::exception & e) {
++                res.status = 400;
++                res.set_content(error_json(std::string("failed to format messages: ") + e.what(), "invalid_request_error", 400).dump(), "application/json");
++                return;
++            }
++        } else if (body.contains("messages") && body["messages"].is_array()) {
++            try { chat_prompt = srv.format_messages(body["messages"]); }
++            catch (const std::exception & e) {
++                res.status = 400;
++                res.set_content(error_json(std::string("failed to format messages: ") + e.what(), "invalid_request_error", 400).dump(), "application/json");
++                return;
++            }
++        } else {
++            res.status = 400;
++            res.set_content(error_json("'prompt' (string) or 'messages' (array) required; Go packs state/questions (LA16)", "invalid_request_error", 400).dump(), "application/json");
++            return;
++        }
++
++        const std::vector<llama_token> prompt_tokens = common_tokenize(srv.vocab, chat_prompt, true, true);
++        const diffusion_result r = run_for_body(body, prompt_tokens);
++        if (!r.ok) {
++            res.status = 500;
++            res.set_content(error_json(r.error, "server_error", 500).dump(), "application/json");
++            return;
++        }
++
++        const std::string model_out = body.value("model", srv.model_id);
++        json out{
++            {"model", model_out},
++            {"answer", r.answer},
++            {"usage", json{
++                {"input_tokens", r.prompt_tokens > 0 ? r.prompt_tokens : (int) prompt_tokens.size()},
++                {"output_tokens", r.answer_tokens},
++            }},
++            {"diffusion", json{
++                {"canvas_tokens", r.canvas_tokens},
++                {"steps", r.n_steps_total},
++            }},
++        };
++        res.set_content(out.dump(), "application/json");
++    };
++    http.Post("/v1/systemone", handle_systemone);
++    http.Post("/v1/decisions", handle_systemone);
++
+     SRV_INF("server is listening on http://%s:%d\n", hostname.c_str(), port);
+     SRV_INF("%s\n", "all slots are idle");
+     if (!http.listen(hostname, port)) {

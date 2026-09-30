@@ -1,0 +1,33 @@
+diff --git a/src/model.cpp b/src/model.cpp
+index 947ba11..19964fd 100644
+--- a/src/model.cpp
++++ b/src/model.cpp
+@@ -115,6 +115,28 @@ void Model::run(const std::vector<Ort::Value>& input_tensors, std::vector<float>
+ 
+     const float* output_data = output_tensor.GetTensorData<float>();
+     output = std::vector<float>(output_data, output_data + count_total_elements(output_shape));
++
++    // onnx-community token exports: logits [3, B, L, C] (channel-first).
++    // TokenDecoder expects flat [B, L, C, 3]. Same element count — layout only.
++    if (config.modelType == TOKEN_LEVEL && output_shape.size() == 4 && output_shape[0] == 3) {
++        const int64_t ch = output_shape[0];
++        const int64_t B = output_shape[1];
++        const int64_t L = output_shape[2];
++        const int64_t C = output_shape[3];
++        std::vector<float> transposed(static_cast<size_t>(ch * B * L * C));
++        for (int64_t b = 0; b < B; ++b) {
++            for (int64_t l = 0; l < L; ++l) {
++                for (int64_t c = 0; c < C; ++c) {
++                    for (int64_t k = 0; k < ch; ++k) {
++                        const size_t src = static_cast<size_t>(((k * B + b) * L + l) * C + c);
++                        const size_t dst = static_cast<size_t>(((b * L + l) * C + c) * ch + k);
++                        transposed[dst] = output[src];
++                    }
++                }
++            }
++        }
++        output.swap(transposed);
++    }
+ }
+ 
+ std::vector<std::vector<Span>> Model::inference(

@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -203,5 +204,44 @@ func TestSoftmaxTemp(t *testing.T) {
 	p := SoftmaxTemp([]float64{0, 0}, 2, 1.0)
 	if len(p) != 2 || math.Abs(p[0]-0.5) > 1e-9 {
 		t.Fatalf("%v", p)
+	}
+}
+
+func TestValidateDecisionBatchCaps(t *testing.T) {
+	ok := map[string]DecisionQuestion{
+		"q": {Type: "noul", Instructions: "?"},
+	}
+	if err := ValidateDecisionBatch(ok); err != nil {
+		t.Fatal(err)
+	}
+
+	tooMany := make(map[string]DecisionQuestion, MaxDecisionQuestions+1)
+	for i := 0; i <= MaxDecisionQuestions; i++ {
+		tooMany[fmt.Sprintf("q%d", i)] = DecisionQuestion{Type: "noul", Instructions: "?"}
+	}
+	if err := ValidateDecisionBatch(tooMany); err == nil {
+		t.Fatal("expected max questions error")
+	}
+
+	crit := make(map[string]string, MaxChoiceOptions+1)
+	for i := 0; i <= MaxChoiceOptions; i++ {
+		crit[fmt.Sprintf("o%d", i)] = "x"
+	}
+	b, _ := json.Marshal(crit)
+	if err := ValidateDecisionBatch(map[string]DecisionQuestion{
+		"c": {Type: "choice", Instructions: "pick", Criteria: b},
+	}); err == nil {
+		t.Fatal("expected max choice options error")
+	}
+
+	levels := make([]string, MaxScoreLevels+1)
+	for i := range levels {
+		levels[i] = "lvl"
+	}
+	lb, _ := json.Marshal(levels)
+	if err := ValidateDecisionBatch(map[string]DecisionQuestion{
+		"s": {Type: "score", Instructions: "rate", Criteria: lb},
+	}); err == nil {
+		t.Fatal("expected max score levels error")
 	}
 }

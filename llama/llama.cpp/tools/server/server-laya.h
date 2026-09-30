@@ -6,8 +6,6 @@
 #include <vector>
 
 // CPU post for LLM_ARCH_LAYA decision head (encoder embeddings → choice logits + act).
-// WHY CPU: head is ~26MB; encoder already GPU via ggml. Avoids new Metal/CUDA kernels
-// while keeping per-MASK states (RANK pooling cannot). See docs/laya-llama-cpp-findings.md.
 
 struct laya_linear {
     std::vector<float> weight; // [ne0=in, ne1=out] column-major ggml layout
@@ -52,7 +50,6 @@ struct laya_decision_input {
     std::vector<llama_token> tokens;
     std::vector<int32_t>     marker_pos;
     int32_t                  qtype = 0;
-    std::string              question_id; // echoed back in result; empty if not provided
 };
 
 struct laya_decision_result {

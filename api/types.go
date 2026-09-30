@@ -1087,7 +1087,6 @@ type RerankRequest struct {
 	Options   map[string]any `json:"options"`
 }
 
-
 // MultiDecodeRequest is POST /v1/multidecode (forest decode).
 // WHY not ChatRequest: custom RoPE pos + ancestor parent / parent_node_ids;
 // see docs/multidecode-llama-cpp.md.
@@ -1146,6 +1145,44 @@ type DecisionsResponse struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
+}
+
+// ExtractRequest is POST /v1/extract (abstract NER) and the core of /v1/gliner.
+// WHY not DecisionsRequest: span NER ≠ choice/score/noul; see docs/gliner-cpp.md.
+type ExtractRequest struct {
+	Model     string   `json:"model"`
+	Text      string   `json:"text,omitempty"`
+	Texts     []string `json:"texts,omitempty"`
+	Labels    []string `json:"labels"`
+	Threshold *float64 `json:"threshold,omitempty"`
+	// Engine knobs (honored on /v1/gliner; stripped on /v1/extract proxy):
+	FlatNer    *bool   `json:"flat_ner,omitempty"`
+	MultiLabel *bool   `json:"multi_label,omitempty"`
+	MaxWidth   *int    `json:"max_width,omitempty"`
+	MaxLength  *int    `json:"max_length,omitempty"`
+	ModelType  string  `json:"model_type,omitempty"` // span|token
+	DeviceID   *int    `json:"device_id,omitempty"`
+}
+
+// ExtractEntity is one span from GLiNER (or another extract backend).
+type ExtractEntity struct {
+	Text  string  `json:"text"`
+	Label string  `json:"label"`
+	Start int     `json:"start"`
+	End   int     `json:"end"`
+	Score float64 `json:"score"`
+}
+
+// ExtractResponse is POST /v1/extract|/v1/gliner for a single text.
+type ExtractResponse struct {
+	Entities []ExtractEntity `json:"entities,omitempty"`
+	Results  []struct {
+		Entities []ExtractEntity `json:"entities"`
+	} `json:"results,omitempty"`
+	Engine     map[string]any `json:"engine,omitempty"`
+	Threshold  *float64       `json:"threshold,omitempty"`
+	FlatNer    *bool          `json:"flat_ner,omitempty"`
+	MultiLabel *bool          `json:"multi_label,omitempty"`
 }
 
 // RerankResult is one scored document (llama.cpp Jina shape).

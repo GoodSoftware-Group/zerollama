@@ -12,6 +12,7 @@
 | Hermes Agent | https://github.com/NousResearch/hermes-agent | Harness API gaps — [hermes-zerollama-gap.md](./hermes-zerollama-gap.md) |
 | Ollama | https://github.com/ollama/ollama | Compatible wire shape |
 | llama.cpp | https://github.com/ggml-org/llama.cpp | Engine pin — [LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) |
+| DeepGEMM | https://github.com/deepseek-ai/DeepGEMM | GEMM / MoE kernel ideas (patterns only) — [deepgemm-borrowings.md](./deepgemm-borrowings.md) |
 
 Outbound thank-you issues (Jul 2026):
 

@@ -35,7 +35,7 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"/api/aliases", "/api/score", "/api/router/decide", "/api/router/corpus",
 		"/api/repair", "/api/experimental/web_search", "/api/experimental/web_fetch",
 		"/v1/chat/completions", "/v1/chat/completions/batch",
-		"/v1/decisions", "/v1/systemone", "/v1/multidecode",
+		"/v1/decisions", "/v1/systemone", "/v1/multidecode", "/v1/extract", "/v1/gliner", "/v1/gliner-decide",
 		"/v1/responses", "/v1/messages",
 	} {
 		if _, ok := paths[p]; !ok {
@@ -58,6 +58,7 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"DecisionsRequest", "DecisionQuestion", "DecisionsResponse",
 		"DecisionAction", "ChoiceAnswer", "ScoreAnswer", "NoulAnswer",
 		"MultiDecodeRequest", "MultiDecodeResponse", "MultiDecodeLeafResult",
+		"ExtractRequest", "ExtractResponse", "ExtractEntity", "GlinerRequest",
 		"RouterCorpusEntry", "RepairRequest", "RepairResponse",
 		"LoadRequest", "LoadResponse", "UnloadRequest", "UnloadResponse",
 	} {

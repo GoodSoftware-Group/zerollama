@@ -1,0 +1,18 @@
+{
+  "version": "v0",
+  "temperature": 0.5,
+  "choice_holdout_n": 6,
+  "choice_holdout_accuracy": 1.0,
+  "noul_holdout_n": 2,
+  "noul_holdout_accuracy": 1.0,
+  "noul_bias": 0.0,
+  "holdout_gate_ok": true,
+  "fixture_n": 20,
+  "fixture_accuracy": 1.0,
+  "marker_rate": 1.0,
+  "operator_signoff": false,
+  "gate_ready": true,
+  "failed_checks": [],
+  "calibrated": false,
+  "note": "DG9: gate_ready = choice+noul+marker floors. operator_signoff stays false (lab). Serve: ZEROLLAMA_OPENJEV_CALIBRATED=1; noul also needs NOUL_CALIBRATED=1."
+}

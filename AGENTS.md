@@ -18,6 +18,7 @@ On the Mac lab host (`~/Sites/inference/zerollama`):
 | Gigatoken / BMTL techniques (do **not** vendor Rust) | `../bmtl` → [docs/faster-bpe-tokenize.md](./docs/faster-bpe-tokenize.md) + [findings](./docs/faster-bpe-tokenize-findings.md) (unicode/BPE pretok in `llama/patches/` through **0105** port of islands/SWAR; must reach **`llama/llama.cpp/`** via sync — note **0122–0126** filenames are **m4-prefill stubs**, not BPE) |
 | M4 Metal prefill kernels (do **not** vendor host engine) | `../m4-prefill-engine` → [docs/m4-prefill-borrowings.md](./docs/m4-prefill-borrowings.md) + [findings](./docs/m4-prefill-borrowings-findings.md) (durable: MTL FA fix; FA+q8_0 KV useful; native Q8 FA / fused SwiGLU regress on M4 Max; lab: `scripts/phase/m4_prefill_lab_serve.sh`) |
 | Vanilla Ollama diff | `../ollama-upstream` → [docs/upstream-ollama-diff.md](./docs/upstream-ollama-diff.md) |
+| DeepGEMM (optional; CUDA ideas only) | `../DeepGEMM` → [docs/deepgemm-borrowings.md](./docs/deepgemm-borrowings.md) — **do not** vendor; skip Ascend port |
 
 ## Do not touch
 
@@ -67,7 +68,9 @@ Canonical guide: **[docs/mac-dev-setup.md](./docs/mac-dev-setup.md)**.
 - Training borrowings (Unsloth → T7–T11): [ROADMAP § GPU training](./docs/ROADMAP.md#gpu-training-fine-tuning)
 - Doctor Modelfile repair (empty `response` / slash-collapse / ChatML hygiene): `zerollama doctor --repair-models [--all-local] [--apply]` — **why** not `doctor --fix`: [docs/doctor-model-repair.md](./docs/doctor-model-repair.md)
 - Hermes `/v1` gaps (M15e/M15f): [docs/hermes-zerollama-gap.md](./docs/hermes-zerollama-gap.md) (§8 batch wire) · [findings](./docs/hermes-gap-closure-findings.md) · OpenAPI `server/openapi/openapi.yaml` (`ChatCompletionsBatchResponse`)
-- MultiDecode (forest decode): patches **0129–0131**; `POST /v1/multidecode` + `capabilities.multidecode`; silent LCP pack on Hermes batch — [docs/multidecode-llama-cpp.md](./docs/multidecode-llama-cpp.md) · [findings](./docs/multidecode-llama-cpp-findings.md)
-- Typed decisions (Laya + CLM): `POST /v1/decisions` — Laya GGUF patches **0127–0128**; CLM native heads (`ZEROLLAMA_CLM_HEADS` + emb URL) — [docs/laya-llama-cpp.md](./docs/laya-llama-cpp.md) · [docs/clm.md](./docs/clm.md) · skill `agentskills/typed-decisions/`
+- MultiDecode (forest decode): patches **0129–0131**; `POST /v1/multidecode` + `capabilities.multidecode`; silent LCP pack on Hermes batch — [docs/multidecode-llama-cpp.md](./docs/multidecode-llama-cpp.md) · [findings](./docs/multidecode-llama-cpp-findings.md) · skill `agentskills/multidecode/`
+- Typed decisions (Laya + CLM + OpenJev/DiffusionGemma): `POST /v1/decisions` — Laya GGUF patches **0127–0128**; CLM native heads; DiffusionGemma sibling PR `#24427` (**DG0–DG9** choice+noul+score marker slots; opt-in `CALIBRATED` / `NOUL_CALIBRATED`) — [docs/laya-llama-cpp.md](./docs/laya-llama-cpp.md) · [docs/clm.md](./docs/clm.md) · [docs/diffusion-gemma-llama-cpp.md](./docs/diffusion-gemma-llama-cpp.md) · [findings](./docs/diffusion-gemma-llama-cpp-findings.md) · skill `agentskills/typed-decisions/`
+- Entity extract (GLiNER): `POST /v1/extract` + `POST /v1/gliner` — C++/ONNX sibling; dual abstract/mechanical wire; **GL0–GL5a** (CUDA ORT + token multitask; RelEx Parked) — [docs/gliner-cpp.md](./docs/gliner-cpp.md) · [findings](./docs/gliner-cpp-findings.md) · skill `agentskills/entity-extract/`
+- GLiNER2.5-Decide (triage): `POST /v1/decisions` + `POST /v1/gliner-decide` — Python `gliner2` sibling; **not** NER; `ZEROLLAMA_GLINER_DECIDE_URL` — [docs/gliner-decide.md](./docs/gliner-decide.md) · [findings](./docs/gliner-decide-findings.md)
 - Product diffs vs Ollama (README hero): **megaprompts** (Gigatoken-inspired tokenize + L3) + visuals + harness — [README.md § Why](./README.md#2-why-zerollama) · [Tour](./README.md#4-tour--what-makes-us-different)
 - MiniMax Music 3 (mlx hear → C later): [docs/music-c.md](./docs/music-c.md) — **why** not Comfy / not H3 VAE / not blocking TTS

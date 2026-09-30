@@ -188,7 +188,7 @@ new file mode 100644
 index 0000000..1111111
 --- /dev/null
 +++ b/src/models/laya.cpp
-@@ -0,0 +1,     206 @@
+@@ -0,0 +1,206 @@
 +// Laya typed-decision model: ModernBERT-style encoder + RLCD decision head.
 +// Encoder graph matches modern-bert; head tensors are loaded for CPU post (server).
 +

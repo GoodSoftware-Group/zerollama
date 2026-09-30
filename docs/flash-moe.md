@@ -2,7 +2,7 @@
 
 **Audience:** Mac operators running **MoE models larger than unified RAM** via [Anemll/anemll-flash-llama.cpp](https://github.com/Anemll/anemll-flash-llama.cpp) slot-bank + sidecar streaming.
 
-**Related:** [phase17-llama-server.md](./phase17-llama-server.md), [apple-silicon-metal.md](./apple-silicon-metal.md), [ane-probe.md](./ane-probe.md).
+**Related:** [phase17-llama-server.md](./phase17-llama-server.md), [apple-silicon-metal.md](./apple-silicon-metal.md), [ane-probe.md](./ane-probe.md), [deepgemm-borrowings.md](./deepgemm-borrowings.md) (fused MoE GEMM ideas — orthogonal to SSD slot-bank).
 
 ---
 

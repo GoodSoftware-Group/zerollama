@@ -36,6 +36,12 @@ const (
 	defaultLayaMaxLen     = 512
 	defaultLayaHeadMaxLen = 192
 	layaOptionTokCap      = 48
+
+	// Jev / Unsloth Desktop Decision API caps (wire parity).
+	// See https://unsloth.ai/docs/models/decision-laya and docs/laya-llama-cpp.md.
+	MaxDecisionQuestions = 64
+	MaxChoiceOptions     = 255
+	MaxScoreLevels       = 10
 )
 
 var defaultNoulLabels = map[string]string{"false": "false", "true": "true"}
@@ -370,10 +376,49 @@ func BuildSequence(tok LayaTokenizer, state any, q DecisionQuestion, maxLen, hea
 	return ids, kept, nil
 }
 
+// ValidateDecisionBatch enforces Jev/Unsloth Decision API caps and criteria shapes
+// for choice/score. Call before packing or proxying so all backends share one gate.
+func ValidateDecisionBatch(questions map[string]DecisionQuestion) error {
+	if len(questions) > MaxDecisionQuestions {
+		return fmt.Errorf("at most %d questions per request (got %d)", MaxDecisionQuestions, len(questions))
+	}
+	for id, q := range questions {
+		t := strings.ToLower(strings.TrimSpace(q.Type))
+		switch t {
+		case "choice":
+			pairs, err := orderedObjectPairs(q.Criteria)
+			if err != nil {
+				return fmt.Errorf("question %q: %w", id, err)
+			}
+			if len(pairs) == 0 {
+				return fmt.Errorf("question %q: choice requires at least one option", id)
+			}
+			if len(pairs) > MaxChoiceOptions {
+				return fmt.Errorf("question %q: at most %d choice options (got %d)", id, MaxChoiceOptions, len(pairs))
+			}
+		case "score":
+			levels, err := decodeStringList(q.Criteria)
+			if err != nil {
+				return fmt.Errorf("question %q: %w", id, err)
+			}
+			if len(levels) == 0 {
+				return fmt.Errorf("question %q: score requires at least one level", id)
+			}
+			if len(levels) > MaxScoreLevels {
+				return fmt.Errorf("question %q: at most %d score levels (got %d)", id, MaxScoreLevels, len(levels))
+			}
+		}
+	}
+	return nil
+}
+
 // PackQuestions builds tokenized inputs for every question against one state.
 // WHY sort by question_id: Go map iteration is random; server results are
 // position-aligned (and may echo question_id). Unstable order mislabels logits.
 func PackQuestions(tok LayaTokenizer, state any, questions map[string]DecisionQuestion, maxLen, headMaxLen int) ([]LayaPackedInput, error) {
+	if err := ValidateDecisionBatch(questions); err != nil {
+		return nil, err
+	}
 	ids := make([]string, 0, len(questions))
 	for qid := range questions {
 		ids = append(ids, qid)

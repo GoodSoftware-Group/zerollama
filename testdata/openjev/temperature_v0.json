@@ -1,0 +1,223 @@
+{
+  "version": "v0",
+  "seed": 42,
+  "n_steps": 8,
+  "temperature": 0.5,
+  "train_nll": 0.003787226026121042,
+  "train_n": 7,
+  "holdout_n": 6,
+  "holdout_accuracy": 1.0,
+  "holdout_gate_ok": true,
+  "calibrated": false,
+  "note": "DG4c: T fitted on train only; holdout_gate_ok means ranking matched labels. Still calibrated:false until operator sign-off + larger set.",
+  "cases": [
+    {
+      "id": "refund_billing",
+      "split": "train",
+      "option_ids": [
+        "billing",
+        "tech"
+      ],
+      "logits": [
+        9.88157844543457,
+        3.729384183883667
+      ],
+      "gold": "billing",
+      "argmax_t1": "billing",
+      "hit_t1": true,
+      "readout_mode": "answer_marker_logit"
+    },
+    {
+      "id": "outage_tech",
+      "split": "train",
+      "option_ids": [
+        "billing",
+        "tech"
+      ],
+      "logits": [
+        4.810617446899414,
+        7.375835418701172
+      ],
+      "gold": "tech",
+      "argmax_t1": "tech",
+      "hit_t1": true,
+      "readout_mode": "answer_marker_logit"
+    },
+    {
+      "id": "password_tech",
+      "split": "train",
+      "option_ids": [
+        "billing",
+        "tech"
+      ],
+      "logits": [
+        5.631895542144775,
+        7.649632453918457
+      ],
+      "gold": "tech",
+      "argmax_t1": "tech",
+      "hit_t1": true,
+      "readout_mode": "answer_marker_logit"
+    },
+    {
+      "id": "invoice_billing",
+      "split": "train",
+      "option_ids": [
+        "billing",
+        "tech"
+      ],
+      "logits": [
+        8.992931365966797,
+        3.5377676486968994
+      ],
+      "gold": "billing",
+      "argmax_t1": "billing",
+      "hit_t1": true,
+      "readout_mode": "answer_marker_logit"
+    },
+    {
+      "id": "receipt_billing",
+      "split": "train",
+      "option_ids": [
+        "billing",
+        "tech"
+      ],
+      "logits": [
+        9.321284294128418,
+        5.367171287536621
+      ],
+      "gold": "billing",
+      "argmax_t1": "billing",
+      "hit_t1": true,
+      "readout_mode": "answer_marker_logit"
+    },
+    {
+      "id": "crash_tech",
+      "split": "train",
+      "option_ids": [
+        "billing",
+        "tech"
+      ],
+      "logits": [
+        4.7428812980651855,
+        7.7016520500183105
+      ],
+      "gold": "tech",
+      "argmax_t1": "tech",
+      "hit_t1": true,
+      "readout_mode": "answer_marker_logit"
+    },
+    {
+      "id": "promo_billing",
+      "split": "train",
+      "option_ids": [
+        "billing",
+        "tech"
+      ],
+      "logits": [
+        9.704475402832031,
+        4.060030460357666
+      ],
+      "gold": "billing",
+      "argmax_t1": "billing",
+      "hit_t1": true,
+      "readout_mode": "answer_marker_logit"
+    },
+    {
+      "id": "ssl_tech",
+      "split": "holdout",
+      "option_ids": [
+        "billing",
+        "tech"
+      ],
+      "logits": [
+        5.580607891082764,
+        8.927943229675293
+      ],
+      "gold": "tech",
+      "argmax_t1": "tech",
+      "hit_t1": true,
+      "readout_mode": "answer_marker_logit"
+    },
+    {
+      "id": "subscription_billing",
+      "split": "holdout",
+      "option_ids": [
+        "billing",
+        "tech"
+      ],
+      "logits": [
+        10.949596405029297,
+        4.04498291015625
+      ],
+      "gold": "billing",
+      "argmax_t1": "billing",
+      "hit_t1": true,
+      "readout_mode": "answer_marker_logit"
+    },
+    {
+      "id": "dns_tech",
+      "split": "holdout",
+      "option_ids": [
+        "billing",
+        "tech"
+      ],
+      "logits": [
+        4.79761266708374,
+        6.492702960968018
+      ],
+      "gold": "tech",
+      "argmax_t1": "tech",
+      "hit_t1": true,
+      "readout_mode": "answer_marker_logit"
+    },
+    {
+      "id": "overcharge_billing",
+      "split": "holdout",
+      "option_ids": [
+        "billing",
+        "tech"
+      ],
+      "logits": [
+        10.495866775512695,
+        4.981492519378662
+      ],
+      "gold": "billing",
+      "argmax_t1": "billing",
+      "hit_t1": true,
+      "readout_mode": "answer_marker_logit"
+    },
+    {
+      "id": "multi_refund_urgent",
+      "split": "holdout",
+      "option_ids": [
+        "billing",
+        "tech"
+      ],
+      "logits": [
+        12.749898910522461,
+        7.172191143035889
+      ],
+      "gold": "billing",
+      "argmax_t1": "billing",
+      "hit_t1": true,
+      "readout_mode": "answer_marker_logit"
+    },
+    {
+      "id": "webhook_tech",
+      "split": "holdout",
+      "option_ids": [
+        "billing",
+        "tech"
+      ],
+      "logits": [
+        3.854482650756836,
+        5.169185161590576
+      ],
+      "gold": "tech",
+      "argmax_t1": "tech",
+      "hit_t1": true,
+      "readout_mode": "answer_marker_logit"
+    }
+  ]
+}

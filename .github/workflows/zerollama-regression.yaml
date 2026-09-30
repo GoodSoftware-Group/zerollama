@@ -8,6 +8,16 @@ on:
       - 'envconfig/**'
       - 'runtime/**'
       - 'scripts/**'
+      - 'gliner/**'
+      - 'GLINER_CPP_COMMIT'
+      - 'docs/gliner-cpp.md'
+      - 'docs/gliner-cpp-findings.md'
+      - 'docs/gliner-decide.md'
+      - 'docs/gliner-decide-findings.md'
+      - 'agentskills/entity-extract/**'
+      - 'skills/entity-extract/**'
+      - 'agentskills/typed-decisions/**'
+      - 'skills/typed-decisions/**'
       - 'llama/patches/**'
       - 'llama/llama.cpp/**'
       - 'Makefile.sync'
@@ -24,6 +34,16 @@ on:
       - 'envconfig/**'
       - 'runtime/**'
       - 'scripts/**'
+      - 'gliner/**'
+      - 'GLINER_CPP_COMMIT'
+      - 'docs/gliner-cpp.md'
+      - 'docs/gliner-cpp-findings.md'
+      - 'docs/gliner-decide.md'
+      - 'docs/gliner-decide-findings.md'
+      - 'agentskills/entity-extract/**'
+      - 'skills/entity-extract/**'
+      - 'agentskills/typed-decisions/**'
+      - 'skills/typed-decisions/**'
       - 'llama/patches/**'
       - 'llama/llama.cpp/**'
       - 'Makefile.sync'
@@ -78,6 +98,18 @@ jobs:
         env:
           P15_UPSTREAM_JSON: /tmp/phase15-upstream-kv-watch.json
         run: ./scripts/phase/phase15_upstream_kv_watch.sh
+
+      - name: GLiNER scripts + pin check (GL0–GL5a)
+        run: ./scripts/check_gliner_scripts.sh
+
+      - name: GLiNER2.5-Decide scripts check (GD*)
+        run: ./scripts/check_gliner_decide_scripts.sh
+
+      - name: GLiNER Go proxy unit tests
+        env:
+          CGO_ENABLED: '1'
+          OLLAMA_NO_CLOUD: 'true'
+        run: go test -count=1 -run 'Extract|Gliner|IsGliner' ./server/
 
   training-embed-health:
     # T4: prove the OTHER half of the embedded-Python health story — not just that Go route

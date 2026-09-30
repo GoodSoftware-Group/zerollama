@@ -1,0 +1,270 @@
+{
+  "ok": 20,
+  "fail": 0,
+  "n": 20,
+  "accuracy": 1.0,
+  "marker_cases": 20,
+  "marker_rate": 1.0,
+  "calibrated": false,
+  "report_noul": {
+    "n": 0,
+    "ok": 0,
+    "cases": []
+  },
+  "cases": [
+    {
+      "id": "refund_billing",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "dept": {
+        "got": "billing",
+        "want": "billing",
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "outage_tech",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "dept": {
+        "got": "tech",
+        "want": "tech",
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "password_tech",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "dept": {
+        "got": "tech",
+        "want": "tech",
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "invoice_billing",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "dept": {
+        "got": "billing",
+        "want": "billing",
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "receipt_billing",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "dept": {
+        "got": "billing",
+        "want": "billing",
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "crash_tech",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "dept": {
+        "got": "tech",
+        "want": "tech",
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "train_urgent_outage",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "urgent": {
+        "got_noul": 0.9999999990305013,
+        "noul_min": 0.5,
+        "noul_max": null,
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "promo_billing",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "dept": {
+        "got": "billing",
+        "want": "billing",
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "train_sev_low",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "sev": {
+        "got_score": 0.00040655957506621125,
+        "score_min": null,
+        "score_max": 1.0,
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "train_sev_high",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "sev": {
+        "got_score": 1.9999999887853528,
+        "score_min": 1.0,
+        "score_max": null,
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "ssl_tech",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "dept": {
+        "got": "tech",
+        "want": "tech",
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "subscription_billing",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "dept": {
+        "got": "billing",
+        "want": "billing",
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "dns_tech",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "dept": {
+        "got": "tech",
+        "want": "tech",
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "overcharge_billing",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "dept": {
+        "got": "billing",
+        "want": "billing",
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "multi_refund_urgent",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "dept": {
+        "got": "billing",
+        "want": "billing",
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      },
+      "urgent": {
+        "got_noul": 0.9999999999634901,
+        "noul_min": 0.5,
+        "noul_max": null,
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "webhook_tech",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "dept": {
+        "got": "tech",
+        "want": "tech",
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "outage_severity_high",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "sev": {
+        "got_score": 1.9999999973145859,
+        "score_min": 1.0,
+        "score_max": null,
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "holdout_sev_low",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "sev": {
+        "got_score": 0.00019878547512226677,
+        "score_min": null,
+        "score_max": 1.0,
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "train_noul_low",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "urgent": {
+        "got_noul": 3.1379750418553594e-11,
+        "noul_min": null,
+        "noul_max": 0.5,
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    },
+    {
+      "id": "holdout_noul_low",
+      "ok": true,
+      "marker": true,
+      "gating": true,
+      "urgent": {
+        "got_noul": 2.3218062167359176e-09,
+        "noul_min": null,
+        "noul_max": 0.5,
+        "score_source": "answer_marker_logit",
+        "calibrated": true
+      }
+    }
+  ]
+}

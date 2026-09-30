@@ -15,10 +15,15 @@ import (
 	"github.com/ollama/ollama/types/model"
 )
 
-// DecisionsHandler serves POST /v1/decisions and POST /v1/systemone (Jev/Laya/CLM typed decisions).
+// DecisionsHandler serves POST /v1/decisions and POST /v1/systemone (Jev/Laya/CLM/OpenJev).
+//
 // WHY a dedicated handler: not chat, not /api/score, not /v1/rerank — needs a Decider
-// runner (llama-server --decisions) or an external URL (ZEROLLAMA_CLM_URL / ZEROLLAMA_LAYA_URL).
-// Alias /v1/systemone keeps Jev/CLM clients on one path.
+// runner (llama-server --decisions) or an external URL (ZEROLLAMA_CLM_URL / ZEROLLAMA_LAYA_URL /
+// ZEROLLAMA_OPENJEV_URL for DiffusionGemma / ZEROLLAMA_GLINER_DECIDE_URL for GLiNER2.5-Decide).
+// Alias /v1/systemone keeps Jev clients on one path.
+//
+// WHY OpenJev branches before scheduleRunner: sibling diffusion server is not a ggml Model
+// runner; Go packs prompt and proxies (LA16). Answers are calibrated:false until marker logits.
 func (s *Server) DecisionsHandler(c *gin.Context) {
 	var req api.DecisionsRequest
 	if err := c.ShouldBindJSON(&req); errors.Is(err, io.EOF) {
@@ -40,12 +45,20 @@ func (s *Server) DecisionsHandler(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "state is required"})
 		return
 	}
+	// Jev/Unsloth caps (64 questions / 255 choice options / 10 score levels) before
+	// any backend — Laya, CLM, OpenJev, or external URL.
+	llmReq, err := apiDecisionsToLLM(req)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	if served, err := applyModelAlias(c, req.Model); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	} else {
 		req.Model = served
+		llmReq.Model = served
 	}
 
 	modelRef, err := parseAndValidateModelRef(req.Model)
@@ -87,11 +100,6 @@ func (s *Server) DecisionsHandler(c *gin.Context) {
 	}
 
 	if clmWantsNative(req.Model, m) {
-		llmReq, err := apiDecisionsToLLM(req)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
 		resp, err := llm.CLMAnswer(c.Request.Context(), envconfig.CLMHeads(), envconfig.CLMEmbURL(), envconfig.CLMEmbModel(), llmReq, 1)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": err.Error()})
@@ -122,12 +130,6 @@ func (s *Server) DecisionsHandler(c *gin.Context) {
 	decider, ok := r.(llm.Decider)
 	if !ok {
 		c.AbortWithStatusJSON(http.StatusNotImplemented, gin.H{"error": "model runner does not support decisions"})
-		return
-	}
-
-	llmReq, err := apiDecisionsToLLM(req)
-	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -174,6 +176,9 @@ func apiDecisionsToLLM(req api.DecisionsRequest) (llm.DecisionsRequest, error) {
 			Criteria:     q.Criteria,
 			Labels:       q.Labels,
 		}
+	}
+	if err := llm.ValidateDecisionBatch(out.Questions); err != nil {
+		return llm.DecisionsRequest{}, err
 	}
 	return out, nil
 }

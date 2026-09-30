@@ -272,7 +272,7 @@ new file mode 100644
 index 0000000..1111111
 --- /dev/null
 +++ b/tools/server/server-laya.cpp
-@@ -0,0 +1,     536 @@
+@@ -0,0 +1,536 @@
 +#include "server-laya.h"
 +
 +#include "common.h"
@@ -814,7 +814,7 @@ new file mode 100644
 index 0000000..1111111
 --- /dev/null
 +++ b/tools/server/server-laya.h
-@@ -0,0 +1,      89 @@
+@@ -0,0 +1,89 @@
 +#pragma once
 +
 +#include "llama.h"

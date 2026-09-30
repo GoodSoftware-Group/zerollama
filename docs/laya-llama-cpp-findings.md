@@ -86,6 +86,16 @@ Laya looked “just another ModernBERT” until product requirements collided wi
 
 ---
 
+## Finding 8 — Unsloth / Jev Decision API caps are product wire
+
+**What:** Unsloth Desktop (Sep 2026) serves Laya via Jev-shaped `POST /v1/systemone` with ≤64 questions, ≤255 choice options, ≤10 score levels, and warns that Laya `confidence` ≠ cloud Jev thresholds ([guide](https://unsloth.ai/docs/models/decision-laya)).
+
+**Why enforce here:** Drop-in Jev clients expect those limits and probability-gated policy. Silent oversize batches would pack until token budget collapses or misaligns labels.
+
+**Learning:** `ValidateDecisionBatch` at the public handler (all backends) + `PackQuestions`; document HF variant tag names (`laya-multilingual` / `laya-english` / `laya-typed-decisions`); gate on `probabilities` / `noul`, not `confidence`. Do not vendor Unsloth Desktop.
+
+---
+
 ## Open questions (not blockers)
 
 - Full fixture parity vs Python Agent (argmax + temp-calibrated probs) on converted GGUF — unit tests cover pack/decode only.

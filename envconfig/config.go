@@ -645,6 +645,14 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_CLM_EMB_URL":                    {"ZEROLLAMA_CLM_EMB_URL", CLMEmbURL(), "Embeddings URL for native CLM (llama-server --embeddings Qwen3-8B)"},
 		"ZEROLLAMA_CLM_EMB_MODEL":                  {"ZEROLLAMA_CLM_EMB_MODEL", CLMEmbModel(), "Model name for CLM embeddings requests (default qwen3-8b)"},
 		"ZEROLLAMA_LAYA_URL":                       {"ZEROLLAMA_LAYA_URL", LayaURL(), "Base URL for external Laya Decider (same /v1/decisions wire; LAYA4 / sidecar)"},
+		"ZEROLLAMA_OPENJEV_URL":                    {"ZEROLLAMA_OPENJEV_URL", OpenJevURL(), "Base URL for DiffusionGemma/OpenJev Decider (llama-diffusion-gemma-server /v1/systemone; DG2)"},
+		"ZEROLLAMA_GLINER_URL":                     {"ZEROLLAMA_GLINER_URL", GlinerURL(), "Base URL for GLiNER.cpp sibling (gliner-server /v1/extract|/v1/gliner; GL2)"},
+		"ZEROLLAMA_GLINER_DECIDE_URL":              {"ZEROLLAMA_GLINER_DECIDE_URL", GlinerDecideURL(), "Base URL for GLiNER2.5-Decide sibling (/v1/systemone|/v1/gliner-decide; GD*)"},
+		"ZEROLLAMA_OPENJEV_TEMP":                   {"ZEROLLAMA_OPENJEV_TEMP", fmt.Sprintf("%g", OpenJevTemperature()), "DG4b OpenJev softmax temperature"},
+		"ZEROLLAMA_OPENJEV_CALIBRATED":             {"ZEROLLAMA_OPENJEV_CALIBRATED", fmt.Sprintf("%v", OpenJevCalibrated()), "DG8: choice/score calibrated:true when on"},
+		"ZEROLLAMA_OPENJEV_NOUL_BIAS":              {"ZEROLLAMA_OPENJEV_NOUL_BIAS", fmt.Sprintf("%g", OpenJevNoulBias()), "DG9: subtract from noul positive-class logit before softmax"},
+		"ZEROLLAMA_OPENJEV_NOUL_CALIBRATED":        {"ZEROLLAMA_OPENJEV_NOUL_CALIBRATED", fmt.Sprintf("%v", OpenJevNoulCalibrated()), "DG9: allow noul calibrated:true when OPENJEV_CALIBRATED also on"},
+		"ZEROLLAMA_DIFFUSION_BIN":                  {"ZEROLLAMA_DIFFUSION_BIN", DiffusionBin(), "Path to llama-diffusion-gemma-cli (sibling vendor; not prod llama-server)"},
 		"ZEROLLAMA_RUNTIME_URL":                    {"ZEROLLAMA_RUNTIME_URL", RuntimeURL(), "Base URL for Python GGUF runtime sidecar (PagedAttention)"},
 		"ZEROLLAMA_RUNTIME_EMBED":                  {"ZEROLLAMA_RUNTIME_EMBED", RuntimeEmbedDisplay(), "Embed runtime in-process (CGO); default on if URL unset"},
 		"ZEROLLAMA_RUNTIME_EMBED_PORT":             {"ZEROLLAMA_RUNTIME_EMBED_PORT", Var("ZEROLLAMA_RUNTIME_EMBED_PORT"), "Loopback port for embedded runtime HTTP (default 8081)"},
@@ -660,7 +668,7 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_FLASH_MOE_SLOT_BANK":            {"ZEROLLAMA_FLASH_MOE_SLOT_BANK", Var("ZEROLLAMA_FLASH_MOE_SLOT_BANK"), "Resident expert slots per MoE layer"},
 		"ZEROLLAMA_FLASH_MOE_TOPK":                 {"ZEROLLAMA_FLASH_MOE_TOPK", Var("ZEROLLAMA_FLASH_MOE_TOPK"), "Routed expert top-k override (0=model default)"},
 		"ZEROLLAMA_FLASH_MOE_PREFETCH":             {"ZEROLLAMA_FLASH_MOE_PREFETCH", FlashMoEPrefetchTemporal(), "One-step temporal expert prefetch (1/on)"},
-		"ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB":         {"ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB", FlashMoEPinBudgetGiB(), "Lab pin-budget GiB override (FreeToken FREETOKEN_PIN_BUDGET_GB; advice only)"},
+		"ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB":        {"ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB", FlashMoEPinBudgetGiB(), "Lab pin-budget GiB override (FreeToken FREETOKEN_PIN_BUDGET_GB; advice only)"},
 		"ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN":     {"ZEROLLAMA_FLASH_MOE_LLAMA_SERVER_BIN", FlashMoELlamaServerBin(), "Override Flash-MoE llama-server binary path"},
 		"FLASH_MOE_REPO":                           {"FLASH_MOE_REPO", FlashMoERepo(), "anemll-flash-llama.cpp checkout for build script"},
 		"ANE_REPO":                                 {"ANE_REPO", ANERepo(), "maderix/ane checkout for ANE probe bridge"},
@@ -868,6 +876,77 @@ func CLMURL() string {
 // GGUF is not the path (LAYA4 sidecar). Empty means use in-process llama-server.
 func LayaURL() string {
 	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_LAYA_URL")), "/")
+}
+
+// OpenJevURL is the base URL for the DiffusionGemma sibling Decider
+// (llama-diffusion-gemma-server). modality_backends.decisions=openjev or
+// model name openjev* / diffusiongemma* routes here (DG2).
+//
+// WHY separate from LayaURL/CLMURL: different upstream contract — Go packs a
+// prompt; C++ returns {answer}, not public DecisionsResponse. v0 answers are
+// uncalibrated (see docs/diffusion-gemma-llama-cpp-findings.md).
+func OpenJevURL() string {
+	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_OPENJEV_URL")), "/")
+}
+
+// GlinerURL is the base URL for the GLiNER.cpp sibling server (gliner-server).
+// modality_backends.extract=gliner or model name gliner* routes /v1/extract|/v1/gliner here (GL2).
+func GlinerURL() string {
+	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_GLINER_URL")), "/")
+}
+
+// GlinerDecideURL is the base URL for the Fastino GLiNER2.5-Decide Python sibling.
+// modality_backends.decisions=gliner-decide or model name gliner-decide* /
+// gliner2.5-decide* routes /v1/decisions|/v1/systemone here (GD*).
+//
+// WHY separate from GlinerURL: Decide is System-1 triage (classify_text), not
+// span NER. See docs/gliner-decide.md.
+func GlinerDecideURL() string {
+	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_GLINER_DECIDE_URL")), "/")
+}
+
+// OpenJevTemperature is the DG4b softmax temperature for OpenJev gather probs.
+// Default llm.DefaultOpenJevTemperature; override with ZEROLLAMA_OPENJEV_TEMP.
+func OpenJevTemperature() float64 {
+	if s := strings.TrimSpace(Var("ZEROLLAMA_OPENJEV_TEMP")); s != "" {
+		if v, err := strconv.ParseFloat(s, 64); err == nil && v > 0 {
+			return v
+		}
+	}
+	return 0.5 // keep in sync with llm.DefaultOpenJevTemperature (DG4b fixture fit)
+}
+
+// OpenJevCalibrated is DG8 operator opt-in for choice/score calibrated:true.
+// WHY default off: serve must not claim Laya-grade calibration without sign-off.
+// Noul needs OpenJevNoulCalibrated as well (Finding 17 / DG9).
+func OpenJevCalibrated() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_OPENJEV_CALIBRATED"))
+	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on")
+}
+
+// OpenJevNoulBias is DG9 offset subtracted from the noul positive-class logit
+// ("1"/true) before softmax. Default llm.DefaultOpenJevNoulBias.
+func OpenJevNoulBias() float64 {
+	if s := strings.TrimSpace(Var("ZEROLLAMA_OPENJEV_NOUL_BIAS")); s != "" {
+		if v, err := strconv.ParseFloat(s, 64); err == nil {
+			return v
+		}
+	}
+	return 0 // keep in sync with llm.DefaultOpenJevNoulBias (DG9 fit = 0)
+}
+
+// OpenJevNoulCalibrated opts in noul calibrated:true together with OpenJevCalibrated.
+// WHY separate: choice/score gate can pass while noul still fails Finding 17.
+func OpenJevNoulCalibrated() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_OPENJEV_NOUL_CALIBRATED"))
+	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on")
+}
+
+// DiffusionBin is an optional path to llama-diffusion-gemma-cli from the
+// sibling vendor tree (scripts/build/build_llama_diffusion.sh).
+// WHY not LLAMA_SERVER_BIN: prod chat/Laya/CLM emb must stay on b10615.
+func DiffusionBin() string {
+	return strings.TrimSpace(Var("ZEROLLAMA_DIFFUSION_BIN"))
 }
 
 // CLMHeads is the path to a Contrastive-LM heads-only GGUF

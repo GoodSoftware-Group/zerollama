@@ -1,0 +1,75 @@
+{
+  "version": "v0",
+  "temperature": 0.5,
+  "holdout_accuracy": 1.0,
+  "holdout_gate_ok": true,
+  "calibrated": false,
+  "cases": [
+    {
+      "id": "ssl_tech",
+      "gold": "tech",
+      "argmax": "tech",
+      "hit": true,
+      "gold_prob_at_T": 0.9987640401465069,
+      "logits": [
+        5.580607891082764,
+        8.927943229675293
+      ]
+    },
+    {
+      "id": "subscription_billing",
+      "gold": "billing",
+      "argmax": "billing",
+      "hit": true,
+      "gold_prob_at_T": 0.9999989936976613,
+      "logits": [
+        10.949596405029297,
+        4.04498291015625
+      ]
+    },
+    {
+      "id": "dns_tech",
+      "gold": "tech",
+      "argmax": "tech",
+      "hit": true,
+      "gold_prob_at_T": 0.9673962410483826,
+      "logits": [
+        4.79761266708374,
+        6.492702960968018
+      ]
+    },
+    {
+      "id": "overcharge_billing",
+      "gold": "billing",
+      "argmax": "billing",
+      "hit": true,
+      "gold_prob_at_T": 0.9999837718754968,
+      "logits": [
+        10.495866775512695,
+        4.981492519378662
+      ]
+    },
+    {
+      "id": "multi_refund_urgent",
+      "gold": "billing",
+      "argmax": "billing",
+      "hit": true,
+      "gold_prob_at_T": 0.9999857025567804,
+      "logits": [
+        12.749898910522461,
+        7.172191143035889
+      ]
+    },
+    {
+      "id": "webhook_tech",
+      "gold": "tech",
+      "argmax": "tech",
+      "hit": true,
+      "gold_prob_at_T": 0.9327302273744514,
+      "logits": [
+        3.854482650756836,
+        5.169185161590576
+      ]
+    }
+  ]
+}

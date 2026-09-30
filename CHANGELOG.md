@@ -4,6 +4,38 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### GLiNER2.5-Decide Decider (GD0–GD3) — Sep 2026
+
+Self-host Fastino [GLiNER2.5-Decide](https://huggingface.co/fastino/GLiNER2.5-Decide) as System-1 triage (not span NER).
+
+**Dual wire:** Jev `POST /v1/decisions` + mechanical `POST /v1/gliner-decide`. Go: `ZEROLLAMA_GLINER_DECIDE_URL`; lab `:18098` / `:11439`.  
+**Sibling:** `gliner/decide_server/` (`gliner2` AutoExtractor). Answers `calibrated:false` until a fixture gate.  
+Docs: [gliner-decide.md](docs/gliner-decide.md) · [findings](docs/gliner-decide-findings.md).
+
+
+### GLiNER entity extract (GL0–GL5a) — Sep 2026
+
+**Why not decisions / chat:** Span NER is a different modality (`text` + `labels` → spans).  
+**Why C++/ONNX sibling:** No Torch/Ray at serve; keep ORT out of prod `llama-server` (same sibling WHY as DiffusionGemma).  
+**Dual wire:** `POST /v1/extract` (portable) + `POST /v1/gliner` (GLiNER.cpp knobs). Go: `ZEROLLAMA_GLINER_URL`; lab ports `:18094` / `:11437`.  
+**GL4:** `GLINER_ORT=cuda` + GPU ORT; `gliner_cuda_smoke.sh` (`--device-id 0`); ~+1 GiB VRAM for `gliner_small` — unload OpenJev/emb first on 16 GB (Finding 7).  
+**GL5a:** token-level multitask ONNX (`--model-type token`); Finding **10** fixed via channel-first logits transpose patch; RelEx/bi-encoder **Parked** (Finding 9).  
+**Ops:** `serve_gliner_lab.sh [--cuda] [--multitask]`; `ensure_gliner_model.sh small|multitask`; `gliner_token_go_e2e.sh`.  
+**CI:** `scripts/check_gliner_scripts.sh` + Extract/Gliner Go tests in `zerollama-regression`.
+
+Docs: [gliner-cpp.md](docs/gliner-cpp.md) · [findings](docs/gliner-cpp-findings.md) · skill `entity-extract`.
+
+### DiffusionGemma / OpenJev (DG0–DG9) — Sep 2026
+
+**Why llama.cpp (not Go/MLX):** Block-diffusion weights and CUDA kernels belong in the engine; Go stays the control plane (LA16).  
+**Why a sibling tree (not `b10615`):** Draft PR `#24427` must not risk prod chat / Laya / CLM emb `llama-server`.
+
+**DG7:** `gate_ready=true` on 18 gating fixtures; choice holdout 6/6; Finding 17 English true prior on noul.  
+**DG8:** `ZEROLLAMA_OPENJEV_CALIBRATED=1` → choice/score `calibrated:true`; `scripts/serve/serve_openjev_lab.sh [--calibrated]` (ports `:18093` / `:11436`, never prod).  
+**DG9:** noul slots `0|1` (not true/false); `DefaultOpenJevNoulBias=0`; `ZEROLLAMA_OPENJEV_NOUL_CALIBRATED=1` (+ `CALIBRATED`) → noul `calibrated:true`; Finding 19; `--noul-calibrated`; calib gate records noul holdout floors.
+
+Docs: [diffusion-gemma-llama-cpp.md](docs/diffusion-gemma-llama-cpp.md) · [findings](docs/diffusion-gemma-llama-cpp-findings.md) · [readout](docs/diffusion-gemma-readout-design.md).
+
 ### CLM2 — native Go heads (no Torch at serve) — Sep 2026
 
 **Why:** CLM1 still needed Python `clm-serve`. Agents want System-1 on the same `/v1/systemone` wire without a Torch sidecar.

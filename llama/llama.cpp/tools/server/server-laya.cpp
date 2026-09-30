@@ -300,8 +300,8 @@ bool laya_head_load(const llama_model * model, laya_head_weights & out, std::str
 
     // Optional eps from GGUF metadata
     char buf[64];
-    if (llama_model_meta_val_str(model, "laya.attention.layer_norm_epsilon", buf, sizeof(buf)) >= 0 ||
-        llama_model_meta_val_str(model, "laya.norm_eps", buf, sizeof(buf)) >= 0) {
+    if (llama_model_meta_val_str(model, "laya.norm_eps", buf, sizeof(buf)) >= 0 ||
+        llama_model_meta_val_str(model, "attention.layernorm_eps", buf, sizeof(buf)) >= 0) {
         try {
             out.eps = std::stof(buf);
         } catch (...) {

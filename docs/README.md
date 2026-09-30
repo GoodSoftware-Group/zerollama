@@ -40,6 +40,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [llama.cpp backend unification](./llama-cpp-unification.md) — **why** one elizaOS tree @ `LLAMA_CPP_COMMIT` replaces stock + eliza-llama siblings; discovery, doctor, vendor rebase plan.
 * [L2 unified llama-server profiles](./gpu-profiles-l2.md) — L1 vs fork argv on one binary; **5080 Jun 2026:** L1 q8_0 wins @ 8k (fork profiles opt-in).
 * [CUDA lanes (dual-4090 / 5080)](./cuda-lanes.md) — **why** shared CUDA playbook vs 5080-only; NVFP4/MXFP4/FP8 weight roadmap; probes + sign-off.
+* [DeepGEMM borrowings](./deepgemm-borrowings.md) — **why** Ascend DeepGEMM is not a port target; keep grouped GEMM / SF layout / MoE-fuse ideas for ggml CUDA+Metal (skip EP8 / Ascend MAD).
 * [Native FP8 GGUF (E4M3/E5M2)](./native-fp8-gguf.md) — **why** block FP8 types + `--fp8-native` instead of full F16 dequant; patches 0073–0076; MMVQ/MMQ; probes.
 * [Runtime env reference](./runtime-env.md) — **why** profiles/YAML/smart defaults beat dozens of `ZEROLLAMA_*` exports; L3, KV, VRAM; `./scripts/runtime/runtime_env_doctor.sh`.
 * [L3 prompt cache → slot bridge](./gpu-profiles-l3.md) — **why** Phase 15 dynamic slots discard KV each turn; stable keys → pinned llama-server slots + disk TTL; cuts agent prefill latency (complements L1 tok/s, L2 VRAM). **Audit (Jun 2026):** canonical GGUF hashing, orphan hash-dir sweep, strict batch keys, native bind before slot release; SWA/draft-spec policy; decode graph epoch + CUDA invalidation (in-process + subprocess HTTP).
@@ -94,8 +95,11 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Open-source shoutouts](./open-source-shoutouts.md) — Gigatoken, vLLM, SGLang, LocalAI, minefield, Hermes, Ollama, llama.cpp — what we borrowed and why.
 * [LocalAI control-plane borrowings](./localai-borrowings.md) — **why** LA1–LA11 (incl. KNN **LA11b**), **LA14–LA15**, **LA17–LA21**; env reference.
 * [Laya (llama.cpp typed decisions)](./laya-llama-cpp.md) — **why** `LLM_ARCH_LAYA` + `/v1/decisions` (not chat, not RANK); convert + lab smokes. [findings](./laya-llama-cpp-findings.md).
-* [MultiDecode (llama.cpp forest decode)](./multidecode-llama-cpp.md) — **why** `batch.parent` + cell `node_id` ancestor mask (not dflash); `POST /v1/multidecode`; silent Hermes batch pack. [findings](./multidecode-llama-cpp-findings.md).
+* [MultiDecode (llama.cpp forest decode)](./multidecode-llama-cpp.md) — **why** `batch.parent` + cell `node_id` ancestor mask (not dflash); harness pack + sticky steps; silent Hermes batch. [findings](./multidecode-llama-cpp-findings.md) · skill `agentskills/multidecode/`.
 * [Contrastive-LM (CLM)](./clm.md) — **why** native Go heads + llama-server embeds (no Torch serve); optional `ZEROLLAMA_CLM_URL` fallback.
+* [DiffusionGemma (llama.cpp)](./diffusion-gemma-llama-cpp.md) — **why** sibling PR `#24427` (not prod `b10615`); LA16 Go pack; DG8/DG9 opt-in calibrated choice/score/noul. [findings](./diffusion-gemma-llama-cpp-findings.md) · [readout design](./diffusion-gemma-readout-design.md).
+* [GLiNER.cpp (entity extract)](./gliner-cpp.md) — **why** sibling ONNX (not Torch/Ray, not decisions); dual `/v1/extract` + `/v1/gliner`. [findings](./gliner-cpp-findings.md).
+* [GLiNER2.5-Decide (triage Decider)](./gliner-decide.md) — **why** Fastino encoder ≠ NER extract; dual `/v1/decisions` + `/v1/gliner-decide`. [findings](./gliner-decide-findings.md).
 * [Fleet scheduling (multi-node)](./fleet-scheduling.md) — **why** a management node above per-node schedulers; warm-model routing; filter-then-score (F7); anti-patterns (scatter-gather, long quotes).
 * [Fleet management operator guide](./fleet-management.md) — **why** F3 is thin (poll + assign, no remote load); `zerollama fleet serve`; API, env, agent pattern.
 * [Remote model storage](./remote-model-storage.md) — **why** central content-addressed blobs + HMAC LAN auth + fetch-on-miss; RDMA-prefer/TCP fallback; pin/refcount LRU; ephemeral cleanup; tensor catalog language for later streaming (spec-only in v1).

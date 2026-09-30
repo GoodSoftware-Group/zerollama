@@ -182,11 +182,12 @@ curl -s http://127.0.0.1:11434/api/version | jq '{distribution, capabilities: .z
 | Bound `/v1` `think` + `response_format` / GBNF | No accept-and-drop; schemas reach the runner |
 | — | `done_reason=preempted` + `preempted_reason` — **retry**, don’t treat eviction as `stop` |
 | — | `/api/can-load`, `/api/propose-load`, `/api/pin`, `/api/cache/pin`, `/v1/.../batch` |
-| Typed System-1 (Laya) | `POST /v1/decisions` / `/v1/systemone` — calibrated choice/score/noul + act (not chat) |
+| Typed System-1 (Laya / CLM) | `POST /v1/decisions` / `/v1/systemone` — **calibrated** choice/score/noul (not chat) |
+| OpenJev wire (DiffusionGemma) | Same path via `ZEROLLAMA_OPENJEV_URL` — **v0 uncalibrated** denoise JSON (`calibrated:false`); sibling llama.cpp only |
 
 Progressive ladder: vanilla Ollama → Tier 1 fields only; zerollama → + `options.zerollama`; capabilities → Orient / Decide / Act.
 
-**Why `/v1/decisions` exists:** triage/routing needs calibrated labels in one encoder pass — chat sampling and RANK rerank are the wrong tools. → [laya-llama-cpp.md](docs/laya-llama-cpp.md) · [findings](docs/laya-llama-cpp-findings.md)
+**Why `/v1/decisions` exists:** triage/routing needs typed labels without chat sampling or RANK scalars. Laya/CLM are calibrated; DiffusionGemma DG2 v0 is an honest interim wire only. → [laya-llama-cpp.md](docs/laya-llama-cpp.md) · [clm.md](docs/clm.md) · [diffusion-gemma-llama-cpp.md](docs/diffusion-gemma-llama-cpp.md) · [findings](docs/diffusion-gemma-llama-cpp-findings.md)
 
 → [agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md) · [hermes-zerollama-gap.md](docs/hermes-zerollama-gap.md)
 

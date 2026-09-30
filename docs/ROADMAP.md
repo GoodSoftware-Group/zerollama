@@ -453,13 +453,12 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 
 **Relationship to Fleet F-track:** LA6 extends [F3 management node](./fleet-management.md) routing; LA5 feeds future capacity-aware scores; **LA13** ships as **L3-R8** (status mirror + soft residency) + **L3-R9** (content-hash longest-prefix assign).
 
-
 ### MultiDecode (forest decode)
 
 Exact shared-prefix fan-out via custom RoPE `pos` + ancestor KQ mask ([WestCoastML/multidecode](https://github.com/WestCoastML/multidecode)). Not speculative draft/verify (dflash).
 
-| Row | Goal | Surface | Status |
-|-----|------|---------|--------|
+| Milestone | Goal | Owner | Status |
+|-----------|------|--------|--------|
 | **MD0** | **llama.cpp `batch.parent` ancestor mask** | C++ | **Done (lab)** — patch **0129**; exactness PASS (leaf logits == linear); [multidecode-llama-cpp.md](./multidecode-llama-cpp.md) · [findings](./multidecode-llama-cpp-findings.md) |
 | **MD1** | **node_id + HTTP + Go + silent Hermes pack** | C++ + Go | **Done (lab)** — **0130** cell node ids + multi-step exactness; **0131** `--multidecode` / `POST /v1/multidecode`; Go proxy + `capabilities.multidecode`; silent LCP pack on `/v1/chat/completions/batch` (no Hermes PR) |
 | **MD1a** | Cell `node_id` / `parent_node_id` + mask | C++ | **Done (lab)** — **0130** |
@@ -467,11 +466,13 @@ Exact shared-prefix fan-out via custom RoPE `pos` + ancestor KQ mask ([WestCoast
 | **MD1c** | Go `/v1/multidecode` + version flag | Go | **Done (lab)** |
 | **MD1d** | Silent Hermes batch pack | Go | **Done (lab)** — LCP ≥ 32 → forest; else Python `generate_batch` |
 
-### Typed decisions (Laya)
+### Typed decisions (Laya / CLM / DiffusionGemma)
 
-Non-autoregressive System-1 models (`choice` / `score` / `noul`) — Jev-shaped `POST /v1/decisions`, not chat.
+Non-autoregressive (or denoise) System-1 surfaces (`choice` / `score` / `noul`) — Jev-shaped `POST /v1/decisions` / `/v1/systemone`, **not** chat.
 
-**Why a separate track:** Agents need **calibrated triage** (route, urgency, score bands) without paying for autoregressive decode or inventing brittle “JSON-in-chat” prompts. Chat cannot honestly return per-option probs + act/escalate; `/v1/rerank` returns one scalar. Product surface is a **decisions modality**, not another chat template.
+**Why a separate track:** Agents need **triage** (route, urgency, score bands) without paying for open-ended decode or inventing brittle “JSON-in-chat” prompts. Chat cannot honestly return per-option probs + act/escalate; `/v1/rerank` returns one scalar. Product surface is a **decisions modality**.
+
+**Why DiffusionGemma is its own DG\* row:** OpenJev-class structured read needs **block diffusion** weights in llama.cpp (draft PR `#24427`). That must not merge into prod chat `b10615` until stable — sibling vendor + LA16 Go pack. Through **DG9**, marker-logit Softmax + temp/bias opt-in can mark `calibrated:true` (not a trained Laya/CLM head). See [diffusion-gemma-readout-design.md](./diffusion-gemma-readout-design.md).
 
 | Milestone | Goal | Owner | Status |
 |-----------|------|--------|--------|
@@ -481,8 +482,50 @@ Non-autoregressive System-1 models (`choice` / `score` / `noul`) — Jev-shaped 
 | **LAYA4** | **laya-mlx sidecar / mlxrunner graph** | Mac | **Parked** — external `ZEROLLAMA_LAYA_URL` wired (same `/v1/decisions`); see [mlx-serve-borrowings.md](./mlx-serve-borrowings.md) |
 | **CLM1** | **Contrastive-LM external Decider proxy** | Go | **Shipped** — optional `ZEROLLAMA_CLM_URL` → clm-serve; [clm.md](./clm.md) |
 | **CLM2** | **CLM heads GGUF + Go apply** | Go + scripts | **Shipped** — `convert_clm_heads_to_gguf.py`, `ZEROLLAMA_CLM_HEADS` + `ZEROLLAMA_CLM_EMB_URL`; no Torch at serve |
+| **DG0** | **DiffusionGemma llama.cpp spike (PR `#24427`)** | C++ lab | **Done (go)** — CUDA `120-real`, Q4_K_M `-ngl 25` on 5080 16 GB, peak ~15.3 GiB; [findings](./diffusion-gemma-llama-cpp-findings.md) |
+| **DG1** | **Sibling vendor + build/smoke scripts** | Scripts | **Done** — real `vendor/llama-cpp-diffusion-*` + `llama/patches/diffusion/`; [ops](./diffusion-gemma-llama-cpp.md) |
+| **DG2** | **Structured readout + Go Decider** | C++ + Go | **Done (v0 wire)** — [design](./diffusion-gemma-readout-design.md): C++ prompt-only `/v1/systemone`; Go packs+parses (`calibrated:false`) |
+| **DG2b** | **Final-canvas logit gather** | C++ + Go | **Done (uncalibrated)** — `POST /tokenize` + `readout.gather`; superseded scoring span by DG2c |
+| **DG2c** | **Answer-span logit gather** | C++ + Go | **Done (uncalibrated)** — gather max over tokens after `<channel|>`; fallback when markers missing |
+| **DG3a** | **Answer-marker logit slots** | C++ + Go | **Done (uncalibrated)** — `<<qid>>` markers; post-marker option logits (`answer_marker_logit`) |
+| **DG3b** | **Hybrid slot→gather fill** | C++ | **Done (uncalibrated)** — per-question: keep slot hits; answer-span gather only for questions whose markers are missing (`hybrid_marker_gather`) |
+| **DG4** | **Calibration (temp + opt-in)** | Go + lab | **Done (marker path)** — T=**0.5**; noul bias=**0**; `gate_ready=true` (+ noul floors); serve opt-in `CALIBRATED` / `NOUL_CALIBRATED`. Trained decision head = out of scope (use Laya/CLM) |
+| **DG5a** | **noul via marker slots** | Go | **Done** — slots `"0"`/`"1"` (DG9; was true/false); `noul=P("1")`; multi-q fixture `multi_refund_urgent` |
+| **DG5b** | **score via level-index marker slots** | Go | **Done (uncalibrated)** — options `"0".."k-1"`; `score=E[level]`; legend from criteria array; fixture `outage_severity_high` |
+| **DG6** | **Marker-first prompt + expanded fixtures** | Go + lab | **Done (uncalibrated)** — markers before JSON; `max_tokens=128`; harness `marker_rate`; still `calibrated:false` |
+| **DG7** | **Larger fixture set + explicit calib gate** | Go + lab | **Done (uncalibrated)** — 18 fixtures **18/18**; choice holdout **6/6**; `marker_rate=1.0`; `EvalOpenJevCalibGate` + `calib_gate_v0.json` (`gate_ready`, not calibrated); Finding 17 English true prior |
+| **DG8** | **Production opt-in calibrated (choice/score)** | Go + ops | **Done** — `ZEROLLAMA_OPENJEV_CALIBRATED=1` → choice/score `calibrated:true`; noul needs DG9; `scripts/serve/serve_openjev_lab.sh --calibrated` |
+| **DG9** | **Noul 0\|1 slots + bias + calibrated opt-in** | Go + lab | **Done** — prompt `<<qid>> 0\|1`; `DefaultOpenJevNoulBias=0`; `ZEROLLAMA_OPENJEV_NOUL_CALIBRATED=1` (+ `CALIBRATED`); holdout 2/2; Finding 19 |
+| **GD0** | **Docs + modality + env for GLiNER2.5-Decide** | Docs + Go | **Done** — `BackendGlinerDecide`; `ZEROLLAMA_GLINER_DECIDE_URL`; [gliner-decide.md](./gliner-decide.md) |
+| **GD1** | **Python sibling `gliner-decide-server`** | Python | **Done** — `gliner2` AutoExtractor; `/v1/systemone` + `/v1/gliner-decide`; lab `:18098`; smoke `refund_request` |
+| **GD2** | **Go proxy + mechanical route** | Go | **Done** — name heuristics; CLM-style passthrough; `POST /v1/gliner-decide`; unit + e2e |
+| **GD3** | **OpenAPI + skill + ops scripts** | Docs | **Done** — `typed-decisions` skill; `serve_gliner_decide_lab.sh`; CI `check_gliner_decide_scripts.sh` |
+| **GD4** | **CUDA/device + VRAM coexistence** | Lab | **Partial** — `GLINER_DECIDE_DEVICE=cuda:0` supported; unload OpenJev/NER first (Finding 2) |
 
-**Non-goals (this track):** bolting Laya onto `/api/chat`; reusing RANK pooling for decisions; production binds on `:11434` / `:8081` for lab smokes; Darwin-managed MLX spawn before LAYA1–2 are solid on CPU/CUDA; vendoring CLM/vLLM into the repo.
+**Non-goals (this track):** bolting Laya onto `/api/chat`; reusing RANK pooling for decisions; production binds on `:11434` / `:8081` for lab smokes; Darwin-managed MLX spawn before LAYA1–2 are solid on CPU/CUDA; vendoring CLM/vLLM into the repo; merging DiffusionGemma into prod chat `llama-server` before calibrated marker readout; cloud OpenJev; claiming OpenJev noul ≡ Laya noul (different head; now optionally calibrated via DG9). Entity NER is the **GLiNER** track below — not decisions. **GLiNER2.5-Decide** (Fastino encoder triage) is the **GD\*** rows above — not span NER, not Fastino cloud as the default path.
+
+---
+
+### Entity extract (GLiNER)
+
+Zero-shot span NER (`text` + `labels[]` → spans + probs) — **not** System-1 decisions, **not** chat JSON-in-prompt.
+
+**Why a separate track:** Agents need portable entity extraction without paying for generate or inventing brittle chat prompts. GLiNER is encoder + span head (ONNX), not `choice`/`score`/`noul`. Dual wire: abstract `POST /v1/extract` + engine-native `POST /v1/gliner` (GLiNER.cpp knobs).
+
+**Why C++ / ONNX (not Torch Ray serve):** Serve path must not require Python at inference; sibling binary keeps ORT out of prod `llama-server`. Upstream: [Knowledgator/GLiNER.cpp](https://github.com/Knowledgator/GLiNER.cpp). Docs: [gliner-cpp.md](./gliner-cpp.md) · [findings](./gliner-cpp-findings.md).
+
+| Milestone | Goal | Owner | Status |
+|-----------|------|--------|--------|
+| **GL0** | **Spike GLiNER.cpp + ORT (CPU)** | C++ lab | **Done (scripts)** — pin `GLINER_CPP_COMMIT`; ensure/build/smoke; [findings](./gliner-cpp-findings.md) |
+| **GL1** | **Sibling `gliner-server` dual HTTP** | C++ | **Done (source)** — `gliner/server/` `/v1/extract` + `/v1/gliner`; lab port `:18094` |
+| **GL2** | **Go proxy `ZEROLLAMA_GLINER_URL`** | Go | **Done** — modality `extract` / backend `gliner`; both public routes + tests |
+| **GL3** | **OpenAPI + skill + operator docs** | Docs | **Done** — skill `entity-extract`; OpenAPI schemas |
+| **GL4** | **CUDA ORT + VRAM coexistence** | Lab | **Done** — `GLINER_ORT=cuda` + GPU ORT tarball; `gliner_cuda_smoke.sh` (`device_id=0`, ~+1 GiB on 5080); Findings 7–8; do not co-reside with OpenJev `-ngl 25` |
+| **GL5a** | **Token-level / multitask ONNX** | C++ + lab | **Done** — `--model-type token` + multitask-large; Finding **10** channel-first logits transpose patch; `gliner_token_smoke.sh` / `gliner_token_go_e2e.sh` assert entity hits; RelEx/bi-encoder still Parked |
+| **GL5** | **RelEx / bi-encoder** | C++ | **Parked** — not in GLiNER.cpp yet (Finding 9); Python ONNX RelEx exists upstream |
+| **GL-CI** | **Regression gate** | CI | **Done** — `scripts/check_gliner_scripts.sh` + `go test -run Extract\|Gliner` in `zerollama-regression` (path-filter includes `gliner/**`) |
+
+**Non-goals:** bolting NER onto `/v1/decisions` or chat; Torch/Ray as prod path; merging into `b10615` llama-server; lab binds on `:11434`/`:8081`/`:8080`; claiming GLiNER spans ≡ Laya/OpenJev noul.
 
 ---
 

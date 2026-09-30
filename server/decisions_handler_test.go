@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -96,6 +97,19 @@ func TestAPIDecisionsToLLM(t *testing.T) {
 		Questions: map[string]api.DecisionQuestion{
 			"bad": {Type: "chat", Instructions: "x"},
 		},
+	})
+	require.Error(t, err)
+}
+
+func TestAPIDecisionsToLLMCaps(t *testing.T) {
+	qs := make(map[string]api.DecisionQuestion, llm.MaxDecisionQuestions+1)
+	for i := 0; i <= llm.MaxDecisionQuestions; i++ {
+		qs[fmt.Sprintf("q%d", i)] = api.DecisionQuestion{Type: "noul", Instructions: "?"}
+	}
+	_, err := apiDecisionsToLLM(api.DecisionsRequest{
+		Model:     "m",
+		State:     "s",
+		Questions: qs,
 	})
 	require.Error(t, err)
 }

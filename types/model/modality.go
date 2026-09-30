@@ -13,6 +13,9 @@ const (
 	// ModalityDecisions selects the System-1 typed-decisions driver (Laya GGUF vs external CLM/Laya URL).
 	// WHY a dedicated key: decisions is not chat; see docs/laya-llama-cpp.md and docs/clm.md.
 	ModalityDecisions = "decisions"
+	// ModalityExtract selects the entity-extract / NER driver (GLiNER C++ sibling).
+	// WHY not decisions: span NER ≠ choice/score/noul; see docs/gliner-cpp.md.
+	ModalityExtract = "extract"
 	// ModalityVideoGeneration selects the text-to-video driver (e.g. Wan via run_script).
 	ModalityVideoGeneration = "video_generation"
 )
@@ -36,6 +39,20 @@ const (
 	// BackendLaya marks an external Laya Decider via ZEROLLAMA_LAYA_URL (LAYA4 sidecar).
 	// Local GGUF Laya uses architecture=laya and needs no modality backend.
 	BackendLaya = "laya"
+	// BackendOpenJev routes POST /v1/decisions|/v1/systemone to DiffusionGemma
+	// llama-diffusion-gemma-server via ZEROLLAMA_OPENJEV_URL (DG2).
+	// WHY not chat arch / not prod LLAMA_SERVER_BIN: block-diffusion sibling binary;
+	// WHY name "openjev": Jev-shaped public wire; engine is DiffusionGemma (uncalibrated v0).
+	// See docs/diffusion-gemma-llama-cpp.md + docs/diffusion-gemma-readout-design.md.
+	BackendOpenJev = "openjev"
+	// BackendGliner routes POST /v1/extract|/v1/gliner to gliner-server via
+	// ZEROLLAMA_GLINER_URL (GL2). WHY not llama-server: ONNX GLiNER.cpp sibling.
+	BackendGliner = "gliner"
+	// BackendGlinerDecide routes POST /v1/decisions|/v1/systemone (and mechanical
+	// /v1/gliner-decide) to the Fastino GLiNER2.5-Decide Python sibling via
+	// ZEROLLAMA_GLINER_DECIDE_URL (GD*). WHY not BackendGliner: Decide is triage
+	// (choice/score/noul), not span NER — see docs/gliner-decide.md.
+	BackendGlinerDecide = "gliner-decide"
 	BackendWan              = "wan"               // Wan2.x: Python generate.py, or video-cli when backend_paths.video_cli / ZEROLLAMA_VIDEO_CLI is set
 	// BackendLTX is Wan2GP LTXV (13B distilled quanto or 2B distilled FP8) via scripts/video/ltx_video_generate.py.
 	// See docs/ltx-t2v.md — not LTX-2/Gemma on ≤24 GiB hosts.

@@ -1,0 +1,77 @@
+{
+  "version": "v0",
+  "temperature": 0.5,
+  "noul_bias": 0.0,
+  "train_nll": 6.073385919956821e-06,
+  "train_n": 2,
+  "train_accuracy": 1.0,
+  "holdout_n": 2,
+  "holdout_accuracy": 1.0,
+  "holdout_gate_ok": true,
+  "calibrated": false,
+  "note": "DG9: bias fit on train noul only. Set ZEROLLAMA_OPENJEV_NOUL_BIAS. Noul calibrated needs OPENJEV_CALIBRATED + OPENJEV_NOUL_CALIBRATED.",
+  "cases": [
+    {
+      "id": "train_urgent_outage",
+      "split": "train",
+      "logit_false": 21.929838180541992,
+      "logit_true": 27.58916473388672,
+      "gold_true": true,
+      "readout_mode": "answer_marker_logit",
+      "margin": 5.659326553344727
+    },
+    {
+      "id": "multi_refund_urgent",
+      "split": "holdout",
+      "logit_false": 22.86846351623535,
+      "logit_true": 28.08148956298828,
+      "gold_true": true,
+      "readout_mode": "answer_marker_logit",
+      "margin": 5.21302604675293
+    },
+    {
+      "id": "train_noul_low",
+      "split": "train",
+      "logit_false": 28.509906768798828,
+      "logit_true": 18.62131690979004,
+      "gold_true": false,
+      "readout_mode": "answer_marker_logit",
+      "margin": -9.888589859008789
+    },
+    {
+      "id": "holdout_noul_low",
+      "split": "holdout",
+      "logit_false": 28.062515258789062,
+      "logit_true": 18.785228729248047,
+      "gold_true": false,
+      "readout_mode": "answer_marker_logit",
+      "margin": -9.277286529541016
+    }
+  ],
+  "holdout": [
+    {
+      "id": "multi_refund_urgent",
+      "split": "holdout",
+      "logit_false": 22.86846351623535,
+      "logit_true": 28.08148956298828,
+      "gold_true": true,
+      "readout_mode": "answer_marker_logit",
+      "margin": 5.21302604675293,
+      "noul_at_bias": 0.999970350987638,
+      "pred_true": true,
+      "hit": true
+    },
+    {
+      "id": "holdout_noul_low",
+      "split": "holdout",
+      "logit_false": 28.062515258789062,
+      "logit_true": 18.785228729248047,
+      "gold_true": false,
+      "readout_mode": "answer_marker_logit",
+      "margin": -9.277286529541016,
+      "noul_at_bias": 8.7468424214138e-09,
+      "pred_true": false,
+      "hit": true
+    }
+  ]
+}

@@ -71,12 +71,35 @@ Go packs via `llm.PackQuestions` + llama-server `/tokenize`; subprocess gets `--
 
 **WHY sort question ids:** map iteration is non-deterministic; both pack and result alignment sort by `question_id` so logits line up with labels.
 
+## Jev / Unsloth Desktop wire parity
+
+Same public surface as [Unsloth Decision API](https://unsloth.ai/docs/models/decision-laya) (`POST /v1/systemone`): `{model, state, questions}` → typed `answers` + `usage`.
+
+| Cap / note | Value | Enforced |
+|------------|-------|----------|
+| Questions per request | ≤ **64** | `llm.ValidateDecisionBatch` (handler + pack) |
+| Choice options | ≤ **255** | same |
+| Score levels | ≤ **10** | same |
+| `state` | string **or** JSON | `SerializeState` |
+| Option label trim | ~**48** tokens / option | `layaOptionTokCap` (long criteria may truncate — same class as Unsloth’s “~20 described options”) |
+| Gate automation | on **`probabilities`** / **`noul`**, not `confidence` | docs + OpenAPI — Laya entropy confidence ≠ cloud Jev thresholds |
+
+**HF variants** (create tags from convert; not auto-downloaded by Desktop):
+
+| Tag suggestion | Size / RAM (Unsloth) | Notes |
+|----------------|----------------------|--------|
+| `laya-multilingual` / `laya` | ~678 MB / ~4 GB | default; 100+ languages, 1024 ctx |
+| `laya-english` | ~846 MB / ~5 GB | English encoder, 512 ctx |
+| `laya-typed-decisions` | ~846 MB / ~5 GB | invoices / security / CS / agent traces |
+
+Unsloth also accepts `default` / `jev-latest` for the Desktop-selected model — add Modelfile aliases if you need drop-in clients. Response may include `action.act_probability` and noul `confidence` beyond the minimal Unsloth example; clients that ignore unknown keys stay compatible.
+
 ## Parity
 
 Unit coverage (no weights):
 
 ```bash
-go test ./llm/ -run 'Laya|Pack|Confidence|Render|GgufIsLaya'
+go test ./llm/ -run 'Laya|Pack|Confidence|Render|GgufIsLaya|ValidateDecision'
 go test ./server/ -run Decisions
 go test ./server/openapi -run OpenAPI
 ```

@@ -1,15 +1,15 @@
 ---
 name: typed-decisions
-description: "Answer typed System-1 questions (choice / score / noul) via zerollama POST /v1/decisions — Laya GGUF or Contrastive-LM (ZEROLLAMA_CLM_URL); calibrated probs — not chat, not score, not rerank."
-version: 1.0.0
+description: "Answer typed System-1 questions (choice / score / noul) via zerollama POST /v1/decisions — Laya GGUF (calibrated), Contrastive-LM (calibrated), DiffusionGemma/OpenJev (DG8/DG9 opt-in), or GLiNER2.5-Decide (uncalibrated self-host); not chat, not score endpoint, not rerank, not NER extract."
+version: 1.3.0
 author: Hermes Agent
 license: MIT
 platforms: [macos, linux]
 metadata:
   hermes:
-    tags: [zerollama, laya, clm, decisions, systemone, classification, routing, calibrated]
+    tags: [zerollama, laya, clm, openjev, diffusiongemma, gliner-decide, decisions, systemone, classification, routing, calibrated]
     category: mlops
-    related_skills: [zerollama-integration, rerank-candidates, download-model]
+    related_skills: [zerollama-integration, entity-extract, rerank-candidates, download-model]
 ---
 
 # Typed Decisions Skill
@@ -18,76 +18,68 @@ Run **System-1** typed decisions on
 [zerollama](https://github.com/GoodSoftware-Group/zerollama) via
 `POST /v1/decisions` (alias `POST /v1/systemone`):
 
-- **Laya** GGUF (`LLM_ARCH_LAYA`) — in-process llama-server `--decisions` + act/escalate
-- **Contrastive-LM (CLM)** — native Go heads (`ZEROLLAMA_CLM_HEADS` + `ZEROLLAMA_CLM_EMB_URL`); optional `ZEROLLAMA_CLM_URL` — [docs/clm.md](../../docs/clm.md)
+| Backend | How | Calibrated? |
+|---------|-----|-------------|
+| **Laya** GGUF | llama-server `--decisions` + act/escalate | **Yes** |
+| **CLM** | `ZEROLLAMA_CLM_HEADS` + emb URL (or `ZEROLLAMA_CLM_URL`) | **Yes** |
+| **OpenJev / DiffusionGemma** | `ZEROLLAMA_OPENJEV_URL` → sibling `llama-diffusion-gemma-server` | **Choice/score (DG8)** when `CALIBRATED=1`; **noul (DG9)** when + `NOUL_CALIBRATED=1` |
+| **GLiNER2.5-Decide** | `ZEROLLAMA_GLINER_DECIDE_URL` → Python `gliner2` sibling | **No** (`calibrated:false` until fixture gate) |
 
-Calibrated probabilities — not free-text chat, not `/api/score`, not `/v1/rerank`.
+**Why not chat:** calibrated (or honest uncalibrated) labels need a decisions modality — not free-text sampling, not `/api/score`, not `/v1/rerank`.
 
 ## Compatibility check
 
-This skill targets zerollama **tip/dev**, not a specific pinned
-release — not every server will have every endpoint/flag below yet.
-Verify before relying on this in an unattended flow, especially
-against a host you don't control:
-
 ```bash
-zerollama --version                      # binary build
-curl -s http://localhost:11434/api/version | jq   # server build (if reachable)
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/v1/decisions -d '{}'   # 400/422 = route exists; 404 = missing on this build
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/v1/systemone -d '{}'   # alias for /v1/decisions
+zerollama --version
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/v1/decisions -d '{}'
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/v1/systemone -d '{}'
 ```
 
-A **404** on an endpoint above (or an unrecognized flag/subcommand) means this build predates the feature this skill
-describes — check [`CHANGELOG.md`](../CHANGELOG.md) for when it
-landed, or upgrade (`git pull && ./scripts/build/build_zerollama_mac.sh`)
-rather than assuming the request shape is wrong.
+404 → build predates the feature; check [`CHANGELOG.md`](../../CHANGELOG.md).
 
 ## When to Use
 
-- Discrete **routing / triage / classification** where labels are known up front
-  (`choice`), ordinal levels (`score`), or boolean (`noul`)
-- You need **calibrated probs + confidence + act_probability**, not a sampled string
-- You want **many questions in one call** over the same `state` (one encoder pass)
+- Discrete **routing / triage** with known labels (`choice`), ordinal (`score`), or boolean (`noul`)
+- **Laya/CLM:** you need **calibrated probs + confidence** (+ Laya act)
+- **OpenJev wire:** choice/score after DG7 gate + `ZEROLLAMA_OPENJEV_CALIBRATED=1`; noul needs `--noul-calibrated` / `NOUL_CALIBRATED=1` (Finding 19; English true/false prior was Finding 17)
 
 ## When NOT to Use
 
-- Open-ended generation → `/api/chat` or `/v1/chat/completions`
-- Rank documents with a RANK GGUF → `/v1/rerank`
-- Score candidate **continuations** of a chat model → `/api/score`
-- No Laya GGUF and no `ZEROLLAMA_CLM_URL` for `model=clm` → **501** / **503**
+- Open-ended generation → `/api/chat`
+- Rank documents → `/v1/rerank`
+- Score chat continuations → `/api/score`
+- Production OpenJev without opt-in flags when you need `calibrated:true` (`CALIBRATED`; noul also `NOUL_CALIBRATED`)
+- Treating OpenJev marker-logit noul as identical to Laya’s trained noul head
 
 ## Prerequisites
 
-- **Laya path:** zerollama with patches **0127–0128** + a Laya GGUF tag ([docs/laya-llama-cpp.md](../docs/laya-llama-cpp.md))
-- **CLM path:** convert heads GGUF once; set `ZEROLLAMA_CLM_HEADS` + `ZEROLLAMA_CLM_EMB_URL`; use `model=clm` — [docs/clm.md](../docs/clm.md)
-- Lab smokes: non-production ports (`11435`, `18082`, `18700`) — never bind `:11434` / `:8081` from agent work
+- **Laya:** patches **0127–0128** + Laya GGUF — [docs/laya-llama-cpp.md](../../docs/laya-llama-cpp.md)
+- **CLM:** heads GGUF + emb URL — [docs/clm.md](../../docs/clm.md)
+- **OpenJev:** sibling build + `ZEROLLAMA_OPENJEV_URL` — [docs/diffusion-gemma-llama-cpp.md](../../docs/diffusion-gemma-llama-cpp.md) · [findings](../../docs/diffusion-gemma-llama-cpp-findings.md)
+- **GLiNER2.5-Decide:** `serve_gliner_decide_lab.sh` + `ZEROLLAMA_GLINER_DECIDE_URL` — [docs/gliner-decide.md](../../docs/gliner-decide.md) (not NER `/v1/extract`)
+- Lab ports only (`11435`, `11439`, `18082`, `18093`, `18098`) — never bind `:11434` / `:8081` from agent work
 
 ## API Contract
 
-`POST /v1/decisions` (same body as `POST /v1/systemone`)
+`POST /v1/decisions` (same body as `POST /v1/systemone` — Jev / Unsloth Desktop Decision wire)
 
 | Field | Required | Notes |
 |---|---|---|
-| `model` | yes | Laya tag, `clm`, or alias |
-| `state` | yes | string \| object \| array — shared context for all questions |
-| `questions` | yes | map of `question_id` → `{type, instructions, criteria?, labels?}` |
-| `keep_alive` | no | Keep model loaded after the call (Laya local only) |
-| `options` | no | Passthrough runner options |
+| `model` | yes | Laya tag (`laya`, `laya-multilingual`, `laya-english`, `laya-typed-decisions`), `clm`, `openjev`, or alias |
+| `state` | yes | string \| object \| array — shared context |
+| `questions` | yes | map of `question_id` → `{type, instructions, criteria?, labels?}` (**≤64**) |
 
-`questions[id].type` ∈ `choice` | `score` | `noul`.
+`questions[id].type` ∈ `choice` | `score` | `noul`. Caps: **≤255** choice options, **≤10** score levels.
 
-- **choice** — `criteria` object; keys are option ids (preserve JSON key order)
-- **score** — `criteria` ordered array of levels; answer is expected value
-- **noul** — P(true) float; optional `labels` for false/true display strings
+**Policy:** gate on `probabilities` / `noul`, not `confidence` (Laya entropy confidence ≠ cloud Jev thresholds).
 
-Response `answers[id]` is discriminated by `type`, each with `probabilities` /
-`confidence`. Laya also returns `action.act_probability`; CLM may omit `action`.
+OpenJev answers: default `"calibrated": false`. With `ZEROLLAMA_OPENJEV_CALIBRATED=1`, **choice** and **score** become `calibrated:true` (DG8). With both that and `ZEROLLAMA_OPENJEV_NOUL_CALIBRATED=1`, **noul** is calibrated too (DG9; slots `0|1`, bias default 0). Temperature default 0.5 via `ZEROLLAMA_OPENJEV_TEMP`.
 
 ## How to Run
 
 ```bash
-# Triage: which team owns this ticket?
-curl -s http://127.0.0.1:11434/v1/decisions -H 'content-type: application/json' -d '{
+# Calibrated (Laya)
+curl -s http://127.0.0.1:11435/v1/decisions -H 'content-type: application/json' -d '{
   "model": "laya",
   "state": {"body": "billed twice, refund please"},
   "questions": {
@@ -95,33 +87,56 @@ curl -s http://127.0.0.1:11434/v1/decisions -H 'content-type: application/json' 
       "type": "choice",
       "instructions": "Which team?",
       "criteria": {"billing": "refunds", "tech": "bugs"}
-    },
-    "urgent": {
-      "type": "noul",
-      "instructions": "Is this urgent?",
-      "criteria": {}
+    }
+  }
+}'
+
+# Uncalibrated wire (DiffusionGemma sibling — lab)
+# ZEROLLAMA_OPENJEV_URL=http://127.0.0.1:18093
+curl -s http://127.0.0.1:11435/v1/systemone -H 'content-type: application/json' -d '{
+  "model": "openjev",
+  "state": {"body": "billed twice, refund please"},
+  "questions": {
+    "dept": {
+      "type": "choice",
+      "instructions": "Which team?",
+      "criteria": {"billing": "refunds", "tech": "bugs"}
+    }
+  }
+}'
+
+# GLiNER2.5-Decide (self-host — lab :11439)
+# ./scripts/serve/serve_gliner_decide_lab.sh
+curl -s http://127.0.0.1:11439/v1/decisions -H 'content-type: application/json' -d '{
+  "model": "gliner-decide",
+  "state": "My subscription renewed after the service was already down. Can I get a refund?",
+  "questions": {
+    "intent": {
+      "type": "choice",
+      "instructions": "Customer intent",
+      "criteria": {
+        "refund_request": "wants money back",
+        "cancel_subscription": "wants to cancel",
+        "other": "none of the above"
+      }
     }
   }
 }'
 ```
 
-Pick `answers.dept.choice` when `action.act_probability` is high enough for your
-policy; otherwise escalate to a System-2 chat model.
-
 ## Pitfalls
 
-- **Wrong model arch → 501** — chat GGUFs cannot decisions; need `arch=laya` +
-  llama-server built with patches 0127–0128 (`--decisions` auto when Laya).
-- **Choice key order matters** — criteria object key order aligns logits to labels;
-  do not reshuffle keys between pack and decode.
-- **Not a chat drop-in** — do not send `messages[]`; send `state` + `questions`.
-- **MLX sidecar is parked** — active path is llama.cpp CPU/CUDA; do not expect
-  Darwin-managed `laya-mlx` spawn (ROADMAP LAYA4).
-- **Agent labs** — never kill production `:11434` / `:8081`; use `OLLAMA_HOST=127.0.0.1:11435`.
+- **Wrong model arch → 501** — chat GGUFs cannot decisions (Laya needs `arch=laya`).
+- **Oversize batch → 400** — >64 questions, >255 choice options, or >10 score levels (Jev/Unsloth caps).
+- **Confidence ≠ Jev** — do not reuse cloud Jev confidence thresholds; use `probabilities` / `noul`.
+- **OpenJev default uncalibrated** — without opt-in envs, `calibrated:false` even with canvas gather; do not escalate policy on `probabilities` as if Laya unless flags are on.
+- **OpenJev noul** — needs `0|1` markers + both calibrated flags; prefer Laya/CLM if you need a trained boolean head.
+- **GLiNER2.5-Decide** — always `calibrated:false` today; mechanical schema is `/v1/gliner-decide` (not NER `/v1/gliner`).
+- **Choice key order** — criteria object key order is load-bearing for Laya; OpenJev pack sorts question ids.
+- **VRAM** — DiffusionGemma Q4 on 16 GB needs `-ngl ~25` and usually exclusive GPU ([findings](../../docs/diffusion-gemma-llama-cpp-findings.md)). Gather needs host logits (GPU sampling off during score — Finding 7). Decide GPU: unload OpenJev/NER CUDA first.
+- **Agent labs** — never kill production `:11434` / `:8081`.
 
 ## Related
 
-- `rerank-candidates` — `/api/score` + `/v1/rerank` (different surfaces)
-- `zerollama-integration` — generic API contract
-- `download-model` — pull / create GGUF tags
-- Docs: [laya-llama-cpp.md](../docs/laya-llama-cpp.md) · [findings](../docs/laya-llama-cpp-findings.md)
+- Docs: [laya](../../docs/laya-llama-cpp.md) · [clm](../../docs/clm.md) · [diffusion](../../docs/diffusion-gemma-llama-cpp.md) · [readout design](../../docs/diffusion-gemma-readout-design.md) · [gliner-decide](../../docs/gliner-decide.md)
+- ROADMAP typed-decisions **LAYA\*** / **CLM\*** / **DG\*** / **GD\***

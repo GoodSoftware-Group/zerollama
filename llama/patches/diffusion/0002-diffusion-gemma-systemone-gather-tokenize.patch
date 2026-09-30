@@ -1,0 +1,519 @@
+--- a/examples/diffusion-gemma/diffusion-gemma-server.cpp	2026-09-26 07:08:16.356431886 +0000
++++ b/examples/diffusion-gemma/diffusion-gemma-server.cpp	2026-09-26 07:08:16.271432156 +0000
+@@ -39,6 +39,7 @@
+ #include <string>
+ #include <utility>
+ #include <vector>
++#include <unordered_set>
+ 
+ using json = nlohmann::ordered_json;
+ 
+@@ -125,9 +126,36 @@
+     uint32_t seed          = 1234;
+ };
+ 
++// DG2b/c: Go-sent option token groups; scored from a post-denoise canvas forward (LA16).
++struct diffusion_gather_spec {
++    std::string question_id;
++    std::string option_id;
++    std::vector<llama_token> tokens;
++};
++
++// DG3a: Laya-MASK analogue — find marker in answer span; score option logits at the
++// first position AFTER the marker (still uncalibrated — no decision-head calib).
++struct diffusion_slot_spec {
++    std::string question_id;
++    std::vector<llama_token> marker_tokens;
++    std::vector<diffusion_gather_spec> options;
++};
++
++struct diffusion_gather_hit {
++    std::string question_id;
++    std::string option_id;
++    float logit_max  = -INFINITY;
++    float logit_mean = 0.0f;
++    int   n_tokens   = 0;
++};
++
+ struct diffusion_result {
+     std::string answer;            // final response text (post channel-split / eog truncation)
+     std::string full;             // full detokenized canvas (thought + response)
++    std::vector<llama_token> canvas_ids; // raw generated canvas tokens (DG2b/DG2c gather)
++    int answer_start = 0;         // DG2c: index of first answer token in canvas_ids
++    int answer_n     = 0;         // DG2c: answer token count (0 → gather falls back to full canvas)
++    std::vector<diffusion_gather_hit> gathers;
+     int    prompt_tokens   = 0;    // prompt prefix tokens processed (encoder prefill)
+     int    answer_tokens   = 0;    // tokens in the extracted answer
+     int    n_blocks        = 0;    // canvas blocks run
+@@ -604,9 +632,268 @@
+         out.n_steps_total = n_steps_total;
+         out.canvas_tokens = n_blocks_run * canvas_length;
+         out.n_decode      = n_decode;
++        out.canvas_ids    = generated; // DG2b/c: post-hoc gather forward
++        // DG2c: gather only over the answer span (after last <channel|>), not thought.
++        out.answer_start  = start;
++        out.answer_n      = (int) answer.size();
+         out.ok            = true;
+         return out;
+     }
++
++    // DG2c: canvas forward after denoise; score Go option ids over the answer span.
++    // WHY answer span (not full canvas): thought tokens pollute max-logit ranking.
++    // WHY still uncalibrated: not OpenJev marker slots. Marker readout remains later.
++    bool score_gathers(
++            const std::vector<llama_token> & prompt_tokens,
++            const std::vector<llama_token> & canvas_ids,
++            const std::vector<diffusion_gather_spec> & specs,
++            diffusion_result & out,
++            bool append = false) {
++        // WHY append: DG3b hybrid — keep DG3a slot hits for questions that found markers,
++        // fill remaining questions from answer-span gather without wiping slot results.
++        if (!append) {
++            out.gathers.clear();
++        }
++        if (specs.empty() || canvas_ids.empty()) {
++            return true;
++        }
++        std::vector<std::vector<float>> tok_max(specs.size());
++        for (size_t s = 0; s < specs.size(); ++s) {
++            tok_max[s].assign(specs[s].tokens.size(), -INFINITY);
++        }
++
++        // WHY disable GPU sampling: llama_decode then skips host logit copy (zeros).
++        const bool restore_gpu_sampling = use_gpu_sampling;
++        llama_set_diffusion_gpu_sampling(ctx, false);
++
++        llama_memory_clear(mem, true);
++        int n_decode_local = 0;
++        if (!prompt_tokens.empty()) {
++            if (!prefill_causal(prompt_tokens, 0, &n_decode_local)) {
++                llama_set_diffusion_gpu_sampling(ctx, restore_gpu_sampling);
++                out.error = "gather prefill failed";
++                out.ok = false;
++                return false;
++            }
++        }
++        const int n = (int) canvas_ids.size();
++        const int n_past0 = (int) prompt_tokens.size();
++        // DG2c: score answer span only. Fallback to full canvas if span empty/invalid.
++        int score_lo = 0;
++        int score_hi = n;
++        if (out.answer_n > 0 && out.answer_start >= 0 &&
++            out.answer_start + out.answer_n <= n) {
++            score_lo = out.answer_start;
++            score_hi = out.answer_start + out.answer_n;
++        }
++        for (int off = 0; off < n; ) {
++            const int cnt = std::min(n_ub, n - off);
++            batch.n_tokens = cnt;
++            for (int i = 0; i < cnt; ++i) {
++                batch.token[i]     = canvas_ids[off + i];
++                batch.pos[i]       = n_past0 + off + i;
++                batch.n_seq_id[i]  = 1;
++                batch.seq_id[i][0] = 0;
++                batch.logits[i]    = 1;
++            }
++            if (llama_decode(ctx, batch) != 0) {
++                llama_set_diffusion_gpu_sampling(ctx, restore_gpu_sampling);
++                out.error = "gather canvas decode failed";
++                out.ok = false;
++                return false;
++            }
++            ++n_decode_local;
++            llama_synchronize(ctx);
++            for (size_t s = 0; s < specs.size(); ++s) {
++                for (size_t t = 0; t < specs[s].tokens.size(); ++t) {
++                    const llama_token tok = specs[s].tokens[t];
++                    if (tok < 0 || tok >= n_vocab) {
++                        continue;
++                    }
++                    float & tm = tok_max[s][t];
++                    for (int i = 0; i < cnt; ++i) {
++                        const int pos = off + i;
++                        if (pos < score_lo || pos >= score_hi) {
++                            continue;
++                        }
++                        const float * lg = llama_get_logits_ith(ctx, i);
++                        if (lg == nullptr) {
++                            continue;
++                        }
++                        tm = std::max(tm, lg[tok]);
++                    }
++                }
++            }
++            off += cnt;
++        }
++        llama_set_diffusion_gpu_sampling(ctx, restore_gpu_sampling);
++        for (size_t s = 0; s < specs.size(); ++s) {
++            diffusion_gather_hit hit;
++            hit.question_id = specs[s].question_id;
++            hit.option_id   = specs[s].option_id;
++            hit.n_tokens    = (int) specs[s].tokens.size();
++            float sum = 0.0f;
++            float mx = -INFINITY;
++            int n_ok = 0;
++            for (float v : tok_max[s]) {
++                if (!std::isfinite(v)) {
++                    continue;
++                }
++                mx = std::max(mx, v);
++                sum += v;
++                ++n_ok;
++            }
++            hit.logit_max  = mx;
++            hit.logit_mean = n_ok > 0 ? sum / (float) n_ok : -INFINITY;
++            out.gathers.push_back(std::move(hit));
++        }
++        out.n_decode += n_decode_local;
++        return true;
++    }
++
++    // DG3a: score option logits at the position after each marker in the answer span.
++    // WHY not max-over-span: Laya reads at MASK; OpenJev needs a fixed slot.
++    // WHY still calibrated:false: raw vocab logits, no decision-head temperature.
++    bool score_slots(
++            const std::vector<llama_token> & prompt_tokens,
++            const std::vector<llama_token> & canvas_ids,
++            const std::vector<diffusion_slot_spec> & slots,
++            diffusion_result & out) {
++        if (slots.empty() || canvas_ids.empty()) {
++            return true;
++        }
++        const int n = (int) canvas_ids.size();
++        int score_lo = 0;
++        int score_hi = n;
++        if (out.answer_n > 0 && out.answer_start >= 0 &&
++            out.answer_start + out.answer_n <= n) {
++            score_lo = out.answer_start;
++            score_hi = out.answer_start + out.answer_n;
++        }
++
++        struct pending_opt {
++            std::string question_id;
++            std::string option_id;
++            std::vector<llama_token> tokens;
++            int score_pos = -1;
++        };
++        std::vector<pending_opt> pending;
++        for (const auto & sl : slots) {
++            if (sl.marker_tokens.empty() || sl.options.empty()) {
++                continue;
++            }
++            const int mlen = (int) sl.marker_tokens.size();
++            int found = -1;
++            for (int i = score_lo; i + mlen <= score_hi; ++i) {
++                bool ok = true;
++                for (int k = 0; k < mlen; ++k) {
++                    if (canvas_ids[i + k] != sl.marker_tokens[k]) {
++                        ok = false;
++                        break;
++                    }
++                }
++                if (ok) {
++                    found = i + mlen;
++                    break;
++                }
++            }
++            if (found < 0 || found >= score_hi) {
++                continue;
++            }
++            for (const auto & opt : sl.options) {
++                pending_opt po;
++                po.question_id = sl.question_id;
++                po.option_id = opt.option_id;
++                po.tokens = opt.tokens;
++                po.score_pos = found;
++                pending.push_back(std::move(po));
++            }
++        }
++        if (pending.empty()) {
++            return true;
++        }
++
++        const bool restore_gpu_sampling = use_gpu_sampling;
++        llama_set_diffusion_gpu_sampling(ctx, false);
++        llama_memory_clear(mem, true);
++        int n_decode_local = 0;
++        if (!prompt_tokens.empty()) {
++            if (!prefill_causal(prompt_tokens, 0, &n_decode_local)) {
++                llama_set_diffusion_gpu_sampling(ctx, restore_gpu_sampling);
++                out.error = "slot gather prefill failed";
++                out.ok = false;
++                return false;
++            }
++        }
++        const int n_past0 = (int) prompt_tokens.size();
++        std::vector<std::vector<float>> tok_vals(pending.size());
++        for (size_t s = 0; s < pending.size(); ++s) {
++            tok_vals[s].assign(pending[s].tokens.size(), -INFINITY);
++        }
++        for (int off = 0; off < n; ) {
++            const int cnt = std::min(n_ub, n - off);
++            batch.n_tokens = cnt;
++            for (int i = 0; i < cnt; ++i) {
++                batch.token[i]     = canvas_ids[off + i];
++                batch.pos[i]       = n_past0 + off + i;
++                batch.n_seq_id[i]  = 1;
++                batch.seq_id[i][0] = 0;
++                batch.logits[i]    = 1;
++            }
++            if (llama_decode(ctx, batch) != 0) {
++                llama_set_diffusion_gpu_sampling(ctx, restore_gpu_sampling);
++                out.error = "slot gather canvas decode failed";
++                out.ok = false;
++                return false;
++            }
++            ++n_decode_local;
++            llama_synchronize(ctx);
++            for (size_t s = 0; s < pending.size(); ++s) {
++                const int base = pending[s].score_pos;
++                for (size_t t = 0; t < pending[s].tokens.size(); ++t) {
++                    const int pos = base + (int) t;
++                    if (pos < off || pos >= off + cnt) {
++                        continue;
++                    }
++                    const llama_token tok = pending[s].tokens[t];
++                    if (tok < 0 || tok >= n_vocab) {
++                        continue;
++                    }
++                    const float * lg = llama_get_logits_ith(ctx, pos - off);
++                    if (lg == nullptr) {
++                        continue;
++                    }
++                    tok_vals[s][t] = lg[tok];
++                }
++            }
++            off += cnt;
++        }
++        llama_set_diffusion_gpu_sampling(ctx, restore_gpu_sampling);
++
++        out.gathers.clear();
++        for (size_t s = 0; s < pending.size(); ++s) {
++            diffusion_gather_hit hit;
++            hit.question_id = pending[s].question_id;
++            hit.option_id   = pending[s].option_id;
++            hit.n_tokens    = (int) pending[s].tokens.size();
++            float sum = 0.0f;
++            float mx = -INFINITY;
++            int n_ok = 0;
++            for (float v : tok_vals[s]) {
++                if (!std::isfinite(v)) {
++                    continue;
++                }
++                mx = std::max(mx, v);
++                sum += v;
++                ++n_ok;
++            }
++            hit.logit_max  = mx;
++            hit.logit_mean = n_ok > 0 ? sum / (float) n_ok : -INFINITY;
++            out.gathers.push_back(std::move(hit));
++        }
++        out.n_decode += n_decode_local;
++        return true;
++    }
+ };
+ 
+ // ------------------------------------------------------------------------------------------------
+@@ -691,10 +978,13 @@
+     if (body.contains("max_tokens") && body["max_tokens"].is_number_integer())                       max_tokens = body["max_tokens"].get<int>();
+     else if (body.contains("max_completion_tokens") && body["max_completion_tokens"].is_number_integer()) max_tokens = body["max_completion_tokens"].get<int>();
+     rq.max_canvases = max_tokens > 0 ? (max_tokens + rq.canvas_length - 1) / rq.canvas_length : 1;
++    // WHY n_steps alias: Go/lab smokes send n_steps; upstream uses diffusion_steps.
+     if (body.contains("diffusion_steps") && body["diffusion_steps"].is_number_integer()) {
+         rq.n_steps = std::max(body["diffusion_steps"].get<int>(), 1);
+     } else if (body.contains("n_denoise_steps") && body["n_denoise_steps"].is_number_integer()) {
+         rq.n_steps = std::max(body["n_denoise_steps"].get<int>(), 1);
++    } else if (body.contains("n_steps") && body["n_steps"].is_number_integer()) {
++        rq.n_steps = std::max(body["n_steps"].get<int>(), 1);
+     }
+     if (body.contains("top_k") && body["top_k"].is_number_integer()) {
+         rq.topk_fixed = body["top_k"].get<int>();
+@@ -1164,8 +1454,31 @@
+         res.set_content(out.dump(), "application/json");
+     });
+ 
+-    // POST /v1/systemone (+ /v1/decisions alias) — prompt-only denoise for zerollama DG2.
+-    // LA16: Go packs {state,questions} → prompt and parses answers; C++ only denoise + return text.
++    // POST /tokenize — Go packs option token ids for DG2b gather (LA16).
++    http.Post("/tokenize", [&](const httplib::Request & req, httplib::Response & res) {
++        json body;
++        try { body = json::parse(req.body); }
++        catch (const std::exception & e) {
++            res.status = 400;
++            res.set_content(error_json(std::string("invalid JSON: ") + e.what(), "invalid_request_error", 400).dump(), "application/json");
++            return;
++        }
++        if (!body.contains("content") || !body["content"].is_string()) {
++            res.status = 400;
++            res.set_content(error_json("'content' (string) required", "invalid_request_error", 400).dump(), "application/json");
++            return;
++        }
++        const bool add_special = body.value("add_special", false);
++        const std::vector<llama_token> toks = common_tokenize(srv.vocab, body["content"].get<std::string>(), add_special, true);
++        json arr = json::array();
++        for (llama_token t : toks) {
++            arr.push_back((int) t);
++        }
++        res.set_content(json{{"tokens", arr}}.dump(), "application/json");
++    });
++
++    // POST /v1/systemone (+ /v1/decisions alias) — prompt-only denoise + DG3a slots / DG2c gather.
++    // LA16: Go packs prompt (+ marker/option token ids); C++ denoise + logit readout.
+     // Do NOT accept high-level state/questions here (that would invent uncalibrated "confidence").
+     auto handle_systemone = [&](const httplib::Request & req, httplib::Response & res) {
+         json body;
+@@ -1200,13 +1513,126 @@
+         }
+ 
+         const std::vector<llama_token> prompt_tokens = common_tokenize(srv.vocab, chat_prompt, true, true);
+-        const diffusion_result r = run_for_body(body, prompt_tokens);
+-        if (!r.ok) {
++        const diffusion_result r0 = run_for_body(body, prompt_tokens);
++        if (!r0.ok) {
+             res.status = 500;
+-            res.set_content(error_json(r.error, "server_error", 500).dump(), "application/json");
++            res.set_content(error_json(r0.error, "server_error", 500).dump(), "application/json");
+             return;
+         }
++        diffusion_result r = r0;
+ 
++        std::vector<diffusion_slot_spec> slots;
++        std::vector<diffusion_gather_spec> specs;
++        if (body.contains("readout") && body["readout"].is_object()) {
++            const auto & ro = body["readout"];
++            if (ro.contains("slots") && ro["slots"].is_array()) {
++                for (const auto & s : ro["slots"]) {
++                    if (!s.is_object() || !s.contains("marker_tokens") || !s["marker_tokens"].is_array()) {
++                        continue;
++                    }
++                    diffusion_slot_spec sl;
++                    sl.question_id = s.value("question_id", "");
++                    for (const auto & t : s["marker_tokens"]) {
++                        if (t.is_number_integer()) {
++                            sl.marker_tokens.push_back((llama_token) t.get<int>());
++                        }
++                    }
++                    if (s.contains("options") && s["options"].is_array()) {
++                        for (const auto & o : s["options"]) {
++                            if (!o.is_object() || !o.contains("tokens") || !o["tokens"].is_array()) {
++                                continue;
++                            }
++                            diffusion_gather_spec sp;
++                            sp.question_id = sl.question_id;
++                            sp.option_id   = o.value("option_id", "");
++                            for (const auto & t : o["tokens"]) {
++                                if (t.is_number_integer()) {
++                                    sp.tokens.push_back((llama_token) t.get<int>());
++                                }
++                            }
++                            if (!sp.option_id.empty() && !sp.tokens.empty()) {
++                                sl.options.push_back(std::move(sp));
++                            }
++                        }
++                    }
++                    if (!sl.question_id.empty() && !sl.marker_tokens.empty() && !sl.options.empty()) {
++                        slots.push_back(std::move(sl));
++                    }
++                }
++            }
++            if (ro.contains("gather") && ro["gather"].is_array()) {
++                for (const auto & g : ro["gather"]) {
++                    if (!g.is_object() || !g.contains("tokens") || !g["tokens"].is_array()) {
++                        continue;
++                    }
++                    diffusion_gather_spec sp;
++                    sp.question_id = g.value("question_id", "");
++                    sp.option_id   = g.value("option_id", "");
++                    for (const auto & t : g["tokens"]) {
++                        if (t.is_number_integer()) {
++                            sp.tokens.push_back((llama_token) t.get<int>());
++                        }
++                    }
++                    if (!sp.question_id.empty() && !sp.option_id.empty() && !sp.tokens.empty()) {
++                        specs.push_back(std::move(sp));
++                    }
++                }
++            }
++        }
++        std::string readout_mode;
++        bool used_slots = false;
++        bool used_gather = false;
++        if (!slots.empty()) {
++            if (!srv.score_slots(prompt_tokens, r.canvas_ids, slots, r)) {
++                res.status = 500;
++                res.set_content(error_json(r.error.empty() ? "slot gather failed" : r.error, "server_error", 500).dump(), "application/json");
++                return;
++            }
++            used_slots = !r.gathers.empty();
++        }
++        if (!specs.empty()) {
++            std::unordered_set<std::string> scored_q;
++            for (const auto & h : r.gathers) {
++                scored_q.insert(h.question_id);
++            }
++            std::vector<diffusion_gather_spec> missing;
++            for (const auto & sp : specs) {
++                if (!scored_q.count(sp.question_id)) {
++                    missing.push_back(sp);
++                }
++            }
++            // Full gather when slots scored nothing; append gather for unscored questions only.
++            if (!missing.empty()) {
++                const bool append = used_slots;
++                if (!srv.score_gathers(prompt_tokens, r.canvas_ids, missing, r, append)) {
++                    res.status = 500;
++                    res.set_content(error_json(r.error.empty() ? "gather failed" : r.error, "server_error", 500).dump(), "application/json");
++                    return;
++                }
++                used_gather = true;
++            }
++        }
++        if (used_slots && used_gather) {
++            readout_mode = "hybrid_marker_gather";
++        } else if (used_slots) {
++            readout_mode = "answer_marker_logit";
++        } else if (used_gather) {
++            readout_mode = "final_answer_logit_gather";
++        }
++
++        // DG4a: echo seed + requested steps so oracle smokes can pin reproducibility.
++        uint32_t echo_seed = default_seed;
++        if (body.contains("seed") && body["seed"].is_number_integer()) {
++            echo_seed = (uint32_t) body["seed"].get<int64_t>();
++        }
++        int echo_steps_req = srv.n_steps;
++        if (body.contains("diffusion_steps") && body["diffusion_steps"].is_number_integer()) {
++            echo_steps_req = body["diffusion_steps"].get<int>();
++        } else if (body.contains("n_denoise_steps") && body["n_denoise_steps"].is_number_integer()) {
++            echo_steps_req = body["n_denoise_steps"].get<int>();
++        } else if (body.contains("n_steps") && body["n_steps"].is_number_integer()) {
++            echo_steps_req = body["n_steps"].get<int>();
++        }
+         const std::string model_out = body.value("model", srv.model_id);
+         json out{
+             {"model", model_out},
+@@ -1218,8 +1644,24 @@
+             {"diffusion", json{
+                 {"canvas_tokens", r.canvas_tokens},
+                 {"steps", r.n_steps_total},
++                {"steps_requested", echo_steps_req},
++                {"seed", echo_seed},
+             }},
+         };
++        if (!r.gathers.empty()) {
++            json gj = json::array();
++            for (const auto & h : r.gathers) {
++                gj.push_back(json{
++                    {"question_id", h.question_id},
++                    {"option_id", h.option_id},
++                    {"logit_max", h.logit_max},
++                    {"logit_mean", h.logit_mean},
++                    {"n_tokens", h.n_tokens},
++                });
++            }
++            out["gather"] = gj;
++            out["readout_mode"] = readout_mode.empty() ? "final_answer_logit_gather" : readout_mode;
++        }
+         res.set_content(out.dump(), "application/json");
+     };
+     http.Post("/v1/systemone", handle_systemone);

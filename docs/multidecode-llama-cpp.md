@@ -8,7 +8,8 @@
 **Upstream idea:** [WestCoastML/multidecode](https://github.com/WestCoastML/multidecode)  
 **Findings:** [multidecode-llama-cpp-findings.md](./multidecode-llama-cpp-findings.md)  
 **Pin:** [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md)  
-**Hermes batch:** [hermes-zerollama-gap.md](./hermes-zerollama-gap.md) §8
+**Hermes batch:** [hermes-zerollama-gap.md](./hermes-zerollama-gap.md) §8  
+**Harness skill:** [`agentskills/multidecode/`](../agentskills/multidecode/) (mirror [`skills/multidecode/`](../skills/multidecode/))
 
 ## Why this exists
 
@@ -40,32 +41,114 @@ typedef struct llama_batch {
 
 `llama_batch_init` leaves `parent` / `node_id` / `parent_node_id` NULL.
 
-## HTTP (llama-server + zerollama)
+## Custom harness (zerollama)
+
+End-to-end for harnesses that own tokenization. Lab ports only (`:11435`, llama-server `:18082`) — never `:11434` / `:8081`.
+
+### 1. Probe
+
+```bash
+curl -sS http://127.0.0.1:11435/api/version | python3 -c \
+  'import sys,json; print(json.load(sys.stdin)["zerollama"]["capabilities"].get("multidecode"))'
+# True
+```
+
+### 2. Tokenize
+
+Ids must match the loaded GGUF. Options:
+
+- Lab `llama-server` `POST /tokenize` (`{"content":"…","add_special":false}`)
+- Your client tokenizer for the same vocab
+- Chat templates: render the full prompt string first, then tokenize (same as chat)
+
+### 3. Pack the forest
+
+Shared prefix of length `L`, then per-branch suffixes:
+
+```
+prefix:  t0 → t1 → t2
+                  ↘ a3 → a4        leaf A
+                  ↘ b3 → b4 → b5   leaf B
+```
+
+| Array | Rule |
+|-------|------|
+| `tokens` | Prefix once, then each unique suffix in batch order |
+| `pos` | Tree depth (`0..L-1` for prefix; continue per branch) |
+| `parent` | Batch index of parent, or `-1` for root; **parents must appear earlier** |
+| `leaves` | Batch index of the last token of each branch |
+
+Identical prompts share one leaf. Prefer `llm.PackForestFromTokenLists` (Go) over hand-building — same helper as silent Hermes pack (LCP ≥ 32).
+
+### 4. One-shot via zerollama
+
+```bash
+BASE=http://127.0.0.1:11435
+MODEL=llama3.2:3b
+
+curl -sS "$BASE/v1/multidecode" -H 'content-type: application/json' -d "{
+  \"model\": \"$MODEL\",
+  \"tokens\": [791,6864,315,9822,374],
+  \"pos\": [0,1,2,3,4],
+  \"parent\": [-1,0,1,2,3],
+  \"leaves\": [4],
+  \"clear\": true
+}"
+```
+
+Response shape:
+
+```json
+{
+  "results": [{"leaf": 4, "token": 279, "node_id": 4}],
+  "node_ids": [0, 1, 2, 3, 4]
+}
+```
+
+- `results[].token` — greedy argmax (set `"return_logits": true` for full rows)
+- `results[].node_id` — durable id of that leaf in KV (parent for the next sticky write)
+- `node_ids` — id assigned to each token in this request
+
+### 5. Sticky multi-step (same runner)
+
+The server does **not** loop on `n_predict`. After step 1, write the sampled token under the leaf’s `node_id`, predict the next:
+
+```bash
+# PREV = results[0].token, LEAF_NID = results[0].node_id, pos = prompt_len
+curl -sS "$BASE/v1/multidecode" -H 'content-type: application/json' -d "{
+  \"model\": \"$MODEL\",
+  \"tokens\": [279],
+  \"pos\": [5],
+  \"parent_node_ids\": [4],
+  \"leaves\": [0],
+  \"clear\": false
+}"
+```
+
+Omit `parent` when `parent_node_ids` is set. Keep the runner warm (`keep_alive`) so KV sticks. Repeat: send last sampled token, `parent_node_ids` = previous response `results[0].node_id` (id of the token just written), `clear:false`.
+
+### Two-branch sketch
+
+```json
+{
+  "model": "llama3.2:3b",
+  "tokens": [10, 11, 12, 20, 30, 31],
+  "pos":    [0,  1,  2,  3,  3,  4],
+  "parent": [-1, 0,  1,  2,  2,  4],
+  "leaves": [3, 5],
+  "clear": true
+}
+```
+
+Prefix `[10,11,12]`; branch A `[20]`; branch B `[30,31]`. Leaves at batch indices 3 and 5.
+
+## HTTP (llama-server direct)
 
 Gate: `--multidecode` (Go llama-server launches pass this for non-embedding models).
 
-**One-shot:**
-
-```json
-{"tokens":[...],"pos":[...],"parent":[...],"leaves":[4,6],"return_logits":false}
-```
-
-→ `{"results":[{"leaf":4,"token":…,"node_id":4}],"node_ids":[0,1,…]}`
-
-**Multi-step (sticky KV, same server slot):**
-
-```json
-{"tokens":[30,31],"pos":[5,5],"parent_node_ids":[4,6],"leaves":[0,1],"clear":false}
-```
-
-Server allocates new `node_ids`, writes cells, returns them. Omit `parent` when `parent_node_ids` is set.
-
-**zerollama:** `POST /v1/multidecode` (same body + `model`) → schedules llama-server runner. Capability: `GET /api/version` → `zerollama.capabilities.multidecode`.
-
-Lab bind e.g. `:18082` — never `:11434` / `:8081`.
+Same wire **without** `model`:
 
 ```bash
-# llama-server lab
 ./build/bin/llama-server -m MODEL.gguf --multidecode -ngl 0 --port 18082 --host 127.0.0.1
 
 curl -sS http://127.0.0.1:18082/v1/multidecode -H 'content-type: application/json' -d '{
@@ -95,7 +178,7 @@ Step1 forest + step2 sticky append; leaf logits vs linear path must match (diff 
 
 | Client | Wire |
 |--------|------|
-| **Custom harness** | `POST /v1/multidecode` — `tokens` + `pos` + `parent` / `parent_node_ids` + `leaves` |
+| **Custom harness** | `POST /v1/multidecode` — pack + one-shot / sticky steps (skill above) |
 | **Hermes / ElizaOS** | Unchanged `POST /v1/chat/completions/batch`; server may accelerate when prefixes match |
 | **Vanilla chat** | Unchanged — do not stuff `parent[]` into normal `/v1/chat/completions` |
 

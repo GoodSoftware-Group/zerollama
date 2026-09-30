@@ -1,0 +1,271 @@
+{
+  "description": "OpenJev/DiffusionGemma fixtures (DG4c–DG7). Train fits temperature; holdout checks ranking. Markers before JSON. Scores stay calibrated:false.",
+  "model": "openjev",
+  "options": {"seed": 42, "n_steps": 8, "max_tokens": 128},
+  "cases": [
+    {
+      "id": "refund_billing",
+      "split": "train",
+      "state": {"body": "customer asking for refund on duplicate charge"},
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "Which team?",
+          "criteria": {"billing": "refunds and charges", "tech": "bugs and outages"}
+        }
+      },
+      "expect": {"dept": {"choice": "billing"}}
+    },
+    {
+      "id": "outage_tech",
+      "split": "train",
+      "state": {"body": "API returns 500 and the dashboard is down"},
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "Which team?",
+          "criteria": {"billing": "refunds and charges", "tech": "bugs and outages"}
+        }
+      },
+      "expect": {"dept": {"choice": "tech"}}
+    },
+    {
+      "id": "password_tech",
+      "split": "train",
+      "state": {"body": "cannot reset password, login loop"},
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "Which team?",
+          "criteria": {"billing": "refunds and charges", "tech": "bugs and outages"}
+        }
+      },
+      "expect": {"dept": {"choice": "tech"}}
+    },
+    {
+      "id": "invoice_billing",
+      "split": "train",
+      "state": {"body": "why was I charged twice on my last invoice"},
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "Which team?",
+          "criteria": {"billing": "refunds and charges", "tech": "bugs and outages"}
+        }
+      },
+      "expect": {"dept": {"choice": "billing"}}
+    },
+    {
+      "id": "receipt_billing",
+      "split": "train",
+      "state": {"body": "please email me a PDF receipt for my last payment"},
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "Which team?",
+          "criteria": {"billing": "refunds and charges", "tech": "bugs and outages"}
+        }
+      },
+      "expect": {"dept": {"choice": "billing"}}
+    },
+    {
+      "id": "crash_tech",
+      "split": "train",
+      "state": {"body": "mobile app crashes immediately after the latest update"},
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "Which team?",
+          "criteria": {"billing": "refunds and charges", "tech": "bugs and outages"}
+        }
+      },
+      "expect": {"dept": {"choice": "tech"}}
+    },
+    {
+      "id": "train_urgent_outage",
+      "split": "train",
+      "state": {"body": "site is down for everyone, please escalate immediately"},
+      "questions": {
+        "urgent": {
+          "type": "noul",
+          "instructions": "Is immediate same-day action required? Emit marker 1 only if yes, else 0."
+        }
+      },
+      "expect": {"urgent": {"noul_min": 0.5}}
+    },
+    {
+      "id": "promo_billing",
+      "split": "train",
+      "state": {"body": "I was charged for a promo code that should have been free"},
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "Which team?",
+          "criteria": {"billing": "refunds and charges", "tech": "bugs and outages"}
+        }
+      },
+      "expect": {"dept": {"choice": "billing"}}
+    },
+    {
+      "id": "train_sev_low",
+      "split": "train",
+      "state": {"body": "typo on the about page, no customers affected"},
+      "questions": {
+        "sev": {
+          "type": "score",
+          "instructions": "How severe is this?",
+          "criteria": ["low", "medium", "high"]
+        }
+      },
+      "expect": {"sev": {"score_max": 1.0}}
+    },
+    {
+      "id": "train_sev_high",
+      "split": "train",
+      "state": {"body": "entire region offline, database primary unreachable"},
+      "questions": {
+        "sev": {
+          "type": "score",
+          "instructions": "How severe is this?",
+          "criteria": ["low", "medium", "high"]
+        }
+      },
+      "expect": {"sev": {"score_min": 1.0}}
+    },
+    {
+      "id": "ssl_tech",
+      "split": "holdout",
+      "state": {"body": "TLS certificate expired and browsers show NET::ERR_CERT"},
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "Which team?",
+          "criteria": {"billing": "refunds and charges", "tech": "bugs and outages"}
+        }
+      },
+      "expect": {"dept": {"choice": "tech"}}
+    },
+    {
+      "id": "subscription_billing",
+      "split": "holdout",
+      "state": {"body": "please cancel my subscription and stop monthly billing"},
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "Which team?",
+          "criteria": {"billing": "refunds and charges", "tech": "bugs and outages"}
+        }
+      },
+      "expect": {"dept": {"choice": "billing"}}
+    },
+    {
+      "id": "dns_tech",
+      "split": "holdout",
+      "state": {"body": "DNS lookup fails for api.example.com after we rotated nameservers"},
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "Which team?",
+          "criteria": {"billing": "refunds and charges", "tech": "bugs and outages"}
+        }
+      },
+      "expect": {"dept": {"choice": "tech"}}
+    },
+    {
+      "id": "overcharge_billing",
+      "split": "holdout",
+      "state": {"body": "you billed me $99 but my plan is $29, please correct the charge"},
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "Which team?",
+          "criteria": {"billing": "refunds and charges", "tech": "bugs and outages"}
+        }
+      },
+      "expect": {"dept": {"choice": "billing"}}
+    },
+    {
+      "id": "multi_refund_urgent",
+      "split": "holdout",
+      "state": {"body": "I was charged twice on my last invoice and need an urgent refund today"},
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "Which team?",
+          "criteria": {"billing": "refunds and charges", "tech": "bugs and outages"}
+        },
+        "urgent": {
+          "type": "noul",
+          "instructions": "Is immediate same-day action required? Emit marker 1 only if yes, else 0."
+        }
+      },
+      "expect": {
+        "dept": {"choice": "billing"},
+        "urgent": {"noul_min": 0.5}
+      }
+    },
+    {
+      "id": "webhook_tech",
+      "split": "holdout",
+      "state": {"body": "outbound webhooks return 401 after we rotated the signing secret"},
+      "questions": {
+        "dept": {
+          "type": "choice",
+          "instructions": "Which team?",
+          "criteria": {"billing": "refunds and charges", "tech": "bugs and outages"}
+        }
+      },
+      "expect": {"dept": {"choice": "tech"}}
+    },
+    {
+      "id": "outage_severity_high",
+      "split": "holdout",
+      "state": {"body": "production is down, all customers cannot login, P0 incident"},
+      "questions": {
+        "sev": {
+          "type": "score",
+          "instructions": "How severe is this?",
+          "criteria": ["low", "medium", "high"]
+        }
+      },
+      "expect": {"sev": {"score_min": 1.0}}
+    },
+    {
+      "id": "holdout_sev_low",
+      "split": "holdout",
+      "state": {"body": "footer copyright year is wrong, purely cosmetic"},
+      "questions": {
+        "sev": {
+          "type": "score",
+          "instructions": "How severe is this?",
+          "criteria": ["low", "medium", "high"]
+        }
+      },
+      "expect": {"sev": {"score_max": 1.0}}
+    },
+    {
+      "id": "train_noul_low",
+      "split": "train",
+      "state": {"body": "please update my mailing address on file when convenient"},
+      "questions": {
+        "urgent": {
+          "type": "noul",
+          "instructions": "Is immediate same-day action required? Emit marker 1 only if yes, else 0."
+        }
+      },
+      "expect": {"urgent": {"noul_max": 0.5}}
+    },
+    {
+      "id": "holdout_noul_low",
+      "split": "holdout",
+      "state": {"body": "can you add my middle name to the account profile sometime this month"},
+      "questions": {
+        "urgent": {
+          "type": "noul",
+          "instructions": "Is immediate same-day action required? Emit marker 1 only if yes, else 0."
+        }
+      },
+      "expect": {"urgent": {"noul_max": 0.5}}
+    }
+  ]
+}

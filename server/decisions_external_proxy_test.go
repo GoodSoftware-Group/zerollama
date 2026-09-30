@@ -23,9 +23,19 @@ func TestIsCLMModelName(t *testing.T) {
 	}
 }
 
+func TestIsOpenJevModelName(t *testing.T) {
+	for _, n := range []string{"openjev", "openjev:latest", "openjev-26b", "diffusiongemma", "DiffusionGemma-Q4"} {
+		require.True(t, isOpenJevModelName(n), n)
+	}
+	for _, n := range []string{"laya", "clm", "llama3.2", ""} {
+		require.False(t, isOpenJevModelName(n), n)
+	}
+}
+
 func TestDecisionsExternalResolve(t *testing.T) {
 	t.Setenv("ZEROLLAMA_CLM_URL", "")
 	t.Setenv("ZEROLLAMA_LAYA_URL", "")
+	t.Setenv("ZEROLLAMA_OPENJEV_URL", "")
 	t.Setenv("ZEROLLAMA_CLM_HEADS", "")
 	t.Setenv("ZEROLLAMA_CLM_EMB_URL", "")
 
@@ -35,6 +45,15 @@ func TestDecisionsExternalResolve(t *testing.T) {
 
 	_, err = decisionsExternalResolve("clm", nil)
 	require.Error(t, err)
+
+	_, err = decisionsExternalResolve("openjev", nil)
+	require.Error(t, err)
+
+	t.Setenv("ZEROLLAMA_OPENJEV_URL", "http://127.0.0.1:18093/")
+	base, err = decisionsExternalResolve("openjev:latest", nil)
+	require.NoError(t, err)
+	require.Equal(t, "http://127.0.0.1:18093", base)
+	t.Setenv("ZEROLLAMA_OPENJEV_URL", "")
 
 	t.Setenv("ZEROLLAMA_CLM_HEADS", "/tmp/heads.gguf")
 	t.Setenv("ZEROLLAMA_CLM_EMB_URL", "http://127.0.0.1:18090")
@@ -75,15 +94,30 @@ func TestDecisionsExternalResolve(t *testing.T) {
 	base, err = decisionsExternalResolve("laya-ext", mLaya)
 	require.NoError(t, err)
 	require.Empty(t, base)
+
+	mOJ := &Model{Config: model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityDecisions: model.BackendOpenJev},
+	}}
+	_, err = decisionsExternalResolve("router", mOJ)
+	require.Error(t, err)
+	t.Setenv("ZEROLLAMA_OPENJEV_URL", "http://127.0.0.1:18093")
+	base, err = decisionsExternalResolve("router", mOJ)
+	require.NoError(t, err)
+	require.Equal(t, "http://127.0.0.1:18093", base)
 }
 
 func TestDecisionsExternalPath(t *testing.T) {
 	require.Equal(t, "http://h/v1/systemone", decisionsExternalPath("http://h", "clm", nil))
+	require.Equal(t, "http://h/v1/systemone", decisionsExternalPath("http://h", "openjev", nil))
 	require.Equal(t, "http://h/v1/decisions", decisionsExternalPath("http://h", "laya", nil))
 	m := &Model{Config: model.ConfigV2{
 		ModalityBackends: map[string]string{model.ModalityDecisions: model.BackendCLM},
 	}}
 	require.Equal(t, "http://h/v1/systemone", decisionsExternalPath("http://h", "router", m))
+	mOJ := &Model{Config: model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityDecisions: model.BackendOpenJev},
+	}}
+	require.Equal(t, "http://h/v1/systemone", decisionsExternalPath("http://h", "router", mOJ))
 }
 
 func TestProxyDecisionsExternalPassthrough(t *testing.T) {
@@ -111,6 +145,80 @@ func TestProxyDecisionsExternalPassthrough(t *testing.T) {
 	require.Equal(t, "clm-latest", out.Model)
 	require.Equal(t, 12, out.Usage.InputTokens)
 	require.Contains(t, out.Answers, "urgent")
+}
+
+func TestProxyOpenJevPacksPrompt(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/tokenize":
+			var got map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+			content, _ := got["content"].(string)
+			id := 100
+			switch {
+			case content == "tech":
+				id = 200
+			case content == "<<dept>>":
+				_ = json.NewEncoder(w).Encode(map[string]any{"tokens": []int{7, 8}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"tokens": []int{id}})
+			return
+		case "/v1/systemone":
+			var got map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+			require.Equal(t, "openjev", got["model"])
+			prompt, _ := got["prompt"].(string)
+			require.Contains(t, prompt, "STATE:")
+			require.Contains(t, prompt, "id=dept")
+			require.Contains(t, prompt, "<<dept>>")
+			require.NotContains(t, got, "state")
+			require.NotContains(t, got, "questions")
+			readout, _ := got["readout"].(map[string]any)
+			require.NotNil(t, readout)
+			slots, _ := readout["slots"].([]any)
+			require.Len(t, slots, 1)
+			gather, _ := readout["gather"].([]any)
+			require.Len(t, gather, 2)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"model":"openjev","answer":"{\"dept\":{\"type\":\"choice\",\"choice\":\"tech\",\"confidence\":1.0}}\n<<dept>> billing","usage":{"input_tokens":10,"output_tokens":5},"readout_mode":"answer_marker_logit","gather":[{"question_id":"dept","option_id":"billing","logit_mean":3.0,"logit_max":3.0,"n_tokens":1},{"question_id":"dept","option_id":"tech","logit_mean":0.2,"logit_max":0.2,"n_tokens":1}]}`))
+			return
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	req := api.DecisionsRequest{
+		Model: "openjev",
+		State: map[string]string{"body": "refund"},
+		Questions: map[string]api.DecisionQuestion{
+			"dept": {Type: "choice", Instructions: "Which?", Criteria: json.RawMessage(`{"billing":"x","tech":"y"}`)},
+		},
+	}
+	out, err := proxyDecisionsExternal(t.Context(), upstream.URL, "openjev", nil, req)
+	require.NoError(t, err)
+	require.Equal(t, "openjev", out.Model)
+	require.Equal(t, 10, out.Usage.InputTokens)
+	var ans map[string]any
+	require.NoError(t, json.Unmarshal(out.Answers["dept"], &ans))
+	require.Equal(t, "billing", ans["choice"], "gather logits should override text choice")
+	_, hasConf := ans["confidence"]
+	require.False(t, hasConf, "confidence must be stripped")
+	require.Equal(t, false, ans["calibrated"])
+	require.Equal(t, "answer_marker_logit", ans["score_source"])
+}
+
+func TestOpenJevApplyOptions(t *testing.T) {
+	payload := map[string]any{"model": "openjev", "prompt": "x"}
+	openJevApplyOptions(payload, map[string]any{
+		"seed":       42,
+		"n_steps":    8,
+		"max_tokens": 64,
+	})
+	require.Equal(t, 42, payload["seed"])
+	require.Equal(t, 8, payload["n_steps"])
+	require.Equal(t, 64, payload["max_tokens"])
 }
 
 func TestProxyDecisionsExternalUpstreamError(t *testing.T) {

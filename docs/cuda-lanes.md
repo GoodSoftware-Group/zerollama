@@ -2,7 +2,7 @@
 
 **Why this doc:** Zerollama CUDA work was documented primarily around the **RTX 5080 16 GiB** sign-off (CT 1564). Other hosts run **different topologies** (dual RTX 4090, single 3090, …). Operators need one place to see what applies to **any CUDA box** vs what is **lane-specific** setup and testing.
 
-**Related:** [5080-runbook.md](./5080-runbook.md), [testing-smoke.md](./testing-smoke.md), [gpu-profiles-l1.md](./gpu-profiles-l1.md), [runtime/README.md](../runtime/README.md).
+**Related:** [5080-runbook.md](./5080-runbook.md), [testing-smoke.md](./testing-smoke.md), [gpu-profiles-l1.md](./gpu-profiles-l1.md), [deepgemm-borrowings.md](./deepgemm-borrowings.md) (FP8/FP4 / MoE GEMM ideas — not Ascend), [runtime/README.md](../runtime/README.md).
 
 ---
 

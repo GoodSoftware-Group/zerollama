@@ -13,7 +13,7 @@ info:
     voice catalog, and video generation).
 
     LocalAI control plane (LA7/LA9/LA11/LA11b/LA15/LA16/LA17/LA21/LA22): `/api/repair`,
-    `/api/score`, `/v1/rerank`, `/v1/decisions`, `/v1/multidecode`, `/api/router/*`, `/api/aliases`, `/api/load`, `/api/unload`, experimental web_search/fetch.
+    `/api/score`, `/v1/rerank`, `/v1/decisions`, `/v1/multidecode`, `/v1/extract`, `/v1/gliner`, `/v1/gliner-decide`, `/api/router/*`, `/api/aliases`, `/api/load`, `/api/unload`, experimental web_search/fetch.
     In-band alias and router rewrite may set `X-Zerollama-*` response headers.
     Failed-load cooldown (LA18) returns 503 with `Retry-After`.
 
@@ -1498,20 +1498,29 @@ components:
         `/v1/rerank` RANK pooling. WHY a dedicated route: chat would force sampling
         free text; score/rerank return one scalar per candidate, not calibrated
         choice/score/noul + act head. `state` is string|object|array; `questions`
-        maps stable ids → typed defs. Requires a Laya GGUF (`general.architecture=laya`).
+        maps stable ids → typed defs. Wire caps match Unsloth Desktop / Jev Decision
+        API: ≤64 questions, ≤255 choice options, ≤10 score levels. Requires a Laya
+        GGUF (`general.architecture=laya`) or CLM/OpenJev backend.
       properties:
         model:
           type: string
-          description: Laya tag or alias (must load as arch=laya)
+          description: >
+            Local tag or alias that loads as Laya/CLM/OpenJev. Common Laya HF
+            variant names when created from convert: `laya`, `laya-multilingual`
+            (~678 MB / ~4 GB RAM), `laya-english`, `laya-typed-decisions`.
+            Unsloth also accepts `default` / `jev-latest` for the Desktop-selected
+            model — map those via Modelfile aliases if you need drop-in clients.
         state:
           description: Conversation/state payload (string | object | array)
         questions:
           type: object
+          maxProperties: 64
           additionalProperties:
             $ref: "#/components/schemas/DecisionQuestion"
           description: >
-            Map of question_id → definition. WHY map not array: clients key answers
-            by id; Go packs in sorted question_id order for stable server alignment.
+            Map of question_id → definition (max 64). WHY map not array: clients key
+            answers by id; Go packs in sorted question_id order for stable server
+            alignment.
         keep_alive:
           oneOf:
             - type: string
@@ -1521,22 +1530,31 @@ components:
           additionalProperties: true
       example:
         model: laya
-        state:
-          body: billed twice, refund please
+        state: "Hi, I was charged twice for my March invoice. Please refund the duplicate today."
         questions:
-          dept:
+          team:
             type: choice
-            instructions: Which team?
+            instructions: Which team should handle this?
             criteria:
-              billing: refunds
-              tech: bugs
+              billing: invoices, payments, refunds
+              technical: bugs, outages, errors
+              other: everything else
+          refund:
+            type: noul
+            instructions: Does the customer ask for a refund?
+          urgency:
+            type: score
+            instructions: How urgent is this?
+            criteria: [not urgent, soon, today]
     DecisionQuestion:
       type: object
       required: [type, instructions]
       description: >
         One typed question. `criteria` is a JSON object for choice/noul (key order
-        must be preserved — logit ↔ label alignment) or an array of ordered levels
-        for score.
+        must be preserved — logit ↔ label alignment; ≤255 choice keys) or an array
+        of ordered levels for score (≤10). Option label text is token-budget capped
+        (~48 tokens / option) so long described choices may trim — same class of
+        limit as Unsloth's "past ~20 described options" note.
       properties:
         type:
           type: string
@@ -1544,7 +1562,7 @@ components:
         instructions:
           type: string
         criteria:
-          description: Object for choice/noul; array of levels for score
+          description: Object for choice/noul (≤255 keys); array of levels for score (≤10)
         labels:
           type: object
           description: Optional noul display labels keyed false/true
@@ -1572,9 +1590,16 @@ components:
           type: object
           additionalProperties:
             type: number
+          description: >
+            Per-option calibrated probs. Gate automation on these (e.g. only act when
+            `billing` > 0.8), not on `confidence` — Laya vs cloud Jev confidence
+            formulas differ (Unsloth/Jev migration note).
         confidence:
           type: number
           format: float
+          description: >
+            Normalized Shannon entropy peakiness (1 − H(p)/log(k)). Not interchangeable
+            with cloud Jev confidence thresholds.
         action:
           $ref: "#/components/schemas/DecisionAction"
     ScoreAnswer:
@@ -1587,18 +1612,26 @@ components:
         score:
           type: number
           format: float
+          description: Expected level index (0-based) under calibrated probs
+        legend:
+          type: object
+          additionalProperties:
+            type: string
+          description: Level index → criterion label
         probabilities:
           type: object
           additionalProperties:
             type: number
+          description: Per-level probs keyed by index string ("0","1",…). Gate on these, not confidence.
         confidence:
           type: number
           format: float
+          description: Entropy-based peakiness; do not reuse cloud Jev confidence thresholds
         action:
           $ref: "#/components/schemas/DecisionAction"
     NoulAnswer:
       type: object
-      required: [type, noul, probabilities, confidence, action]
+      required: [type, noul, confidence, action]
       properties:
         type:
           type: string
@@ -1606,21 +1639,22 @@ components:
         noul:
           type: number
           format: float
-          description: Probability the statement is true (P_true), not a boolean
-        probabilities:
-          type: object
-          additionalProperties:
-            type: number
+          description: >
+            Probability the statement is true (P_true), 0..1 — not a boolean. Gate on
+            this value (e.g. refund when `noul` > 0.8).
         confidence:
           type: number
           format: float
+          description: max(noul, 1−noul); prefer thresholding `noul` itself for yes/no policy
         action:
           $ref: "#/components/schemas/DecisionAction"
     DecisionsResponse:
       type: object
       description: >
         Calibrated typed answers keyed by question_id. Each value is one of
-        ChoiceAnswer | ScoreAnswer | NoulAnswer (discriminated by `type`).
+        ChoiceAnswer | ScoreAnswer | NoulAnswer (discriminated by `type`). Extra
+        fields vs Unsloth Desktop (`action`, noul `confidence`) are additive —
+        Jev clients that ignore unknown keys stay compatible.
       properties:
         model:
           type: string
@@ -1641,7 +1675,9 @@ components:
       description: >
         MultiDecode forest (MD1). One-shot uses `parent` (batch indices). Sticky
         multi-step uses `parent_node_ids` + `clear:false`. Requires llama-server
-        `--multidecode`. Docs: docs/multidecode-llama-cpp.md.
+        `--multidecode`. `n_predict` is accepted but the server does not
+        autoregressive-loop — clients sticky-step. Docs:
+        docs/multidecode-llama-cpp.md · skill agentskills/multidecode/.
       properties:
         model:
           type: string
@@ -1673,6 +1709,7 @@ components:
           description: Clear KV before decode (default true when parent_node_ids omitted)
         n_predict:
           type: integer
+          description: Advisory only — sticky multi-step is client-driven
         keep_alive:
           oneOf:
             - type: string
@@ -1680,6 +1717,13 @@ components:
         options:
           type: object
           additionalProperties: true
+      example:
+        model: llama3.2:3b
+        tokens: [791, 6864, 315, 9822, 374]
+        pos: [0, 1, 2, 3, 4]
+        parent: [-1, 0, 1, 2, 3]
+        leaves: [4]
+        clear: true
     MultiDecodeLeafResult:
       type: object
       required: [leaf, token, node_id]
@@ -1701,6 +1745,93 @@ components:
         node_ids:
           type: array
           items: { type: integer }
+    ExtractEntity:
+      type: object
+      required: [text, label, start, end, score]
+      properties:
+        text:
+          type: string
+        label:
+          type: string
+        start:
+          type: integer
+        end:
+          type: integer
+        score:
+          type: number
+    ExtractRequest:
+      type: object
+      required: [model, labels]
+      description: >
+        Abstract NER (GL2). Provide `text` or `texts` plus zero-shot `labels`.
+        WHY not `/v1/decisions`: span extract ≠ choice/score/noul. Docs: docs/gliner-cpp.md.
+      properties:
+        model:
+          type: string
+        text:
+          type: string
+        texts:
+          type: array
+          items:
+            type: string
+        labels:
+          type: array
+          items:
+            type: string
+        threshold:
+          type: number
+      example:
+        model: gliner
+        text: Kyiv is the capital of Ukraine.
+        labels: [city, country]
+    GlinerRequest:
+      allOf:
+        - $ref: "#/components/schemas/ExtractRequest"
+        - type: object
+          description: Mechanical GLiNER.cpp knobs (POST /v1/gliner only).
+          properties:
+            flat_ner:
+              type: boolean
+            multi_label:
+              type: boolean
+            max_width:
+              type: integer
+            max_length:
+              type: integer
+            model_type:
+              type: string
+              enum: [span, token]
+              description: >
+                Must match the sibling process load (`--model-type`).
+                `token` = multitask / token-level ONNX (GL5a); `span` = default NER.
+            device_id:
+              type: integer
+    ExtractResponse:
+      type: object
+      properties:
+        entities:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExtractEntity"
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              entities:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ExtractEntity"
+        engine:
+          type: object
+          additionalProperties: true
+          description: Echoed on /v1/gliner (max_width, max_length, model_type, device_id)
+        threshold:
+          type: number
+        flat_ner:
+          type: boolean
+        multi_label:
+          type: boolean
     RouterDecideRequest:
       type: object
       required: [router]
@@ -4786,8 +4917,9 @@ paths:
         ancestor mask via `parent` / sticky `parent_node_ids`. Custom harnesses
         call this directly; Hermes `POST /v1/chat/completions/batch` may silently
         pack when LCP ≥ 32 tokens. Probe `zerollama.capabilities.multidecode`.
-        Lab docs: docs/multidecode-llama-cpp.md. Lab ports only — never production
-        `:11434` / `:8081`.
+        Harness guide: docs/multidecode-llama-cpp.md § Custom harness · skill
+        `agentskills/multidecode/`. Lab ports only — never production `:11434` /
+        `:8081`.
       operationId: multiDecodeV1
       requestBody:
         required: true
@@ -4858,8 +4990,9 @@ paths:
     post:
       summary: Alias for /v1/decisions
       description: >
-        Same contract as `/v1/decisions`. WHY alias: Jev/System-1 clients may look
-        for `/v1/systemone`; keep one Decider path underneath.
+        Same contract as `/v1/decisions`. WHY alias: Jev/System-1 clients and Unsloth
+        Desktop Decision API use `/v1/systemone`; keep one Decider path underneath.
+        Wire caps: ≤64 questions, ≤255 choice options, ≤10 score levels.
       operationId: systemOneV1
       requestBody:
         required: true
@@ -4874,6 +5007,124 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DecisionsResponse"
+  /v1/extract:
+    post:
+      summary: Entity extract (abstract NER)
+      description: >
+        Portable zero-shot span NER. Proxies to gliner-server when
+        `ZEROLLAMA_GLINER_URL` is set. Engine knobs are stripped — use `/v1/gliner`
+        for max_width / model_type / flat_ner. Docs: docs/gliner-cpp.md.
+      operationId: extractV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtractRequest"
+      responses:
+        "200":
+          description: Extracted entities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractResponse"
+        "400":
+          description: Missing text/labels/model or GLiNER URL unset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "502":
+          description: Upstream gliner-server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /v1/gliner:
+    post:
+      summary: GLiNER.cpp mechanical extract
+      description: >
+        Same core fields as `/v1/extract` plus GLiNER.cpp knobs (`max_width`,
+        `max_length`, `model_type`, `device_id`, `flat_ner`, `multi_label`).
+        Unknown keys → 400 from C++ server.
+      operationId: glinerV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GlinerRequest"
+      responses:
+        "200":
+          description: Extracted entities plus engine echo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractResponse"
+        "400":
+          description: Bad request / unknown engine field
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /v1/gliner-decide:
+    post:
+      summary: GLiNER2.5-Decide mechanical classify
+      description: >
+        Fastino `classify_text` schema pass-through. Proxies to the Python sibling
+        when `ZEROLLAMA_GLINER_DECIDE_URL` is set. WHY not `/v1/gliner`: that path is
+        span NER. WHY not only `/v1/decisions`: agents may want native schema heads.
+        Docs: docs/gliner-decide.md. Answers on the Jev path stay `calibrated:false`
+        until a fixture gate (Finding 3).
+      operationId: glinerDecideV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text, schema]
+              properties:
+                model:
+                  type: string
+                  example: gliner-decide
+                text:
+                  type: string
+                schema:
+                  type: object
+                  additionalProperties: true
+                  description: Fastino classify_text schema (task → labels or config)
+                include_confidence:
+                  type: boolean
+                  default: true
+      responses:
+        "200":
+          description: Classify result plus engine echo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  model:
+                    type: string
+                  result:
+                    type: object
+                    additionalProperties: true
+                  engine:
+                    type: object
+                    additionalProperties: true
+        "400":
+          description: Missing text/schema or Decide URL unset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "502":
+          description: Upstream decide sibling error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
   /v1/images/generations:
     post:
       tags: [OpenAI]
