@@ -67,6 +67,7 @@ Canonical guide: **[docs/mac-dev-setup.md](./docs/mac-dev-setup.md)**.
 - Training borrowings (Unsloth → T7–T11): [ROADMAP § GPU training](./docs/ROADMAP.md#gpu-training-fine-tuning)
 - Doctor Modelfile repair (empty `response` / slash-collapse / ChatML hygiene): `zerollama doctor --repair-models [--all-local] [--apply]` — **why** not `doctor --fix`: [docs/doctor-model-repair.md](./docs/doctor-model-repair.md)
 - Hermes `/v1` gaps (M15e/M15f): [docs/hermes-zerollama-gap.md](./docs/hermes-zerollama-gap.md) (§8 batch wire) · [findings](./docs/hermes-gap-closure-findings.md) · OpenAPI `server/openapi/openapi.yaml` (`ChatCompletionsBatchResponse`)
+- MultiDecode (forest decode): patches **0129–0131**; `POST /v1/multidecode` + `capabilities.multidecode`; silent LCP pack on Hermes batch — [docs/multidecode-llama-cpp.md](./docs/multidecode-llama-cpp.md) · [findings](./docs/multidecode-llama-cpp-findings.md)
 - Typed decisions (Laya + CLM): `POST /v1/decisions` — Laya GGUF patches **0127–0128**; CLM native heads (`ZEROLLAMA_CLM_HEADS` + emb URL) — [docs/laya-llama-cpp.md](./docs/laya-llama-cpp.md) · [docs/clm.md](./docs/clm.md) · skill `agentskills/typed-decisions/`
 - Product diffs vs Ollama (README hero): **megaprompts** (Gigatoken-inspired tokenize + L3) + visuals + harness — [README.md § Why](./README.md#2-why-zerollama) · [Tour](./README.md#4-tour--what-makes-us-different)
 - MiniMax Music 3 (mlx hear → C later): [docs/music-c.md](./docs/music-c.md) — **why** not Comfy / not H3 VAE / not blocking TTS

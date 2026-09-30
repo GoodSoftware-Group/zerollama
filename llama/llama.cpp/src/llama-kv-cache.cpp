@@ -18,6 +18,8 @@
 #include <map>
 #include <stdexcept>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 static bool ggml_is_power_of_2(int n) {
@@ -1723,6 +1725,20 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & 
                 cells.ext_set(idx, ext);
             }
 
+            // MultiDecode: stable node ids (MD1). One-shot with only parent[]: node_id = batch index.
+            if (ubatch.parent != nullptr) {
+                const int32_t nid = ubatch.node_id ? ubatch.node_id[i] : (int32_t) i;
+                int32_t pnid = -1;
+                if (ubatch.parent_node_id) {
+                    pnid = ubatch.parent_node_id[i];
+                } else if (ubatch.parent[i] >= 0) {
+                    // parent[] is a prior batch index; one-shot synth uses that index as node_id
+                    const int32_t p = ubatch.parent[i];
+                    pnid = ubatch.node_id ? ubatch.node_id[p] : p;
+                }
+                cells.node_id_set(idx, nid, pnid);
+            }
+
             for (int32_t s = 0; s < ubatch.n_seq_id[i]; s++) {
                 cells.seq_add(idx, ubatch.seq_id[i][s]);
             }
@@ -2595,6 +2611,83 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
     //const int64_t t_end = ggml_time_us();
 
     //LLAMA_LOG_ERROR("%s: kq mask time: %0.3f ms\n", __func__, (t_end - t_start)/1000.0);
+}
+
+void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const {
+    const uint32_t n_tokens = ubatch->n_tokens;
+
+    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
+    GGML_ASSERT(ubatch->parent != nullptr);
+    GGML_ASSERT(sinfo.n_stream() == 1); // MultiDecode: single stream
+    GGML_ASSERT(swa_type == LLAMA_SWA_TYPE_NONE);
+
+    const int64_t n_kv     = dst->ne[0];
+    const int64_t n_stream = dst->ne[3];
+    GGML_ASSERT(n_stream == 1);
+    GGML_ASSERT(n_tokens % n_stream == 0);
+    GGML_ASSERT(sinfo.size() == n_tokens);
+
+    const llama_seq_id seq_id = ubatch->seq_id[0][0];
+    const auto & cells = (*v_cells).at(seq_to_stream[seq_id]);
+
+    // node_id -> parent_node_id for all occupied cells (includes prior steps + this ubatch)
+    std::unordered_map<int32_t, int32_t> nid_to_parent;
+    nid_to_parent.reserve((size_t) n_kv);
+    for (uint32_t j = 0; j < (uint32_t) n_kv; ++j) {
+        if (cells.is_empty(j) || !cells.seq_has(j, seq_id)) {
+            continue;
+        }
+        const int32_t nid = cells.node_id_get(j);
+        if (nid >= 0) {
+            nid_to_parent[nid] = cells.parent_node_id_get(j);
+        }
+    }
+
+    auto fill = [&](auto * data) {
+        using T = std::remove_reference_t<decltype(*data)>;
+        const T mask_keep = llama_cast<T>(0.0f);
+        const T mask_drop = llama_cast<T>(-INFINITY);
+
+        for (uint32_t i = 0; i < n_tokens; ++i) {
+            const uint32_t qcell = sinfo.idxs[0][i];
+            const int32_t qnid = cells.node_id_get(qcell);
+
+            // ancestor set of node_ids (self + walk parent_node_id)
+            std::unordered_set<int32_t> allow;
+            allow.insert(qnid);
+            int32_t cur = cells.parent_node_id_get(qcell);
+            int depth = 0;
+            while (cur >= 0 && depth <= (int) n_kv) {
+                allow.insert(cur);
+                auto it = nid_to_parent.find(cur);
+                if (it == nid_to_parent.end()) {
+                    break;
+                }
+                cur = it->second;
+                ++depth;
+            }
+
+            const uint64_t idst = n_kv * i;
+            for (uint32_t j = 0; j < (uint32_t) n_kv; ++j) {
+                if (cells.is_empty(j) || !cells.seq_has(j, seq_id)) {
+                    data[idst + j] = mask_drop;
+                    continue;
+                }
+                const int32_t nid = cells.node_id_get(j);
+                if (nid >= 0 && allow.count(nid)) {
+                    data[idst + j] = mask_keep;
+                } else {
+                    data[idst + j] = mask_drop;
+                }
+            }
+        }
+    };
+
+    if (dst->type == GGML_TYPE_F16) {
+        fill((ggml_fp16_t *) dst->data);
+    } else {
+        fill((float *) dst->data);
+    }
 }
 
 void llama_kv_cache::set_input_kq_mask_dca(ggml_tensor * dst, const llama_ubatch * ubatch, int dca_stage) const {
@@ -3534,6 +3627,10 @@ void llama_kv_cache_context::set_input_v_idxs(ggml_tensor * dst, const llama_uba
 }
 
 void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {
+    if (ubatch->parent != nullptr) {
+        kv->set_input_kq_mask_multidecode(dst, ubatch, sinfos[i_cur]);
+        return;
+    }
     kv->set_input_kq_mask(dst, ubatch, causal_attn);
 }
 

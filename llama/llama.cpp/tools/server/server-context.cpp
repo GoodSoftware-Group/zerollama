@@ -231,6 +231,9 @@ struct server_batch {
             batch.n_seq_id + off,
             batch.seq_id   + off,
             batch.logits   + off,
+            /*parent=*/ nullptr,
+            /*node_id=*/ nullptr,
+            /*parent_node_id=*/ nullptr,
         };
 
         return view;
@@ -876,6 +879,10 @@ public:
     // Laya /v1/decisions: sync encode+CPU head (serialized; dedicated --decisions servers)
     std::mutex mutex_laya;
     std::unique_ptr<laya_head_weights> laya_weights;
+
+    // MultiDecode /v1/multidecode: sync forest decode (serialized)
+    std::mutex mutex_multidecode;
+    int32_t md_next_node_id = 0;
 
     llama_context * get_ctx_tgt() {
         return ctx_tgt;
@@ -5593,9 +5600,6 @@ void server_routes::init_routes() {
 
             laya_decision_input in;
             in.qtype = json_value(item, "qtype", 0);
-            if (item.contains("question_id") && item.at("question_id").is_string()) {
-                in.question_id = item.at("question_id").get<std::string>();
-            }
             try {
                 in.tokens = item.at("tokens").get<std::vector<llama_token>>();
                 in.marker_pos = item.at("marker_pos").get<std::vector<int32_t>>();
@@ -5642,18 +5646,195 @@ void server_routes::init_routes() {
                 res->error(format_error_response(err, ERROR_TYPE_SERVER));
                 return res;
             }
-            json r = {
+            results.push_back({
                 {"logits",   out.logits},
                 {"act",      out.act},
                 {"n_tokens", out.n_tokens},
-            };
-            if (!in.question_id.empty()) {
-                r["question_id"] = in.question_id;
-            }
-            results.push_back(std::move(r));
+            });
         }
 
         res->ok({{"results", results}});
+        return res;
+    };
+
+    this->post_multidecode = [this](const server_http_req & req) {
+        auto res = create_response();
+
+        if (!params.multidecode) {
+            res->error(format_error_response(
+                "This server does not support MultiDecode. Start it with `--multidecode`",
+                ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        json body;
+        try {
+            body = json::parse(req.body);
+        } catch (const std::exception & e) {
+            res->error(format_error_response(std::string("invalid JSON: ") + e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        if (!body.contains("tokens") || !body.at("tokens").is_array() || body.at("tokens").empty()) {
+            res->error(format_error_response("\"tokens\" must be a non-empty array", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (!body.contains("pos") || !body.at("pos").is_array()) {
+            res->error(format_error_response("\"pos\" must be an array", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (!body.contains("leaves") || !body.at("leaves").is_array() || body.at("leaves").empty()) {
+            res->error(format_error_response("\"leaves\" must be a non-empty array", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        std::vector<llama_token> tokens;
+        std::vector<llama_pos>   pos;
+        std::vector<int32_t>     parent;
+        std::vector<int32_t>     leaves;
+        std::vector<int32_t>     node_ids_in;
+        std::vector<int32_t>     parent_node_ids;
+        try {
+            tokens = body.at("tokens").get<std::vector<llama_token>>();
+            pos    = body.at("pos").get<std::vector<llama_pos>>();
+            leaves = body.at("leaves").get<std::vector<int32_t>>();
+            if (body.contains("node_ids") && body.at("node_ids").is_array()) {
+                node_ids_in = body.at("node_ids").get<std::vector<int32_t>>();
+            }
+            if (body.contains("parent_node_ids") && body.at("parent_node_ids").is_array()) {
+                parent_node_ids = body.at("parent_node_ids").get<std::vector<int32_t>>();
+            }
+            if (body.contains("parent") && body.at("parent").is_array()) {
+                parent = body.at("parent").get<std::vector<int32_t>>();
+            } else if (parent_node_ids.empty()) {
+                res->error(format_error_response(
+                    "\"parent\" must be an array (or provide parent_node_ids for multi-step)",
+                    ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+        } catch (const std::exception & e) {
+            res->error(format_error_response(std::string("invalid forest arrays: ") + e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        const int n = (int) tokens.size();
+        if (parent.empty() && !parent_node_ids.empty()) {
+            // Multi-step: ancestry is via durable node ids; batch.parent indices unused.
+            parent.assign(n, -1);
+        }
+        if ((int) pos.size() != n || (int) parent.size() != n) {
+            res->error(format_error_response("tokens/pos/parent length mismatch", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (!node_ids_in.empty() && (int) node_ids_in.size() != n) {
+            res->error(format_error_response("node_ids length mismatch", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (!parent_node_ids.empty() && (int) parent_node_ids.size() != n) {
+            res->error(format_error_response("parent_node_ids length mismatch", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        for (int32_t li : leaves) {
+            if (li < 0 || li >= n) {
+                res->error(format_error_response("leaf index out of range", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+        }
+
+        const bool want_logits = json_value(body, "return_logits", json_value(body, "logits", false));
+        const bool clear_kv = json_value(body, "clear", parent_node_ids.empty());
+
+        queue_tasks.wait_until_no_sleep();
+        std::unique_lock<std::mutex> lock(ctx_server.mutex_multidecode);
+
+        llama_context * lctx = ctx_server.get_ctx_tgt();
+        if (lctx == nullptr || ctx_server.model_tgt == nullptr) {
+            res->error(format_error_response("model context is not available", ERROR_TYPE_UNAVAILABLE));
+            return res;
+        }
+
+        if (clear_kv) {
+            llama_memory_clear(llama_get_memory(lctx), true);
+            ctx_server.md_next_node_id = 0;
+        }
+
+        // Assign node ids if not provided
+        std::vector<int32_t> node_ids = node_ids_in;
+        if (node_ids.empty()) {
+            node_ids.resize(n);
+            for (int i = 0; i < n; ++i) {
+                node_ids[i] = ctx_server.md_next_node_id++;
+            }
+        } else {
+            for (int32_t nid : node_ids) {
+                if (nid + 1 > ctx_server.md_next_node_id) {
+                    ctx_server.md_next_node_id = nid + 1;
+                }
+            }
+        }
+
+        llama_batch batch = llama_batch_init(n, 0, 1);
+        batch.n_tokens = n;
+        batch.parent = (int32_t *) malloc(sizeof(int32_t) * n);
+        batch.node_id = (int32_t *) malloc(sizeof(int32_t) * n);
+        batch.parent_node_id = (int32_t *) malloc(sizeof(int32_t) * n);
+        for (int i = 0; i < n; ++i) {
+            batch.token[i] = tokens[i];
+            batch.pos[i] = pos[i];
+            batch.parent[i] = parent[i];
+            batch.node_id[i] = node_ids[i];
+            if (!parent_node_ids.empty()) {
+                batch.parent_node_id[i] = parent_node_ids[i];
+            } else if (parent[i] >= 0) {
+                batch.parent_node_id[i] = node_ids[parent[i]];
+            } else {
+                batch.parent_node_id[i] = -1;
+            }
+            batch.n_seq_id[i] = 1;
+            batch.seq_id[i][0] = 0;
+            batch.logits[i] = 0;
+        }
+        for (int32_t li : leaves) {
+            batch.logits[li] = 1;
+        }
+
+        if (llama_decode(lctx, batch) != 0) {
+            llama_batch_free(batch);
+            res->error(format_error_response("llama_decode failed", ERROR_TYPE_SERVER));
+            return res;
+        }
+
+        const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(ctx_server.model_tgt));
+        json results = json::array();
+        for (int32_t li : leaves) {
+            const float * logits = llama_get_logits_ith(lctx, li);
+            if (!logits) {
+                llama_batch_free(batch);
+                res->error(format_error_response("null logits for leaf", ERROR_TYPE_SERVER));
+                return res;
+            }
+            int best = 0;
+            for (int v = 1; v < n_vocab; ++v) {
+                if (logits[v] > logits[best]) {
+                    best = v;
+                }
+            }
+            json row = {
+                {"leaf", li},
+                {"token", best},
+                {"node_id", node_ids[li]},
+            };
+            if (want_logits) {
+                row["logits"] = std::vector<float>(logits, logits + n_vocab);
+            }
+            results.push_back(std::move(row));
+        }
+
+        llama_batch_free(batch);
+        res->ok({
+            {"results", results},
+            {"node_ids", node_ids},
+        });
         return res;
     };
 

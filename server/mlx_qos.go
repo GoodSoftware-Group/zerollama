@@ -405,6 +405,10 @@ func zerollamaVersionCapabilities() map[string]any {
 		"stable_multi_model_swap": false, // B0/B1 dampen thrash only; Python still single-GGUF
 		"pin_reserve":             true,
 		"propose_sidecar":         true,
+		// MultiDecode forest decode (llama-server --multidecode / POST /v1/multidecode).
+		// Clients probe once; Hermes batch may silently pack shared-prefix forests.
+		"multidecode":             true,
+		"chat_completions_batch":  true,
 	}
 }
 

@@ -885,6 +885,10 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 	if ggufIsLaya(launch.ggufKV) {
 		params = append(params, "--decisions")
 	}
+	// MultiDecode forest endpoint (MD1). Harmless no-op unless clients hit /v1/multidecode.
+	if !launch.embedding {
+		params = append(params, "--multidecode")
+	}
 
 	// GPU layer offloading — only pass an exact count when the caller asked for
 	// a real partial/full pin. Default (-1) and Modelfile/eliza sentinel 999

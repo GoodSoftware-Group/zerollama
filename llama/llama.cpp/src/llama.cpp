@@ -120,7 +120,7 @@ bool llama_supports_rpc(void) {
 }
 
 #ifndef LLAMA_VERSION
-#define LLAMA_VERSION "b10615"
+#define LLAMA_VERSION "b10488"
 #endif
 
 const char * llama_version(void) {

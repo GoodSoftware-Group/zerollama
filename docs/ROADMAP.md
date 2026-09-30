@@ -453,6 +453,20 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 
 **Relationship to Fleet F-track:** LA6 extends [F3 management node](./fleet-management.md) routing; LA5 feeds future capacity-aware scores; **LA13** ships as **L3-R8** (status mirror + soft residency) + **L3-R9** (content-hash longest-prefix assign).
 
+
+### MultiDecode (forest decode)
+
+Exact shared-prefix fan-out via custom RoPE `pos` + ancestor KQ mask ([WestCoastML/multidecode](https://github.com/WestCoastML/multidecode)). Not speculative draft/verify (dflash).
+
+| Row | Goal | Surface | Status |
+|-----|------|---------|--------|
+| **MD0** | **llama.cpp `batch.parent` ancestor mask** | C++ | **Done (lab)** — patch **0129**; exactness PASS (leaf logits == linear); [multidecode-llama-cpp.md](./multidecode-llama-cpp.md) · [findings](./multidecode-llama-cpp-findings.md) |
+| **MD1** | **node_id + HTTP + Go + silent Hermes pack** | C++ + Go | **Done (lab)** — **0130** cell node ids + multi-step exactness; **0131** `--multidecode` / `POST /v1/multidecode`; Go proxy + `capabilities.multidecode`; silent LCP pack on `/v1/chat/completions/batch` (no Hermes PR) |
+| **MD1a** | Cell `node_id` / `parent_node_id` + mask | C++ | **Done (lab)** — **0130** |
+| **MD1b** | llama-server HTTP | C++ | **Done (lab)** — **0131** |
+| **MD1c** | Go `/v1/multidecode` + version flag | Go | **Done (lab)** |
+| **MD1d** | Silent Hermes batch pack | Go | **Done (lab)** — LCP ≥ 32 → forest; else Python `generate_batch` |
+
 ### Typed decisions (Laya)
 
 Non-autoregressive System-1 models (`choice` / `score` / `noul`) — Jev-shaped `POST /v1/decisions`, not chat.

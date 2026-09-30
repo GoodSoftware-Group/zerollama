@@ -3518,6 +3518,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISIONS"));
     add_opt(common_arg(
+        {"--multidecode"},
+        string_format("enable MultiDecode forest endpoint /v1/multidecode (default: %s)", "disabled"),
+        [](common_params & params) {
+            params.multidecode = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_MULTIDECODE"));
+    add_opt(common_arg(
         {"--api-key"}, "KEY",
         "API key to use for authentication, multiple keys can be provided as a comma-separated list (default: none)",
         [](common_params & params, const std::string & value) {

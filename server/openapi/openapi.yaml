@@ -13,7 +13,7 @@ info:
     voice catalog, and video generation).
 
     LocalAI control plane (LA7/LA9/LA11/LA11b/LA15/LA16/LA17/LA21/LA22): `/api/repair`,
-    `/api/score`, `/v1/rerank`, `/v1/decisions`, `/api/router/*`, `/api/aliases`, `/api/load`, `/api/unload`, experimental web_search/fetch.
+    `/api/score`, `/v1/rerank`, `/v1/decisions`, `/v1/multidecode`, `/api/router/*`, `/api/aliases`, `/api/load`, `/api/unload`, experimental web_search/fetch.
     In-band alias and router rewrite may set `X-Zerollama-*` response headers.
     Failed-load cooldown (LA18) returns 503 with `Retry-After`.
 
@@ -1635,6 +1635,72 @@ components:
               type: integer
             output_tokens:
               type: integer
+    MultiDecodeRequest:
+      type: object
+      required: [model, tokens, pos, leaves]
+      description: >
+        MultiDecode forest (MD1). One-shot uses `parent` (batch indices). Sticky
+        multi-step uses `parent_node_ids` + `clear:false`. Requires llama-server
+        `--multidecode`. Docs: docs/multidecode-llama-cpp.md.
+      properties:
+        model:
+          type: string
+        tokens:
+          type: array
+          items: { type: integer }
+        pos:
+          type: array
+          items: { type: integer }
+        parent:
+          type: array
+          items: { type: integer }
+          description: Batch-index parents (-1 root); required unless parent_node_ids set
+        node_ids:
+          type: array
+          items: { type: integer }
+        parent_node_ids:
+          type: array
+          items: { type: integer }
+          description: Durable KV node parents for multi-step
+        leaves:
+          type: array
+          items: { type: integer }
+          minItems: 1
+        return_logits:
+          type: boolean
+        clear:
+          type: boolean
+          description: Clear KV before decode (default true when parent_node_ids omitted)
+        n_predict:
+          type: integer
+        keep_alive:
+          oneOf:
+            - type: string
+            - type: number
+        options:
+          type: object
+          additionalProperties: true
+    MultiDecodeLeafResult:
+      type: object
+      required: [leaf, token, node_id]
+      properties:
+        leaf: { type: integer }
+        token: { type: integer }
+        node_id: { type: integer }
+        logits:
+          type: array
+          items: { type: number }
+    MultiDecodeResponse:
+      type: object
+      required: [results, node_ids]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/MultiDecodeLeafResult"
+        node_ids:
+          type: array
+          items: { type: integer }
     RouterDecideRequest:
       type: object
       required: [router]
@@ -4413,6 +4479,7 @@ paths:
                     cache_pin: true
                     propose_sidecar: true
                     chat_completions_batch: true
+                    multidecode: true
                     request_timeout: true
                     preempted_reason: true
                     stable_multi_model_swap: false
@@ -4541,7 +4608,8 @@ paths:
       tags: [OpenAI]
       summary: Batch chat completions (same model)
       description: >
-        Fan-out text chat via Python generate_batch (M15e). Why not Go sched:
+        Fan-out text chat via Python generate_batch (M15e), or silent MultiDecode
+        pack when prompts share a long prefix (`capabilities.multidecode`). Why not Go sched:
         pending_queue is model-load only; decode batching already lives in the
         runtime. Constraints: same model for all items; max 8; no tools/vision/think;
         stream must be false. Requires Python runtime path
@@ -4706,6 +4774,42 @@ paths:
                 $ref: "#/components/schemas/InferenceError"
         "501":
           description: Runner or GGUF does not support rerank
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /v1/multidecode:
+    post:
+      summary: MultiDecode forest decode
+      description: >
+        Shared-prefix forest decode (MD1). WHY not chat: custom RoPE `pos` +
+        ancestor mask via `parent` / sticky `parent_node_ids`. Custom harnesses
+        call this directly; Hermes `POST /v1/chat/completions/batch` may silently
+        pack when LCP ≥ 32 tokens. Probe `zerollama.capabilities.multidecode`.
+        Lab docs: docs/multidecode-llama-cpp.md. Lab ports only — never production
+        `:11434` / `:8081`.
+      operationId: multiDecodeV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MultiDecodeRequest"
+      responses:
+        "200":
+          description: Leaf greedy tokens (and optional logits)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MultiDecodeResponse"
+        "400":
+          description: Invalid forest arrays
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "501":
+          description: Runner does not support multidecode
           content:
             application/json:
               schema:

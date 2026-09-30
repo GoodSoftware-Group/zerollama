@@ -230,6 +230,8 @@ public:
     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
     // Dual Chunk Attention stage mask: dca_stage 0=intra, 1=succ, 2=inter
     void set_input_kq_mask_dca(ggml_tensor * dst, const llama_ubatch * ubatch, int dca_stage) const;
+    // MultiDecode: ancestor-only KQ mask using ubatch->parent + slot cell indices
+    void set_input_kq_mask_multidecode(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const;
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
 
     void set_input_k_rot(ggml_tensor * dst) const;

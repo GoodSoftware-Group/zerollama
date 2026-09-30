@@ -105,6 +105,8 @@ A Hermes wishlist compared zerollama’s advertised APIs to what the harness act
 
 **Shipped (M15e):** `POST /v1/chat/completions/batch` → Go validates → Python `generate_batch`. Cap `min(8, llama_parallel_slots)` (Go hard-caps at 8; Python may tighten further). Same model required; tools/vision/think rejected; non-stream only for v1. Internal `/internal/generate-batch` remains for smokes. OpenAPI: `ChatCompletionsBatchRequest` / `ChatCompletionsBatchResponse`.
 
+**MultiDecode (MD1, lab):** when `zerollama.capabilities.multidecode` and tokenized prompts share LCP ≥ 32, Go silently packs a forest and runs llama-server `POST /v1/multidecode` (patches **0129–0131**); else Python `generate_batch`. Hermes keeps the same OpenAI-shaped request — no client PR. Docs: [multidecode-llama-cpp.md](./multidecode-llama-cpp.md).
+
 #### Wire format (stable)
 
 **Request**
@@ -123,7 +125,7 @@ A Hermes wishlist compared zerollama’s advertised APIs to what the harness act
 - Top-level `model` is required unless every item sets the same `model`.
 - Nested items are OpenAI-shaped chat bodies (`messages` required). Per-item `model` must match the shared model.
 - Rejected: `stream: true`, mixed models, `tools` / non-`none` `tool_choice`, vision / logprobs / think, empty `requests`, size above cap.
-- Requires the Python runtime path (`modality_backends.inference` or `ZEROLLAMA_RUNTIME`).
+- Default path requires the Python runtime (`modality_backends.inference` or `ZEROLLAMA_RUNTIME`). MultiDecode silent pack may satisfy the batch without Python when LCP ≥ 32 and a llama-server MultiDecoder is available.
 
 **Response** (wrapper — not a bare list)
 

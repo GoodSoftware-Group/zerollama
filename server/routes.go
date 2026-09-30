@@ -2615,6 +2615,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/api/rerank", s.RerankHandler)
 	r.POST("/v1/decisions", s.DecisionsHandler)
 	r.POST("/v1/systemone", s.DecisionsHandler)
+	r.POST("/v1/multidecode", s.MultiDecodeHandler)
 	r.POST("/api/router/decide", s.RouterDecideHandler)
 	r.GET("/api/router/corpus", s.RouterCorpusHandler)
 	r.POST("/api/router/corpus", s.RouterCorpusHandler)

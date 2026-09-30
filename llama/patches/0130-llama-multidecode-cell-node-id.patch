@@ -1,0 +1,625 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@localhost>
+Date: Wed, 30 Sep 2026 11:16:38 -0700
+Subject: [PATCH] llama: MultiDecode cell node_id + multi-step ancestor mask
+ (0130)
+
+Store stable node_id/parent_node_id on KV cells; mask walks node ids so
+historical prefix cells survive across ubatches. Exactness step2 PASS.
+---
+ .../multidecode/multidecode-exactness.cpp     | 121 ++++++++++++++++--
+ include/llama.h                               |   9 +-
+ src/llama-batch.cpp                           |  27 ++++
+ src/llama-batch.h                             |   6 +-
+ src/llama-kv-cache-dsv4.cpp                   |   2 +
+ src/llama-kv-cache.cpp                        |  68 +++++++---
+ src/llama-kv-cells.h                          |  45 +++++++
+ 7 files changed, 241 insertions(+), 37 deletions(-)
+
+diff --git a/examples/multidecode/multidecode-exactness.cpp b/examples/multidecode/multidecode-exactness.cpp
+index ea2feb573..28cf43e93 100644
+--- a/examples/multidecode/multidecode-exactness.cpp
++++ b/examples/multidecode/multidecode-exactness.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include "llama.h"
+ 
++#include <algorithm>
+ #include <cmath>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -166,9 +167,9 @@ int main(int argc, char ** argv) {
+             n_forest, prefix.size(), branch_a.size(), branch_b.size(), leaf_a, leaf_b);
+ 
+     llama_context_params cparams = llama_context_default_params();
+-    cparams.n_ctx   = n_forest + 32;
+-    cparams.n_batch = n_forest;
+-    cparams.n_ubatch = n_forest;
++    cparams.n_ctx   = n_forest + 64;
++    cparams.n_batch = std::max(n_forest, 8);
++    cparams.n_ubatch = cparams.n_batch;
+     cparams.n_seq_max = 1;
+ 
+     llama_context * ctx = llama_init_from_model(model, cparams);
+@@ -177,7 +178,9 @@ int main(int argc, char ** argv) {
+         return 1;
+     }
+ 
+-    // --- Path A: MultiDecode forest ---
++    const float eps = 2e-2f; // fp16-tolerant
++
++    // --- Step 1: MultiDecode forest (one-shot) ---
+     llama_memory_clear(llama_get_memory(ctx), true);
+     llama_batch batch = llama_batch_init(n_forest, 0, 1);
+     batch.n_tokens = n_forest;
+@@ -192,18 +195,17 @@ int main(int argc, char ** argv) {
+     }
+ 
+     if (llama_decode(ctx, batch) != 0) {
+-        fprintf(stderr, "MultiDecode llama_decode failed\n");
++        fprintf(stderr, "MultiDecode step1 llama_decode failed\n");
+         llama_batch_free(batch);
+         llama_free(ctx);
+         llama_model_free(model);
+         return 1;
+     }
+ 
+-    // logits rows appear in batch order for marked outputs → leaf_a then leaf_b
+     const float * md_a = llama_get_logits_ith(ctx, leaf_a);
+     const float * md_b = llama_get_logits_ith(ctx, leaf_b);
+     if (!md_a || !md_b) {
+-        fprintf(stderr, "MultiDecode: null leaf logits (a=%p b=%p)\n", (const void *) md_a, (const void *) md_b);
++        fprintf(stderr, "MultiDecode step1: null leaf logits\n");
+         llama_batch_free(batch);
+         llama_free(ctx);
+         llama_model_free(model);
+@@ -211,9 +213,14 @@ int main(int argc, char ** argv) {
+     }
+     std::vector<float> md_logits_a(md_a, md_a + n_vocab);
+     std::vector<float> md_logits_b(md_b, md_b + n_vocab);
++    // pick greedy next tokens from forest leaves (fixed for both paths)
++    int best_a = 0, best_b = 0;
++    for (int v = 1; v < n_vocab; ++v) {
++        if (md_logits_a[v] > md_logits_a[best_a]) best_a = v;
++        if (md_logits_b[v] > md_logits_b[best_b]) best_b = v;
++    }
+     llama_batch_free(batch);
+ 
+-    // --- Path B: two linear prefills ---
+     std::vector<llama_token> path_a = prefix;
+     path_a.insert(path_a.end(), branch_a.begin(), branch_a.end());
+     std::vector<llama_token> path_b = prefix;
+@@ -227,19 +234,107 @@ int main(int argc, char ** argv) {
+         return 1;
+     }
+ 
+-    const float eps = 2e-2f; // fp16-tolerant
+     const float da = max_abs_diff(md_logits_a.data(), lin_a.data(), n_vocab);
+     const float db = max_abs_diff(md_logits_b.data(), lin_b.data(), n_vocab);
++    fprintf(stderr, "step1 max_abs_diff leaf_a=%.6g leaf_b=%.6g (eps=%.3g)\n", da, db, eps);
++    if (da > eps || db > eps) {
++        fprintf(stderr, "FAIL: step1 MultiDecode logits diverge from linear\n");
++        llama_free(ctx);
++        llama_model_free(model);
++        return 1;
++    }
++    fprintf(stderr, "PASS: step1 one-shot forest\n");
++
++    // --- Step 2: multi-step append (reuse KV via parent_node_id) ---
++    // Rebuild forest KV (cleared by linear baselines above)
++    llama_memory_clear(llama_get_memory(ctx), true);
++    {
++        llama_batch b1 = llama_batch_init(n_forest, 0, 1);
++        b1.n_tokens = n_forest;
++        b1.parent = (int32_t *) malloc(sizeof(int32_t) * n_forest);
++        for (int i = 0; i < n_forest; ++i) {
++            b1.token[i] = forest_tok[i];
++            b1.pos[i] = forest_pos[i];
++            b1.parent[i] = forest_parent[i];
++            b1.n_seq_id[i] = 1;
++            b1.seq_id[i][0] = 0;
++            b1.logits[i] = 0; // no need for step1 logits again
++        }
++        if (llama_decode(ctx, b1) != 0) {
++            fprintf(stderr, "MultiDecode step2 rebuild failed\n");
++            llama_batch_free(b1);
++            return 1;
++        }
++        llama_batch_free(b1);
++    }
++
++    const llama_pos depth_next = (llama_pos) (prefix.size() + std::max(branch_a.size(), branch_b.size()));
++    const int32_t nid_a = n_forest;
++    const int32_t nid_b = n_forest + 1;
+ 
+-    fprintf(stderr, "max_abs_diff leaf_a=%.6g leaf_b=%.6g (eps=%.3g)\n", da, db, eps);
++    llama_batch b2 = llama_batch_init(2, 0, 1);
++    b2.n_tokens = 2;
++    b2.parent = (int32_t *) malloc(sizeof(int32_t) * 2);
++    b2.node_id = (int32_t *) malloc(sizeof(int32_t) * 2);
++    b2.parent_node_id = (int32_t *) malloc(sizeof(int32_t) * 2);
++    // leaf A continuation
++    b2.token[0] = best_a;
++    b2.pos[0] = depth_next;
++    b2.parent[0] = -1;
++    b2.node_id[0] = nid_a;
++    b2.parent_node_id[0] = leaf_a; // one-shot synth used batch index as node_id
++    b2.n_seq_id[0] = 1;
++    b2.seq_id[0][0] = 0;
++    b2.logits[0] = 1;
++    // leaf B continuation
++    b2.token[1] = best_b;
++    b2.pos[1] = depth_next;
++    b2.parent[1] = -1;
++    b2.node_id[1] = nid_b;
++    b2.parent_node_id[1] = leaf_b;
++    b2.n_seq_id[1] = 1;
++    b2.seq_id[1][0] = 0;
++    b2.logits[1] = 1;
++
++    if (llama_decode(ctx, b2) != 0) {
++        fprintf(stderr, "MultiDecode step2 llama_decode failed\n");
++        llama_batch_free(b2);
++        llama_free(ctx);
++        llama_model_free(model);
++        return 1;
++    }
++    const float * md2_a = llama_get_logits_ith(ctx, 0);
++    const float * md2_b = llama_get_logits_ith(ctx, 1);
++    if (!md2_a || !md2_b) {
++        fprintf(stderr, "MultiDecode step2: null logits\n");
++        llama_batch_free(b2);
++        return 1;
++    }
++    std::vector<float> md2a(md2_a, md2_a + n_vocab);
++    std::vector<float> md2b(md2_b, md2_b + n_vocab);
++    llama_batch_free(b2);
++
++    path_a.push_back(best_a);
++    path_b.push_back(best_b);
++    std::vector<float> lin2a, lin2b;
++    if (decode_linear_leaf_logits(ctx, path_a, lin2a) != 0) {
++        return 1;
++    }
++    if (decode_linear_leaf_logits(ctx, path_b, lin2b) != 0) {
++        return 1;
++    }
++
++    const float d2a = max_abs_diff(md2a.data(), lin2a.data(), n_vocab);
++    const float d2b = max_abs_diff(md2b.data(), lin2b.data(), n_vocab);
++    fprintf(stderr, "step2 max_abs_diff leaf_a=%.6g leaf_b=%.6g (eps=%.3g)\n", d2a, d2b, eps);
+ 
+     llama_free(ctx);
+     llama_model_free(model);
+ 
+-    if (da > eps || db > eps) {
+-        fprintf(stderr, "FAIL: MultiDecode logits diverge from linear baselines\n");
++    if (d2a > eps || d2b > eps) {
++        fprintf(stderr, "FAIL: step2 multi-step MultiDecode logits diverge from linear\n");
+         return 1;
+     }
+-    fprintf(stderr, "PASS: MultiDecode leaf logits match linear prefills\n");
++    fprintf(stderr, "PASS: MultiDecode step1+step2 (node_id) match linear prefills\n");
+     return 0;
+ }
+diff --git a/include/llama.h b/include/llama.h
+index f05e4b30c..688ac6bbb 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -257,7 +257,10 @@ extern "C" {
+     // - parent : MultiDecode ancestor mask (zerollama / WestCoastML). If non-NULL, length n_tokens;
+     //            parent[i] is the batch index of token i's parent, or -1 for a root. pos[] should be
+     //            tree depth for RoPE; KQ mask keeps only self+ancestors (siblings masked). NULL = off
+-    //            (standard causal). v0: single seq_id, full forest in one ubatch, fresh KV.
++    //            (standard causal). Single seq_id; forest fits one ubatch.
++    // - node_id / parent_node_id : MultiDecode stable ids (MD1). Optional; length n_tokens when set.
++    //            When NULL with parent[] set, synthesize node_id=i and parent_node_id=parent[i].
++    //            Multi-step: set parent_node_id to ids already in KV; node_id for new cells.
+     //
+     typedef struct llama_batch {
+         int32_t n_tokens;
+@@ -268,7 +271,9 @@ extern "C" {
+         int32_t      *  n_seq_id;
+         llama_seq_id ** seq_id;
+         int8_t       *  logits;   // TODO: rename this to "output"
+-        int32_t      *  parent;   // MultiDecode; NULL = off
++        int32_t      *  parent;           // MultiDecode; NULL = off
++        int32_t      *  node_id;          // MultiDecode MD1; NULL = synthesize from batch index
++        int32_t      *  parent_node_id;   // MultiDecode MD1; NULL = use parent[] as node ids
+     } llama_batch;
+ 
+     enum llama_model_kv_override_type {
+diff --git a/src/llama-batch.cpp b/src/llama-batch.cpp
+index fd21f2308..38aa4e82a 100644
+--- a/src/llama-batch.cpp
++++ b/src/llama-batch.cpp
+@@ -260,6 +260,8 @@ bool llama_batch_allocr::init(
+             /*.seq_idx      =*/ this->seq_idx.data(),
+             /*.output       =*/ batch.logits,
+             /*.parent       =*/ batch.parent,
++            /*.node_id      =*/ batch.node_id,
++            /*.parent_node_id=*/ batch.parent_node_id,
+             /*.data         =*/ {},
+         };
+ 
+@@ -495,6 +497,8 @@ llama_ubatch llama_batch_allocr::ubatch_reserve(uint32_t n_seq_tokens, uint32_t
+         /*.seq_idx      =*/ udata->seq_idx.data(),
+         /*.output       =*/ udata->output.data(),
+         /*.parent       =*/ nullptr,
++        /*.node_id      =*/ nullptr,
++        /*.parent_node_id=*/ nullptr,
+         /*.data         =*/ std::move(udata),
+     };
+ 
+@@ -853,6 +857,12 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
+     if (batch.parent) {
+         udata->parent.resize(n_tokens, -1);
+     }
++    if (batch.node_id) {
++        udata->node_id.resize(n_tokens, -1);
++    }
++    if (batch.parent_node_id) {
++        udata->parent_node_id.resize(n_tokens, -1);
++    }
+ 
+     udata->seq_id_data.reserve(n_tokens);
+ 
+@@ -901,6 +911,13 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
+             }
+         }
+ 
++        if (batch.node_id) {
++            udata->node_id[i] = batch.node_id[idxs[i]];
++        }
++        if (batch.parent_node_id) {
++            udata->parent_node_id[i] = batch.parent_node_id[idxs[i]];
++        }
++
+         for (int s = 0; s < udata->n_seq_id[i]; ++s) {
+             const llama_seq_id seq_id = batch.seq_id[idxs[i]][s];
+ 
+@@ -927,6 +944,8 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
+     }
+ 
+     int32_t * parent_ptr = batch.parent ? udata->parent.data() : nullptr;
++    int32_t * node_id_ptr = batch.node_id ? udata->node_id.data() : nullptr;
++    int32_t * parent_node_id_ptr = batch.parent_node_id ? udata->parent_node_id.data() : nullptr;
+ 
+     llama_ubatch res {
+         /*.b_equal_seqs =*/ equal_seqs,
+@@ -945,6 +964,8 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
+         /*.seq_idx      =*/ udata->seq_idx.data(),
+         /*.output       =*/ udata->output.data(),
+         /*.parent       =*/ parent_ptr,
++        /*.node_id      =*/ node_id_ptr,
++        /*.parent_node_id=*/ parent_node_id_ptr,
+         /*.data         =*/ std::move(udata),
+     };
+ 
+@@ -1054,6 +1075,8 @@ struct llama_batch llama_batch_get_one(
+         /*seq_id   =*/ nullptr,
+         /*logits   =*/ nullptr,
+         /*parent   =*/ nullptr,
++        /*node_id  =*/ nullptr,
++        /*parent_node_id =*/ nullptr,
+     };
+ }
+ 
+@@ -1067,6 +1090,8 @@ struct llama_batch llama_batch_init(int32_t n_tokens_alloc, int32_t embd, int32_
+         /*seq_id   =*/ nullptr,
+         /*logits   =*/ nullptr,
+         /*parent   =*/ nullptr,
++        /*node_id  =*/ nullptr,
++        /*parent_node_id =*/ nullptr,
+     };
+ 
+     if (embd) {
+@@ -1102,4 +1127,6 @@ void llama_batch_free(struct llama_batch batch) {
+     }
+     if (batch.logits)   free(batch.logits);
+     if (batch.parent)   free(batch.parent);
++    if (batch.node_id)  free(batch.node_id);
++    if (batch.parent_node_id) free(batch.parent_node_id);
+ }
+diff --git a/src/llama-batch.h b/src/llama-batch.h
+index e59cd207e..559ad2102 100644
+--- a/src/llama-batch.h
++++ b/src/llama-batch.h
+@@ -50,7 +50,9 @@ struct llama_ubatch {
+     llama_seq_id *  seq_id_unq; // [n_seqs_unq]       | s   | seq_id
+     int32_t      *  seq_idx;    // [LLAMA_MAX_SEQ]    | -   | seq_idx
+     int8_t       *  output;     // [n_tokens]         | i   | -
+-    int32_t      *  parent;     // [n_tokens] MultiDecode; NULL = off
++    int32_t      *  parent;           // [n_tokens] MultiDecode; NULL = off
++    int32_t      *  node_id;          // [n_tokens] MultiDecode MD1; NULL = off/synth
++    int32_t      *  parent_node_id;   // [n_tokens] MultiDecode MD1; NULL = off/synth
+ 
+     struct data_t {
+         std::vector<llama_token>    token;
+@@ -62,6 +64,8 @@ struct llama_ubatch {
+         std::vector<int32_t>        seq_idx;
+         std::vector<int8_t>         output;
+         std::vector<int32_t>        parent;
++        std::vector<int32_t>        node_id;
++        std::vector<int32_t>        parent_node_id;
+ 
+         std::vector<llama_seq_id> seq_id_data;
+     };
+diff --git a/src/llama-kv-cache-dsv4.cpp b/src/llama-kv-cache-dsv4.cpp
+index e4e983875..0d5ce1c28 100644
+--- a/src/llama-kv-cache-dsv4.cpp
++++ b/src/llama-kv-cache-dsv4.cpp
+@@ -165,6 +165,8 @@ static llama_ubatch dsv4_build_raw_write_ubatch(const llama_ubatch & ubatch) {
+         /*.seq_idx      =*/ data->seq_idx.data(),
+         /*.output       =*/ data->output.data(),
+         /*.parent       =*/ nullptr,
++        /*.node_id      =*/ nullptr,
++        /*.parent_node_id=*/ nullptr,
+         /*.data         =*/ data,
+     };
+ 
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 35f73876c..c3a87ab51 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -18,6 +18,8 @@
+ #include <map>
+ #include <stdexcept>
+ #include <type_traits>
++#include <unordered_map>
++#include <unordered_set>
+ #include <vector>
+ 
+ static bool ggml_is_power_of_2(int n) {
+@@ -1723,6 +1725,20 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch &
+                 cells.ext_set(idx, ext);
+             }
+ 
++            // MultiDecode: stable node ids (MD1). One-shot with only parent[]: node_id = batch index.
++            if (ubatch.parent != nullptr) {
++                const int32_t nid = ubatch.node_id ? ubatch.node_id[i] : (int32_t) i;
++                int32_t pnid = -1;
++                if (ubatch.parent_node_id) {
++                    pnid = ubatch.parent_node_id[i];
++                } else if (ubatch.parent[i] >= 0) {
++                    // parent[] is a prior batch index; one-shot synth uses that index as node_id
++                    const int32_t p = ubatch.parent[i];
++                    pnid = ubatch.node_id ? ubatch.node_id[p] : p;
++                }
++                cells.node_id_set(idx, nid, pnid);
++            }
++
+             for (int32_t s = 0; s < ubatch.n_seq_id[i]; s++) {
+                 cells.seq_add(idx, ubatch.seq_id[i][s]);
+             }
+@@ -2602,7 +2618,7 @@ void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llam
+ 
+     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
+     GGML_ASSERT(ubatch->parent != nullptr);
+-    GGML_ASSERT(sinfo.n_stream() == 1); // MultiDecode v0: single stream
++    GGML_ASSERT(sinfo.n_stream() == 1); // MultiDecode: single stream
+     GGML_ASSERT(swa_type == LLAMA_SWA_TYPE_NONE);
+ 
+     const int64_t n_kv     = dst->ne[0];
+@@ -2611,12 +2627,20 @@ void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llam
+     GGML_ASSERT(n_tokens % n_stream == 0);
+     GGML_ASSERT(sinfo.size() == n_tokens);
+ 
+-    // reverse map: cell index -> ubatch token index (v0 fresh forest = all cells from this ubatch)
+-    std::vector<int32_t> cell_to_tok(n_kv, -1);
+-    for (uint32_t i = 0; i < n_tokens; ++i) {
+-        const uint32_t cell = sinfo.idxs[0][i];
+-        GGML_ASSERT(cell < (uint32_t) n_kv);
+-        cell_to_tok[cell] = (int32_t) i;
++    const llama_seq_id seq_id = ubatch->seq_id[0][0];
++    const auto & cells = (*v_cells).at(seq_to_stream[seq_id]);
++
++    // node_id -> parent_node_id for all occupied cells (includes prior steps + this ubatch)
++    std::unordered_map<int32_t, int32_t> nid_to_parent;
++    nid_to_parent.reserve((size_t) n_kv);
++    for (uint32_t j = 0; j < (uint32_t) n_kv; ++j) {
++        if (cells.is_empty(j) || !cells.seq_has(j, seq_id)) {
++            continue;
++        }
++        const int32_t nid = cells.node_id_get(j);
++        if (nid >= 0) {
++            nid_to_parent[nid] = cells.parent_node_id_get(j);
++        }
+     }
+ 
+     auto fill = [&](auto * data) {
+@@ -2624,19 +2648,22 @@ void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llam
+         const T mask_keep = llama_cast<T>(0.0f);
+         const T mask_drop = llama_cast<T>(-INFINITY);
+ 
+-        const llama_seq_id seq_id = ubatch->seq_id[0][0];
+-        const auto & cells = (*v_cells).at(seq_to_stream[seq_id]);
+-
+         for (uint32_t i = 0; i < n_tokens; ++i) {
+-            // ancestor bitset over ubatch token indices
+-            std::vector<char> allow(n_tokens, 0);
+-            allow[i] = 1;
+-            int32_t cur = ubatch->parent[i];
++            const uint32_t qcell = sinfo.idxs[0][i];
++            const int32_t qnid = cells.node_id_get(qcell);
++
++            // ancestor set of node_ids (self + walk parent_node_id)
++            std::unordered_set<int32_t> allow;
++            allow.insert(qnid);
++            int32_t cur = cells.parent_node_id_get(qcell);
+             int depth = 0;
+-            while (cur >= 0 && depth <= (int) n_tokens) {
+-                GGML_ASSERT(cur < (int32_t) n_tokens);
+-                allow[cur] = 1;
+-                cur = ubatch->parent[cur];
++            while (cur >= 0 && depth <= (int) n_kv) {
++                allow.insert(cur);
++                auto it = nid_to_parent.find(cur);
++                if (it == nid_to_parent.end()) {
++                    break;
++                }
++                cur = it->second;
+                 ++depth;
+             }
+ 
+@@ -2646,11 +2673,10 @@ void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llam
+                     data[idst + j] = mask_drop;
+                     continue;
+                 }
+-                const int32_t tok = cell_to_tok[j];
+-                if (tok >= 0 && allow[tok]) {
++                const int32_t nid = cells.node_id_get(j);
++                if (nid >= 0 && allow.count(nid)) {
+                     data[idst + j] = mask_keep;
+                 } else {
+-                    // cell not in this ubatch forest map, or not an ancestor — drop
+                     data[idst + j] = mask_drop;
+                 }
+             }
+diff --git a/src/llama-kv-cells.h b/src/llama-kv-cells.h
+index bccecabb0..645995ebb 100644
+--- a/src/llama-kv-cells.h
++++ b/src/llama-kv-cells.h
+@@ -37,6 +37,8 @@ public:
+             ext[i].reset();
+             shift[i] =  0;
+             seq[i].reset();
++            node_id[i] = -1;
++            parent_node_id[i] = -1;
+         }
+ 
+         has_shift = false;
+@@ -65,6 +67,8 @@ public:
+         ext.resize(n);
+         shift.resize(n);
+         seq.resize(n);
++        node_id.resize(n);
++        parent_node_id.resize(n);
+ 
+         reset();
+     }
+@@ -79,6 +83,8 @@ public:
+         ext.resize(n);
+         shift.resize(n, 0);
+         seq.resize(n);
++        node_id.resize(n, -1);
++        parent_node_id.resize(n, -1);
+     }
+ 
+     // Drop empty tail. All used cells must already sit in [0, n).
+@@ -88,6 +94,8 @@ public:
+         ext.resize(n);
+         shift.resize(n);
+         seq.resize(n);
++        node_id.resize(n);
++        parent_node_id.resize(n);
+     }
+ 
+     std::vector<uint32_t> used_idxs() const {
+@@ -155,6 +163,8 @@ public:
+             res.pos[j] = pos[idx];
+             res.ext[j] = ext[idx];
+             res.seq[j] = seq[idx];
++            res.node_id[j] = node_id[idx];
++            res.parent_node_id[j] = parent_node_id[idx];
+ 
+             assert(shift[idx] == 0);
+         }
+@@ -174,6 +184,8 @@ public:
+             res.pos[j] = pos[idx];
+             res.ext[j] = ext[idx];
+             res.seq[j] = seq[idx];
++            res.node_id[j] = node_id[idx];
++            res.parent_node_id[j] = parent_node_id[idx];
+ 
+             assert(shift[idx] == 0);
+         }
+@@ -203,6 +215,8 @@ public:
+             pos[idx] = other.pos[j];
+             ext[idx] = other.ext[j];
+             seq[idx] = other.seq[j];
++            node_id[idx] = other.node_id[j];
++            parent_node_id[idx] = other.parent_node_id[j];
+ 
+             if (pos[idx] != -1) {
+                 seq_pos_add(i + j);
+@@ -234,6 +248,8 @@ public:
+             pos[idx] = other.pos[j];
+             ext[idx] = other.ext[j];
+             seq[idx] = other.seq[j];
++            node_id[idx] = other.node_id[j];
++            parent_node_id[idx] = other.parent_node_id[j];
+ 
+             if (pos[idx] != -1) {
+                 seq_pos_add(idx);
+@@ -254,6 +270,8 @@ public:
+         pos[i] = -1;
+         ext[i].reset();
+         shift[i] = 0;
++        node_id[i] = -1;
++        parent_node_id[i] = -1;
+ 
+         used.erase(i);
+     }
+@@ -273,6 +291,8 @@ public:
+             pos[i] = -1;
+             ext[i].reset();
+             shift[i] = 0;
++            node_id[i] = -1;
++            parent_node_id[i] = -1;
+ 
+             used.erase(i);
+ 
+@@ -303,6 +323,8 @@ public:
+             pos[i] = -1;
+             ext[i].reset();
+             shift[i] = 0;
++            node_id[i] = -1;
++            parent_node_id[i] = -1;
+ 
+             used.erase(i);
+ 
+@@ -432,6 +454,23 @@ public:
+         ext[i] = p;
+     }
+ 
++    // MultiDecode: stable node identity (survives across ubatches). -1 = unset.
++    void node_id_set(uint32_t i, int32_t nid, int32_t parent_nid) {
++        assert(i < node_id.size());
++        node_id[i] = nid;
++        parent_node_id[i] = parent_nid;
++    }
++
++    int32_t node_id_get(uint32_t i) const {
++        assert(i < node_id.size());
++        return node_id[i];
++    }
++
++    int32_t parent_node_id_get(uint32_t i) const {
++        assert(i < parent_node_id.size());
++        return parent_node_id[i];
++    }
++
+     // pos[i] = pos[i] + d
+     // sets "has_shift" to true
+     // note: call only if the cell is not empty
+@@ -450,6 +489,8 @@ public:
+             seq[i].reset();
+             pos[i] = -1;
+             shift[i] = 0;
++            node_id[i] = -1;
++            parent_node_id[i] = -1;
+ 
+             used.erase(i);
+ 
+@@ -491,6 +532,10 @@ private:
+     // stores extra info per cell
+     std::vector<llama_kv_cell_ext> ext;
+ 
++    // MultiDecode: stable node id + parent node id per cell (-1 = unset / non-MD)
++    std::vector<int32_t> node_id;
++    std::vector<int32_t> parent_node_id;
++
+     // this array accumulates any applied shifts to the pos array since the last reset_shift() call
+     // this is used to queue multiple updates to the pos array, which in the end can be applied in one go:
+     //

@@ -1087,6 +1087,39 @@ type RerankRequest struct {
 	Options   map[string]any `json:"options"`
 }
 
+
+// MultiDecodeRequest is POST /v1/multidecode (forest decode).
+// WHY not ChatRequest: custom RoPE pos + ancestor parent / parent_node_ids;
+// see docs/multidecode-llama-cpp.md.
+type MultiDecodeRequest struct {
+	Model         string         `json:"model"`
+	Tokens        []int32        `json:"tokens"`
+	Pos           []int32        `json:"pos"`
+	Parent        []int32        `json:"parent,omitempty"`
+	NodeIDs       []int32        `json:"node_ids,omitempty"`
+	ParentNodeIDs []int32        `json:"parent_node_ids,omitempty"`
+	Leaves        []int32        `json:"leaves"`
+	ReturnLogits  bool           `json:"return_logits,omitempty"`
+	Clear         *bool          `json:"clear,omitempty"`
+	NPredict      int            `json:"n_predict,omitempty"`
+	KeepAlive     *Duration      `json:"keep_alive,omitempty"`
+	Options       map[string]any `json:"options"`
+}
+
+// MultiDecodeLeafResult is one leaf from POST /v1/multidecode.
+type MultiDecodeLeafResult struct {
+	Leaf   int32     `json:"leaf"`
+	Token  int32     `json:"token"`
+	NodeID int32     `json:"node_id"`
+	Logits []float32 `json:"logits,omitempty"`
+}
+
+// MultiDecodeResponse is POST /v1/multidecode.
+type MultiDecodeResponse struct {
+	Results []MultiDecodeLeafResult `json:"results"`
+	NodeIDs []int32                 `json:"node_ids"`
+}
+
 // DecisionsRequest is POST /v1/decisions (Jev/Laya typed System-1 decisions).
 // WHY not ChatRequest: calibrated choice/score/noul + act head; see docs/laya-llama-cpp.md.
 type DecisionsRequest struct {

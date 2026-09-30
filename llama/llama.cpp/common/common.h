@@ -634,6 +634,7 @@ struct common_params {
     // embedding
     bool embedding         = false; // get only sentence embedding
     bool decisions         = false; // enable /v1/decisions (Laya typed-decision head)
+    bool multidecode       = false; // enable /v1/multidecode (forest decode)
     int32_t embd_normalize = 2;     // normalisation for embeddings (-1=none, 0=max absolute int16, 1=taxicab, 2=euclidean, >2=p-norm)
     std::string embd_out   = "";    // empty = default, "array" = [[],[]...], "json" = openai style, "json+" = same "json" + cosine similarity matrix
     std::string embd_sep   = "\n";  // separator of embeddings

@@ -37,6 +37,8 @@ public:
             ext[i].reset();
             shift[i] =  0;
             seq[i].reset();
+            node_id[i] = -1;
+            parent_node_id[i] = -1;
         }
 
         has_shift = false;
@@ -65,6 +67,8 @@ public:
         ext.resize(n);
         shift.resize(n);
         seq.resize(n);
+        node_id.resize(n);
+        parent_node_id.resize(n);
 
         reset();
     }
@@ -79,6 +83,8 @@ public:
         ext.resize(n);
         shift.resize(n, 0);
         seq.resize(n);
+        node_id.resize(n, -1);
+        parent_node_id.resize(n, -1);
     }
 
     // Drop empty tail. All used cells must already sit in [0, n).
@@ -88,6 +94,8 @@ public:
         ext.resize(n);
         shift.resize(n);
         seq.resize(n);
+        node_id.resize(n);
+        parent_node_id.resize(n);
     }
 
     std::vector<uint32_t> used_idxs() const {
@@ -155,6 +163,8 @@ public:
             res.pos[j] = pos[idx];
             res.ext[j] = ext[idx];
             res.seq[j] = seq[idx];
+            res.node_id[j] = node_id[idx];
+            res.parent_node_id[j] = parent_node_id[idx];
 
             assert(shift[idx] == 0);
         }
@@ -174,6 +184,8 @@ public:
             res.pos[j] = pos[idx];
             res.ext[j] = ext[idx];
             res.seq[j] = seq[idx];
+            res.node_id[j] = node_id[idx];
+            res.parent_node_id[j] = parent_node_id[idx];
 
             assert(shift[idx] == 0);
         }
@@ -203,6 +215,8 @@ public:
             pos[idx] = other.pos[j];
             ext[idx] = other.ext[j];
             seq[idx] = other.seq[j];
+            node_id[idx] = other.node_id[j];
+            parent_node_id[idx] = other.parent_node_id[j];
 
             if (pos[idx] != -1) {
                 seq_pos_add(i + j);
@@ -234,6 +248,8 @@ public:
             pos[idx] = other.pos[j];
             ext[idx] = other.ext[j];
             seq[idx] = other.seq[j];
+            node_id[idx] = other.node_id[j];
+            parent_node_id[idx] = other.parent_node_id[j];
 
             if (pos[idx] != -1) {
                 seq_pos_add(idx);
@@ -254,6 +270,8 @@ public:
         pos[i] = -1;
         ext[i].reset();
         shift[i] = 0;
+        node_id[i] = -1;
+        parent_node_id[i] = -1;
 
         used.erase(i);
     }
@@ -273,6 +291,8 @@ public:
             pos[i] = -1;
             ext[i].reset();
             shift[i] = 0;
+            node_id[i] = -1;
+            parent_node_id[i] = -1;
 
             used.erase(i);
 
@@ -303,6 +323,8 @@ public:
             pos[i] = -1;
             ext[i].reset();
             shift[i] = 0;
+            node_id[i] = -1;
+            parent_node_id[i] = -1;
 
             used.erase(i);
 
@@ -432,6 +454,23 @@ public:
         ext[i] = p;
     }
 
+    // MultiDecode: stable node identity (survives across ubatches). -1 = unset.
+    void node_id_set(uint32_t i, int32_t nid, int32_t parent_nid) {
+        assert(i < node_id.size());
+        node_id[i] = nid;
+        parent_node_id[i] = parent_nid;
+    }
+
+    int32_t node_id_get(uint32_t i) const {
+        assert(i < node_id.size());
+        return node_id[i];
+    }
+
+    int32_t parent_node_id_get(uint32_t i) const {
+        assert(i < parent_node_id.size());
+        return parent_node_id[i];
+    }
+
     // pos[i] = pos[i] + d
     // sets "has_shift" to true
     // note: call only if the cell is not empty
@@ -450,6 +489,8 @@ public:
             seq[i].reset();
             pos[i] = -1;
             shift[i] = 0;
+            node_id[i] = -1;
+            parent_node_id[i] = -1;
 
             used.erase(i);
 
@@ -490,6 +531,10 @@ private:
 
     // stores extra info per cell
     std::vector<llama_kv_cell_ext> ext;
+
+    // MultiDecode: stable node id + parent node id per cell (-1 = unset / non-MD)
+    std::vector<int32_t> node_id;
+    std::vector<int32_t> parent_node_id;
 
     // this array accumulates any applied shifts to the pos array since the last reset_shift() call
     // this is used to queue multiple updates to the pos array, which in the end can be applied in one go:

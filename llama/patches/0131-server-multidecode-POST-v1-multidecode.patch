@@ -1,0 +1,293 @@
+From c2048a7ec9c7cb2fe9359da230466ca9a668a4eb Mon Sep 17 00:00:00 2001
+From: root <root@ryzen7950x0.servers.moe>
+Date: Wed, 30 Sep 2026 11:20:39 -0700
+Subject: [PATCH] server: --multidecode and POST /v1/multidecode (0131)
+
+Forest one-shot and multi-step sticky sessions via parent_node_ids.
+---
+ common/arg.cpp                  |   7 ++
+ common/common.h                 |   1 +
+ tools/server/server-context.cpp | 188 ++++++++++++++++++++++++++++++++
+ tools/server/server-context.h   |   1 +
+ tools/server/server.cpp         |   3 +
+ 5 files changed, 200 insertions(+)
+
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 55a0e5ea5..2c036cfdc 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -3517,6 +3517,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.pooling_type = LLAMA_POOLING_TYPE_NONE;
+         }
+     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISIONS"));
++    add_opt(common_arg(
++        {"--multidecode"},
++        string_format("enable MultiDecode forest endpoint /v1/multidecode (default: %s)", "disabled"),
++        [](common_params & params) {
++            params.multidecode = true;
++        }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_MULTIDECODE"));
+     add_opt(common_arg(
+         {"--api-key"}, "KEY",
+         "API key to use for authentication, multiple keys can be provided as a comma-separated list (default: none)",
+diff --git a/common/common.h b/common/common.h
+index d03bcf906..eb5a20214 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -634,6 +634,7 @@ struct common_params {
+     // embedding
+     bool embedding         = false; // get only sentence embedding
+     bool decisions         = false; // enable /v1/decisions (Laya typed-decision head)
++    bool multidecode       = false; // enable /v1/multidecode (forest decode)
+     int32_t embd_normalize = 2;     // normalisation for embeddings (-1=none, 0=max absolute int16, 1=taxicab, 2=euclidean, >2=p-norm)
+     std::string embd_out   = "";    // empty = default, "array" = [[],[]...], "json" = openai style, "json+" = same "json" + cosine similarity matrix
+     std::string embd_sep   = "\n";  // separator of embeddings
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index f65fc1336..b7ecdf312 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -231,6 +231,9 @@ struct server_batch {
+             batch.n_seq_id + off,
+             batch.seq_id   + off,
+             batch.logits   + off,
++            /*parent=*/ nullptr,
++            /*node_id=*/ nullptr,
++            /*parent_node_id=*/ nullptr,
+         };
+ 
+         return view;
+@@ -877,6 +880,10 @@ public:
+     std::mutex mutex_laya;
+     std::unique_ptr<laya_head_weights> laya_weights;
+ 
++    // MultiDecode /v1/multidecode: sync forest decode (serialized)
++    std::mutex mutex_multidecode;
++    int32_t md_next_node_id = 0;
++
+     llama_context * get_ctx_tgt() {
+         return ctx_tgt;
+     }
+@@ -5650,6 +5657,187 @@ void server_routes::init_routes() {
+         return res;
+     };
+ 
++    this->post_multidecode = [this](const server_http_req & req) {
++        auto res = create_response();
++
++        if (!params.multidecode) {
++            res->error(format_error_response(
++                "This server does not support MultiDecode. Start it with `--multidecode`",
++                ERROR_TYPE_NOT_SUPPORTED));
++            return res;
++        }
++
++        json body;
++        try {
++            body = json::parse(req.body);
++        } catch (const std::exception & e) {
++            res->error(format_error_response(std::string("invalid JSON: ") + e.what(), ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++
++        if (!body.contains("tokens") || !body.at("tokens").is_array() || body.at("tokens").empty()) {
++            res->error(format_error_response("\"tokens\" must be a non-empty array", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++        if (!body.contains("pos") || !body.at("pos").is_array()) {
++            res->error(format_error_response("\"pos\" must be an array", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++        if (!body.contains("leaves") || !body.at("leaves").is_array() || body.at("leaves").empty()) {
++            res->error(format_error_response("\"leaves\" must be a non-empty array", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++
++        std::vector<llama_token> tokens;
++        std::vector<llama_pos>   pos;
++        std::vector<int32_t>     parent;
++        std::vector<int32_t>     leaves;
++        std::vector<int32_t>     node_ids_in;
++        std::vector<int32_t>     parent_node_ids;
++        try {
++            tokens = body.at("tokens").get<std::vector<llama_token>>();
++            pos    = body.at("pos").get<std::vector<llama_pos>>();
++            leaves = body.at("leaves").get<std::vector<int32_t>>();
++            if (body.contains("node_ids") && body.at("node_ids").is_array()) {
++                node_ids_in = body.at("node_ids").get<std::vector<int32_t>>();
++            }
++            if (body.contains("parent_node_ids") && body.at("parent_node_ids").is_array()) {
++                parent_node_ids = body.at("parent_node_ids").get<std::vector<int32_t>>();
++            }
++            if (body.contains("parent") && body.at("parent").is_array()) {
++                parent = body.at("parent").get<std::vector<int32_t>>();
++            } else if (parent_node_ids.empty()) {
++                res->error(format_error_response(
++                    "\"parent\" must be an array (or provide parent_node_ids for multi-step)",
++                    ERROR_TYPE_INVALID_REQUEST));
++                return res;
++            }
++        } catch (const std::exception & e) {
++            res->error(format_error_response(std::string("invalid forest arrays: ") + e.what(), ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++
++        const int n = (int) tokens.size();
++        if (parent.empty() && !parent_node_ids.empty()) {
++            // Multi-step: ancestry is via durable node ids; batch.parent indices unused.
++            parent.assign(n, -1);
++        }
++        if ((int) pos.size() != n || (int) parent.size() != n) {
++            res->error(format_error_response("tokens/pos/parent length mismatch", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++        if (!node_ids_in.empty() && (int) node_ids_in.size() != n) {
++            res->error(format_error_response("node_ids length mismatch", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++        if (!parent_node_ids.empty() && (int) parent_node_ids.size() != n) {
++            res->error(format_error_response("parent_node_ids length mismatch", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++        for (int32_t li : leaves) {
++            if (li < 0 || li >= n) {
++                res->error(format_error_response("leaf index out of range", ERROR_TYPE_INVALID_REQUEST));
++                return res;
++            }
++        }
++
++        const bool want_logits = json_value(body, "return_logits", json_value(body, "logits", false));
++        const bool clear_kv = json_value(body, "clear", parent_node_ids.empty());
++
++        queue_tasks.wait_until_no_sleep();
++        std::unique_lock<std::mutex> lock(ctx_server.mutex_multidecode);
++
++        llama_context * lctx = ctx_server.get_ctx_tgt();
++        if (lctx == nullptr || ctx_server.model_tgt == nullptr) {
++            res->error(format_error_response("model context is not available", ERROR_TYPE_UNAVAILABLE));
++            return res;
++        }
++
++        if (clear_kv) {
++            llama_memory_clear(llama_get_memory(lctx), true);
++            ctx_server.md_next_node_id = 0;
++        }
++
++        // Assign node ids if not provided
++        std::vector<int32_t> node_ids = node_ids_in;
++        if (node_ids.empty()) {
++            node_ids.resize(n);
++            for (int i = 0; i < n; ++i) {
++                node_ids[i] = ctx_server.md_next_node_id++;
++            }
++        } else {
++            for (int32_t nid : node_ids) {
++                if (nid + 1 > ctx_server.md_next_node_id) {
++                    ctx_server.md_next_node_id = nid + 1;
++                }
++            }
++        }
++
++        llama_batch batch = llama_batch_init(n, 0, 1);
++        batch.n_tokens = n;
++        batch.parent = (int32_t *) malloc(sizeof(int32_t) * n);
++        batch.node_id = (int32_t *) malloc(sizeof(int32_t) * n);
++        batch.parent_node_id = (int32_t *) malloc(sizeof(int32_t) * n);
++        for (int i = 0; i < n; ++i) {
++            batch.token[i] = tokens[i];
++            batch.pos[i] = pos[i];
++            batch.parent[i] = parent[i];
++            batch.node_id[i] = node_ids[i];
++            if (!parent_node_ids.empty()) {
++                batch.parent_node_id[i] = parent_node_ids[i];
++            } else if (parent[i] >= 0) {
++                batch.parent_node_id[i] = node_ids[parent[i]];
++            } else {
++                batch.parent_node_id[i] = -1;
++            }
++            batch.n_seq_id[i] = 1;
++            batch.seq_id[i][0] = 0;
++            batch.logits[i] = 0;
++        }
++        for (int32_t li : leaves) {
++            batch.logits[li] = 1;
++        }
++
++        if (llama_decode(lctx, batch) != 0) {
++            llama_batch_free(batch);
++            res->error(format_error_response("llama_decode failed", ERROR_TYPE_SERVER));
++            return res;
++        }
++
++        const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(ctx_server.model_tgt));
++        json results = json::array();
++        for (int32_t li : leaves) {
++            const float * logits = llama_get_logits_ith(lctx, li);
++            if (!logits) {
++                llama_batch_free(batch);
++                res->error(format_error_response("null logits for leaf", ERROR_TYPE_SERVER));
++                return res;
++            }
++            int best = 0;
++            for (int v = 1; v < n_vocab; ++v) {
++                if (logits[v] > logits[best]) {
++                    best = v;
++                }
++            }
++            json row = {
++                {"leaf", li},
++                {"token", best},
++                {"node_id", node_ids[li]},
++            };
++            if (want_logits) {
++                row["logits"] = std::vector<float>(logits, logits + n_vocab);
++            }
++            results.push_back(std::move(row));
++        }
++
++        llama_batch_free(batch);
++        res->ok({
++            {"results", results},
++            {"node_ids", node_ids},
++        });
++        return res;
++    };
++
+     this->get_lora_adapters = [this](const server_http_req & req) {
+         auto res = create_response();
+ 
+diff --git a/tools/server/server-context.h b/tools/server/server-context.h
+index 6238b0ee5..9a505fa5b 100644
+--- a/tools/server/server-context.h
++++ b/tools/server/server-context.h
+@@ -157,6 +157,7 @@ struct server_routes {
+     server_http_context::handler_t post_embeddings_oai;
+     server_http_context::handler_t post_rerank;
+     server_http_context::handler_t post_decisions;
++    server_http_context::handler_t post_multidecode;
+     server_http_context::handler_t get_lora_adapters;
+     server_http_context::handler_t post_lora_adapters;
+ 
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index 986be0a94..7af0f365c 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -243,6 +243,7 @@ int llama_server(common_params & params, int argc, char ** argv) {
+         routes.post_embeddings_oai         = models_routes->proxy_post;
+         routes.post_rerank                 = models_routes->proxy_post;
+         routes.post_decisions              = models_routes->proxy_post;
++        routes.post_multidecode            = models_routes->proxy_post;
+         routes.post_tokenize               = models_routes->proxy_post;
+         routes.post_detokenize             = models_routes->proxy_post;
+         routes.post_apply_template         = models_routes->proxy_post;
+@@ -299,6 +300,8 @@ int llama_server(common_params & params, int argc, char ** argv) {
+     ctx_http.post("/v1/reranking",             ex_wrapper(routes.post_rerank));
+     ctx_http.post("/v1/decisions",             ex_wrapper(routes.post_decisions));
+     ctx_http.post("/decisions",                ex_wrapper(routes.post_decisions));
++    ctx_http.post("/v1/multidecode",           ex_wrapper(routes.post_multidecode));
++    ctx_http.post("/multidecode",              ex_wrapper(routes.post_multidecode));
+     ctx_http.post("/tokenize",                 ex_wrapper(routes.post_tokenize));
+     ctx_http.post("/detokenize",               ex_wrapper(routes.post_detokenize));
+     ctx_http.post("/apply-template",           ex_wrapper(routes.post_apply_template));
+-- 
+2.39.5
+

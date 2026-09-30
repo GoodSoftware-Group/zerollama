@@ -254,6 +254,13 @@ extern "C" {
     //               - if embeddings: all tokens are output
     //               - if not:        only the last token is output
     //            )
+    // - parent : MultiDecode ancestor mask (zerollama / WestCoastML). If non-NULL, length n_tokens;
+    //            parent[i] is the batch index of token i's parent, or -1 for a root. pos[] should be
+    //            tree depth for RoPE; KQ mask keeps only self+ancestors (siblings masked). NULL = off
+    //            (standard causal). Single seq_id; forest fits one ubatch.
+    // - node_id / parent_node_id : MultiDecode stable ids (MD1). Optional; length n_tokens when set.
+    //            When NULL with parent[] set, synthesize node_id=i and parent_node_id=parent[i].
+    //            Multi-step: set parent_node_id to ids already in KV; node_id for new cells.
     //
     typedef struct llama_batch {
         int32_t n_tokens;
@@ -264,6 +271,9 @@ extern "C" {
         int32_t      *  n_seq_id;
         llama_seq_id ** seq_id;
         int8_t       *  logits;   // TODO: rename this to "output"
+        int32_t      *  parent;           // MultiDecode; NULL = off
+        int32_t      *  node_id;          // MultiDecode MD1; NULL = synthesize from batch index
+        int32_t      *  parent_node_id;   // MultiDecode MD1; NULL = use parent[] as node ids
     } llama_batch;
 
     enum llama_model_kv_override_type {

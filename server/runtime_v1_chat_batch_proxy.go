@@ -100,6 +100,11 @@ func (s *Server) runtimeV1ChatCompletionsBatchProxy() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": errCloudUseOpenAICompat})
 			return
 		}
+		// Silent MultiDecode pack when shared prefix is long enough (MD1).
+		// WHY before Python: same Hermes wire; no client PR. Falls through on miss.
+		if s.tryBatchMultidecode(c, model, reqs, bodyMap) {
+			return
+		}
 		if !resolveRuntimeProxy(c, model, proxyOptsFromV1Body(bodyMap)) {
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
 				"error": "batch chat requires the Python runtime path (set modality_backends.inference or ZEROLLAMA_RUNTIME)",
