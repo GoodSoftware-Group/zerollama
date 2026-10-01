@@ -100,7 +100,9 @@ export ZEROLLAMA_LLAMA_CACHE="${ZEROLLAMA_LLAMA_CACHE:-1}"
 #   ZEROLLAMA_RUNTIME_LLAMA_BACKEND=inprocess
 
 # Training: Go listens on :9500 and /api/train/* (embedded CPython, not a python sidecar).
-export OLLAMA_TRAINING="${OLLAMA_TRAINING:-true}"
+# Canonical: ZEROLLAMA_GPU_JOBS. OLLAMA_TRAINING remains a deprecated alias.
+export ZEROLLAMA_GPU_JOBS="${ZEROLLAMA_GPU_JOBS:-${OLLAMA_TRAINING:-true}}"
+export OLLAMA_TRAINING="${OLLAMA_TRAINING:-${ZEROLLAMA_GPU_JOBS}}"
 export OLLAMA_TRAINING_TCP="${OLLAMA_TRAINING_TCP:-:9500}"
 
 # Prefer repo run/ binary when present (CT 1564 install layout).
@@ -135,7 +137,7 @@ _PYPP=""
 if [[ -d "${_RT_SITE}" ]]; then
   _PYPP="${_RT_SITE}"
 fi
-if [[ "${OLLAMA_TRAINING}" == "true" ]]; then
+if [[ "${ZEROLLAMA_GPU_JOBS}" == "true" || "${OLLAMA_TRAINING}" == "true" ]]; then
   _TRAIN_VENV="${ZEROLLAMA_REPO}/.venv-training"
   _TRAIN_SITE="${_TRAIN_VENV}/lib/python${_EMBED_PY}/site-packages"
   if [[ ! -d "${_TRAIN_SITE}" ]]; then

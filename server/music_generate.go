@@ -54,7 +54,7 @@ func (s *Server) MusicCreateHandler(c *gin.Context) {
 
 func (s *Server) queueMusic3(c *gin.Context, req openai.SpeechCreateRequest) {
 	if s.training == nil {
-		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "music generation requires OLLAMA_TRAINING=true (embedded training worker)"))
+		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "music generation requires ZEROLLAMA_GPU_JOBS=true (embedded GPU job worker; alias OLLAMA_TRAINING)"))
 		return
 	}
 
@@ -128,7 +128,7 @@ func (s *Server) queueMusic3(c *gin.Context, req openai.SpeechCreateRequest) {
 // MusicGetHandler returns GET /v1/audio/generations/:id
 func (s *Server) MusicGetHandler(c *gin.Context) {
 	if s.training == nil {
-		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "music generation requires OLLAMA_TRAINING=true"))
+		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "music generation requires ZEROLLAMA_GPU_JOBS=true (alias OLLAMA_TRAINING)"))
 		return
 	}
 	id := c.Param("id")
@@ -162,7 +162,7 @@ func (s *Server) MusicGetHandler(c *gin.Context) {
 // MusicContentHandler streams GET /v1/audio/generations/:id/content (audio/wav).
 func (s *Server) MusicContentHandler(c *gin.Context) {
 	if s.training == nil {
-		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "music generation requires OLLAMA_TRAINING=true"))
+		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "music generation requires ZEROLLAMA_GPU_JOBS=true (alias OLLAMA_TRAINING)"))
 		return
 	}
 	id := c.Param("id")

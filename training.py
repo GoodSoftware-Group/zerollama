@@ -44,24 +44,78 @@ import time
 from queue import Queue, Empty
 from datetime import datetime
 
-# Training imports (loaded once)
-import torch
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    TrainingArguments,
-    Trainer,
-)
-from datasets import Dataset
-from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
+# Heavy ML imports are deferred so embed CPython can start the job queue for
+# video run_script (Wan/LTX/H3) without torch in the system interpreter.
+# Train jobs call _ensure_training_stack() before touching these names.
+torch = None  # type: ignore[assignment]
+AutoModelForCausalLM = None  # type: ignore[assignment]
+AutoTokenizer = None  # type: ignore[assignment]
+TrainingArguments = None  # type: ignore[assignment]
+Trainer = None  # type: ignore[assignment]
+Dataset = None  # type: ignore[assignment]
+LoraConfig = None  # type: ignore[assignment]
+get_peft_model = None  # type: ignore[assignment]
+TaskType = None  # type: ignore[assignment]
+prepare_model_for_kbit_training = None  # type: ignore[assignment]
+HAS_BNB = False
+_TRAINING_STACK_READY = False
+
+
+def _ensure_training_stack() -> None:
+    """Import torch/transformers/peft once. Required for train jobs, not run_script."""
+    global torch, AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer
+    global Dataset, LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
+    global HAS_BNB, _TRAINING_STACK_READY
+    if _TRAINING_STACK_READY:
+        return
+    try:
+        import torch as _torch
+        from transformers import (
+            AutoModelForCausalLM as _AutoModelForCausalLM,
+            AutoTokenizer as _AutoTokenizer,
+            TrainingArguments as _TrainingArguments,
+            Trainer as _Trainer,
+        )
+        from datasets import Dataset as _Dataset
+        from peft import (
+            LoraConfig as _LoraConfig,
+            get_peft_model as _get_peft_model,
+            TaskType as _TaskType,
+            prepare_model_for_kbit_training as _prepare_model_for_kbit_training,
+        )
+    except ImportError as e:
+        raise RuntimeError(
+            "embedded training stack missing (torch/transformers/peft/datasets); "
+            "install into the embed interpreter, or use run_script video jobs only"
+        ) from e
+    torch = _torch
+    AutoModelForCausalLM = _AutoModelForCausalLM
+    AutoTokenizer = _AutoTokenizer
+    TrainingArguments = _TrainingArguments
+    Trainer = _Trainer
+    Dataset = _Dataset
+    LoraConfig = _LoraConfig
+    get_peft_model = _get_peft_model
+    TaskType = _TaskType
+    prepare_model_for_kbit_training = _prepare_model_for_kbit_training
+    try:
+        import bitsandbytes as bnb  # noqa: F401
+        HAS_BNB = True
+    except ImportError:
+        HAS_BNB = False
+    _TRAINING_STACK_READY = True
 
 
 def _mps_available() -> bool:
+    if torch is None:
+        return False
     mps = getattr(torch.backends, "mps", None)
     return mps is not None and mps.is_available()
 
 
 def _pick_device() -> str:
+    if torch is None:
+        return "cpu"
     if torch.cuda.is_available():
         return "cuda"
     if _mps_available():
@@ -70,6 +124,8 @@ def _pick_device() -> str:
 
 
 def _empty_device_cache() -> None:
+    if torch is None:
+        return
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     elif _mps_available():
@@ -78,19 +134,12 @@ def _empty_device_cache() -> None:
 
 def _is_cuda_oom(exc: BaseException) -> bool:
     """True if exception indicates GPU OOM (PyTorch or driver message)."""
-    oom_cls = getattr(torch.cuda, "OutOfMemoryError", None)
-    if oom_cls is not None and isinstance(exc, oom_cls):
-        return True
+    if torch is not None:
+        oom_cls = getattr(torch.cuda, "OutOfMemoryError", None)
+        if oom_cls is not None and isinstance(exc, oom_cls):
+            return True
     msg = str(exc).lower()
     return "out of memory" in msg or "cuda out of memory" in msg
-
-
-# Optional: bitsandbytes for QLoRA
-try:
-    import bitsandbytes as bnb
-    HAS_BNB = True
-except ImportError:
-    HAS_BNB = False
 
 
 def _parse_idle_unload_sec() -> int:
@@ -444,6 +493,11 @@ class WorkerState:
                 print(f"WORKER: Model {model_name} already loaded, reusing", flush=True)
                 return True
 
+        _ensure_training_stack()
+        if self.device == "cpu" and torch is not None and torch.cuda.is_available():
+            # Worker started without torch; refresh device once the stack is present.
+            self.device = _pick_device()
+
         if use_qlora and self.device != "cuda":
             print(
                 "WORKER ERROR: QLoRA requires CUDA (bitsandbytes); use use_lora without use_qlora on Apple Silicon",
@@ -651,6 +705,7 @@ def job_processor():
 
 def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
     """Process a training request"""
+    _ensure_training_stack()
     STATE.cancel_idle_unload_timer()
     STATE.training_active = True
     try:
@@ -1267,13 +1322,15 @@ def handle_request(request: Dict[str, Any], client_id: Optional[str] = None) -> 
     
     if cmd == "ping":
         queue_status = JOB_QUEUE.get_queue_status()
+        cuda_ok = bool(torch is not None and torch.cuda.is_available())
         return {
             "status": "ok",
             "message": "pong",
             "device": STATE.device,
             "model_loaded": STATE.current_model_name,
-            "cuda_available": torch.cuda.is_available(),
+            "cuda_available": cuda_ok,
             "mps_available": _mps_available(),
+            "training_stack": _TRAINING_STACK_READY,
             "queue": queue_status,
         }
     
@@ -1445,12 +1502,22 @@ def run_server(address: str):
         
         print(f"WORKER: Training worker listening on Unix socket {address}", flush=True)
     
-    print(f"WORKER: Device: {STATE.device}, CUDA available: {torch.cuda.is_available()}, MPS available: {_mps_available()}", flush=True)
-    if torch.cuda.is_available():
+    cuda_ok = bool(torch is not None and torch.cuda.is_available())
+    print(
+        f"WORKER: Device: {STATE.device}, CUDA available: {cuda_ok}, "
+        f"MPS available: {_mps_available()}, training_stack={_TRAINING_STACK_READY}",
+        flush=True,
+    )
+    if cuda_ok:
         print(f"WORKER: GPU: {torch.cuda.get_device_name(0)}", flush=True)
         print(f"WORKER: GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB", flush=True)
     elif _mps_available():
         print("WORKER: Using Apple Metal (MPS) for training", flush=True)
+    elif not _TRAINING_STACK_READY:
+        print(
+            "WORKER: training stack deferred (torch not loaded); run_script video jobs OK",
+            flush=True,
+        )
     if IDLE_UNLOAD_SEC > 0:
         print(
             f"WORKER: Idle GPU unload enabled: TRAINING_WORKER_IDLE_UNLOAD_SEC={IDLE_UNLOAD_SEC}",

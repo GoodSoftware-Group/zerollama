@@ -190,6 +190,28 @@ func BoolWithDefault(k string) func(defaultValue bool) bool {
 	}
 }
 
+// boolWithDefaultAliased reads primary first, then deprecated alias, then defaultValue.
+// Why: rename env keys without breaking systemd drop-ins that still set the old name.
+func boolWithDefaultAliased(primary, alias string) func(defaultValue bool) bool {
+	return func(defaultValue bool) bool {
+		if s := Var(primary); s != "" {
+			b, err := strconv.ParseBool(s)
+			if err != nil {
+				return true
+			}
+			return b
+		}
+		if s := Var(alias); s != "" {
+			b, err := strconv.ParseBool(s)
+			if err != nil {
+				return true
+			}
+			return b
+		}
+		return defaultValue
+	}
+}
+
 func Bool(k string) func() bool {
 	withDefault := BoolWithDefault(k)
 	return func() bool {
@@ -250,9 +272,13 @@ var (
 	EnableIntegratedGPU = BoolWithDefault("OLLAMA_IGPU_ENABLE")
 	// NoCloudEnv checks the OLLAMA_NO_CLOUD environment variable.
 	NoCloudEnv = Bool("OLLAMA_NO_CLOUD")
-	// TrainingEnabled starts embedded GPU training (CGO + training.py) and registers training APIs when true.
-	// Default true so the capability is discoverable; production without GPU stack sets OLLAMA_TRAINING=false.
-	TrainingEnabled = BoolWithDefault("OLLAMA_TRAINING")
+	// GPUJobsEnabled starts the embedded CPython job worker (training.py): /api/train,
+	// video/music run_script, optional TCP. Canonical env: ZEROLLAMA_GPU_JOBS.
+	// OLLAMA_TRAINING is a deprecated alias (kept so existing unit files keep working).
+	// Default true so the capability is discoverable; hosts without the stack set false.
+	GPUJobsEnabled = boolWithDefaultAliased("ZEROLLAMA_GPU_JOBS", "OLLAMA_TRAINING")
+	// TrainingEnabled is the deprecated name for GPUJobsEnabled.
+	TrainingEnabled = GPUJobsEnabled
 )
 
 func String(s string) func() string {
@@ -626,7 +652,8 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_NO_CLOUD":                          {"OLLAMA_NO_CLOUD", NoCloud(), "Disable Ollama cloud features (remote inference and web search)"},
 		"OLLAMA_NOHISTORY":                         {"OLLAMA_NOHISTORY", NoHistory(), "Do not preserve readline history"},
 		"OLLAMA_NOPRUNE":                           {"OLLAMA_NOPRUNE", NoPrune(), "Do not prune model blobs on startup"},
-		"OLLAMA_TRAINING":                          {"OLLAMA_TRAINING", TrainingEnabled(true), "Enable GPU training (embedded CPython + training.py; HTTP /api/train and optional TCP) (default true)"},
+		"ZEROLLAMA_GPU_JOBS":                       {"ZEROLLAMA_GPU_JOBS", GPUJobsEnabled(true), "Enable embedded GPU job worker (training.py): /api/train, video/music run_script, optional TCP (default true). Alias: OLLAMA_TRAINING"},
+		"OLLAMA_TRAINING":                          {"OLLAMA_TRAINING", TrainingEnabled(true), "Deprecated alias for ZEROLLAMA_GPU_JOBS (embedded GPU job worker)"},
 		"OLLAMA_TRAINING_TCP":                      {"OLLAMA_TRAINING_TCP", Var("OLLAMA_TRAINING_TCP"), "Public training TCP listen address; empty or 1 is :9500; 0 or - disables"},
 		"OLLAMA_TRAINING_PYTHONPATH":               {"OLLAMA_TRAINING_PYTHONPATH", Var("OLLAMA_TRAINING_PYTHONPATH"), "Repository root containing training.py; must exist if set (no silent fallback). When unset: walk cwd, then $HOME/zerollama or $HOME/ollama"},
 		"ZEROLLAMA_REPO":                           {"ZEROLLAMA_REPO", Var("ZEROLLAMA_REPO"), "Alias for repo root (training.py and runtime/); same rules as OLLAMA_TRAINING_PYTHONPATH"},

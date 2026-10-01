@@ -7,7 +7,7 @@
 ```text
 zerollama (Go)
   ├── CGO libpython (one interpreter)
-  ├── training.py (optional, OLLAMA_TRAINING)
+  ├── training.py (optional, ZEROLLAMA_GPU_JOBS / alias OLLAMA_TRAINING)
   └── runtime package → uvicorn on 127.0.0.1:8081 (daemon thread)
          ↑
   Go proxies /api/generate, /api/chat, /v1/... to this loopback URL

@@ -149,15 +149,27 @@ def _job_to_dict(job) -> dict:
 
 class _TrainingShimAPI:
     def health(self) -> dict:
-        import torch
         import training
+
+        # Torch is optional: video run_script hosts may defer the training stack.
+        cuda_ok = False
+        mps_ok = False
+        try:
+            import torch
+
+            cuda_ok = bool(torch.cuda.is_available())
+            mps = getattr(torch.backends, "mps", None)
+            mps_ok = mps is not None and mps.is_available()
+        except ImportError:
+            pass
 
         extras = {
             "device": training.STATE.device,
-            "cuda_available": torch.cuda.is_available(),
-            "mps_available": getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available(),
+            "cuda_available": cuda_ok,
+            "mps_available": mps_ok,
             "model_loaded": training.STATE.current_model_name,
             "training_active": training.STATE.training_active,
+            "training_stack": bool(getattr(training, "_TRAINING_STACK_READY", False)),
             "queue": training.JOB_QUEUE.get_queue_status(),
         }
         return {"status": "ok", "extrasJson": json.dumps(extras)}  # camelCase matches proto JSON

@@ -114,7 +114,7 @@ func Start(ctx context.Context, evictor VRAMEvictor) (*Client, error) {
 		pyembed.RegisterOOMHandler(nil)
 		return nil, fmt.Errorf("training worker: %w", err)
 	}
-	slog.Info("training worker started", "training_py_root", repo)
+	slog.Info("GPU job worker started", "training_py_root", repo)
 	return &Client{evictor: evictor}, nil
 }
 

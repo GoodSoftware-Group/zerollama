@@ -40,7 +40,7 @@ GET /v1/videos/:id/content (completed only; video/mp4)
 
 ## Requirements
 
-- **`OLLAMA_TRAINING=true`** (default when PyTorch embed is available). If training is disabled, `POST /v1/videos` returns **503**.
+- **`ZEROLLAMA_GPU_JOBS=true`** (default; deprecated alias **`OLLAMA_TRAINING`**). Enables the embedded GPU job worker that queues video `run_script` jobs. If disabled, `POST /v1/videos` returns **503**.
 - **GPU ~16 GB** for shipped **16g** presets (`wan2.1-t2v:1.3b`, `wan2.2-ti2v-5b`).
 - **Host RAM ~16 GB** for the Wan subprocess on 16g presets (T5 released after encode; see below). A **24 GB** CT is comfortable; **16 GB** works with `WAN_UNLOAD_T5=1` (default on 16g).
 - Wan repo + checkpoints (install script below).
@@ -207,7 +207,7 @@ On `vram_tier: 16g`, request `options.frames` is capped unless manifest `video_g
 
 | Variable | Role |
 |----------|------|
-| `OLLAMA_TRAINING` | Must be enabled for `/v1/videos`. |
+| `ZEROLLAMA_GPU_JOBS` | Must be enabled for `/v1/videos` (alias: `OLLAMA_TRAINING`). |
 | `OLLAMA_MODELS` | Artifact root `$OLLAMA_MODELS/generated/`. |
 | `ZEROLLAMA_WAN_VIDEO_TIMEOUT` | Global timeout override (seconds). |
 | `ZEROLLAMA_TRAINING_QUEUE_ON_BUSY` | Defer video submit when inference busy (with submit `queue_on_busy`). |
@@ -245,7 +245,7 @@ On `vram_tier: 16g`, request `options.frames` is capped unless manifest `video_g
 
 | Symptom | Likely cause |
 |---------|----------------|
-| **503** on POST | `OLLAMA_TRAINING=false`, embed failed, **or host-RAM admission** (`server/video_admit.go`) — box total/free below plan floor. |
+| **503** on POST | `ZEROLLAMA_GPU_JOBS=false` (or alias `OLLAMA_TRAINING=false`), embed failed, **or host-RAM admission** (`server/video_admit.go`) — box total/free below plan floor. |
 | **400** cloud model | Local Wan only. |
 | **502** on GET/content | Training worker error; check daemon logs (`SCRIPT:` / `SCRIPT ERROR:`). |
 | **404** defer id | Expired tombstone or wrong id; use id from POST response. |

@@ -2774,10 +2774,11 @@ func Serve(listeners ...net.Listener) error {
 	s.sched = sched
 	sched.fifoYield = s.schedYieldToRuntimeFifo
 
-	// Optional GPU training: Go owns public TCP :9500 and /api/train; embedded CPython runs training.py.
-	// Default on (OLLAMA_TRAINING) so integrators see the feature; set false if libpython / torch deps are absent.
-	// Close order on signals: training worker (stops Python job thread) before tearing down inference runners.
-	if envconfig.TrainingEnabled(true) {
+	// Embedded GPU job worker: Go owns public TCP :9500 and /api/train; CPython runs training.py
+	// (train + video/music run_script). Canonical env ZEROLLAMA_GPU_JOBS (alias OLLAMA_TRAINING).
+	// Default on so integrators see the feature; set false if libpython / stack deps are absent.
+	// Close order on signals: worker (stops Python job thread) before tearing down inference runners.
+	if envconfig.GPUJobsEnabled(true) {
 		if runtime.GOOS == "darwin" {
 			if repo, rerr := trainingworker.RepoRoot(); rerr == nil && repo != "" {
 				if err := EnsureDarwinTrainingEnv(ctx, repo); err != nil {
@@ -2786,7 +2787,7 @@ func Serve(listeners ...net.Listener) error {
 			}
 		}
 		if tw, terr := trainingworker.Start(ctx, sched); terr != nil {
-			slog.Warn("training worker not started", "error", terr)
+			slog.Warn("GPU job worker not started", "error", terr)
 		} else {
 			s.training = tw
 			s.trainingDefer = newTrainingDeferQueue(s)
@@ -2813,7 +2814,7 @@ func Serve(listeners ...net.Listener) error {
 			}
 		}
 	} else {
-		slog.Info("training disabled", "env", "OLLAMA_TRAINING=false")
+		slog.Info("GPU job worker disabled", "env", "ZEROLLAMA_GPU_JOBS=false")
 	}
 
 	if strings.TrimSpace(effectiveRuntimeURL()) != "" {

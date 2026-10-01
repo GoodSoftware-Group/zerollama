@@ -102,7 +102,7 @@ type wanVideoJobPayload struct {
 // runs for tens of minutes and must not share a 16GB card with llama-server reloads.
 func (s *Server) VideoCreateHandler(c *gin.Context) {
 	if s.training == nil {
-		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "video generation requires OLLAMA_TRAINING=true (embedded training worker)"))
+		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "video generation requires ZEROLLAMA_GPU_JOBS=true (embedded GPU job worker; alias OLLAMA_TRAINING)"))
 		return
 	}
 
@@ -389,7 +389,7 @@ func buildVideoJobPayload(backend string, cfg model.ConfigV2, vcfg model.VideoGe
 // VideoGetHandler returns GET /v1/videos/:id job status.
 func (s *Server) VideoGetHandler(c *gin.Context) {
 	if s.training == nil {
-		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "video generation requires OLLAMA_TRAINING=true"))
+		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "video generation requires ZEROLLAMA_GPU_JOBS=true (alias OLLAMA_TRAINING)"))
 		return
 	}
 
@@ -427,7 +427,7 @@ func (s *Server) VideoGetHandler(c *gin.Context) {
 // VideoContentHandler streams GET /v1/videos/:id/content (video/mp4).
 func (s *Server) VideoContentHandler(c *gin.Context) {
 	if s.training == nil {
-		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "video generation requires OLLAMA_TRAINING=true"))
+		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "video generation requires ZEROLLAMA_GPU_JOBS=true (alias OLLAMA_TRAINING)"))
 		return
 	}
 
