@@ -394,6 +394,25 @@ func TestClampLtxFrames(t *testing.T) {
 	if got := clampLtxFrames(cfg, 200, 17); got != 41 {
 		t.Fatalf("16g cap: got %d want 41", got)
 	}
+	cfg25 := model.VideoGenerationConfig{VRAMTier: "48g", Profile: ltxProfile25Distill}
+	if got := clampLtxFrames(cfg25, 200, 97); got != 193 {
+		t.Fatalf("ltx2.5 snap: got %d want 193", got)
+	}
+}
+
+func TestIsLtx2BProfileExcludesLtx25(t *testing.T) {
+	if isLtx2BProfile(ltxProfile25Distill) {
+		t.Fatal("ltx2.5 must not match isLtx2BProfile")
+	}
+	if !isLtx25Profile(ltxProfile25Distill) {
+		t.Fatal("want isLtx25Profile")
+	}
+	if !isLtx2BProfile(ltxProfile2BDistill) {
+		t.Fatal("want 2b distilled")
+	}
+	if ltxWan2GPModelType(ltxProfile25Distill) != "ltx2_25_22B_distilled" {
+		t.Fatalf("model type: %s", ltxWan2GPModelType(ltxProfile25Distill))
+	}
 }
 
 func TestBuildVideoJobPayloadLTX(t *testing.T) {
@@ -625,6 +644,83 @@ func TestBuildVideoJobPayloadLTXMLX(t *testing.T) {
 	}
 }
 
+func TestBuildVideoJobPayloadLTX25(t *testing.T) {
+	root := findRepoRoot(t)
+	t.Setenv("ZEROLLAMA_REPO", root)
+	t.Setenv("ZEROLLAMA_LTX_DRY_RUN", "")
+	t.Setenv("ZEROLLAMA_LTX_MMGP_PROFILE", "")
+	t.Setenv("ZEROLLAMA_LTX_MODEL_TYPE", "")
+
+	repo := t.TempDir()
+	ckpt := filepath.Join(repo, "ckpts")
+	venv := filepath.Join(t.TempDir(), "venv")
+	if err := os.MkdirAll(filepath.Join(ckpt, "gemma4-12b-ltx-v1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(venv, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(venv, "bin", "python3"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"ltx-2.5-22b-distilled_diffusion_model_int8_convrot.safetensors",
+		"ltx-2.5-22b_video_vae_bf16.safetensors",
+		"ltx-2.5-22b_audio_vae_bf16.safetensors",
+		"gemma4-12b-ltx-v1/gemma4-12b-ltx-v1_int8_convrot.safetensors",
+		"gemma4-12b-ltx-v1/tokenizer.json",
+	} {
+		if err := os.WriteFile(filepath.Join(ckpt, name), make([]byte, 2048), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendLTX},
+		BackendPaths: map[string]string{
+			"wan2gp_repo":     repo,
+			"wan2gp_ckpt_dir": ckpt,
+			"wan2gp_venv":     venv,
+		},
+		VideoGeneration: &model.VideoGenerationConfig{
+			Profile:    ltxProfile25Distill,
+			VRAMTier:   "48g",
+			Size:       ltx25DefaultSize,
+			Frames:     ltx25DefaultFrames,
+			Steps:      ltx25DefaultSteps,
+			TimeoutSec: 600,
+		},
+	}
+	kf := t.TempDir()
+	start := filepath.Join(kf, "a_start.png")
+	end := filepath.Join(kf, "z_end.png")
+	for _, p := range []string{start, end} {
+		if err := os.WriteFile(p, []byte("png"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	payload, err := buildVideoJobPayload(model.BackendLTX, cfg, *cfg.VideoGeneration, "ltx2.5-22b-distilled:48g", "control prompt", nil, time.Now().UTC(), kf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Env["LTX_MODEL_TYPE"] != "ltx2_25_22B_distilled" {
+		t.Fatalf("model_type: %s", payload.Env["LTX_MODEL_TYPE"])
+	}
+	if payload.Env["LTX_IMAGE_START"] != start {
+		t.Fatalf("start: %s want %s", payload.Env["LTX_IMAGE_START"], start)
+	}
+	if payload.Env["LTX_IMAGE_END"] != end {
+		t.Fatalf("end: %s want %s", payload.Env["LTX_IMAGE_END"], end)
+	}
+	if payload.Env["LTX_FPS"] != "24" {
+		t.Fatalf("fps: %s", payload.Env["LTX_FPS"])
+	}
+	if payload.Env["LTX_MMGP_PROFILE"] != "5" {
+		t.Fatalf("mmgp: %s", payload.Env["LTX_MMGP_PROFILE"])
+	}
+}
+
 func TestBuildVideoJobPayloadLTXMissingPaths(t *testing.T) {
 	root := findRepoRoot(t)
 	t.Setenv("ZEROLLAMA_REPO", root)
@@ -816,5 +912,144 @@ func TestBuildVideoJobPayloadH3MissingCLI(t *testing.T) {
 	_, err := buildVideoJobPayload(model.BackendH3, cfg, *cfg.VideoGeneration, "h3", "p", nil, time.Now().UTC(), "")
 	if err == nil || !strings.Contains(err.Error(), "video_cli") {
 		t.Fatalf("want video_cli error, got %v", err)
+	}
+}
+
+func TestResolveVideoGenerationConfigH3Wan2GP(t *testing.T) {
+	m := &Model{
+		Config: model.ConfigV2{
+			VideoGeneration: &model.VideoGenerationConfig{
+				Runner:  h3RunnerWan2GP,
+				Profile: h3ProfileFL2VAFull,
+			},
+		},
+	}
+	cfg, err := resolveVideoGenerationConfig(m, openai.VideoCreateRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Frames != h3Wan2GPDefaultFrames || cfg.Steps != h3Wan2GPDefaultSteps || cfg.Size != h3Wan2GPDefaultSize {
+		t.Fatalf("got frames=%d steps=%d size=%s", cfg.Frames, cfg.Steps, cfg.Size)
+	}
+}
+
+func TestBuildVideoJobPayloadH3Wan2GP(t *testing.T) {
+	root := findRepoRoot(t)
+	t.Setenv("ZEROLLAMA_REPO", root)
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "Wan2GP")
+	ckpt := filepath.Join(dir, "ckpts")
+	venv := filepath.Join(dir, "venv", "bin")
+	if err := os.MkdirAll(filepath.Join(repo, "models", "minimax_h3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(ckpt, "Qwen3-VL-32B-Instruct"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(venv, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	py := filepath.Join(venv, "python3")
+	if err := os.WriteFile(py, []byte("#!/bin/true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"MiniMax-H3-FL2VA_int8_convrot.safetensors",
+		"minimax_h3_video_vae_fp8mix.safetensors",
+		"MiniMax-H3-audio_vae_fp32.safetensors",
+	} {
+		if err := os.WriteFile(filepath.Join(ckpt, name), []byte(strings.Repeat("x", 2048)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ckpt, "Qwen3-VL-32B-Instruct", "qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf"), []byte(strings.Repeat("x", 2048)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendH3},
+		BackendPaths: map[string]string{
+			"wan2gp_repo":     repo,
+			"wan2gp_ckpt_dir": ckpt,
+			"wan2gp_venv":     filepath.Join(dir, "venv"),
+		},
+		VideoGeneration: &model.VideoGenerationConfig{
+			Runner:     h3RunnerWan2GP,
+			Profile:    h3ProfileFL2VAFull,
+			Size:       h3Wan2GPDefaultSize,
+			Frames:     h3Wan2GPDefaultFrames,
+			Steps:      h3Wan2GPDefaultSteps,
+			TimeoutSec: 120,
+		},
+	}
+	payload, err := buildVideoJobPayload(model.BackendH3, cfg, *cfg.VideoGeneration, "minimax-h3-fl2va:lab", "a fox", nil, time.Now().UTC(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(payload.ScriptPath, "h3_video_generate.py") {
+		t.Fatalf("script: %s", payload.ScriptPath)
+	}
+	if payload.Env["H3_MODEL_TYPE"] != "minimax_h3_fl2va" {
+		t.Fatalf("model_type: %s", payload.Env["H3_MODEL_TYPE"])
+	}
+	if payload.Env["WAN2GP_REPO"] != repo || payload.Env["WAN2GP_CKPT_DIR"] != ckpt {
+		t.Fatalf("paths repo=%s ckpt=%s", payload.Env["WAN2GP_REPO"], payload.Env["WAN2GP_CKPT_DIR"])
+	}
+	if payload.PythonBin != py {
+		t.Fatalf("python: %s want %s", payload.PythonBin, py)
+	}
+	if payload.Env["H3_FRAMES"] != "17" || payload.Env["H3_STEPS"] != "8" {
+		t.Fatalf("frames=%s steps=%s", payload.Env["H3_FRAMES"], payload.Env["H3_STEPS"])
+	}
+}
+
+func TestBuildVideoJobPayloadH3Wan2GPPruned(t *testing.T) {
+	root := findRepoRoot(t)
+	t.Setenv("ZEROLLAMA_REPO", root)
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "Wan2GP")
+	ckpt := filepath.Join(dir, "ckpts")
+	venv := filepath.Join(dir, "venv", "bin")
+	if err := os.MkdirAll(filepath.Join(repo, "models", "minimax_h3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(ckpt, "Qwen3-VL-32B-Instruct"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(venv, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(venv, "python3"), []byte("#!/bin/true\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"MiniMax-H3-FL2VA-pruned_rank8_int8_convrot.safetensors",
+		"minimax_h3_video_vae_fp8mix.safetensors",
+		"MiniMax-H3-audio_vae_fp32.safetensors",
+	} {
+		if err := os.WriteFile(filepath.Join(ckpt, name), []byte(strings.Repeat("x", 2048)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ckpt, "Qwen3-VL-32B-Instruct", "qwen3vl-32B-MiniMax-H3-Q2_K.gguf"), []byte(strings.Repeat("x", 2048)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := model.ConfigV2{
+		ModalityBackends: map[string]string{model.ModalityVideoGeneration: model.BackendH3},
+		BackendPaths: map[string]string{
+			"wan2gp_repo":     repo,
+			"wan2gp_ckpt_dir": ckpt,
+			"wan2gp_venv":     filepath.Join(dir, "venv"),
+		},
+		VideoGeneration: &model.VideoGenerationConfig{
+			Runner:  h3RunnerWan2GP,
+			Profile: h3ProfileFL2VAPruned,
+		},
+	}
+	payload, err := buildVideoJobPayload(model.BackendH3, cfg, *cfg.VideoGeneration, "minimax-h3-fl2va-pruned:lab", "a fox", nil, time.Now().UTC(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Env["H3_MODEL_TYPE"] != "minimax_h3_fl2va_pruned" {
+		t.Fatalf("model_type: %s", payload.Env["H3_MODEL_TYPE"])
 	}
 }

@@ -49,7 +49,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [vLLM borrowings (L3)](./vllm-borrowings.md) — **why** slot-level prefix cache vs vLLM block pool; taken vs deferred; env + `cache_salt` / drop-last-block / SWA retention / subprocess graph clear.
 * [Upstream sibling checkouts](./upstream-siblings.md) — **why** weekly pull map (`../vllm`, `../LocalAI`, …); agent entry [AGENTS.md](../AGENTS.md).
 * [Video parity matrix](./video-parity.md) — **why** reference workloads for native vs SGLang.
-* [H3 CUDA port research](./h3-cuda-port.md) — **why** antirez/h3.c Metal MiniMax-H3 → CUDA via `h3_gpu.h`; Wan2GP/SGLang vs native stub; CT 1564 RAM wall.
+* [H3 CUDA (Wan2GP product + native research)](./h3-cuda-port.md) — `/v1/videos` `h3-wan2gp` tags; antirez `h3_gpu.h` research track; astra SSD layout vs CT 1564 RAM wall.
 * [Roadmap](./ROADMAP.md) — **why** Option 2 is phased (policy, templates, context, optional subprocess).
 * [Upstream Ollama comparison](./upstream-ollama-diff.md) — **why** vanilla Ollama dropped ggml for GGUF; pin gaps; cherry-pick map; Phase 17 alignment.
 * [Phase 17 — Go → llama-server](./phase17-llama-server.md) — **why** upstream GGUF path is cherry-picked for mergeability; Mac keeps ggml default (M7 bench).

@@ -2,7 +2,7 @@
 
 Local **LTXV** generation reuses the OpenAI async Videos API (`POST /v1/videos`) and the training **`run_script`** queue — same control plane as Wan. The runner is sibling **[Wan2GP](https://github.com/deepbeepmeep/Wan2GP)** (`shared.api` / `--process`), not Gradio `wgp.py` as the product UI.
 
-**Shipped first:** **LTX Video 0.9.8 Distilled 13B + quanto bf16_int8** (`ltxv_distilled`) and **2B distilled FP8** (`ltxv_2b_distilled`, official `ltxv-2b-0.9.8-distilled-fp8.safetensors`). **Not** LTX-2 / Gemma TE on ~24 GiB host RAM boxes.
+**Shipped:** **LTX Video 0.9.8 Distilled 13B + quanto** (`ltxv_distilled`), **2B distilled FP8** (`ltxv_2b_distilled`), and on astra-class hosts **LTX-2.5 22B distilled** (`ltx2_25_22B_distilled`) with Gemma4 TE + start/end keyframe control.
 
 **Mac GRAPH / toolkit (parallel):** bmtl [WISHLIST_LTX_MEDIA.md](../../bmtl/hardware_lab/lanes/m4/uma_toolkit/docs/WISHLIST_LTX_MEDIA.md) under [WISHLIST_DIT_MEDIA.md](../../bmtl/hardware_lab/lanes/m4/uma_toolkit/docs/WISHLIST_DIT_MEDIA.md).
 
@@ -14,7 +14,8 @@ Related: [wan-t2v.md](./wan-t2v.md), [wangp-borrowings.md](./wangp-borrowings.md
 |--------|-----|
 | **LTXV 13B distilled + quanto** | 6 steps, long-prompt model, Wan2GP mmgp profile 5 fits 16 GB VRAM classes better than LTX-2 |
 | **LTXV 2B distilled FP8** | Prompt-iteration / cartoon-prototype tag (`ltxv-2b-distilled:lab`). ~4.5 GiB DiT, 512² / 8 steps. Wan2GP has no native 2B type — we install a **finetune JSON** that reuses the LTXV loader. |
-| **Not LTX-2 on CT 1564** | LTX-2 preloads **Gemma-3-12B** TE → host RAM often worse than Wan TI2V; ~24 GiB + prod serve is a wall |
+| **LTX-2.5 on astra (2×4090)** | Gemma4-12B TE + 22B DiT (~50 GB pack) — host floor **48 GiB**; start/end stills via `options.keyframes` |
+| **Not LTX-2.5 on CT 1564** | ~24 GiB host + prod serve is a wall; use LTXV 13B/2B there |
 | **Wan2GP, not Gradio** | Product is `/v1/videos` + exclusive GPU QoS; Gradio competes for ports/UX |
 | **`modality_backends.video_generation: "ltx"`** | Multi-family registry (ROADMAP v1.4); Wan stays `"wan"` |
 | **Config-only tag** | Multi‑GB ckpts under `~/.zerollama/third_party/wan2gp/ckpts/` — not GGUF blobs |
@@ -43,6 +44,8 @@ $OLLAMA_MODELS/generated/<job_id>.mp4
 ```bash
 ./scripts/video/install_ltx_wan2gp.sh --venv-only
 ./scripts/video/install_ltx_wan2gp.sh --2b-only
+# LTX-2.5 (control) on SSD — astra:
+./scripts/video/install_ltx2_wan2gp.sh            # distilled int8 + gemma4 + VAEs + union-control LoRA
 ./scripts/video/register_ltx_models.sh
 ```
 
@@ -66,29 +69,33 @@ The install script reuses `~/.zerollama/third_party/wan/venv` when present (syml
 | `backend_paths.wan2gp_repo` | Sibling Wan2GP tree |
 | `backend_paths.wan2gp_venv` | Python venv with torch + Wan2GP deps |
 | `backend_paths.wan2gp_ckpt_dir` | Checkpoint dir (`ckpts`) |
-| `video_generation.profile` | `ltxv-13b-distilled` or `ltxv-2b-distilled` |
-| `video_generation.quant` | `quanto` (13B) or `fp8` (2B) |
-| `video_generation.steps` | `6` (13B distilled lock) or `8` (2B distilled recipe) |
+| `video_generation.profile` | `ltxv-13b-distilled`, `ltxv-2b-distilled`, or `ltx2.5-22b-distilled` |
+| `video_generation.quant` | `quanto` (13B), `fp8` (2B), `int8_convrot` (LTX-2.5) |
+| `video_generation.steps` | `6` (13B), `8` (2B / LTX-2.5 distilled) |
 | `LTX_*` / `WAN2GP_*` | Wrapper env (see `ltx_video_generate.py`) |
+| `LTX_IMAGE_START` / `LTX_IMAGE_END` | LTX-2.5 keyframe control (from `options.keyframes`) |
 | `LTX_DRY_RUN=1` | Validate settings/weights; no DiT allocate |
-| `ZEROLLAMA_LTX_MIN_HOST_RAM_GIB` | Raise-only host floor (default **12** GiB for 13B, **8** GiB for 2B) |
+| `ZEROLLAMA_LTX_MIN_HOST_RAM_GIB` | Raise-only host floor (default **12** / **8** / **48** GiB for 13B / 2B / LTX-2.5) |
 
 ## Admission / QoS
 
 - Same **exclusive GPU** lease as Wan (`video_exclusive.go`).
-- Host floor starts at **12 GiB** for 13B (Wan mmgp + GPU VAE class) and **8 GiB** for 2B. Tune after measured peaks.
+- Host floor: **12 GiB** (13B), **8 GiB** (2B), **48 GiB** (LTX-2.5). Tune after measured peaks.
 - Full generate needs free VRAM (~prod often holds ~6.5 GiB on `:11434`). **Unload production listeners only when the operator requests it.**
 
 ## API
 
-Same as Wan: `POST /v1/videos` → poll `GET /v1/videos/:id` → `GET …/content`. Keyframes are **not** supported on these LTXV T2V tags (TI2V/control later).
+Same as Wan: `POST /v1/videos` → poll `GET /v1/videos/:id` → `GET …/content`.
 
 | Tag | Use |
 |-----|-----|
 | `ltxv-13b-distilled:16g` | Quality 768×512, 6 steps, Linux 16g CUDA (Wan2GP) |
 | `ltxv-2b-distilled:lab` | Wan2GP 2B FP8 (CUDA/PyTorch) |
+| `ltx2.5-22b-distilled:48g` | **Control:** 1280×704, 8 steps, A/V + start/end keyframes (`options.keyframes`) |
 | `ltxv-2b-mlx:lab` | **Fast Darwin prototype:** 768×480, 17 frames, **4 steps**. Expects cartoon drift. |
 | `ltxv-13b-mlx:lab` | **Darwin anime:** 1280×720, 41 frames, **8 steps**, first-frame I2V. `./scripts/video/install_ltx_mlx.sh --13b-only` |
+
+**LTX-2.5 control:** pass one still (`keyframes[0]` → `image_start`) or two (`[0]`/`[-1]` → start/end). LTXV 0.9.8 Wan2GP tags stay T2V-only (400 on keyframes).
 
 ### Measured on M4 Max (2026-08-22, 2B distilled bf16, seed 42, 4 steps)
 
@@ -208,5 +215,6 @@ LTXV wants **long, descriptive prompts**. Distilled models lock CFG≈1 and igno
 
 ## Out of scope (this slice)
 
-- LTX-2 / Gemma, MiniMax H3 product path, Gradio UI, native `h3_cuda`
+- Full LTX-2.5 research stack (non-distilled / MSR / edit-anything) as default tags
+- Gradio UI as product surface
 - Generating while production holds the GPU without an unload window

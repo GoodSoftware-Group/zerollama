@@ -40,12 +40,21 @@ const (
 	ltxProfile2BDistill    = "ltxv-2b-distilled"
 	ltxProfile2BMlx        = "ltxv-2b-mlx"
 	ltxProfile13BMlx       = "ltxv-13b-mlx"
+	ltxProfile25Distill    = "ltx2.5-22b-distilled" // Wan2GP ltx2_25_22B_distilled + control
 	h3ProfileTinyT2VA      = "h3-tiny-t2va"
 	h3Profile768T2VA       = "h3-768-t2va"
+	h3ProfileFL2VAFull     = "h3-fl2va-full"
+	h3ProfileFL2VAPruned   = "h3-fl2va-pruned"
+	h3RunnerWan2GP = "h3-wan2gp"
 	wan22MaxFrames16g      = 81
 	ltx16gDefaultFrames    = 17
 	ltx2bDefaultSize       = "512x512"
 	ltx2bDefaultSteps      = 8
+	ltx25DefaultSize       = "1280x704"
+	ltx25DefaultSteps      = 8
+	ltx25DefaultFrames     = 97 // ~4s @ 24fps; Wan2GP sample uses 241 — admit longer via manifest
+	ltx25TimeoutSec        = 7200
+	ltx25MinHostGiB        = 48 // Gemma4-12B TE + 22B DiT staging; astra ~125 GiB
 	ltxMlxDefaultSize      = "768x480"
 	ltxMlxDefaultSteps     = 4
 	ltxMlx13BDefaultSize   = "1280x720" // ltx-mlx --resolution 720p is height 720, width 1280
@@ -64,6 +73,12 @@ const (
 	ltxDefaultTimeoutSec   = 2700
 	h3DefaultTimeoutSec    = 900
 	h3768TimeoutSec        = 14400
+	h3Wan2GPTimeoutSec     = 7200 // full FL2VA 33B + mmgp on consumer GPU
+	h3Wan2GPDefaultFrames  = 17
+	h3Wan2GPDefaultSteps   = 8
+	h3Wan2GPDefaultSize    = "480x832" // Wan2GP H3 common portrait-ish
+	h3Wan2GPMinHostGiB     = 32         // DiT+TE staging; astra has ~125 GiB
+	h3Wan2GPPrunedMinHostGiB = 24
 	ltxDefaultMinHostGiB   = 12 // Wan mmgp+GPU-VAE class; see docs/ltx-t2v.md
 )
 
@@ -158,9 +173,10 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 			return
 		}
 	}
-	// Darwin ltx-mlx I2V: first still is --image (line lock for anime). Wan2GP LTXV remains T2V-only.
-	if backend == model.BackendLTX && len(keyframeLabels) > 0 && !isLtxMLXJob(cfg) {
-		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "ltx Wan2GP LTXV distilled T2V does not support keyframes yet"))
+	// Darwin ltx-mlx I2V: first still is --image. LTX-2.5 Wan2GP: start/end stills (image_start/image_end).
+	// LTXV 0.9.8 Wan2GP distilled remains T2V-only.
+	if backend == model.BackendLTX && len(keyframeLabels) > 0 && !isLtxMLXJob(cfg) && !isLtx25Profile(cfg.Profile) {
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "ltx Wan2GP LTXV distilled T2V does not support keyframes; use ltx2.5-22b-distilled for start/end control"))
 		return
 	}
 	if backend == model.BackendLTX && isLtxMLXJob(cfg) {
@@ -255,7 +271,16 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 			return
 		}
 	} else if backend == model.BackendH3 {
-		// Host DiT+VAE (tiny or 768 canvas) — do not apply Wan 16g GPU/RAM admit.
+		if isH3Wan2GPJob(cfg) {
+			if err := admitH3HostRAM(cfg); err != nil {
+				if keyframeDir != "" {
+					_ = os.RemoveAll(keyframeDir)
+				}
+				c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, err.Error()))
+				return
+			}
+		}
+		// Darwin video-cli H3: host DiT+VAE — no Wan 16g GPU/RAM admit.
 	} else {
 		hostPlan := planWanHost(cfg)
 		if err := admitWanHostRAM(cfg, hostPlan); err != nil {
@@ -350,6 +375,9 @@ func buildVideoJobPayload(backend string, cfg model.ConfigV2, vcfg model.VideoGe
 	case model.BackendLTX:
 		return buildLtxVideoPayload(cfg, vcfg, modelName, prompt, seed, submittedAt, keyframeDir)
 	case model.BackendH3:
+		if isH3Wan2GPJob(vcfg) {
+			return buildH3Wan2gpPayload(cfg, vcfg, modelName, prompt, seed, submittedAt)
+		}
 		return buildH3VideoPayload(cfg, vcfg, modelName, prompt, seed, submittedAt)
 	case model.BackendRIFE:
 		return wanVideoJobPayload{}, errors.New("rife backend is not implemented yet")
@@ -478,7 +506,7 @@ func resolveVideoGenerationConfig(m *Model, req openai.VideoCreateRequest) (mode
 	if isLtxProfile(cfg.Profile) {
 		cfg.Frames = clampLtxFrames(cfg, cfg.Frames, manifestFrames)
 	}
-	if isH3Profile(cfg.Profile) {
+	if isH3VideoCliProfile(cfg.Profile) {
 		cfg.Frames = h3TinyFrames
 		if isH3Canvas768(cfg.Profile) {
 			cfg.Size = h3768Size
@@ -495,9 +523,13 @@ func resolveVideoGenerationConfig(m *Model, req openai.VideoCreateRequest) (mode
 	if cfg.Frames <= 0 {
 		if isLtxMLX13BProfile(cfg.Profile) {
 			cfg.Frames = ltxMlx13BDefaultFrames
+		} else if isLtx25Profile(cfg.Profile) {
+			cfg.Frames = ltx25DefaultFrames
 		} else if isLtxProfile(cfg.Profile) {
 			cfg.Frames = ltx16gDefaultFrames
-		} else if isH3Profile(cfg.Profile) {
+		} else if isH3Wan2GPProfile(cfg.Profile) {
+			cfg.Frames = h3Wan2GPDefaultFrames
+		} else if isH3VideoCliProfile(cfg.Profile) {
 			cfg.Frames = h3TinyFrames
 		} else {
 			cfg.Frames = 49
@@ -509,12 +541,16 @@ func resolveVideoGenerationConfig(m *Model, req openai.VideoCreateRequest) (mode
 		} else if isLtxMLXProfile(cfg.Profile) {
 			cfg.Steps = ltxMlxDefaultSteps
 		} else if isLtxProfile(cfg.Profile) {
-			if isLtx2BProfile(cfg.Profile) {
+			if isLtx25Profile(cfg.Profile) {
+				cfg.Steps = ltx25DefaultSteps
+			} else if isLtx2BProfile(cfg.Profile) {
 				cfg.Steps = ltx2bDefaultSteps
 			} else {
 				cfg.Steps = 6
 			}
-		} else if isH3Profile(cfg.Profile) {
+		} else if isH3Wan2GPProfile(cfg.Profile) {
+			cfg.Steps = h3Wan2GPDefaultSteps
+		} else if isH3VideoCliProfile(cfg.Profile) {
 			if isH3Canvas768(cfg.Profile) {
 				cfg.Steps = h3768DefaultSteps
 			} else {
@@ -530,12 +566,16 @@ func resolveVideoGenerationConfig(m *Model, req openai.VideoCreateRequest) (mode
 		} else if isLtxMLXProfile(cfg.Profile) {
 			cfg.Size = ltxMlxDefaultSize
 		} else if isLtxProfile(cfg.Profile) {
-			if isLtx2BProfile(cfg.Profile) {
+			if isLtx25Profile(cfg.Profile) {
+				cfg.Size = ltx25DefaultSize
+			} else if isLtx2BProfile(cfg.Profile) {
 				cfg.Size = ltx2bDefaultSize
 			} else {
 				cfg.Size = "768x512"
 			}
-		} else if isH3Profile(cfg.Profile) {
+		} else if isH3Wan2GPProfile(cfg.Profile) {
+			cfg.Size = h3Wan2GPDefaultSize
+		} else if isH3VideoCliProfile(cfg.Profile) {
 			if isH3Canvas768(cfg.Profile) {
 				cfg.Size = h3768Size
 			} else {
@@ -618,13 +658,13 @@ func wanMMGPQuantize(cfg model.VideoGenerationConfig) string {
 	return "0"
 }
 
-func firstStillInDir(dir string) string {
+func stillNamesInDir(dir string) []string {
 	if dir == "" {
-		return ""
+		return nil
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return ""
+		return nil
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
@@ -633,10 +673,23 @@ func firstStillInDir(dir string) string {
 		}
 	}
 	sort.Strings(names)
+	return names
+}
+
+func firstStillInDir(dir string) string {
+	names := stillNamesInDir(dir)
 	if len(names) == 0 {
 		return ""
 	}
 	return filepath.Join(dir, names[0])
+}
+
+func lastStillInDir(dir string) string {
+	names := stillNamesInDir(dir)
+	if len(names) == 0 {
+		return ""
+	}
+	return filepath.Join(dir, names[len(names)-1])
 }
 
 func isWanTI2VProfile(profile string) bool {
@@ -669,31 +722,67 @@ func isLtxMLXJob(vcfg model.VideoGenerationConfig) bool {
 	return isLtxMLXProfile(vcfg.Profile)
 }
 
+func isLtx25Profile(profile string) bool {
+	p := strings.ToLower(strings.TrimSpace(profile))
+	if isLtxMLXProfile(p) {
+		return false
+	}
+	return p == ltxProfile25Distill ||
+		strings.HasPrefix(p, "ltx2.5") ||
+		strings.HasPrefix(p, "ltx2_25") ||
+		strings.Contains(p, "ltx2.5") ||
+		strings.Contains(p, "ltx2_25")
+}
+
 func isLtx2BProfile(profile string) bool {
-	if isLtxMLXProfile(profile) {
+	if isLtxMLXProfile(profile) || isLtx25Profile(profile) {
 		return false
 	}
 	p := strings.ToLower(strings.TrimSpace(profile))
-	return p == ltxProfile2BDistill || strings.Contains(p, "2b")
+	// LTXV 2B only — must not match ltx2* (LTX-2.x) via bare "2b" substring.
+	return p == ltxProfile2BDistill || strings.HasPrefix(p, "ltxv-2b") || strings.Contains(p, "ltxv_2b")
 }
 
 func isH3Profile(profile string) bool {
+	return isH3VideoCliProfile(profile) || isH3Wan2GPProfile(profile)
+}
+
+func isH3VideoCliProfile(profile string) bool {
 	p := strings.ToLower(strings.TrimSpace(profile))
-	return p == h3ProfileTinyT2VA || p == h3Profile768T2VA || strings.HasPrefix(p, "h3")
+	return p == h3ProfileTinyT2VA || p == h3Profile768T2VA
+}
+
+func isH3Wan2GPProfile(profile string) bool {
+	p := strings.ToLower(strings.TrimSpace(profile))
+	return p == h3ProfileFL2VAFull || p == h3ProfileFL2VAPruned ||
+		strings.Contains(p, "fl2va") || strings.HasPrefix(p, "h3-fl2va")
+}
+
+func isH3Wan2GPJob(vcfg model.VideoGenerationConfig) bool {
+	if strings.EqualFold(strings.TrimSpace(vcfg.Runner), h3RunnerWan2GP) {
+		return true
+	}
+	return isH3Wan2GPProfile(vcfg.Profile)
 }
 
 func isH3Canvas768(profile string) bool {
 	p := strings.ToLower(strings.TrimSpace(profile))
-	return p == h3Profile768T2VA || strings.Contains(p, "768")
+	return p == h3Profile768T2VA || (strings.Contains(p, "768") && !isH3Wan2GPProfile(p))
 }
 
 // clampLtxFrames: LTXV wants frames = 17 + 8*k (handler frames_minimum/steps). Cap 16g.
+// LTX-2.5 uses the same 8k+1 cadence; allow longer clips on non-16g (astra 2×4090).
 func clampLtxFrames(cfg model.VideoGenerationConfig, frames, manifestFrames int) int {
 	if frames <= 0 {
 		return frames
 	}
 	max := 41 // ~1.3s @ 30fps class for 16g first slice
-	if cfg.VRAMTier != "16g" {
+	if isLtx25Profile(cfg.Profile) {
+		max = 97
+		if cfg.VRAMTier != "16g" {
+			max = 241 // Wan2GP LTX-2.5 sample length
+		}
+	} else if cfg.VRAMTier != "16g" {
 		max = 97
 	}
 	if manifestFrames > max {
@@ -702,7 +791,7 @@ func clampLtxFrames(cfg model.VideoGenerationConfig, frames, manifestFrames int)
 	if frames > max {
 		frames = max
 	}
-	// Snap down to LTXV legal length: 17 + 8*k
+	// Snap down to LTXV / LTX-2 legal length: 17 + 8*k (also 1 + 8*k family)
 	if frames < 17 {
 		return 17
 	}
@@ -984,17 +1073,29 @@ func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		wan2gpCkpt = filepath.Join(wan2gpRepo, "ckpts")
 	}
 	if st, err := os.Stat(wan2gpRepo); err != nil || !st.IsDir() {
-		return wanVideoJobPayload{}, fmt.Errorf("Wan2GP repo missing at %s — clone sibling or run ./scripts/video/install_ltx_wan2gp.sh", wan2gpRepo)
+		hint := "./scripts/video/install_ltx_wan2gp.sh"
+		if isLtx25Profile(vcfg.Profile) {
+			hint = "./scripts/video/install_ltx2_wan2gp.sh"
+		}
+		return wanVideoJobPayload{}, fmt.Errorf("Wan2GP repo missing at %s — clone sibling or run %s", wan2gpRepo, hint)
 	}
 	if st, err := os.Stat(wan2gpCkpt); err != nil || !st.IsDir() {
-		return wanVideoJobPayload{}, fmt.Errorf("Wan2GP checkpoint dir missing at %s — run ./scripts/video/install_ltx_wan2gp.sh --weights-only", wan2gpCkpt)
+		hint := "./scripts/video/install_ltx_wan2gp.sh --weights-only"
+		if isLtx25Profile(vcfg.Profile) {
+			hint = "./scripts/video/install_ltx2_wan2gp.sh --weights-only"
+		}
+		return wanVideoJobPayload{}, fmt.Errorf("Wan2GP checkpoint dir missing at %s — run %s", wan2gpCkpt, hint)
 	}
 	if !ltxCkptLooksPopulated(wan2gpCkpt, vcfg.Profile) {
 		hint := "./scripts/video/install_ltx_wan2gp.sh --weights-only"
-		if isLtx2BProfile(vcfg.Profile) {
+		family := "LTXV"
+		if isLtx25Profile(vcfg.Profile) {
+			hint = "./scripts/video/install_ltx2_wan2gp.sh --weights-only"
+			family = "LTX-2.5"
+		} else if isLtx2BProfile(vcfg.Profile) {
 			hint = "./scripts/video/install_ltx_wan2gp.sh --2b-only"
 		}
-		return wanVideoJobPayload{}, fmt.Errorf("LTXV weights missing under %s — run %s", wan2gpCkpt, hint)
+		return wanVideoJobPayload{}, fmt.Errorf("%s weights missing under %s — run %s", family, wan2gpCkpt, hint)
 	}
 
 	wan2gpVenv := expandUserPath(modality.PathFor(cfg, "wan2gp_venv"))
@@ -1006,7 +1107,11 @@ func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 	}
 	pythonBin := filepath.Join(wan2gpVenv, "bin", "python3")
 	if _, err := os.Stat(pythonBin); err != nil {
-		return wanVideoJobPayload{}, fmt.Errorf("Wan2GP venv python missing at %s — run ./scripts/video/install_ltx_wan2gp.sh --venv-only", pythonBin)
+		hint := "./scripts/video/install_ltx_wan2gp.sh --venv-only"
+		if isLtx25Profile(vcfg.Profile) {
+			hint = "./scripts/video/install_ltx2_wan2gp.sh --venv-only"
+		}
+		return wanVideoJobPayload{}, fmt.Errorf("Wan2GP venv python missing at %s — run %s", pythonBin, hint)
 	}
 
 	outputPath := videoArtifactPath("{job_id}")
@@ -1015,9 +1120,12 @@ func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		timeout = t
 	}
 	if timeout <= 0 {
-		if isLtx2BProfile(vcfg.Profile) {
+		switch {
+		case isLtx25Profile(vcfg.Profile):
+			timeout = ltx25TimeoutSec
+		case isLtx2BProfile(vcfg.Profile):
 			timeout = 900
-		} else {
+		default:
 			timeout = ltxDefaultTimeoutSec
 		}
 	}
@@ -1045,12 +1153,28 @@ func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		"VIDEO_FRAMES":           strconv.Itoa(vcfg.Frames),
 		"VIDEO_SIZE":             vcfg.Size,
 	}
+	if isLtx25Profile(vcfg.Profile) {
+		env["LTX_FPS"] = "24"
+	}
 	if dry := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_DRY_RUN")); dry != "" {
 		env["LTX_DRY_RUN"] = dry
 	}
 	if seed != nil {
 		env["LTX_SEED"] = strconv.FormatInt(*seed, 10)
 		env["VIDEO_SEED"] = strconv.FormatInt(*seed, 10)
+	}
+	// LTX-2.5 control: stage keyframes → image_start / image_end via VIDEO_KEYFRAME_DIR.
+	if keyframeDir != "" && isLtx25Profile(vcfg.Profile) {
+		env["VIDEO_KEYFRAME_DIR"] = keyframeDir
+		env["VIDEO_CLEANUP_KEYFRAME_DIR"] = "1"
+		if first := firstStillInDir(keyframeDir); first != "" {
+			env["LTX_IMAGE_START"] = first
+			env["LTX_IMAGE"] = first
+			env["VIDEO_IMAGE"] = first
+		}
+		if last := lastStillInDir(keyframeDir); last != "" && last != env["LTX_IMAGE_START"] {
+			env["LTX_IMAGE_END"] = last
+		}
 	}
 
 	return wanVideoJobPayload{
@@ -1361,7 +1485,175 @@ func h3CkptLooksPopulated(dir string) bool {
 	return false
 }
 
+// buildH3Wan2gpPayload queues MiniMax-H3 CUDA generate through Wan2GP (same control plane as LTX).
+func buildH3Wan2gpPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, modelName, prompt string, seed *int64, submittedAt time.Time) (wanVideoJobPayload, error) {
+	if strings.TrimSpace(prompt) == "" {
+		return wanVideoJobPayload{}, errors.New("prompt is required")
+	}
+	repoRoot, err := trainingworker.RepoRoot()
+	if err != nil || repoRoot == "" {
+		return wanVideoJobPayload{}, errors.New("cannot locate repository root (set ZEROLLAMA_REPO or OLLAMA_TRAINING_PYTHONPATH)")
+	}
+	scriptPath := filepath.Join(repoRoot, "scripts", "video", "h3_video_generate.py")
+	if _, err := os.Stat(scriptPath); err != nil {
+		return wanVideoJobPayload{}, fmt.Errorf("h3 wan2gp wrapper script not found at %s", scriptPath)
+	}
+
+	wan2gpRepo := expandUserPath(modality.PathFor(cfg, "wan2gp_repo"))
+	wan2gpCkpt := expandUserPath(modality.PathFor(cfg, "wan2gp_ckpt_dir"))
+	if wan2gpRepo == "" {
+		return wanVideoJobPayload{}, errors.New("backend_paths.wan2gp_repo is required for h3-wan2gp")
+	}
+	if wan2gpCkpt == "" {
+		wan2gpCkpt = filepath.Join(wan2gpRepo, "ckpts")
+	}
+	if st, err := os.Stat(wan2gpRepo); err != nil || !st.IsDir() {
+		return wanVideoJobPayload{}, fmt.Errorf("Wan2GP repo missing at %s — clone sibling or run ./scripts/video/install_h3_wan2gp.sh", wan2gpRepo)
+	}
+	if st, err := os.Stat(wan2gpCkpt); err != nil || !st.IsDir() {
+		return wanVideoJobPayload{}, fmt.Errorf("Wan2GP checkpoint dir missing at %s — run ./scripts/video/install_h3_wan2gp.sh --weights-only", wan2gpCkpt)
+	}
+	if !h3Wan2gpCkptLooksPopulated(wan2gpCkpt, vcfg.Profile) {
+		hint := "./scripts/video/install_h3_wan2gp.sh --weights-only"
+		if isH3Wan2GPPrunedProfile(vcfg.Profile) {
+			hint = "./scripts/video/install_h3_wan2gp.sh --pruned-only"
+		}
+		return wanVideoJobPayload{}, fmt.Errorf("MiniMax-H3 weights missing under %s — run %s", wan2gpCkpt, hint)
+	}
+
+	wan2gpVenv := expandUserPath(modality.PathFor(cfg, "wan2gp_venv"))
+	if wan2gpVenv == "" {
+		wan2gpVenv = filepath.Join(filepath.Dir(wan2gpCkpt), "venv")
+		if filepath.Base(wan2gpCkpt) != "ckpts" {
+			wan2gpVenv = filepath.Join(expandUserPath("~/.zerollama/third_party/wan2gp"), "venv")
+		}
+	}
+	pythonBin := filepath.Join(wan2gpVenv, "bin", "python3")
+	if _, err := os.Stat(pythonBin); err != nil {
+		return wanVideoJobPayload{}, fmt.Errorf("Wan2GP venv python missing at %s — run ./scripts/video/install_h3_wan2gp.sh --venv-only", pythonBin)
+	}
+
+	outputPath := videoArtifactPath("{job_id}")
+	timeout := vcfg.TimeoutSec
+	if t := envconfig.WanVideoTimeoutSec(); t > 0 {
+		timeout = t
+	}
+	if timeout <= 0 {
+		timeout = h3Wan2GPTimeoutSec
+	}
+
+	size := strings.TrimSpace(vcfg.Size)
+	if size == "" {
+		size = h3Wan2GPDefaultSize
+	}
+	frames := vcfg.Frames
+	if frames <= 0 {
+		frames = h3Wan2GPDefaultFrames
+	}
+	steps := vcfg.Steps
+	if steps <= 0 {
+		steps = h3Wan2GPDefaultSteps
+	}
+
+	modelType := h3Wan2GPModelType(vcfg.Profile)
+	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_H3_MODEL_TYPE")); v != "" {
+		modelType = v
+	}
+
+	env := map[string]string{
+		"H3_PROFILE":             vcfg.Profile,
+		"H3_MODEL_TYPE":          modelType,
+		"H3_PROMPT":              prompt,
+		"H3_SIZE":                size,
+		"H3_FRAMES":              strconv.Itoa(frames),
+		"H3_STEPS":               strconv.Itoa(steps),
+		"H3_OUTPUT_PATH":         outputPath,
+		"H3_MMGP_PROFILE":        h3MMGPProfile(vcfg),
+		"H3_ATTENTION":           "sdpa",
+		"WAN2GP_REPO":            wan2gpRepo,
+		"WAN2GP_CKPT_DIR":        wan2gpCkpt,
+		"WAN2GP_VENV":            wan2gpVenv,
+		"WAN_SUBPROCESS_TIMEOUT": strconv.Itoa(timeout),
+		"VIDEO_OUTPUT_PATH":      outputPath,
+		"VIDEO_FRAMES":           strconv.Itoa(frames),
+		"VIDEO_SIZE":             size,
+	}
+	if dry := strings.TrimSpace(envconfig.Var("ZEROLLAMA_H3_DRY_RUN")); dry != "" {
+		env["H3_DRY_RUN"] = dry
+	}
+	if seed != nil {
+		env["H3_SEED"] = strconv.FormatInt(*seed, 10)
+		env["VIDEO_SEED"] = strconv.FormatInt(*seed, 10)
+	}
+
+	return wanVideoJobPayload{
+		ScriptPath:  scriptPath,
+		PythonBin:   pythonBin,
+		WorkingDir:  repoRoot,
+		Env:         env,
+		Timeout:     timeout,
+		OutputPath:  outputPath,
+		SubmittedAt: submittedAt.UTC().Format(time.RFC3339),
+		VideoModel:  modelName,
+		VideoSize:   size,
+	}, nil
+}
+
+func isH3Wan2GPPrunedProfile(profile string) bool {
+	p := strings.ToLower(strings.TrimSpace(profile))
+	return p == h3ProfileFL2VAPruned || strings.Contains(p, "pruned")
+}
+
+func h3Wan2GPModelType(profile string) string {
+	if isH3Wan2GPPrunedProfile(profile) {
+		return "minimax_h3_fl2va_pruned"
+	}
+	return "minimax_h3_fl2va"
+}
+
+func h3MMGPProfile(cfg model.VideoGenerationConfig) string {
+	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_H3_MMGP_PROFILE")); v != "" {
+		return v
+	}
+	if cfg.VRAMTier == "16g" {
+		return "5"
+	}
+	return "5"
+}
+
+func h3Wan2gpCkptLooksPopulated(dir, profile string) bool {
+	dit := "MiniMax-H3-FL2VA_int8_convrot.safetensors"
+	if isH3Wan2GPPrunedProfile(profile) {
+		dit = "MiniMax-H3-FL2VA-pruned_rank8_int8_convrot.safetensors"
+	}
+	need := []string{
+		dit,
+		"minimax_h3_video_vae_fp8mix.safetensors",
+		"MiniMax-H3-audio_vae_fp32.safetensors",
+	}
+	for _, n := range need {
+		if st, err := os.Stat(filepath.Join(dir, n)); err != nil || st.IsDir() || st.Size() < 1024 {
+			return false
+		}
+	}
+	teDir := filepath.Join(dir, "Qwen3-VL-32B-Instruct")
+	teCands := []string{
+		filepath.Join(teDir, "qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf"),
+		filepath.Join(teDir, "qwen3vl-32B-MiniMax-H3-Q2_K.gguf"),
+		filepath.Join(teDir, "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"),
+	}
+	for _, p := range teCands {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Size() > 1024 {
+			return true
+		}
+	}
+	return false
+}
+
 func ltxWan2GPModelType(profile string) string {
+	if isLtx25Profile(profile) {
+		return "ltx2_25_22B_distilled"
+	}
 	if isLtx2BProfile(profile) {
 		return "ltxv_2b_distilled"
 	}
@@ -1371,6 +1663,10 @@ func ltxWan2GPModelType(profile string) string {
 func ltxMMGPProfile(cfg model.VideoGenerationConfig) string {
 	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_MMGP_PROFILE")); v != "" {
 		return v
+	}
+	if isLtx25Profile(cfg.Profile) {
+		// 22B + Gemma4: prefer heavier offload even on dual-GPU hosts.
+		return "5"
 	}
 	if cfg.VRAMTier == "16g" {
 		return "5"
@@ -1386,7 +1682,36 @@ func ltxCkptLooksPopulated(dir, profile string) bool {
 		"ltxv_0.9.8_13B_distilled_quanto_bf16_int8.safetensors",
 		"ltxv_0.9.7_VAE.safetensors",
 	}
-	if isLtx2BProfile(profile) {
+	if isLtx25Profile(profile) {
+		need = []string{
+			"ltx-2.5-22b-distilled_diffusion_model_int8_convrot.safetensors",
+			"ltx-2.5-22b_video_vae_bf16.safetensors",
+			"ltx-2.5-22b_audio_vae_bf16.safetensors",
+			"gemma4-12b-ltx-v1/gemma4-12b-ltx-v1_int8_convrot.safetensors",
+			"gemma4-12b-ltx-v1/tokenizer.json",
+		}
+		// Accept bf16 / nvfp4 DiT as alternate to int8.
+		ditOK := false
+		for _, n := range []string{
+			"ltx-2.5-22b-distilled_diffusion_model_int8_convrot.safetensors",
+			"ltx-2.5-22b-distilled_diffusion_model_bf16.safetensors",
+			"ltx-2.5-22b-distilled_diffusion_model_nvfp4.safetensors",
+		} {
+			if st, err := os.Stat(filepath.Join(dir, n)); err == nil && !st.IsDir() && st.Size() >= 1024 {
+				ditOK = true
+				break
+			}
+		}
+		if !ditOK {
+			return false
+		}
+		need = []string{
+			"ltx-2.5-22b_video_vae_bf16.safetensors",
+			"ltx-2.5-22b_audio_vae_bf16.safetensors",
+			"gemma4-12b-ltx-v1/gemma4-12b-ltx-v1_int8_convrot.safetensors",
+			"gemma4-12b-ltx-v1/tokenizer.json",
+		}
+	} else if isLtx2BProfile(profile) {
 		need = []string{
 			"ltxv-2b-0.9.8-distilled-fp8.safetensors",
 			"ltxv_0.9.7_VAE.safetensors",

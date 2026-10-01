@@ -24,8 +24,8 @@ type VideoSampling struct {
 
 // VideoGenerationConfig holds per-model defaults for text-to-video (Wan and future runners).
 type VideoGenerationConfig struct {
-	Runner       string `json:"runner,omitempty"`    // video-cli | wan-cli | ltx-wan2gp | ltx-mlx | later rife | diffusers | comfy-headless
-	Profile      string `json:"profile,omitempty"`   // wan2.1-t2v-1.3b | wan2.2-ti2v-5b | ltxv-13b-distilled | ltxv-2b-distilled | ltxv-2b-mlx | ltxv-13b-mlx | h3-tiny-t2va | h3-768-t2va
+	Runner       string `json:"runner,omitempty"`    // video-cli | wan-cli | ltx-wan2gp | ltx-mlx | h3-wan2gp | later rife | diffusers | comfy-headless
+	Profile      string `json:"profile,omitempty"`   // wan2.1-t2v-1.3b | wan2.2-ti2v-5b | ltxv-13b-distilled | ltxv-2b-distilled | ltxv-2b-mlx | ltxv-13b-mlx | h3-tiny-t2va | h3-768-t2va | h3-fl2va-full | h3-fl2va-pruned
 	VRAMTier     string `json:"vram_tier,omitempty"` // 16g | 24g | 32g
 	Size         string `json:"size,omitempty"`      // 832x480
 	Frames       int    `json:"frames,omitempty"`
@@ -106,7 +106,7 @@ type ConfigV2 struct {
 	// ModalityBackends selects which subprocess or built-in driver handles each modality.
 	// Keys (see model.Modality* constants): "image", "speech" (TTS), "transcribe" (STT),
 	// "video_understanding" (VLM: "native" default, or "sglang" with OLLAMA_SGLANG_URL),
-	// "video_generation" (T2V: "wan" Python or video-cli; "h3" Darwin video-c; "ltx" Wan2GP).
+	// "video_generation" (T2V: "wan" Python or video-cli; "h3" Darwin video-c or Wan2GP CUDA; "ltx" Wan2GP).
 	// Empty or omitted value means the default built-in path for that modality.
 	ModalityBackends map[string]string `json:"modality_backends,omitempty"`
 	// BackendPaths passes filesystem paths / URLs to subprocess adapters (e.g. Whisper GGML, Piper ONNX).
@@ -114,8 +114,8 @@ type ConfigV2 struct {
 	// "tts_url", "tts_upstream_model", "tts_default_voice", "tts_voices_file", "tts_ref_audio",
 	// "wan_repo", "wan_ckpt_dir", "wan_venv", "wan_gguf_path",
 	// "video_cli" / "wan_cli" (optional Pure-C video-c binary — docs/video-c.md),
-	// "h3_ckpt_dir" (MiniMax-H3 tree for backend h3),
-	// "wan2gp_repo", "wan2gp_venv", "wan2gp_ckpt_dir" (LTX via Wan2GP — docs/ltx-t2v.md),
+	// "h3_ckpt_dir" (MiniMax-H3 tree for Darwin video-cli h3),
+	// "wan2gp_repo", "wan2gp_venv", "wan2gp_ckpt_dir" (LTX + H3 CUDA via Wan2GP — docs/ltx-t2v.md, docs/h3-cuda-port.md),
 	// "ltx_mlx_model_dir", "ltx_mlx_venv" (Darwin ltx-mlx 2B/13B — docs/ltx-t2v.md),
 	// "sd_cli", "sd_model" (stable-diffusion.cpp binary and GGUF weights),
 	// "ov_model_dir", "ov_python", "external_image_bin" (OpenVINO GenAI; see docs/sd-openvino-a380.md),
@@ -123,7 +123,7 @@ type ConfigV2 struct {
 	// or an absolute/~/ path — see docs/comfyui-image-backend.md), "comfy_default_workflow" (name, not a path).
 	BackendPaths map[string]string `json:"backend_paths,omitempty"`
 
-	// VideoGeneration presets for models with capability video_gen (see docs/wan-t2v.md, docs/ltx-t2v.md).
+	// VideoGeneration presets for models with capability video_gen (see docs/wan-t2v.md, docs/ltx-t2v.md, docs/h3-cuda-port.md).
 	VideoGeneration *VideoGenerationConfig `json:"video_generation,omitempty"`
 
 	// MusicGeneration presets for modality_backends.speech=music3 (see docs/music-c.md).

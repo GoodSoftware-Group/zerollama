@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""LTXV text-to-video wrapper for zerollama run_script jobs (Wan2GP backend).
+"""LTX / LTXV text-to-video wrapper for zerollama run_script jobs (Wan2GP backend).
 
 Contract (mirrors wan_video_generate.py):
   - Env from server/video_generate.go (LTX_* / WAN2GP_* / VIDEO_*).
   - Output only at LTX_OUTPUT_PATH / VIDEO_OUTPUT_PATH (no latest-mp4 fallback).
   - PROGRESS: lines + TRAINING_COMPLETE for the training worker.
   - LTX_DRY_RUN=1 validates settings/weights and exits 0 without allocating the DiT.
+  - LTX-2.5: model_type ltx2_25_22B_distilled; optional image_start/image_end (keyframes).
 """
 from __future__ import annotations
 
@@ -39,18 +40,38 @@ def require(name: str) -> str:
     return v
 
 
-def is_2b(model_type: str) -> bool:
+def is_ltx2(model_type: str) -> bool:
     t = (model_type or "").lower()
-    return "2b" in t
+    return t.startswith("ltx2") or "ltx2_" in t or "ltx-2" in t
+
+
+def is_ltxv_2b(model_type: str) -> bool:
+    """LTXV 2B distilled only — not LTX-2.x."""
+    t = (model_type or "").lower()
+    if is_ltx2(t):
+        return False
+    return "2b" in t or t == "ltxv_2b_distilled"
 
 
 def weight_names(model_type: str) -> list[str]:
+    if is_ltx2(model_type):
+        return [
+            "ltx-2.5-22b-distilled_diffusion_model_int8_convrot.safetensors",
+            "ltx-2.5-22b_video_vae_bf16.safetensors",
+            "ltx-2.5-22b_audio_vae_bf16.safetensors",
+            "ltx-2.5-22b_vocoder_bf16.safetensors",
+            "ltx-2.5-22b_text_embedding_projection_bf16.safetensors",
+            "ltx-2.5-22b_video_embeddings_connector_int8_convrot.safetensors",
+            "ltx-2.5-22b_audio_embeddings_connector_int8_convrot.safetensors",
+            "gemma4-12b-ltx-v1/gemma4-12b-ltx-v1_int8_convrot.safetensors",
+            "gemma4-12b-ltx-v1/tokenizer.json",
+        ]
     shared = [
         "ltxv_0.9.7_VAE.safetensors",
         "ltxv_scheduler.json",
         "T5_xxl_1.1/T5_xxl_1.1_enc_quanto_bf16_int8.safetensors",
     ]
-    if is_2b(model_type):
+    if is_ltxv_2b(model_type):
         return [
             "ltxv-2b-0.9.8-distilled-fp8.safetensors",
             "ltxv_0.9.8_spatial_upscaler.safetensors",
@@ -65,18 +86,41 @@ def weight_names(model_type: str) -> list[str]:
 
 def check_weights(ckpt: Path, model_type: str = "") -> list[str]:
     missing = [n for n in weight_names(model_type) if not (ckpt / n).is_file()]
-    if is_2b(model_type) and "ltxv_0.9.8_spatial_upscaler.safetensors" in missing:
+    # Accept bf16 DiT as alternate to int8 for LTX-2.5.
+    if is_ltx2(model_type):
+        dit = "ltx-2.5-22b-distilled_diffusion_model_int8_convrot.safetensors"
+        if dit in missing and (ckpt / "ltx-2.5-22b-distilled_diffusion_model_bf16.safetensors").is_file():
+            missing = [n for n in missing if n != dit]
+        if dit in missing and (ckpt / "ltx-2.5-22b-distilled_diffusion_model_nvfp4.safetensors").is_file():
+            missing = [n for n in missing if n != dit]
+    if is_ltxv_2b(model_type) and "ltxv_0.9.8_spatial_upscaler.safetensors" in missing:
         if (ckpt / "ltxv-spatial-upscaler-0.9.8.safetensors").is_file():
             missing = [n for n in missing if n != "ltxv_0.9.8_spatial_upscaler.safetensors"]
     return missing
 
 
+def stills_in_dir(dir_path: str) -> list[str]:
+    if not dir_path:
+        return []
+    d = Path(dir_path)
+    if not d.is_dir():
+        return []
+    exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    out = sorted(
+        str(p) for p in d.iterdir() if p.is_file() and p.suffix.lower() in exts
+    )
+    return out
+
+
 def build_settings() -> dict:
     model_type = env("LTX_MODEL_TYPE", "ltxv_distilled")
     prompt = require("LTX_PROMPT") if env("LTX_PROMPT") else require("WAN_PROMPT")
-    size = env("LTX_SIZE") or env("VIDEO_SIZE") or env("WAN_SIZE") or "768x512"
-    frames = int(env("LTX_FRAMES") or env("VIDEO_FRAMES") or env("WAN_FRAMES") or "17")
-    steps = int(env("LTX_STEPS") or env("WAN_STEPS") or "6")
+    default_size = "1280x704" if is_ltx2(model_type) else "768x512"
+    default_frames = "97" if is_ltx2(model_type) else "17"
+    default_steps = "8" if is_ltx2(model_type) else "6"
+    size = env("LTX_SIZE") or env("VIDEO_SIZE") or env("WAN_SIZE") or default_size
+    frames = int(env("LTX_FRAMES") or env("VIDEO_FRAMES") or env("WAN_FRAMES") or default_frames)
+    steps = int(env("LTX_STEPS") or env("WAN_STEPS") or default_steps)
     seed_s = env("LTX_SEED") or env("VIDEO_SEED") or env("WAN_SEED")
     settings: dict = {
         "model_type": model_type,
@@ -84,32 +128,67 @@ def build_settings() -> dict:
         "resolution": size.replace("*", "x"),
         "video_length": frames,
         "num_inference_steps": steps,
-        "force_fps": int(env("LTX_FPS", "30") or "30"),
+        "force_fps": int(env("LTX_FPS", "24" if is_ltx2(model_type) else "30") or ("24" if is_ltx2(model_type) else "30")),
     }
     if seed_s:
         settings["seed"] = int(seed_s)
+
+    # Control: start/end stills (LTX-2) — from env paths or keyframe staging dir.
+    image_start = env("LTX_IMAGE_START") or env("LTX_IMAGE") or env("VIDEO_IMAGE")
+    image_end = env("LTX_IMAGE_END")
+    keyframe_dir = env("VIDEO_KEYFRAME_DIR")
+    if keyframe_dir and not image_start:
+        stills = stills_in_dir(keyframe_dir)
+        if len(stills) >= 1:
+            image_start = stills[0]
+        if len(stills) >= 2 and not image_end:
+            image_end = stills[-1]
+    if image_start:
+        settings["image_start"] = image_start
+    if image_end:
+        settings["image_end"] = image_end
+    if env("LTX_VIDEO_GUIDE"):
+        settings["video_guide"] = env("LTX_VIDEO_GUIDE")
+    if env("LTX_IMAGE_REFS"):
+        # Comma-separated paths for reference images.
+        refs = [p.strip() for p in env("LTX_IMAGE_REFS").split(",") if p.strip()]
+        if refs:
+            settings["image_refs"] = refs
     return settings
+
+
+def defaults_path(repo: Path, model_type: str) -> Path:
+    mt = str(model_type)
+    if is_ltx2(mt):
+        # defaults/<model_type>.json (e.g. ltx2_25_22B_distilled.json)
+        cand = repo / "defaults" / f"{mt}.json"
+        if cand.is_file():
+            return cand
+        return repo / "defaults" / "ltx2_25_22B_distilled.json"
+    if is_ltxv_2b(mt):
+        defaults = repo / "finetunes" / "ltxv_2b_distilled.json"
+        if defaults.is_file():
+            return defaults
+        return repo / "defaults" / "ltxv_2b_distilled.json"
+    return repo / "defaults" / "ltxv_distilled.json"
 
 
 def dry_run(repo: Path, ckpt: Path, settings: dict) -> int:
     progress(5.0, "dry-run: checking weights")
-    missing = check_weights(ckpt, str(settings.get("model_type") or ""))
+    model_type = str(settings.get("model_type") or env("LTX_MODEL_TYPE", "ltxv_distilled"))
+    missing = check_weights(ckpt, model_type)
     if missing:
-        eprint("missing LTXV weights:")
+        eprint("missing LTX weights:")
         for m in missing:
             eprint(f"  {ckpt / m}")
-        eprint("reinstall: ./scripts/video/install_ltx_wan2gp.sh --weights-only (or --2b-only)")
+        if is_ltx2(model_type):
+            eprint("reinstall: ./scripts/video/install_ltx2_wan2gp.sh --weights-only")
+        else:
+            eprint("reinstall: ./scripts/video/install_ltx_wan2gp.sh --weights-only (or --2b-only)")
         return 1
-    model_type = settings.get("model_type") or env("LTX_MODEL_TYPE", "ltxv_distilled")
-    if is_2b(str(model_type)):
-        defaults = repo / "finetunes" / "ltxv_2b_distilled.json"
-        if not defaults.is_file():
-            defaults = repo / "defaults" / "ltxv_2b_distilled.json"
-    else:
-        defaults = repo / "defaults" / "ltxv_distilled.json"
+    defaults = defaults_path(repo, model_type)
     if not defaults.is_file():
         eprint(f"missing Wan2GP model def at {defaults}")
-        eprint("install 2B: ./scripts/video/install_ltx_wan2gp.sh --2b-only")
         return 1
     progress(40.0, "dry-run: settings ok")
     out = {
@@ -129,13 +208,15 @@ def dry_run(repo: Path, ckpt: Path, settings: dict) -> int:
 def run_generate(repo: Path, ckpt: Path, settings: dict, output: Path) -> int:
     progress(5.0, "importing Wan2GP API")
     sys.path.insert(0, str(repo))
-    # Ensure ckpts visible from Wan2GP root.
     link = repo / "ckpts"
     if not link.exists():
         try:
             link.symlink_to(ckpt)
         except OSError:
             eprint(f"warning: could not link {link} -> {ckpt}")
+
+    if not env("CUDA_VISIBLE_DEVICES"):
+        os.environ["CUDA_VISIBLE_DEVICES"] = env("LTX_CUDA_DEVICE", "0") or "0"
 
     from shared.api import init  # type: ignore
 
@@ -146,13 +227,12 @@ def run_generate(repo: Path, ckpt: Path, settings: dict, output: Path) -> int:
         root=repo,
         cli_args=["--attention", attention, "--profile", profile],
     )
-    progress(20.0, f"submit {settings.get('model_type', 'ltxv')} task")
+    progress(20.0, f"submit {settings.get('model_type', 'ltx')} task")
     job = session.submit_task(settings)
     last = 20.0
     for event in job.events.iter(timeout=0.5):
         if event.kind == "progress":
             p = event.data
-            # Map diffusion into 20–90%.
             frac = 0.0
             try:
                 if getattr(p, "total_steps", 0):
@@ -207,7 +287,6 @@ def main() -> int:
     if not str(output):
         raise SystemExit("LTX_OUTPUT_PATH / VIDEO_OUTPUT_PATH required")
 
-    # Expand {job_id} if training worker left the token (Go may pre-expand).
     job_id = env("TRAINING_JOB_ID") or env("JOB_ID")
     if "{job_id}" in str(output) and job_id:
         output = Path(str(output).replace("{job_id}", job_id))
@@ -218,9 +297,13 @@ def main() -> int:
     if truthy("LTX_DRY_RUN") or "--dry-run" in sys.argv:
         return dry_run(repo, ckpt, settings)
 
-    missing = check_weights(ckpt, settings.get("model_type") or env("LTX_MODEL_TYPE"))
+    model_type = settings.get("model_type") or env("LTX_MODEL_TYPE")
+    missing = check_weights(ckpt, model_type)
     if missing:
-        eprint("missing LTXV weights — run ./scripts/video/install_ltx_wan2gp.sh --weights-only (or --2b-only)")
+        if is_ltx2(str(model_type)):
+            eprint("missing LTX-2.5 weights — run ./scripts/video/install_ltx2_wan2gp.sh --weights-only")
+        else:
+            eprint("missing LTXV weights — run ./scripts/video/install_ltx_wan2gp.sh --weights-only (or --2b-only)")
         for m in missing:
             eprint(f"  {ckpt / m}")
         return 1

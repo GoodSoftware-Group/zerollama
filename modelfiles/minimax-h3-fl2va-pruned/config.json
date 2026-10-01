@@ -1,0 +1,24 @@
+{
+  "capabilities": ["video_gen"],
+  "modality_backends": { "video_generation": "h3" },
+  "video_generation": {
+    "runner": "h3-wan2gp",
+    "profile": "h3-fl2va-pruned",
+    "vram_tier": "16g",
+    "size": "480x832",
+    "frames": 17,
+    "steps": 8,
+    "precision": "bf16",
+    "quant": "int8_convrot",
+    "offload_model": true,
+    "timeout_sec": 5400
+  },
+  "backend_paths": {
+    "wan2gp_repo": "~/.zerollama/third_party/wan2gp/repo",
+    "wan2gp_ckpt_dir": "~/.zerollama/third_party/wan2gp/ckpts",
+    "wan2gp_venv": "~/.zerollama/third_party/wan2gp/venv"
+  },
+  "architecture": "amd64",
+  "os": "linux",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

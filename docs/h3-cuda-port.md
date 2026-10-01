@@ -244,24 +244,41 @@ h3-cuda/
 
 **Next:** optional encode smoke / round-trip; keep DiT packs off this CT.
 
-## 7. Zerollama product fit (later)
+## 7. Zerollama product fit (Wan2GP CUDA shipped)
 
-**Product intent:** support **MiniMax H3** and **LTX** behind `POST /v1/videos` (clients pick model tags; runners are operator-optional). **LTXV distilled:** [ltx-t2v.md](./ltx-t2v.md). **Darwin H3:** tiny + 768-canvas T2VA generate + `/v1/videos` tags `minimax-h3-tiny:lab` / `minimax-h3-768:lab` in [video-c.md](./video-c.md) (50-layer still parked). **This file** remains the **CUDA** research track (`research/h3-cuda/`).
+**Product:** MiniMax-H3 CUDA generate behind `POST /v1/videos` via **Wan2GP** (`runner: h3-wan2gp`), same control plane as LTX. Darwin **video-cli** tags stay separate (`minimax-h3-tiny:lab` / `minimax-h3-768:lab` — [video-c.md](./video-c.md)). Native `research/h3-cuda/` remains the long-term Metal→CUDA op rematch (not the day-one pixel path).
 
-H3/LTX are **not** GGUF/llama.cpp modalities. Product shape:
+| Tag | Profile | Pack |
+|-----|---------|------|
+| `minimax-h3-fl2va:lab` | `h3-fl2va-full` | FL2VA **33B** `int8_convrot` + Q4 TE + fp8mix VAE |
+| `minimax-h3-fl2va-pruned:lab` | `h3-fl2va-pruned` | FL2VA pruned rank8 int8_convrot |
 
-- Same job path as Wan: training `run_script` + wrapper + VRAM broker handoff  
-- Thin Go registry (`model` / `runner` → family); Python from Wan2GP patterns or sibling invoke — not vendoring `wgp.py`  
-- Lab ports only for any standalone serve; never compete with `:11434` / `:8081` without operator unload  
+### Operator install (astra / large host)
 
-Native `h3_cuda` remains optional long-term; day-one H3 pixels = Wan2GP/mmgp-class path.
+```bash
+# Prefer SSD — root is often full; blank nvme0n1 needs a filesystem first.
+export WAN2GP_ROOT=/mnt/ssd2/zerollama/third_party/wan2gp
+ln -sfn /mnt/ssd2/zerollama/third_party ~/.zerollama/third_party   # if missing
+./scripts/video/install_h3_wan2gp.sh            # full 33B + venv
+# or: ./scripts/video/install_h3_wan2gp.sh --pruned-only
+./scripts/video/install_h3_wan2gp.sh --dry-run
+./scripts/video/register_h3_wan2gp_models.sh
+```
+
+Wrapper: [`scripts/video/h3_video_generate.py`](../scripts/video/h3_video_generate.py). Env: `H3_*` / `WAN2GP_*` / `ZEROLLAMA_H3_DRY_RUN` / `ZEROLLAMA_H3_MIN_HOST_RAM_GIB` (raise-only; default **32** GiB full / **24** GiB pruned).
+
+### VRAM note (2×4090 ≠ unified 48 GB)
+
+astra-class hosts have **two 24 GB GPUs**. CUDA does not merge them into one 48 GB pool. Wan2GP + mmgp runs full FL2VA on **one** card (peak often ~8–15 GB) by shuttling weights from host RAM/SSD. Full BF16 DiT resident (~66 GB) is not required and will not fit.
+
+H3/LTX are **not** GGUF/llama.cpp modalities. Never bind Wan2GP Gradio to `:11434` / `:8081`. Lab serve only (`OLLAMA_HOST=127.0.0.1:11435` if needed).
 
 ---
 
 ## 8. Next actions
 
-1. Raise host RAM (or move lab to ≥64 GiB box) before downloading 21 GB+ DiT packs.  
+1. On CT 1564 (~24 GiB RAM): keep DiT packs off; use pruned + Q2 only with an explicit unload window.  
 2. Keep `/tmp/h3c-research/h3.c` as Metal reference; durable CUDA lab mirror in `research/h3-cuda/`. **Full `h3_gpu.h` surface green** (`make all` / `dit8` / `fixture` / `audio-vae`). NAX stays Apple-only.  
-3. Optional: Wan2GP dry-run on a larger host with pruned INT8 + Q2 TE + Sol-Attn (SM120).  
+3. astra (2026-09-30): pruned FL2VA pack under `/mnt/ssd2/zerollama/third_party/wan2gp/ckpts`; wrapper dry-run OK; direct GPU smoke wrote `/mnt/ssd2/zerollama/h3_smoke.mp4` (~4 MiB, 4 steps @ 480×832). Full 33B: `install_h3_wan2gp.sh` (no `--pruned-only`). Pin `torchaudio` to torch’s CUDA index (cu128).  
 4. Do not compete with production VRAM on :11434 without an explicit unload window from the operator.  
-5. Native path next: MLX golden parity when fixtures exist; SSD streaming for DiT only on a larger host.
+5. Native path next: MLX golden parity when fixtures exist; SSD streaming for DiT in `h3_cuda` / video-c.

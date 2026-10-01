@@ -134,3 +134,68 @@ func TestAdmitLtxHostRAMRejectsTinyBox(t *testing.T) {
 		t.Fatalf("want too small, got %v", err)
 	}
 }
+
+func TestAdmitLtx25HostRAMRejects24GiB(t *testing.T) {
+	prev := wanReadHostMem
+	t.Cleanup(func() { wanReadHostMem = prev })
+	t.Setenv("ZEROLLAMA_LTX_MIN_HOST_RAM_GIB", "")
+	t.Setenv("ZEROLLAMA_LTX_MIN_HOST_RAM_FORCE", "")
+	wanReadHostMem = func() (wanHostMem, error) {
+		return wanHostMem{
+			TotalMemory: 24 * format.GibiByte,
+			FreeMemory:  20 * format.GibiByte,
+		}, nil
+	}
+	err := admitLtxHostRAM(model.VideoGenerationConfig{VRAMTier: "48g", Profile: ltxProfile25Distill})
+	if err == nil || !strings.Contains(err.Error(), "too small") {
+		t.Fatalf("want too small for LTX-2.5 on 24 GiB, got %v", err)
+	}
+}
+
+func TestAdmitLtx25HostRAMOK(t *testing.T) {
+	prev := wanReadHostMem
+	t.Cleanup(func() { wanReadHostMem = prev })
+	t.Setenv("ZEROLLAMA_LTX_MIN_HOST_RAM_GIB", "")
+	t.Setenv("ZEROLLAMA_LTX_MIN_HOST_RAM_FORCE", "")
+	wanReadHostMem = func() (wanHostMem, error) {
+		return wanHostMem{
+			TotalMemory: 125 * format.GibiByte,
+			FreeMemory:  80 * format.GibiByte,
+		}, nil
+	}
+	if err := admitLtxHostRAM(model.VideoGenerationConfig{VRAMTier: "48g", Profile: ltxProfile25Distill}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdmitH3HostRAMOK(t *testing.T) {
+	prev := wanReadHostMem
+	t.Cleanup(func() { wanReadHostMem = prev })
+	t.Setenv("ZEROLLAMA_H3_MIN_HOST_RAM_GIB", "")
+	t.Setenv("ZEROLLAMA_H3_MIN_HOST_RAM_FORCE", "")
+	wanReadHostMem = func() (wanHostMem, error) {
+		return wanHostMem{
+			TotalMemory: 64 * format.GibiByte,
+			FreeMemory:  48 * format.GibiByte,
+		}, nil
+	}
+	if err := admitH3HostRAM(model.VideoGenerationConfig{Profile: h3ProfileFL2VAFull}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdmitH3HostRAMRejectsTinyBox(t *testing.T) {
+	prev := wanReadHostMem
+	t.Cleanup(func() { wanReadHostMem = prev })
+	t.Setenv("ZEROLLAMA_H3_MIN_HOST_RAM_GIB", "")
+	wanReadHostMem = func() (wanHostMem, error) {
+		return wanHostMem{
+			TotalMemory: 16 * format.GibiByte,
+			FreeMemory:  12 * format.GibiByte,
+		}, nil
+	}
+	err := admitH3HostRAM(model.VideoGenerationConfig{Profile: h3ProfileFL2VAFull})
+	if err == nil || !strings.Contains(err.Error(), "too small") {
+		t.Fatalf("want too small, got %v", err)
+	}
+}

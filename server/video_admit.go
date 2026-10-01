@@ -126,11 +126,40 @@ func wanOMPThreads() int {
 	return n
 }
 
+// admitH3HostRAM rejects Wan2GP MiniMax-H3 jobs that cannot stage DiT+TE without thrashing.
+// Floor defaults to 32 GiB (full) / 24 GiB (pruned); raise via ZEROLLAMA_H3_MIN_HOST_RAM_GIB.
+func admitH3HostRAM(cfg model.VideoGenerationConfig) error {
+	minGiB := h3Wan2GPMinHostGiB
+	if isH3Wan2GPPrunedProfile(cfg.Profile) {
+		minGiB = h3Wan2GPPrunedMinHostGiB
+	}
+	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_H3_MIN_HOST_RAM_GIB")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			force := strings.TrimSpace(envconfig.Var("ZEROLLAMA_H3_MIN_HOST_RAM_FORCE"))
+			if force == "1" || strings.EqualFold(force, "true") || n > minGiB {
+				minGiB = n
+			}
+		}
+	}
+	plan := wanHostPlan{
+		VAECPU:         "0",
+		AllowGPUVAE:    true,
+		MinHostRAMGiB:  minGiB,
+		OMPThreads:     wanOMPThreads(),
+		HostReserveGiB: wanHostReserveGiB(),
+	}
+	plan.RlimitASGiB = wanRlimitASGiB(plan.HostReserveGiB)
+	return admitWanHostRAM(cfg, plan)
+}
+
 // admitLtxHostRAM rejects LTX jobs that cannot start without thrashing the CT.
 // Floor defaults to Wan mmgp+GPU-VAE class (12 GiB); raise via ZEROLLAMA_LTX_MIN_HOST_RAM_GIB.
 func admitLtxHostRAM(cfg model.VideoGenerationConfig) error {
 	minGiB := ltxDefaultMinHostGiB
-	if isLtx2BProfile(cfg.Profile) {
+	switch {
+	case isLtx25Profile(cfg.Profile):
+		minGiB = ltx25MinHostGiB
+	case isLtx2BProfile(cfg.Profile):
 		minGiB = ltx2bMinHostGiB
 	}
 	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_MIN_HOST_RAM_GIB")); v != "" {
