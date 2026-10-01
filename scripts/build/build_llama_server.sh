@@ -199,9 +199,10 @@ _probe_cuda_fork_cuda_symbols() {
   fi
   _cuda_lib_has_symbol() {
     local sym="$1"
-    nm -D --demangle "${cuda_lib}" 2>/dev/null | grep -Fq "${sym}" && return 0
-    nm --demangle "${cuda_lib}" 2>/dev/null | grep -Fq "${sym}" && return 0
-    strings "${cuda_lib}" 2>/dev/null | grep -Fq "${sym}" && return 0
+    # WHY not grep -q: with set -o pipefail, early close SIGPIPEs nm → false miss.
+    nm -D --demangle "${cuda_lib}" 2>/dev/null | grep -F "${sym}" >/dev/null && return 0
+    nm --demangle "${cuda_lib}" 2>/dev/null | grep -F "${sym}" >/dev/null && return 0
+    strings "${cuda_lib}" 2>/dev/null | grep -F "${sym}" >/dev/null && return 0
     return 1
   }
   if ! _cuda_lib_has_symbol 'ggml_cuda_op_set_rows'; then
