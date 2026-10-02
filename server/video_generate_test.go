@@ -540,7 +540,26 @@ func TestBuildVideoJobPayloadLTX2B(t *testing.T) {
 	}
 }
 
+func TestErrLtxMLXUnsupportedPlatform(t *testing.T) {
+	err := errLtxMLXUnsupportedPlatform()
+	if runtime.GOOS == "darwin" {
+		if err != nil {
+			t.Fatalf("darwin should allow ltx-mlx: %v", err)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatal("expected non-darwin rejection")
+	}
+	if !strings.Contains(err.Error(), "Apple Silicon") || !strings.Contains(err.Error(), "ltxv-2b-distilled") {
+		t.Fatalf("message should point at Apple Silicon + CUDA tags: %v", err)
+	}
+}
+
 func TestBuildVideoJobPayloadLTXMLX(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("ltx-mlx payload build is Darwin-only")
+	}
 	root := findRepoRoot(t)
 	t.Setenv("ZEROLLAMA_REPO", root)
 	t.Setenv("ZEROLLAMA_LTX_DRY_RUN", "")

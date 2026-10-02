@@ -180,6 +180,10 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 		return
 	}
 	if backend == model.BackendLTX && isLtxMLXJob(cfg) {
+		if err := errLtxMLXUnsupportedPlatform(); err != nil {
+			c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
 		if err := validateLtxMLXLastFrame(req.Options, keyframeLabels); err != nil {
 			c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 			return
@@ -722,6 +726,14 @@ func isLtxMLXJob(vcfg model.VideoGenerationConfig) bool {
 	return isLtxMLXProfile(vcfg.Profile)
 }
 
+// errLtxMLXUnsupportedPlatform is nil on Darwin; elsewhere Apple MLX / ltx-mlx cannot run.
+func errLtxMLXUnsupportedPlatform() error {
+	if runtime.GOOS == "darwin" {
+		return nil
+	}
+	return fmt.Errorf("ltx-mlx requires Apple Silicon (macOS); this host is %s/%s — use ltxv-2b-distilled:lab or ltxv-13b-distilled:16g (Wan2GP/CUDA) instead", runtime.GOOS, runtime.GOARCH)
+}
+
 func isLtx25Profile(profile string) bool {
 	p := strings.ToLower(strings.TrimSpace(profile))
 	if isLtxMLXProfile(p) {
@@ -1191,6 +1203,9 @@ func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 }
 
 func buildLtxMlxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, modelName, prompt string, seed *int64, submittedAt time.Time, keyframeDir string) (wanVideoJobPayload, error) {
+	if err := errLtxMLXUnsupportedPlatform(); err != nil {
+		return wanVideoJobPayload{}, err
+	}
 	repoRoot, err := trainingworker.RepoRoot()
 	if err != nil || repoRoot == "" {
 		return wanVideoJobPayload{}, errors.New("cannot locate repository root (set ZEROLLAMA_REPO or OLLAMA_TRAINING_PYTHONPATH)")

@@ -11,6 +11,7 @@ register() {
 }
 register ltxv-13b-distilled:16g modelfiles/ltxv-13b-distilled/config.json
 register ltxv-2b-distilled:lab modelfiles/ltxv-2b-distilled/config.json
+# Apple Silicon ltx-mlx (Darwin). Linux hosts reject these at request time with a clear error.
 register ltxv-2b-mlx:lab modelfiles/ltxv-2b-mlx/config.json
 register ltxv-13b-mlx:lab modelfiles/ltxv-13b-mlx/config.json
 # LTX-2.5 distilled (Gemma4 TE + start/end keyframes / control). Needs ~48 GiB host + 2×4090 class.
