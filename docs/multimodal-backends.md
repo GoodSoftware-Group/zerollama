@@ -18,7 +18,7 @@ In the model `config.json` (same layer as other `model.ConfigV2` fields):
 - **`modality_backends`**: map of modality key → driver name.
   - `image`: `mlx-imagegen` (default, implicit), `external-image` (stable-diffusion.cpp; [sd-vulkan-a380.md](./sd-vulkan-a380.md)), `openvino-image` (OpenVINO GenAI; [sd-openvino-a380.md](./sd-openvino-a380.md)), or `comfyui` (proxy to a running ComfyUI server for edit/img2img/ControlNet/LoRA — see [comfyui-image-backend.md](./comfyui-image-backend.md)).
   - `transcribe`: `whisper` (whisper.cpp-style CLI) or omit for multimodal LLM audio models.
-  - `speech`: `piper` (CPU ONNX TTS), `remote-tts` (Chatterbox/Orpheus/Kokoro HTTP), or `music3` (MiniMax Music 3 via mlx-audio / later music-cli). **Why a third driver:** songs are minutes of DiT, not Piper phonemes; Comfy’s port is GPL so it is not a backend. `music3` returns **202 JSON** on `/v1/audio/speech` (same job as `POST /v1/audio/generations`) — [music-c.md](./music-c.md).
+  - `speech`: `piper` (CPU ONNX TTS), `remote-tts` (Chatterbox/Orpheus/Kokoro/Irodori HTTP), or `music3` (MiniMax Music 3 via mlx-audio / later music-cli). **Why a third driver:** songs are minutes of DiT, not Piper phonemes; Comfy’s port is GPL so it is not a backend. `music3` returns **202 JSON** on `/v1/audio/speech` (same job as `POST /v1/audio/generations`) — [music-c.md](./music-c.md).
   - `video_understanding` (VLM): `native` (default) samples frames with **ffmpeg** and feeds them like images, or `sglang` to forward OpenAI `POST /v1/chat/completions` to a SGLang server when `OLLAMA_SGLANG_URL` is set.
   - `video_generation` (T2V / TI2V): `wan` runs [Wan](../scripts/video/wan_video_generate.py) via the training job queue; capability `video_gen`. `rife` is reserved (not shipped). Keyframe uploads: [media-uploads.md](./media-uploads.md); Wan semantics: [wan-t2v.md](./wan-t2v.md).
 - **`video_sampling`** (optional, native path only): per-model overrides for ffmpeg—`mode` (`fps` or `stride`), `fps`, `stride`, `max_frames`. Omitted fields use server env defaults (see below).
@@ -33,7 +33,8 @@ In the model `config.json` (same layer as other `model.ConfigV2` fields):
   - `tts_upstream_model`: model id sent to the remote server (defaults to the local tag name).
   - `tts_default_voice`: used when the client omits `voice`.
   - `tts_voices_file`: JSON catalog (`[{id,name,…}]` or `{"voices":[…]}`) listed by `GET /v1/audio/voices`.
-  - `tts_ref_audio`: path to a clone reference clip; sent as `X-TTS-Ref-Audio` to the remote server.
+  - `tts_ref_audio`: path to a clone reference clip; sent as `X-TTS-Ref-Audio` to the remote server (and as `irodori.ref_wav` when `tts_flavor=irodori`).
+  - `tts_flavor`: set to `irodori` so Go nests `emotion` → `irodori.caption` for Irodori-TTS-Server.
   - `music3_mlx_model`: mlx-community (or local) MiniMax Music 3 pack for `speech=music3`.
   - `wan_repo`, `wan_ckpt_dir`: Wan upstream tree and checkpoint directory (weights installed outside Ollama blobs).
   - `wan_gguf_path` (optional): GGUF weights when safetensors+offload OOM on 16 GB.
@@ -120,6 +121,26 @@ TTS_ENGINE=chatterbox TTS_PORT=8090 python3 scripts/tts_remote_server.py
 # or TTS_ENGINE=orpheus / kokoro / echo (smoke)
 ```
 
+### Irodori (Japanese voice cloning)
+
+[Irodori-TTS](https://github.com/Aratako/Irodori-TTS) is a **Japanese-only** Flow Matching TTS with zero-shot clone + caption Voice Design. Zerollama fronts the official [Irodori-TTS-Server](https://github.com/Aratako/Irodori-TTS-Server) on **`:8088`** (keep Chatterbox on `:8090`).
+
+**Consent:** do not clone voice actors / celebrities / private individuals without explicit permission.
+
+```bash
+./scripts/speech/install_irodori_tts.sh
+sudo cp scripts/systemd/irodori-tts.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now irodori-tts
+OLLAMA_MODELS=/mnt/ollama_img/models ./scripts/register_speech_models.sh
+# Drop reference clips into /mnt/ollama_img/speech/irodori/voices/*.wav (stem = voice id)
+curl -sS http://127.0.0.1:2083/v1/audio/speech \
+  -H 'content-type: application/json' \
+  -d '{"model":"irodori","input":"こんにちは。","voice":"none","emotion":"落ち着いた自然な声"}' \
+  -o /tmp/irodori-smoke.wav
+```
+
+Go maps `emotion` → `irodori.caption` and `backend_paths.tts_ref_audio` → `irodori.ref_wav` when `tts_flavor=irodori` / `tts_upstream_model=irodori-tts`.
+
 Clients call the same OpenAI route; optional zerollama extension `emotion` is forwarded for expressive engines:
 
 ```bash
@@ -153,13 +174,13 @@ sudo cp scripts/systemd/speech-backends.conf /etc/systemd/system/zerollama.servi
 sudo systemctl daemon-reload && sudo systemctl restart zerollama
 ```
 
-Registered tags: `piper-lessac:latest`, `whisper-base:latest`, `chatterbox:latest`, `orpheus:latest`, `kokoro:latest`.
+Registered tags: `piper-lessac:latest`, `whisper-base:latest`, `chatterbox:latest`, `orpheus:latest`, `kokoro:latest`, `irodori:latest`.
 
 **Live OpenAPI:** this server serves `GET /docs` (Swagger UI), `GET /openapi.json`, and `GET /openapi.yaml`.
 
 **Voice catalog:** Piper exposes every `piper_voice_*` key; remote tags load `tts_voices_file`. List with `GET /v1/audio/voices` (optional `?model=`).
 
-**Recommended layout:** Chatterbox/Orpheus on GPU (`remote-tts`) for quality + emotion; Kokoro for efficient multi-preset; Piper as CPU fallback.
+**Recommended layout:** Chatterbox/Orpheus on GPU (`remote-tts`) for quality + emotion; **Irodori** for Japanese clone/Voice Design on `:8088`; Kokoro for efficient multi-preset; Piper as CPU fallback.
 
 ## Environment variables
 

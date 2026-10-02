@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -26,16 +27,24 @@ var remoteTTSClient = &http.Client{
 // remoteSpeechBody is the OpenAI-compatible JSON body (kept local to avoid
 // modality↔openai import cycles via openai tests).
 type remoteSpeechBody struct {
-	Model          string   `json:"model"`
-	Input          string   `json:"input"`
-	Voice          string   `json:"voice,omitempty"`
-	ResponseFormat string   `json:"response_format,omitempty"`
-	Speed          *float64 `json:"speed,omitempty"`
-	Emotion        string   `json:"emotion,omitempty"`
+	Model          string             `json:"model"`
+	Input          string             `json:"input"`
+	Voice          string             `json:"voice,omitempty"`
+	ResponseFormat string             `json:"response_format,omitempty"`
+	Speed          *float64           `json:"speed,omitempty"`
+	Emotion        string             `json:"emotion,omitempty"`
+	Irodori        *irodoriSpeechOpts `json:"irodori,omitempty"`
+}
+
+// irodoriSpeechOpts are nested options for Irodori-TTS-Server
+// (https://github.com/Aratako/Irodori-TTS-Server).
+type irodoriSpeechOpts struct {
+	Caption string `json:"caption,omitempty"`
+	RefWav  string `json:"ref_wav,omitempty"`
 }
 
 // SpeechRemote POSTs an OpenAI-compatible /v1/audio/speech request to a GPU/edge TTS server
-// (Chatterbox, Orpheus, Kokoro, etc.). URL resolution:
+// (Chatterbox, Orpheus, Kokoro, Irodori, etc.). URL resolution:
 //  1. backend_paths.tts_url (full …/v1/audio/speech or base URL)
 //  2. OLLAMA_TTS_URL fleet default
 func SpeechRemote(ctx context.Context, cfg model.ConfigV2, localModel, text, voice, responseFormat, emotion string, speed *float64) ([]byte, string, error) {
@@ -55,15 +64,33 @@ func SpeechRemote(ctx context.Context, cfg model.ConfigV2, localModel, text, voi
 	if voice == "" {
 		voice = PathFor(cfg, "tts_default_voice")
 	}
+	ref := strings.TrimSpace(PathFor(cfg, "tts_ref_audio"))
 
-	payload, err := json.Marshal(remoteSpeechBody{
+	body := remoteSpeechBody{
 		Model:          upstream,
 		Input:          text,
 		Voice:          voice,
 		ResponseFormat: responseFormat,
 		Speed:          speed,
 		Emotion:        emotion,
-	})
+	}
+	if isIrodoriTTS(cfg, upstream) {
+		opts := &irodoriSpeechOpts{}
+		if emotion != "" {
+			opts.Caption = emotion
+		}
+		// voice=none is caption/text-only (IRODORI_ALLOW_NO_REF_VOICE); skip manifest ref.
+		if ref != "" && !strings.EqualFold(voice, "none") {
+			if st, err := os.Stat(ref); err == nil && !st.IsDir() {
+				opts.RefWav = ref
+			}
+		}
+		if opts.Caption != "" || opts.RefWav != "" {
+			body.Irodori = opts
+		}
+	}
+
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, "", err
 	}
@@ -73,8 +100,9 @@ func SpeechRemote(ctx context.Context, cfg model.ConfigV2, localModel, text, voi
 		return nil, "", err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if ref := PathFor(cfg, "tts_ref_audio"); ref != "" {
-		// Hint for clone-capable servers; ignored by plain OpenAI speech shims.
+	// Hint for clone-capable servers (Chatterbox). Irodori prefers irodori.ref_wav;
+	// skip the header for voice=none so caption-only design is not forced to a missing path.
+	if ref != "" && !(isIrodoriTTS(cfg, upstream) && strings.EqualFold(voice, "none")) {
 		httpReq.Header.Set("X-TTS-Ref-Audio", ref)
 	}
 
@@ -103,6 +131,17 @@ func SpeechRemote(ctx context.Context, cfg model.ConfigV2, localModel, text, voi
 		ct = "audio/wav"
 	}
 	return data, ct, nil
+}
+
+// isIrodoriTTS is true when the remote-tts upstream is Irodori-TTS-Server.
+// Prefer backend_paths.tts_flavor=irodori; also match tts_upstream_model irodori*.
+func isIrodoriTTS(cfg model.ConfigV2, upstream string) bool {
+	flavor := strings.ToLower(strings.TrimSpace(PathFor(cfg, "tts_flavor")))
+	if flavor == "irodori" {
+		return true
+	}
+	u := strings.ToLower(strings.TrimSpace(upstream))
+	return u == "irodori-tts" || u == "irodori" || strings.HasPrefix(u, "irodori-")
 }
 
 func resolveTTSEndpoint(cfg model.ConfigV2) (string, error) {

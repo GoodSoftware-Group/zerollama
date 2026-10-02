@@ -1,0 +1,22 @@
+{
+  "voices": [
+    {
+      "id": "none",
+      "name": "No reference",
+      "backend": "remote-tts",
+      "description": "Japanese text/caption-only (IRODORI_ALLOW_NO_REF_VOICE); set emotion for Voice Design caption"
+    },
+    {
+      "id": "clone",
+      "name": "Clone (tts_ref_audio)",
+      "backend": "remote-tts",
+      "description": "Zero-shot clone via backend_paths.tts_ref_audio → irodori.ref_wav"
+    },
+    {
+      "id": "sample",
+      "name": "Sample",
+      "backend": "remote-tts",
+      "description": "Stem of voices/sample.wav on the Irodori-TTS-Server host"
+    }
+  ]
+}

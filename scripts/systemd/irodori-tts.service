@@ -1,0 +1,31 @@
+# Irodori-TTS-Server — OpenAI /v1/audio/speech for Japanese zero-shot clone.
+# Install assets: ./scripts/speech/install_irodori_tts.sh
+#   sudo cp scripts/systemd/irodori-tts.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now irodori-tts
+#
+# zerollama tag irodori:latest points tts_url at http://127.0.0.1:8088
+# (Chatterbox/Kokoro stay on :8090 via OLLAMA_TTS_URL / tts_remote_server.py).
+
+[Unit]
+Description=Irodori-TTS OpenAI speech sidecar
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/ollama_img
+
+[Service]
+Type=simple
+User=ollama
+Group=ollama
+WorkingDirectory=/mnt/ollama_img/speech/irodori-tts-server
+Environment=HOME=/usr/share/ollama
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HF_HOME=/mnt/ollama_img/speech/irodori-hf
+# Prefer project venv created by install_irodori_tts.sh (uv sync); fallback to uv on PATH.
+ExecStart=/bin/bash -lc 'cd /mnt/ollama_img/speech/irodori-tts-server; if [[ -x .venv/bin/python ]]; then exec .venv/bin/python -m irodori_openai_tts --host 127.0.0.1 --port 8088; fi; exec uv run --no-sync python -m irodori_openai_tts --host 127.0.0.1 --port 8088'
+Restart=on-failure
+RestartSec=5
+# First HF download + CUDA load can be slow.
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

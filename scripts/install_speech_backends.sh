@@ -66,6 +66,7 @@ echo ">>> Voice catalogs (remote-tts)"
 cp -f "${REPO_ROOT}/modelfiles/chatterbox/voices.json" "${VOICES_DIR}/chatterbox.json"
 cp -f "${REPO_ROOT}/modelfiles/orpheus/voices.json" "${VOICES_DIR}/orpheus.json"
 cp -f "${REPO_ROOT}/modelfiles/kokoro/voices.json" "${VOICES_DIR}/kokoro.json"
+cp -f "${REPO_ROOT}/modelfiles/irodori/voices.json" "${VOICES_DIR}/irodori.json"
 # Alias engine names used by scripts/tts_remote_server.py
 ln -sfn chatterbox.json "${VOICES_DIR}/echo.json" 2>/dev/null || cp -f "${VOICES_DIR}/chatterbox.json" "${VOICES_DIR}/echo.json"
 ls -la "${VOICES_DIR}/"
@@ -140,4 +141,5 @@ cat /tmp/whisper-smoke.txt
 echo "OK: speech assets under ${SPEECH_ROOT}"
 echo "Remote TTS: on the GPU host run:"
 echo "  TTS_ENGINE=chatterbox TTS_PORT=8090 python3 ${REPO_ROOT}/scripts/tts_remote_server.py"
+echo "Irodori (Japanese clone): ./scripts/speech/install_irodori_tts.sh && systemctl enable --now irodori-tts"
 echo "Then register models and set tts_url in modelfiles (or OLLAMA_TTS_URL)."

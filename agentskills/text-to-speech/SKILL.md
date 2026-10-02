@@ -1,13 +1,13 @@
 ---
 name: text-to-speech
-description: "Synthesize speech audio from text via a zerollama server's OpenAI-compatible speech API (Piper, Chatterbox, Orpheus, Kokoro)."
+description: "Synthesize speech audio from text via a zerollama server's OpenAI-compatible speech API (Piper, Chatterbox, Orpheus, Kokoro, Irodori)."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
 platforms: [macos, linux]
 metadata:
   hermes:
-    tags: [zerollama, tts, audio, speech, piper, chatterbox, orpheus, kokoro]
+    tags: [zerollama, tts, audio, speech, piper, chatterbox, orpheus, kokoro, irodori]
     category: mlops
     related_skills: [zerollama-integration, speech-to-text, download-model]
 ---
@@ -17,7 +17,7 @@ metadata:
 Synthesize speech audio from text on a [zerollama](https://github.com/GoodSoftware-Group/zerollama)
 server via the OpenAI-compatible `/v1/audio/speech` endpoint. Backends are
 either **Piper** (CPU, always WAV) or a **remote-tts** bridge (Chatterbox,
-Orpheus, Kokoro), selected by the `model` tag.
+Orpheus, Kokoro, Irodori), selected by the `model` tag.
 
 ## Compatibility check
 
@@ -49,7 +49,9 @@ rather than assuming the request shape is wrong.
 
 - zerollama server running (default `http://localhost:11434`)
 - A speech-capable model pulled (`piper-lessac`, `chatterbox`, `orpheus`,
-  `kokoro`, etc.) — check `GET /api/tags`
+  `kokoro`, `irodori`, etc.) — check `GET /api/tags`
+- Irodori needs the Irodori-TTS-Server sidecar (`:8088`; see
+  `scripts/speech/install_irodori_tts.sh`)
 
 ## API Contract
 
@@ -57,11 +59,11 @@ rather than assuming the request shape is wrong.
 
 | Field | Required | Notes |
 |---|---|---|
-| `model` | yes | Speech model tag, e.g. `piper-lessac`, `chatterbox`, `orpheus`, `kokoro` |
+| `model` | yes | Speech model tag, e.g. `piper-lessac`, `chatterbox`, `orpheus`, `kokoro`, `irodori` |
 | `input` | yes | Text to synthesize, max 4096 Unicode characters |
 | `voice` | no | Voice id from `GET /v1/audio/voices` |
 | `response_format` | no | `mp3`\|`opus`\|`aac`\|`flac`\|`wav`\|`pcm` — **Piper ignores this and always returns WAV**; remote-tts returns whatever the upstream sends via `Content-Type`, no server-side transcoding |
-| `emotion` | no | zerollama extension, remote-tts only (e.g. Orpheus: `excited`, `sad`) |
+| `emotion` | no | zerollama extension, remote-tts only (Orpheus: `excited`/`sad`; Irodori: Japanese caption / Voice Design) |
 
 Response is raw audio bytes (`audio/wav` or `audio/mpeg` depending on
 backend), not JSON.
@@ -87,6 +89,12 @@ curl -s http://localhost:11434/v1/audio/speech \
   -H 'content-type: application/json' \
   -d '{"model":"orpheus","input":"Hello there.","voice":"tara","emotion":"excited"}' \
   -o speech.wav
+
+# 4. Irodori (Japanese caption / Voice Design; sidecar :8088)
+curl -s http://localhost:2083/v1/audio/speech \
+  -H 'content-type: application/json' \
+  -d '{"model":"irodori","input":"こんにちは。","voice":"none","emotion":"落ち着いた自然な声"}' \
+  -o irodori.wav
 ```
 
 ## Pitfalls
@@ -101,8 +109,11 @@ curl -s http://localhost:11434/v1/audio/speech \
   first; voice catalogs differ per model and guessing IDs 404s or falls
   back to a default you didn't intend.
 - **Remote-tts backends need the upstream service reachable** — Chatterbox/
-  Orpheus/Kokoro are proxied to a separate service; a connection error here
-  is a backend availability issue, not a request-shape issue.
+  Orpheus/Kokoro (`:8090`) and Irodori (`:8088`) are proxied to separate
+  services; a connection error here is a backend availability issue, not a
+  request-shape issue.
+- **Irodori is Japanese-only** — English input will degrade; do not clone
+  voice actors / celebrities without consent.
 
 ## Related
 

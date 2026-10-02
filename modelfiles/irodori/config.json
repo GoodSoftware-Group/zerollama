@@ -1,0 +1,15 @@
+{
+  "capabilities": ["speech"],
+  "modality_backends": { "speech": "remote-tts" },
+  "backend_paths": {
+    "tts_url": "http://127.0.0.1:8088",
+    "tts_upstream_model": "irodori-tts",
+    "tts_flavor": "irodori",
+    "tts_default_voice": "none",
+    "tts_voices_file": "/mnt/ollama_img/speech/voices/irodori.json",
+    "tts_ref_audio": "/mnt/ollama_img/speech/irodori/voices/sample.wav"
+  },
+  "architecture": "amd64",
+  "os": "linux",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

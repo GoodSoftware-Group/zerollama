@@ -2703,7 +2703,7 @@ components:
       properties:
         model:
           type: string
-          description: Speech model tag (e.g. piper-lessac, chatterbox, orpheus, kokoro)
+          description: Speech model tag (e.g. piper-lessac, chatterbox, orpheus, kokoro, irodori)
         input:
           type: string
           description: Text to synthesize (4096 runes; 20000 when Music 3 instructions/duration/max_new_tokens are set)
@@ -2724,7 +2724,10 @@ components:
           description: Speech rate (OpenAI-compatible)
         emotion:
           type: string
-          description: zerollama extension — forwarded by remote-tts (Chatterbox/Orpheus); ignored by Piper
+          description: >
+            zerollama extension for remote-tts. Chatterbox/Orpheus: expressive hint.
+            Irodori (`irodori:latest`): mapped to upstream `irodori.caption` (Japanese Voice Design).
+            Ignored by Piper.
         instructions:
           type: string
           description: Music 3 caption (SGLang-Omni). Ignored by Piper. Raises lyrics cap to 20000 runes.
@@ -5160,8 +5163,12 @@ paths:
       tags: [Audio]
       summary: Text to speech
       description: |
-        Piper (CPU) or remote-tts (Chatterbox/Orpheus/Kokoro): returns audio bytes
-        (typically audio/wav). Optional `emotion` is a zerollama extension.
+        Piper (CPU) or remote-tts (Chatterbox/Orpheus/Kokoro/Irodori): returns audio bytes
+        (typically audio/wav). Optional `emotion` is a zerollama extension (Irodori → caption).
+
+        Irodori (`irodori:latest`) is Japanese-only zero-shot clone / Voice Design via
+        Irodori-TTS-Server on `:8088`. Use `voice=none` + `emotion` for caption-only;
+        registered stems under the server `voices/` dir (or manifest `tts_ref_audio`) for clone.
 
         MiniMax Music 3 (`modality_backends.speech=music3`) does **not** return WAV
         on this POST. It queues the same async job as POST /v1/audio/generations
@@ -5184,6 +5191,13 @@ paths:
               -H 'content-type: application/json' \
               -d '{"model":"orpheus","input":"Hello.","voice":"tara","emotion":"excited"}' \
               -o speech.wav
+        - lang: bash
+          label: Irodori Japanese caption
+          source: |
+            curl http://localhost:2083/v1/audio/speech \
+              -H 'content-type: application/json' \
+              -d '{"model":"irodori","input":"こんにちは。","voice":"none","emotion":"落ち着いた自然な声"}' \
+              -o irodori.wav
       requestBody:
         required: true
         content:

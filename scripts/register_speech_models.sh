@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Register Piper / Whisper / remote-tts (Chatterbox, Orpheus, Kokoro) manifests.
+# Register Piper / Whisper / remote-tts (Chatterbox, Orpheus, Kokoro, Irodori) manifests.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -11,6 +11,7 @@ export GOFLAGS="${GOFLAGS:--mod=mod}"
 "$GO" run ./scripts/register_wan_manifest chatterbox:latest modelfiles/chatterbox/config.json
 "$GO" run ./scripts/register_wan_manifest orpheus:latest modelfiles/orpheus/config.json
 "$GO" run ./scripts/register_wan_manifest kokoro:latest modelfiles/kokoro/config.json
+"$GO" run ./scripts/register_wan_manifest irodori:latest modelfiles/irodori/config.json
 
-echo "Registered speech tags: piper-lessac, whisper-base, chatterbox, orpheus, kokoro"
+echo "Registered speech tags: piper-lessac, whisper-base, chatterbox, orpheus, kokoro, irodori"
 echo "List voices: curl -s localhost:11434/v1/audio/voices | jq ."
