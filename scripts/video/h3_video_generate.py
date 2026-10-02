@@ -148,10 +148,11 @@ def run_generate(repo: Path, ckpt: Path, settings: dict, output: Path) -> int:
         except OSError:
             eprint(f"warning: could not link {link} -> {ckpt}")
 
-    # Prefer GPU 0 unless operator set CUDA_VISIBLE_DEVICES.
-    if not env("CUDA_VISIBLE_DEVICES"):
-        os.environ["CUDA_VISIBLE_DEVICES"] = env("H3_CUDA_DEVICE", "0") or "0"
+    # Best-fit (+ migrate irodori only under solvable contention). See cuda_device.py.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from cuda_device import apply_cuda_device  # noqa: WPS433
 
+    apply_cuda_device(override_env="H3_CUDA_DEVICE", label="H3")
     from shared.api import init  # type: ignore
 
     profile = env("H3_MMGP_PROFILE") or env("WAN2GP_PROFILE") or "5"

@@ -178,7 +178,11 @@ func admitLtxHostRAM(cfg model.VideoGenerationConfig) error {
 		HostReserveGiB: wanHostReserveGiB(),
 	}
 	plan.RlimitASGiB = wanRlimitASGiB(plan.HostReserveGiB)
-	return admitWanHostRAM(cfg, plan)
+	err := admitWanHostRAM(cfg, plan)
+	if err != nil && isLtx25Profile(cfg.Profile) {
+		return fmt.Errorf("%s — LTX-2.5 stages ~19 GiB DiT + ~13 GiB Gemma4 in host RAM via mmgp (astra peak ~54 GiB RSS before OOM). Free RAM/swap first, stop competing GPU apps, or use ltxv-13b-distilled:16g / ltxv-2b-distilled:lab", err.Error())
+	}
+	return err
 }
 
 func wanHostReserveGiB() int {

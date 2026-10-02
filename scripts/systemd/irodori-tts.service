@@ -20,6 +20,10 @@ WorkingDirectory=/mnt/ollama_img/speech/irodori-tts-server
 Environment=HOME=/usr/share/ollama
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=HF_HOME=/mnt/ollama_img/speech/irodori-hf
+# Default pack with desktop on GPU0. Video wrappers may rewrite irodori-cuda.env and
+# SIGTERM us so we restart on the other GPU when DiT contention is solvable.
+EnvironmentFile=-/mnt/ollama_img/speech/irodori-cuda.env
+Environment=CUDA_VISIBLE_DEVICES=0
 # Prefer project venv created by install_irodori_tts.sh (uv sync); fallback to uv on PATH.
 ExecStart=/bin/bash -lc 'cd /mnt/ollama_img/speech/irodori-tts-server; if [[ -x .venv/bin/python ]]; then exec .venv/bin/python -m irodori_openai_tts --host 127.0.0.1 --port 8088; fi; exec uv run --no-sync python -m irodori_openai_tts --host 127.0.0.1 --port 8088'
 Restart=on-failure

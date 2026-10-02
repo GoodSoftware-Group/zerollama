@@ -1263,6 +1263,10 @@ def run_local_script(request: Dict[str, Any]) -> Dict[str, Any]:
                 if match:
                     progress = float(match.group(1))
                     message = match.group(2).strip() if match.group(2) else ""
+                    # WHY monotonic: Wan2GP/mmgp load phases emit oscillating sub-step %;
+                    # never move the OpenAI job progress bar backwards.
+                    if progress + 0.01 < last_progress:
+                        continue
                     last_progress = progress
                     STATE.send_progress(progress, message)
 

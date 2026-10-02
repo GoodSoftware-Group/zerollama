@@ -14,7 +14,7 @@ Related: [wan-t2v.md](./wan-t2v.md), [wangp-borrowings.md](./wangp-borrowings.md
 |--------|-----|
 | **LTXV 13B distilled + quanto** | 6 steps, long-prompt model, Wan2GP mmgp profile 5 fits 16 GB VRAM classes better than LTX-2 |
 | **LTXV 2B distilled FP8** | Prompt-iteration / cartoon-prototype tag (`ltxv-2b-distilled:lab`). ~4.5 GiB DiT, 512² / 8 steps. Wan2GP has no native 2B type — we install a **finetune JSON** that reuses the LTXV loader. |
-| **LTX-2.5 on astra (2×4090)** | Gemma4-12B TE + 22B DiT (~50 GB pack) — host floor **48 GiB**; start/end stills via `options.keyframes` |
+| **LTX-2.5 on astra (2×4090)** | Gemma4-12B TE + 22B DiT (~50 GB pack) — host floor **72 GiB MemAvailable** (see [WHY below](#why-ltx-25-host-floor-is-72-gib)); dual-GPU **best-fit** placement ([cuda_device.py](../scripts/video/cuda_device.py)); start/end stills via `options.keyframes` |
 | **Not LTX-2.5 on CT 1564** | ~24 GiB host + prod serve is a wall; use LTXV 13B/2B there |
 | **Wan2GP, not Gradio** | Product is `/v1/videos` + exclusive GPU QoS; Gradio competes for ports/UX |
 | **`modality_backends.video_generation: "ltx"`** | Multi-family registry (ROADMAP v1.4); Wan stays `"wan"` |
@@ -75,13 +75,38 @@ The install script reuses `~/.zerollama/third_party/wan/venv` when present (syml
 | `LTX_*` / `WAN2GP_*` | Wrapper env (see `ltx_video_generate.py`) |
 | `LTX_IMAGE_START` / `LTX_IMAGE_END` | LTX-2.5 keyframe control (from `options.keyframes`) |
 | `LTX_DRY_RUN=1` | Validate settings/weights; no DiT allocate |
-| `ZEROLLAMA_LTX_MIN_HOST_RAM_GIB` | Raise-only host floor (default **12** / **8** / **48** GiB for 13B / 2B / LTX-2.5) |
+| `ZEROLLAMA_LTX_MIN_HOST_RAM_GIB` | Raise-only host floor (default **12** / **8** / **72** GiB for 13B / 2B / LTX-2.5) |
 
 ## Admission / QoS
 
 - Same **exclusive GPU** lease as Wan (`video_exclusive.go`).
-- Host floor: **12 GiB** (13B), **8 GiB** (2B), **48 GiB** (LTX-2.5). Tune after measured peaks.
+- Host floor: **12 GiB** (13B), **8 GiB** (2B), **72 GiB** (LTX-2.5 MemAvailable). Tune after measured peaks.
+- Dual-GPU placement: see [WHY dual-GPU best-fit](#why-dual-gpu-best-fit--migrate-only-on-solvable-contention).
 - Full generate needs free VRAM (~prod often holds ~6.5 GiB on `:11434`). **Unload production listeners only when the operator requests it.**
+- **ltx-mlx tags on Linux:** immediate **400** — Apple MLX cannot run on NVIDIA; message points at `ltxv-*-distilled` Wan2GP tags. **Why not remap:** silent CUDA alias hid the platform mismatch and made Mac vs Linux tags mean different runners.
+
+### WHY LTX-2.5 host floor is 72 GiB
+
+**Incident (astra, 2026-10-02):** `ltx2.5-22b-distilled:48g` ran ~19 min with oscillating `encoding_text` progress, then the kernel **OOM-killed `zerollama-serve`** (~54 GiB process RSS; unit `MemoryPeak≈54.2G`). Swap was already full. Journal showed mmgp re-hooking / reloading the 19 GiB DiT in a loop — not “slow diffusion.”
+
+| Old gate | Why it failed |
+|----------|----------------|
+| **48 GiB MemAvailable** | Peak RSS alone was ~54 GiB while staging DiT+Gemma4; desktop + irodori + page cache need headroom beyond the bare pack size |
+
+**Fix:** refuse submit below **72 GiB MemAvailable** with a 503 that names CUDA alternatives (`ltxv-13b-distilled:16g` / `ltxv-2b-distilled:lab`). Override only via `ZEROLLAMA_LTX_MIN_HOST_RAM_GIB` (+ `…_FORCE=1` to lower). Progress updates are **monotonic** in `training.py` / load-phase floors in `ltx_video_generate.py` so mmgp sub-step % cannot bounce the OpenAI job bar.
+
+### WHY dual-GPU best-fit (+ migrate only on solvable contention)
+
+Astra has **two 24 GiB GPUs**. Always picking “freest” empties one card but packs poorly; always pinning sticky TTS to GPU0 ignores cases where DiT must reclaim that card.
+
+| Rule | Behavior | Why |
+|------|----------|-----|
+| **Best-fit** (default `ZEROLLAMA_CUDA_POLICY=best_fit`) | Among GPUs with `free ≥ need`, pick the **smallest** free that still fits | Packs compute; keeps the **largest open chunk** for the next DiT job |
+| **Migrate iff solvable** | If nothing fits, move **irodori** only (`irodori-cuda.env` + SIGTERM; systemd `Restart=` reloads env). Desktop/kwin/Steam are immovable | Pay a one-time reload cost only when contention is real and fixable — not on every video job |
+| **Need MiB** | `LTX_VRAM_NEED_MIB` (22B=18000, 13B=14000, 2B=8000) from Go payload | Placement must know contiguous free target; mmgp does not merge the two cards |
+| Escapes | `ZEROLLAMA_CUDA_POLICY=freest`, `ZEROLLAMA_CUDA_MIGRATE=0`, `LTX_CUDA_DEVICE` / `H3_CUDA_DEVICE` / `WAN_CUDA_DEVICE` | Labs / debugging without surprising migrations |
+
+Code: [`scripts/video/cuda_device.py`](../scripts/video/cuda_device.py) (LTX / Wan / H3 wrappers). Irodori default pack: `CUDA_VISIBLE_DEVICES=0` + optional `/mnt/ollama_img/speech/irodori-cuda.env` ([`irodori-tts.service`](../scripts/systemd/irodori-tts.service)).
 
 ## API
 

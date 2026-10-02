@@ -184,6 +184,14 @@ def wan_subprocess_env() -> dict[str, str]:
 def prepare_wan_subprocess_env(python_bin: str) -> dict[str, str]:
     """Build env for wan_generate_entry; sanitize LD so torch uses bundled cuDNN."""
     env = wan_subprocess_env()
+    # Best-fit (+ migrate irodori only under solvable contention). See cuda_device.py.
+    if not env.get("CUDA_VISIBLE_DEVICES", "").strip():
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from cuda_device import pick_cuda_device
+
+        device = pick_cuda_device(override_env="WAN_CUDA_DEVICE")
+        env["CUDA_VISIBLE_DEVICES"] = device
+        eprint(f"Wan using CUDA_VISIBLE_DEVICES={device}")
     from wan_torch_compat import sanitize_ld_library_path_for_pytorch
 
     return sanitize_ld_library_path_for_pytorch(env, python=python_bin)

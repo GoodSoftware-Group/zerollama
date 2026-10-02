@@ -208,6 +208,10 @@ def dry_run(repo: Path, ckpt: Path, settings: dict) -> int:
 def run_generate(repo: Path, ckpt: Path, settings: dict, output: Path) -> int:
     progress(5.0, "importing Wan2GP API")
     sys.path.insert(0, str(repo))
+    # Shared freest-GPU picker lives next to this wrapper.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from cuda_device import apply_cuda_device  # noqa: WPS433
+
     link = repo / "ckpts"
     if not link.exists():
         try:
@@ -215,9 +219,8 @@ def run_generate(repo: Path, ckpt: Path, settings: dict, output: Path) -> int:
         except OSError:
             eprint(f"warning: could not link {link} -> {ckpt}")
 
-    if not env("CUDA_VISIBLE_DEVICES"):
-        os.environ["CUDA_VISIBLE_DEVICES"] = env("LTX_CUDA_DEVICE", "0") or "0"
-
+    # Best-fit (+ migrate irodori only under solvable contention). See cuda_device.py.
+    apply_cuda_device(override_env="LTX_CUDA_DEVICE", label="LTX")
     from shared.api import init  # type: ignore
 
     profile = env("LTX_MMGP_PROFILE") or env("WAN2GP_PROFILE") or "5"
@@ -230,28 +233,45 @@ def run_generate(repo: Path, ckpt: Path, settings: dict, output: Path) -> int:
     progress(20.0, f"submit {settings.get('model_type', 'ltx')} task")
     job = session.submit_task(settings)
     last = 20.0
+    # mmgp load phases report non-monotonic sub-step %; pin floors so clients do not see thrash.
+    load_floors = {
+        "loading_model": 27.0,
+        "encoding_text": 40.0,
+        "loading": 27.0,
+    }
     for event in job.events.iter(timeout=0.5):
         if event.kind == "progress":
             p = event.data
-            frac = 0.0
-            try:
-                if getattr(p, "total_steps", 0):
-                    frac = float(p.current_step) / float(p.total_steps)
-                elif getattr(p, "progress", None) is not None:
-                    frac = float(p.progress) / 100.0
-            except Exception:
+            phase = str(getattr(p, "phase", None) or "diffusing")
+            if phase in load_floors:
+                floor = load_floors[phase]
+                pct = floor if last < floor else min(last + 0.05, 55.0)
+            else:
                 frac = 0.0
-            pct = 20.0 + max(0.0, min(1.0, frac)) * 70.0
+                try:
+                    if getattr(p, "total_steps", 0):
+                        frac = float(p.current_step) / float(p.total_steps)
+                    elif getattr(p, "progress", None) is not None:
+                        frac = float(p.progress) / 100.0
+                except Exception:
+                    frac = 0.0
+                pct = 20.0 + max(0.0, min(1.0, frac)) * 70.0
             if pct > last:
-                phase = getattr(p, "phase", None) or "diffusing"
-                progress(pct, str(phase))
+                progress(pct, phase)
                 last = pct
         elif event.kind == "stream":
             line = event.data
             text = getattr(line, "text", "") or ""
             if text:
+                # mmgp re-hooks the same modules many times while thrashing — keep journal readable.
+                if "Hooked to model" in text or "Async loading plan" in text:
+                    continue
+                if text.count("Loading Model") and "ltx-2.5" in text:
+                    # one-line breadcrumb instead of a reload flood
+                    if last < 30.0:
+                        eprint(text.rstrip())
+                    continue
                 eprint(text.rstrip())
-
     result = job.result()
     if not result.success:
         for err in result.errors or []:

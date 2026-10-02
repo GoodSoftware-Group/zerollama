@@ -168,6 +168,23 @@ func TestAdmitLtx25HostRAMOK(t *testing.T) {
 	}
 }
 
+func TestAdmitLtx25HostRAMRejectsTightFree(t *testing.T) {
+	prev := wanReadHostMem
+	t.Cleanup(func() { wanReadHostMem = prev })
+	t.Setenv("ZEROLLAMA_LTX_MIN_HOST_RAM_GIB", "")
+	t.Setenv("ZEROLLAMA_LTX_MIN_HOST_RAM_FORCE", "")
+	wanReadHostMem = func() (wanHostMem, error) {
+		return wanHostMem{
+			TotalMemory: 125 * format.GibiByte,
+			FreeMemory:  55 * format.GibiByte, // above old 48 floor, below measured-safe 72
+		}, nil
+	}
+	err := admitLtxHostRAM(model.VideoGenerationConfig{VRAMTier: "48g", Profile: ltxProfile25Distill})
+	if err == nil || !strings.Contains(err.Error(), "insufficient free") || !strings.Contains(err.Error(), "ltxv-13b-distilled") {
+		t.Fatalf("want free-RAM reject with CUDA alternative, got %v", err)
+	}
+}
+
 func TestAdmitH3HostRAMOK(t *testing.T) {
 	prev := wanReadHostMem
 	t.Cleanup(func() { wanReadHostMem = prev })

@@ -28,7 +28,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [H3 MLX borrowings](./h3-mlx-borrowings.md) — [minimax-h3-mlx](https://github.com/mrbizarro/minimax-h3-mlx) as rematch oracle (AdaLN drop, TE truncation, packing); not the product runner.
 * [H3 ClipProj](./h3-clipproj.md) — NicoLab28 small-Qwen3-VL → `[seq,5120]` TE map; video-c host load/apply.
 * [Wan text-to-video (T2V)](./wan-t2v.md) — **why** `/v1/videos` is async, **why** training `run_script` + wrapper, VRAM/defer queue, artifacts; TI2V keyframes.
-* [LTX text-to-video (v1.4)](./ltx-t2v.md) — **why** LTXV distilled+quanto first (not LTX-2/Gemma); Wan2GP runner behind same `/v1/videos`.
+* [LTX text-to-video (v1.4)](./ltx-t2v.md) — **why** LTXV distilled+quanto first; **why** LTX-2.5 host floor 72 GiB (astra OOM); **why** dual-GPU best-fit + irodori migrate-only-on-contention; Wan2GP behind `/v1/videos`.
 * DiT media toolkit (Wan / H3 / LTX, parallel) — Mac lab umbrella in bmtl `uma_toolkit/docs/WISHLIST_DIT_MEDIA.md`; product ROADMAP video section.
 * [Media uploads (`/v1/media`)](./media-uploads.md) — **why** session/label PUT + CAS (no client digests, no refcounts); **why** not model `blobs/`; keyframe workflow + `media_missing` recovery.
 * [wan-c vs Python MPS speed gap](./wan-c-speed-gap.md) — profile + Phase1 cuts + toolkit `DIT_BLOCK` / flash ATTN / feat_cache asks.
@@ -89,7 +89,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 
 ### GPU training & scheduling (repo)
 
-* [Scheduling, VRAM, and queue policy](./scheduling-vram-policy.md) — **why** inference and training are separate queues; Phase 8 broker; T6 idle-wait + `defer-*` queue; Phase 11–13 runtime heuristics; **ggml unload / manifest `num_ctx` at load**; **M12 ggml suggest/clamp**; **prompt truncation / context-overflow API fields** (`prompt_truncated`, runtime detect).
+* [Scheduling, VRAM, and queue policy](./scheduling-vram-policy.md) — **why** inference and training are separate queues; Phase 8 broker; T6 idle-wait + `defer-*` queue; Phase 11–13 runtime heuristics; **dual-GPU video best-fit**; **ggml unload / manifest `num_ctx` at load**; **M12 ggml suggest/clamp**; **prompt truncation / context-overflow API fields** (`prompt_truncated`, runtime detect).
 * [Inference wishlist — host capacity (Phase A/B)](./inference-wishlist-host.md) — **why** Orient/Decide need capacity APIs; pin/propose with honest single-resident runtime; broker must respect pins; B0 requires ggml-empty; 503 before resume on pin conflicts; `stable_multi_model_swap` still false.
 * [T6 unified queue policy (operator guide)](./t6-unified-queue.md) — idle-wait, defer queue, allowed window, cross-queue FIFO, env table, `/api/status` queue_policy, smoke script.
 * [Open-source shoutouts](./open-source-shoutouts.md) — Gigatoken, vLLM, SGLang, LocalAI, minefield, Hermes, Ollama, llama.cpp — what we borrowed and why.

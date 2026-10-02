@@ -54,7 +54,10 @@ const (
 	ltx25DefaultSteps      = 8
 	ltx25DefaultFrames     = 97 // ~4s @ 24fps; Wan2GP sample uses 241 — admit longer via manifest
 	ltx25TimeoutSec        = 7200
-	ltx25MinHostGiB        = 48 // Gemma4-12B TE + 22B DiT staging; astra ~125 GiB
+	// Measured astra OOM (2026-10-02): serve RSS peaked ~54 GiB while mmgp restaged
+	// 19 GiB DiT + 13 GiB Gemma4; 48 GiB MemAvailable was not enough headroom with
+	// desktop/irodori/swap pressure. Require 72 GiB free or refuse before thrash.
+	ltx25MinHostGiB = 72
 	ltxMlxDefaultSize      = "768x480"
 	ltxMlxDefaultSteps     = 4
 	ltxMlx13BDefaultSize   = "1280x720" // ltx-mlx --resolution 720p is height 720, width 1280
@@ -1167,6 +1170,11 @@ func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 	}
 	if isLtx25Profile(vcfg.Profile) {
 		env["LTX_FPS"] = "24"
+		env["LTX_VRAM_NEED_MIB"] = "18000"
+	} else if isLtx2BProfile(vcfg.Profile) {
+		env["LTX_VRAM_NEED_MIB"] = "8000"
+	} else {
+		env["LTX_VRAM_NEED_MIB"] = "14000"
 	}
 	if dry := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_DRY_RUN")); dry != "" {
 		env["LTX_DRY_RUN"] = dry

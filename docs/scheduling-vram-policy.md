@@ -410,6 +410,20 @@ Code: `server/runtime_inference_routing.go`, `server/runtime_*_proxy.go`, `serve
 
 ---
 
+## Dual-GPU video placement (astra-class)
+
+**Why this is separate from the VRAM broker:** Phase 8 unloads *zerollama* inference runners. It does not place Wan/LTX/H3 PyTorch children across two physical GPUs, and it cannot move irodori TTS or the desktop compositor.
+
+| Layer | Owner | Why |
+|-------|--------|-----|
+| Exclusive video lease | `server/video_exclusive.go` | Stop chat from reloading into the DiT job mid-run |
+| Host RAM admit (LTX-2.5 ≥72 GiB MemAvailable) | `admitLtxHostRAM` | Measured astra OOM: serve RSS ~54 GiB while mmgp restaged 22B+Gemma4 under a 48 GiB floor |
+| Best-fit CUDA pick + irodori migrate | `scripts/video/cuda_device.py` | Pack when free≥need; migrate sticky TTS **only** when contention is solvable — keep the largest open chunk for the next DiT |
+
+Details / operator escapes: [ltx-t2v.md — Admission / QoS](./ltx-t2v.md#admission--qos). Related: [h3-cuda-port.md](./h3-cuda-port.md) (same Wan2GP mmgp class).
+
+---
+
 ## What is still roadmap
 
 | Item | Why not done |
