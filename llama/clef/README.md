@@ -37,7 +37,20 @@ CUDA_HOME=/usr/local/cuda-12.8 CMAKE_CUDA_ARCHITECTURES=120-real \
 ```bash
 hf download Cloudflare/clef-flash --local-dir /root/models/clef-flash-hf
 ./scripts/phase/l6_clef_product_convert.sh
-# → /root/models/clef-flash-gguf/clef-flash-ollama-q8_0.gguf (qwen35.decision.type=clef, clef.*)
+# → clef-flash-ollama-q8_0.gguf (qwen35.decision.type=clef, clef.*)
+# → mmproj-clef-flash-f16.gguf (clip / qwen3vl_merger) when CLEF_CONVERT_MMPROJ=1 (default)
+```
+
+Vision tag (two `FROM` lines; create attaches projector automatically):
+
+```bash
+cat >/tmp/clef-vl.Modelfile <<EOF
+FROM /root/models/clef-flash-gguf/clef-flash-ollama-q8_0.gguf
+FROM /root/models/clef-flash-gguf/mmproj-clef-flash-f16.gguf
+EOF
+zerollama create clef-flash-vl -f /tmp/clef-vl.Modelfile
+# optional: CAPABILITY decision vision + RENDERER clef via /api/create
+OLLAMA_HOST=127.0.0.1:8080 ./scripts/phase/l6_clef_vl_decisions_smoke.sh
 ```
 
 Do **not** use `ggml-org/Clef-Flash-GGUF` with this head — that pack is native `clef` + `decision.*` tensors.

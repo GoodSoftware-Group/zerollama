@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Lab e2e: tip llama-server + zerollama /v1/decisions with synth Clef GGUF.
+# Lab e2e: tip llama-server + zerollama /v1/decisions with synth or product Clef GGUF.
 #
-# WHY: production CT serve still pins LLAMA_SERVER_BIN at b10615 (no Clef head).
-# This starts a lab Go daemon on :11435 with tip b11351 llama-server.
-#
-# Never binds 11434 / 8080 / 8081.
+# Starts a lab Go daemon on :11435 with tip b11351 llama-server (never 11434/8080/8081).
+# Optional VL: CLEF_E2E_MMPROJ=/path/to/mmproj.gguf adds a second FROM + image smoke
+# (heavy on CPU with product Q8 — prefer l6_clef_vl_decisions_smoke.sh against an
+# already-serving host for day-to-day checks).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -23,6 +23,7 @@ fi
 MODEL_NAME="${CLEF_E2E_MODEL:-clef-synth-lab}"
 MODELS_DIR="${CLEF_E2E_MODELS:-/tmp/clef-lab-models}"
 NUM_GPU="${CLEF_E2E_NUM_GPU:-0}"
+MMPROJ_GGUF="${CLEF_E2E_MMPROJ:-}"
 
 case "${PORT}" in
   11434|8080|8081) echo "error: refusing reserved port ${PORT}" >&2; exit 2 ;;
@@ -49,15 +50,25 @@ else
   python3 "${ROOT}/scripts/phase/l6_clef_graft_synth_gguf.py" -i "${SRC_GGUF}" -o "${OUT_GGUF}"
 fi
 
+if [[ -n "${MMPROJ_GGUF}" && ! -f "${MMPROJ_GGUF}" ]]; then
+  echo "error: CLEF_E2E_MMPROJ missing: ${MMPROJ_GGUF}" >&2
+  exit 1
+fi
+
 MF="$(mktemp /tmp/clef-synth-XXXXXX.modelfile)"
 # CAPABILITY is parsed by newer clients; lab may use an older CLI binary.
 # Set decision capability via /api/create after the GGUF import.
-cat >"${MF}" <<EOF
-FROM ${OUT_GGUF}
+{
+  echo "FROM ${OUT_GGUF}"
+  if [[ -n "${MMPROJ_GGUF}" ]]; then
+    echo "FROM ${MMPROJ_GGUF}"
+  fi
+  cat <<EOF
 RENDERER clef
 PARAMETER num_ctx ${CLEF_E2E_NUM_CTX:-512}
 PARAMETER num_gpu ${NUM_GPU}
 EOF
+} >"${MF}"
 
 mkdir -p "${MODELS_DIR}"
 fuser -k "${PORT}/tcp" 2>/dev/null || true
@@ -99,6 +110,11 @@ done
 
 OLLAMA_HOST="127.0.0.1:${PORT}" "${ZL_BIN}" create "${MODEL_NAME}" -f "${MF}"
 
+CAPS='["decision"]'
+if [[ -n "${MMPROJ_GGUF}" ]]; then
+  CAPS='["decision","vision"]'
+fi
+
 # Attach decision capability + clef renderer (works even when CLI Modelfile lacks CAPABILITY).
 curl -sS --max-time 120 "http://127.0.0.1:${PORT}/api/create" \
   -H 'content-type: application/json' \
@@ -106,7 +122,7 @@ curl -sS --max-time 120 "http://127.0.0.1:${PORT}/api/create" \
     \"model\": \"${MODEL_NAME}\",
     \"from\": \"${MODEL_NAME}\",
     \"renderer\": \"clef\",
-    \"capabilities\": [\"decision\"],
+    \"capabilities\": ${CAPS},
     \"stream\": false
   }" | tee /tmp/l6_clef_e2e_create_cap.json
 echo
@@ -114,7 +130,17 @@ echo
 curl -sS --max-time 30 "http://127.0.0.1:${PORT}/api/show" \
   -H 'content-type: application/json' \
   -d "{\"model\": \"${MODEL_NAME}\"}" | tee /tmp/l6_clef_e2e_show.json | \
-  python3 -c 'import json,sys; d=json.load(sys.stdin); caps=[str(c) for c in (d.get("capabilities") or [])]; print("show caps=", caps, "renderer=", d.get("renderer")); assert "decision" in caps, d'
+  python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+caps=[str(c) for c in (d.get('capabilities') or [])]
+print('show caps=', caps, 'renderer=', d.get('renderer'), 'projector=', bool(d.get('projector_info')))
+assert 'decision' in caps, d
+want_proj = bool('${MMPROJ_GGUF}')
+assert bool(d.get('projector_info')) == want_proj, d
+if want_proj:
+  assert 'vision' in caps, d
+"
 echo
 
 curl -sS --max-time 300 "http://127.0.0.1:${PORT}/v1/decisions" \
@@ -138,5 +164,14 @@ d=json.load(open("/tmp/l6_clef_e2e_decisions.json"))
 assert "answers" in d or "error" not in d, d
 ans=d.get("answers") or {}
 assert "refund" in ans, d
-print("PASS: l6_clef_decisions_e2e", json.dumps(ans)[:300])
+print("PASS: l6_clef_decisions_e2e text", json.dumps(ans)[:300])
 PY
+
+if [[ -n "${MMPROJ_GGUF}" ]]; then
+  export OLLAMA_HOST="127.0.0.1:${PORT}"
+  export CLEF_VL_MODEL="${MODEL_NAME}"
+  export CLEF_VL_NUM_GPU="${NUM_GPU}"
+  export CLEF_VL_NUM_CTX="${CLEF_E2E_NUM_CTX:-2048}"
+  "${ROOT}/scripts/phase/l6_clef_vl_decisions_smoke.sh"
+  echo "PASS: l6_clef_decisions_e2e VL"
+fi

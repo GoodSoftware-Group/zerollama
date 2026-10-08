@@ -9,7 +9,8 @@ Usage:
   python3 llama/clef/convert.py --llama-cpp vendor/llama-cpp-b11351 \
     /path/to/Cloudflare/clef-flash --outtype q8_0 --outfile clef-flash.gguf
 
-For the vision projector, add --mmproj --outtype f16 and use a separate outfile.
+For the vision projector, add --mmproj --outtype f16 and use a separate outfile
+(--no-mtp is omitted automatically for --mmproj; tip convert rejects the pair).
 All remaining arguments are passed to convert_hf_to_gguf.py.
 
 Note: ggml-org/Clef-Flash-GGUF uses a native `clef` arch + `decision.*` tensors
@@ -123,5 +124,10 @@ if args.check_only:
     )
     raise SystemExit(0)
 
-sys.argv = [sys.argv[0], "--no-mtp", *remaining]
+# --mmproj selects the vision projector class; tip convert rejects --no-mtp with it.
+# Text convert still needs --no-mtp so NextN draft tensors stay out of the target GGUF.
+prefix: list[str] = []
+if "--mmproj" not in remaining:
+    prefix.append("--no-mtp")
+sys.argv = [sys.argv[0], *prefix, *remaining]
 convert_hf_to_gguf.main()

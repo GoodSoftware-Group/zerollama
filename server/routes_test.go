@@ -883,6 +883,43 @@ func TestShow(t *testing.T) {
 	}
 }
 
+// Tip convert_hf_to_gguf --mmproj writes general.type=mmproj (not projector).
+func TestShowMmprojType(t *testing.T) {
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
+
+	var s Server
+
+	_, digest1 := createBinFile(t, ggml.KV{"general.architecture": "qwen35"}, nil)
+	_, digest2 := createBinFile(t, ggml.KV{
+		"general.type":         "mmproj",
+		"general.architecture": "clip",
+	}, nil)
+
+	createRequest(t, s.CreateHandler, api.CreateRequest{
+		Name:  "show-mmproj",
+		Files: map[string]string{"model.gguf": digest1, "mmproj.gguf": digest2},
+	})
+
+	w := createRequest(t, s.ShowHandler, api.ShowRequest{Name: "show-mmproj"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status code 200, actual %d", w.Code)
+	}
+
+	var resp api.ShowResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.ModelInfo["general.architecture"] != "qwen35" {
+		t.Fatal("Expected model architecture qwen35, got", resp.ModelInfo["general.architecture"])
+	}
+	if resp.ProjectorInfo["general.architecture"] != "clip" {
+		t.Fatal("Expected projector architecture clip from mmproj type, got", resp.ProjectorInfo["general.architecture"])
+	}
+	if resp.ProjectorInfo["general.type"] != "mmproj" {
+		t.Fatal("Expected projector general.type=mmproj, got", resp.ProjectorInfo["general.type"])
+	}
+}
+
 func TestShowCopilotUserAgentOverwritesExistingBasename(t *testing.T) {
 	t.Setenv("OLLAMA_MODELS", t.TempDir())
 

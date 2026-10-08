@@ -148,7 +148,8 @@ stop, format-patch, smoke, then continue — do not stack unresolved `git am` ga
 | `./scripts/phase/l6_clef_compile_check.sh` | Object-compile `llama/clef/clef.cpp` against vendor includes |
 | `./scripts/phase/l6_clef_live_smoke.sh` | Tip llama-server synth score (`:18086`) |
 | `./scripts/phase/l6_clef_decisions_e2e.sh` | Lab Go `:11435` + tip `LLAMA_SERVER_BIN` → `POST /v1/decisions` (synth or `CLEF_E2E_PRODUCT_GGUF`) |
-| `./scripts/phase/l6_clef_product_convert.sh` | Cloudflare HF → Ollama-wire Q8_0 GGUF (`clef.*` head) |
+| `./scripts/phase/l6_clef_product_convert.sh` | Cloudflare HF → Ollama-wire Q8_0 + mmproj F16 (`CLEF_CONVERT_MMPROJ=1`) |
+| `./scripts/phase/l6_clef_vl_decisions_smoke.sh` | Image `/v1/decisions` against a VL Clef tag (host already serving) |
 | `./scripts/phase/l6_promote_tip_env.sh` | Prep tip/rollback `LLAMA_SERVER_BIN` env (no serve restart) |
 | `./scripts/phase/stage_clef_for_pin.sh` | Refresh staging; `--wire` only when pin ≥ b11232 |
 
@@ -156,11 +157,11 @@ stop, format-patch, smoke, then continue — do not stack unresolved `git am` ga
 
 ## Remaining gaps after tip
 
-1. **Production Clef GGUF** — **done (lab):** Cloudflare HF → Ollama-wire GGUF via `./scripts/phase/l6_clef_product_convert.sh`; `/v1/decisions` e2e PASS with `CLEF_E2E_PRODUCT_GGUF=…/clef-flash-ollama-q8_0.gguf`. Note: `ggml-org/Clef-Flash-GGUF` (native `clef` + `decision.*`) is **not** interchangeable with `llama/clef/clef.cpp` (`clef.*` F32 + `{backbone}.decision.*`).
-2. **Strands PointerRows** on CUDA llama-server still deferred (use MLX on Mac).
+1. **Production Clef GGUF** — **done:** Cloudflare HF → Ollama-wire via `l6_clef_product_convert.sh` (text Q8_0 + mmproj F16). Tags: `clef-flash` (text), `clef-flash-vl` (text+mmproj). Note: `ggml-org/Clef-Flash-GGUF` (native `clef` + `decision.*`) is **not** interchangeable with `llama/clef/clef.cpp`.
+2. **Strands PointerRows** on CUDA llama-server — **deferred (not a pin gap):** tip has no pointer-head score endpoint; Go rejects `pointer_rows` with a clear error. Use MLX Strands on Mac (`x/models/strands/`) until a CUDA head is designed.
 3. **Operator rebuild:** on this 5080 CT use `CUDA_HOME=/usr/local/cuda-12.8` (default CUDA 13.3 aborts at device init). Tip Go binary for lab: rebuild after tiled/parsers CGO packages land (`/tmp/zerollama-lab`).
 4. Rollback stays at `vendor/llama-cpp-b11232/` + `LLAMA_CPP_*.prev` if tip misbehaves in production.
-5. **Production CT serve (cudallama)** — **promoted to tip b11351** (Oct 2026): `run/zerollama-lab` + `LLAMA_SERVER_BIN=…/llama-cpp-b11351`; `clef-flash` tag live; `/v1/decisions` smoke PASS. Rollback:
+5. **Production CT serve (cudallama)** — **promoted to tip b11351** (Oct 2026): `run/zerollama-lab` + `LLAMA_SERVER_BIN=…/llama-cpp-b11351`; `clef-flash` + `clef-flash-vl` live; text + image `/v1/decisions` smoke PASS. Rollback:
    ```bash
    ./scripts/phase/l6_promote_tip_env.sh --rollback --write
    # restart ~/bin/serve.sh with that env
@@ -175,10 +176,20 @@ CUDA_HOME=/usr/local/cuda-12.8 CMAKE_CUDA_ARCHITECTURES=120-real \
 # Product path (lab ports only; hides CUDA when production holds VRAM):
 hf download Cloudflare/clef-flash --local-dir /root/models/clef-flash-hf
 ./scripts/phase/l6_clef_product_convert.sh
+# also writes mmproj-clef-flash-f16.gguf (CLEF_CONVERT_MMPROJ=1)
 CLEF_E2E_ZEROLLAMA=/tmp/zerollama-lab \
   CLEF_E2E_PRODUCT_GGUF=/root/models/clef-flash-gguf/clef-flash-ollama-q8_0.gguf \
   CLEF_E2E_MODEL=clef-flash-lab \
   ./scripts/phase/l6_clef_decisions_e2e.sh
+# VL create in lab e2e (slow on CPU with product Q8):
+CLEF_E2E_ZEROLLAMA=/tmp/zerollama-lab \
+  CLEF_E2E_PRODUCT_GGUF=/root/models/clef-flash-gguf/clef-flash-ollama-q8_0.gguf \
+  CLEF_E2E_MMPROJ=/root/models/clef-flash-gguf/mmproj-clef-flash-f16.gguf \
+  CLEF_E2E_MODEL=clef-flash-vl-lab \
+  ./scripts/phase/l6_clef_decisions_e2e.sh
+# Or against already-serving host:
+OLLAMA_HOST=127.0.0.1:8080 CLEF_VL_MODEL=clef-flash-vl \
+  ./scripts/phase/l6_clef_vl_decisions_smoke.sh
 ```
 
 Requires `llama/compat` skip of `clef.*` in `translate_metadata` (upstream parity) so the backbone loader ignores the joint head tensors.
