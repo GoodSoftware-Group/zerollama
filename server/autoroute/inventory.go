@@ -30,9 +30,10 @@ type Candidate struct {
 	SizeBytes     int64              `json:"size"`
 
 	// Server-supplied facts the availability probe needs without re-opening the model.
-	ID               string `json:"id"`                          // fully qualified name (GetModel key)
-	SchedKey         string `json:"-"`                           // scheduler loaded-map / cooldown key (often a blob path)
-	RuntimeInference bool   `json:"runtime_inference,omitempty"` // model is configured for the Python runtime sidecar
+	ID               string   `json:"id"`                          // fully qualified name (GetModel key)
+	SchedKey         string   `json:"-"`                           // scheduler loaded-map / cooldown key (often a blob path)
+	RuntimeInference bool     `json:"runtime_inference,omitempty"` // model is configured for the Python runtime sidecar
+	Voices           []string `json:"voices,omitempty"`            // speech: configured voice ids (empty = backend accepts any)
 }
 
 // Has reports whether c has every capability in want.

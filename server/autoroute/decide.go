@@ -3,6 +3,7 @@ package autoroute
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -51,6 +52,11 @@ type Decision struct {
 // still carries Rejected so callers can explain why.
 var ErrNoCandidate = errors.New("no local model can serve this request")
 
+// ErrAmbiguousPinned means a pinned surface (embed / rerank) has more than one qualifying
+// model. The router refuses rather than guess, because a later pull could silently change
+// the pick and break vector comparability.
+var ErrAmbiguousPinned = errors.New("more than one model qualifies for a pinned surface")
+
 // Deterministic weights (AR1). WHY these orders of magnitude: residency dominates on
 // single-GPU hosts where a load costs seconds to minutes; eviction is the next worst
 // outcome; size (a crude quality proxy for text) and bench speed only break ties among
@@ -98,13 +104,22 @@ func Decide(cands []Candidate, sig Signals, avail AvailabilityFunc) (Decision, e
 	if len(live) == 0 {
 		return dec, fmt.Errorf("%w (%s)", ErrNoCandidate, summarize(rejected))
 	}
+	if sig.Surface.Pinned() && len(live) > 1 {
+		names := make([]string, len(live))
+		for i, e := range live {
+			names[i] = e.c.Name
+		}
+		sort.Strings(names)
+		return dec, fmt.Errorf("%w: %s (%s) — pin one with a router.yaml embedder/reranker or name the model",
+			ErrAmbiguousPinned, sig.Surface, strings.Join(names, ", "))
+	}
 
 	var maxSize int64
 	for _, e := range live {
 		maxSize = max(maxSize, e.c.SizeBytes)
 	}
 	speeds := relativeSpeeds(live, func(e entry) Candidate { return e.c })
-	preferSize := sig.Surface == SurfaceChat || sig.Surface == SurfaceGenerate
+	preferSize := sig.Surface.IsText()
 
 	dec.Ranked = make([]Ranked, len(live))
 	for i, e := range live {
@@ -124,6 +139,14 @@ func Decide(cands []Candidate, sig Signals, avail AvailabilityFunc) (Decision, e
 			r.Score += weightSize * float64(e.c.SizeBytes) / float64(maxSize)
 		}
 		r.Score += weightSpeed * speeds[i]
+		if sig.Bonus != nil {
+			if b, why := sig.Bonus(e.c); b != 0 {
+				r.Score += b
+				if why != "" {
+					r.Reasons = append(r.Reasons, why)
+				}
+			}
+		}
 		dec.Ranked[i] = r
 	}
 	// Stable on name order (inventory is sorted) so equal scores pick deterministically.
@@ -159,6 +182,8 @@ func filterCandidates(cands []Candidate, sig Signals) ([]Candidate, []Rejection)
 		kept = append(kept, c)
 	}
 
+	kept, rejected = softFilter(kept, rejected, voiceFilter(sig))
+
 	need := sig.contextNeed()
 	if need == 0 {
 		return kept, rejected
@@ -176,6 +201,42 @@ func filterCandidates(cands []Candidate, sig Signals) ([]Candidate, []Rejection)
 		return kept, rejected
 	}
 	return fit, append(rejected, tooSmall...)
+}
+
+// voiceFilter drops speech candidates that list voices but not the requested one. A
+// candidate with no voice list accepts any voice (remote TTS passes it upstream).
+func voiceFilter(sig Signals) func(Candidate) string {
+	if sig.Surface != SurfaceSpeech || sig.Voice == "" {
+		return nil
+	}
+	return func(c Candidate) string {
+		if len(c.Voices) == 0 || slices.Contains(c.Voices, sig.Voice) {
+			return ""
+		}
+		return fmt.Sprintf("voice %q not offered (has %s)", sig.Voice, strings.Join(c.Voices, ", "))
+	}
+}
+
+// softFilter applies reject but keeps everything when it would reject every candidate.
+// WHY: a voice / context mismatch on every model is better answered by the handler (which
+// may fall back to a default voice or truncate) than by a router 503.
+func softFilter(kept []Candidate, rejected []Rejection, reject func(Candidate) string) ([]Candidate, []Rejection) {
+	if reject == nil {
+		return kept, rejected
+	}
+	var pass []Candidate
+	var drop []Rejection
+	for _, c := range kept {
+		if reason := reject(c); reason != "" {
+			drop = append(drop, Rejection{c.Name, reason})
+			continue
+		}
+		pass = append(pass, c)
+	}
+	if len(pass) == 0 {
+		return kept, rejected
+	}
+	return pass, append(rejected, drop...)
 }
 
 func missingCaps(c Candidate, required []model.Capability) []string {

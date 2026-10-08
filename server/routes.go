@@ -49,6 +49,7 @@ import (
 	"github.com/ollama/ollama/middleware"
 	"github.com/ollama/ollama/model/parsers"
 	"github.com/ollama/ollama/model/renderers"
+	"github.com/ollama/ollama/server/autoroute"
 	"github.com/ollama/ollama/server/internal/client/ollama"
 	"github.com/ollama/ollama/server/internal/registry"
 	"github.com/ollama/ollama/server/modality"
@@ -1330,6 +1331,13 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 		req.Model = served
 	}
 
+	if routed, rerr := s.routeForSurface(c, req.Model, autoroute.Signals{Surface: autoroute.SurfaceEmbed}); rerr != nil {
+		writeRouterError(c, rerr.dec, rerr.err)
+		return
+	} else {
+		req.Model = routed
+	}
+
 	modelRef, err := parseAndValidateModelRef(req.Model)
 	if err != nil {
 		writeModelRefParseError(c, err, http.StatusNotFound, fmt.Sprintf("model '%s' not found", req.Model))
@@ -1688,6 +1696,13 @@ func (s *Server) EmbeddingsHandler(c *gin.Context) {
 		return
 	} else {
 		req.Model = served
+	}
+
+	if routed, rerr := s.routeForSurface(c, req.Model, autoroute.Signals{Surface: autoroute.SurfaceEmbed}); rerr != nil {
+		writeRouterError(c, rerr.dec, rerr.err)
+		return
+	} else {
+		req.Model = routed
 	}
 
 	modelRef, err := parseAndValidateModelRef(req.Model)
@@ -2813,8 +2828,8 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	// llama-server discovery shim for Odysseus/Hermes (n_ctx / parallel); not slot restore.
 	r.GET("/slots", s.SlotsHandler)
 	r.GET("/api/image/workflows", s.ImageWorkflowsHandler)
-	r.POST("/api/generate", s.withInferenceRequestLogging("/api/generate", s.hostMemGuard(), s.assignmentTokenMiddleware(), s.runtimeGenerateProxy(), s.GenerateHandler)...)
-	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.hostMemGuard(), s.assignmentTokenMiddleware(), s.openaiRemoteChatProxy(), s.runtimeChatProxy(), s.ChatHandler)...)
+	r.POST("/api/generate", s.withInferenceRequestLogging("/api/generate", s.hostMemGuard(), s.assignmentTokenMiddleware(), s.routeAheadMiddleware(""), s.runtimeGenerateProxy(), s.GenerateHandler)...)
+	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.hostMemGuard(), s.assignmentTokenMiddleware(), s.routeAheadMiddleware(autoroute.SurfaceChat), s.openaiRemoteChatProxy(), s.runtimeChatProxy(), s.ChatHandler)...)
 	r.POST("/api/embed", s.EmbedHandler)
 	r.POST("/api/embeddings", s.EmbeddingsHandler)
 	r.GET("/api/aliases", s.AliasesHandler)
@@ -2839,7 +2854,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	// Inference (OpenAI compatibility)
 	// TODO(cloud-stage-a): apply Modelfile overlay deltas for local models with cloud
 	// parents on v1 request families while preserving this explicit :cloud passthrough.
-	r.POST("/v1/chat/completions", s.withInferenceRequestLogging("/v1/chat/completions", s.hostMemGuard(), cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), s.runtimeV1ChatCompletionsProxy(), s.openaiRemoteChatCompletionsProxy(), s.sglangChatCompletionsProxy(), middleware.ChatMiddleware(lookupThinking), s.ChatHandler)...)
+	r.POST("/v1/chat/completions", s.withInferenceRequestLogging("/v1/chat/completions", s.hostMemGuard(), cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), s.routeAheadMiddleware(autoroute.SurfaceChat), s.runtimeV1ChatCompletionsProxy(), s.openaiRemoteChatCompletionsProxy(), s.sglangChatCompletionsProxy(), middleware.ChatMiddleware(lookupThinking), s.ChatHandler)...)
 	r.POST("/v1/chat/completions/batch", s.withInferenceRequestLogging("/v1/chat/completions/batch", s.runtimeV1ChatCompletionsBatchProxy())...)
 	r.POST("/v1/completions", s.withInferenceRequestLogging("/v1/completions", s.hostMemGuard(), cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.CompletionsMiddleware(), s.GenerateHandler)...)
 	r.POST("/v1/embeddings", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.EmbeddingsMiddleware(), s.EmbedHandler)

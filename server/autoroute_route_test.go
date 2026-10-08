@@ -52,10 +52,17 @@ func newRouteTestServer(t *testing.T) *Server {
 
 func createRouteTestModel(t *testing.T, s *Server, name, template string) {
 	t.Helper()
+	createRouteTestModelKV(t, s, name, template, nil)
+}
+
+// createRouteTestModelKV creates a tiny llama GGUF tag; extra KV (e.g. llama.pooling_type)
+// changes the capabilities the router sees.
+func createRouteTestModelKV(t *testing.T, s *Server, name, template string, extra ggml.KV) {
+	t.Helper()
 	tensor := func(n string) *ggml.Tensor {
 		return &ggml.Tensor{Name: n, Shape: []uint64{1}, WriterTo: bytes.NewReader(make([]byte, 4))}
 	}
-	_, digest := createBinFile(t, ggml.KV{
+	kv := ggml.KV{
 		"general.architecture":          "llama",
 		"llama.block_count":             uint32(1),
 		"llama.context_length":          uint32(8192),
@@ -65,7 +72,11 @@ func createRouteTestModel(t *testing.T, s *Server, name, template string) {
 		"tokenizer.ggml.tokens":         []string{""},
 		"tokenizer.ggml.scores":         []float32{0},
 		"tokenizer.ggml.token_type":     []int32{0},
-	}, []*ggml.Tensor{
+	}
+	for k, v := range extra {
+		kv[k] = v
+	}
+	_, digest := createBinFile(t, kv, []*ggml.Tensor{
 		tensor("token_embd.weight"), tensor("blk.0.attn_norm.weight"), tensor("blk.0.ffn_down.weight"),
 		tensor("blk.0.ffn_gate.weight"), tensor("blk.0.ffn_up.weight"), tensor("blk.0.ffn_norm.weight"),
 		tensor("blk.0.attn_k.weight"), tensor("blk.0.attn_output.weight"), tensor("blk.0.attn_q.weight"),

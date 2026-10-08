@@ -163,7 +163,7 @@ func (s *Server) RouterInventoryHandler(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	avail := s.routeAvailability(c.Request.Context())
+	avail := s.routeAvailability(c.Request.Context(), autoroute.Signals{Surface: autoroute.SurfaceChat})
 	rows := make([]routeInventoryRow, 0, len(cands))
 	for _, cand := range cands {
 		a := avail(cand)

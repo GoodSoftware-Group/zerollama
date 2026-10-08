@@ -3,9 +3,12 @@ package server
 import (
 	"fmt"
 	"maps"
+	"slices"
 
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/server/autoroute"
+	"github.com/ollama/ollama/server/modality"
+	"github.com/ollama/ollama/types/model"
 )
 
 // routeInventory memoises per-model capabilities for the auto-router (docs/auto-router.md §5).
@@ -26,14 +29,16 @@ func loadRouteCandidate(ref autoroute.Ref) (autoroute.Candidate, error) {
 	if m.Config.RemoteModel != "" {
 		return autoroute.Candidate{}, autoroute.ErrSkip
 	}
+	caps := m.Capabilities()
 	return autoroute.Candidate{
-		Capabilities:     m.Capabilities(),
+		Capabilities:     caps,
 		Backends:         maps.Clone(m.Config.ModalityBackends),
 		Format:           m.Config.ModelFormat,
 		Family:           m.Config.ModelFamily,
 		ContextLength:    modelMaxNumCtx(m),
 		SchedKey:         schedulerModelKey(m),
 		RuntimeInference: modelUsesRuntimeInference(m),
+		Voices:           routeVoices(m, caps),
 	}, nil
 }
 
@@ -55,4 +60,22 @@ func routeCandidates() ([]autoroute.Candidate, map[string]error, error) {
 	}
 	cands, failed := routeInventory.Refresh(refs)
 	return cands, failed, nil
+}
+
+// routeVoices returns the voices a speech model is known to own. Piper resolves voices from
+// backend_paths, so its list is authoritative; remote TTS only when a voices file is
+// configured — otherwise the upstream may accept voices zerollama never listed.
+func routeVoices(m *Model, caps []model.Capability) []string {
+	if !slices.Contains(caps, model.CapabilitySpeech) {
+		return nil
+	}
+	backend := modality.BackendFor(m.Config, model.ModalitySpeech)
+	if backend != model.BackendPiper && modality.PathFor(m.Config, "tts_voices_file") == "" {
+		return nil
+	}
+	var out []string
+	for _, v := range modality.ListSpeechVoices(m.Config) {
+		out = append(out, v.ID)
+	}
+	return out
 }

@@ -212,3 +212,118 @@ func TestDecideNoCandidatesExplains(t *testing.T) {
 		t.Fatalf("model = %q", d.Model)
 	}
 }
+
+func TestDecideSpeechAndMusicBackends(t *testing.T) {
+	speech := []model.Capability{model.CapabilitySpeech}
+	piper := cand("piper", 1, speech)
+	piper.Backends = map[string]string{model.ModalitySpeech: model.BackendPiper}
+	piper.Voices = []string{"amy", "ryan"}
+	kokoro := cand("kokoro", 2, speech)
+	kokoro.Backends = map[string]string{model.ModalitySpeech: model.BackendRemoteTTS} // no voice list ⇒ any voice
+	music := cand("music", 3, speech)
+	music.Backends = map[string]string{model.ModalitySpeech: model.BackendMusic3}
+	all := []Candidate{piper, kokoro, music}
+
+	d, err := Decide(all, Signals{Surface: SurfaceMusic}, allCold)
+	if err != nil || d.Model != "music" {
+		t.Fatalf("music: got %q err %v", d.Model, err)
+	}
+
+	d, err = Decide(all, Signals{Surface: SurfaceSpeech, Voice: "ryan"}, warmOnly("kokoro"))
+	if err != nil || d.Model != "kokoro" { // warm wins; both accept ryan
+		t.Fatalf("speech warm: got %q err %v", d.Model, err)
+	}
+	if !strings.Contains(rejectedReason(d, "music"), "music3") {
+		t.Fatalf("music reason = %q", rejectedReason(d, "music"))
+	}
+
+	d, _ = Decide([]Candidate{piper, kokoro}, Signals{Surface: SurfaceSpeech, Voice: "nova"}, warmOnly("piper"))
+	if d.Model != "kokoro" || !strings.Contains(rejectedReason(d, "piper"), `voice "nova"`) {
+		t.Fatalf("voice filter: got %q, rejected %+v", d.Model, d.Rejected)
+	}
+
+	// Soft: nobody lists the voice ⇒ keep everyone.
+	d, err = Decide([]Candidate{piper}, Signals{Surface: SurfaceSpeech, Voice: "nova"}, allCold)
+	if err != nil || d.Model != "piper" {
+		t.Fatalf("soft voice: got %q err %v", d.Model, err)
+	}
+}
+
+func TestDecideTranscribe(t *testing.T) {
+	whisper := cand("whisper", 1, []model.Capability{model.CapabilityAudio})
+	whisper.Backends = map[string]string{model.ModalityTranscribe: model.BackendWhisper}
+	audioChat := cand("omni", 9, []model.Capability{model.CapabilityCompletion, model.CapabilityAudio})
+	plain := cand("plain", 5, capChat)
+
+	d, err := Decide([]Candidate{whisper, audioChat, plain}, Signals{Surface: SurfaceTranscribe, HasAudio: true}, warmOnly("whisper"))
+	if err != nil || d.Model != "whisper" {
+		t.Fatalf("got %q err %v", d.Model, err)
+	}
+	if !strings.Contains(rejectedReason(d, "plain"), "whisper") {
+		t.Fatalf("plain reason = %q", rejectedReason(d, "plain"))
+	}
+	d, _ = Decide([]Candidate{audioChat, plain}, Signals{Surface: SurfaceTranscribe, HasAudio: true}, allCold)
+	if d.Model != "omni" {
+		t.Fatalf("audio chat fallback: got %q", d.Model)
+	}
+}
+
+func TestDecidePinnedEmbedRefusesAmbiguity(t *testing.T) {
+	emb := []model.Capability{model.CapabilityEmbedding}
+	laya := cand("laya", 1, []model.Capability{model.CapabilityEmbedding, model.CapabilityDecision})
+
+	d, err := Decide([]Candidate{cand("nomic", 1, emb), laya, cand("qwen", 9, capChat)}, Signals{Surface: SurfaceEmbed}, allCold)
+	if err != nil || d.Model != "nomic" {
+		t.Fatalf("single embedder: got %q err %v", d.Model, err)
+	}
+	if !strings.Contains(rejectedReason(d, "laya"), "decision") {
+		t.Fatalf("laya reason = %q", rejectedReason(d, "laya"))
+	}
+
+	_, err = Decide([]Candidate{cand("nomic", 1, emb), cand("bge", 1, emb)}, Signals{Surface: SurfaceEmbed}, warmOnly("bge"))
+	if !errors.Is(err, ErrAmbiguousPinned) || !strings.Contains(err.Error(), "bge, nomic") {
+		t.Fatalf("err = %v, want ErrAmbiguousPinned listing both", err)
+	}
+}
+
+func TestDecideCheckAndBonusHooks(t *testing.T) {
+	dec := []model.Capability{model.CapabilityDecision}
+	laya, gd, clef := cand("laya", 1, dec), cand("gliner-decide", 1, dec), cand("clef", 1, dec)
+
+	sig := Signals{
+		Surface: SurfaceDecisions,
+		Bonus: func(c Candidate) (float64, string) {
+			if c.Name == "laya" {
+				return 0.5, "calibrated"
+			}
+			return 0, ""
+		},
+	}
+	d, err := Decide([]Candidate{clef, gd, laya}, sig, allCold)
+	if err != nil || d.Model != "laya" {
+		t.Fatalf("bonus: got %q err %v", d.Model, err)
+	}
+	if !slicesContains(d.Ranked[0].Reasons, "calibrated") {
+		t.Fatalf("reasons = %v", d.Ranked[0].Reasons)
+	}
+
+	sig.Check = func(c Candidate) string {
+		if c.Name != "clef" {
+			return "images need a multimodal (clef) decision model"
+		}
+		return ""
+	}
+	d, err = Decide([]Candidate{clef, gd, laya}, sig, allCold)
+	if err != nil || d.Model != "clef" || rejectedReason(d, "laya") == "" {
+		t.Fatalf("check: got %q err %v rejected %+v", d.Model, err, d.Rejected)
+	}
+}
+
+func slicesContains(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}

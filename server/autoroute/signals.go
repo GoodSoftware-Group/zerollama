@@ -17,7 +17,24 @@ const (
 	SurfaceGenerate  Surface = "generate"   // /api/generate, /v1/completions (text)
 	SurfaceImage     Surface = "image"      // /v1/images/generations, /api/generate with width/height
 	SurfaceImageEdit Surface = "image_edit" // /v1/images/edits
+
+	SurfaceVideoGen   Surface = "video_gen"  // /v1/videos
+	SurfaceSpeech     Surface = "speech"     // /v1/audio/speech
+	SurfaceMusic      Surface = "music"      // /v1/audio/generations
+	SurfaceTranscribe Surface = "transcribe" // /v1/audio/transcriptions
+	SurfaceEmbed      Surface = "embed"      // /api/embed, /api/embeddings, /v1/embeddings
+	SurfaceRerank     Surface = "rerank"     // /v1/rerank and aliases
+	SurfaceDecisions  Surface = "decisions"  // /v1/decisions, /v1/systemone
 )
+
+// IsText reports whether s is an autoregressive text surface (chat / generate).
+func (s Surface) IsText() bool { return s == SurfaceChat || s == SurfaceGenerate }
+
+// Pinned reports whether s must resolve to one fixed model rather than a per-request pick.
+// WHY: embedding spaces are incompatible across models — two calls in one RAG pipeline
+// routed to different embedders return vectors that silently do not compare. Rerank
+// scores are likewise only comparable within one model.
+func (s Surface) Pinned() bool { return s == SurfaceEmbed || s == SurfaceRerank }
 
 // defaultReplyTokens is the reply budget assumed for context fit when the client sets no
 // num_predict. WHY 1024: enough that a model whose window exactly equals the prompt is not
@@ -37,6 +54,20 @@ type Signals struct {
 
 	PromptTokens int // estimate; 0 = unknown (skips context fit)
 	ReplyTokens  int // num_predict when > 0, else defaultReplyTokens
+
+	Voice string // speech: requested voice; soft filter — models listing other voices lose to ones offering it
+
+	// BeforeRuntimeProxy is true when routing runs ahead of the runtime / SGLang proxy
+	// middlewares, so runtime-sidecar models are servable on this path.
+	BeforeRuntimeProxy bool
+
+	// Check is an optional surface-specific validator supplied by the server for facts that
+	// need the model config (video admission, decider image support). A non-empty return
+	// rejects the candidate with that reason.
+	Check func(Candidate) string `json:"-"`
+
+	// Bonus optionally adds a score and a reason (e.g. calibrated deciders first).
+	Bonus func(Candidate) (float64, string) `json:"-"`
 }
 
 // Required returns the capabilities a candidate must have to serve the request. The set
@@ -46,6 +77,16 @@ func (s Signals) Required() []model.Capability {
 	switch s.Surface {
 	case SurfaceImage, SurfaceImageEdit:
 		return []model.Capability{model.CapabilityImage}
+	case SurfaceVideoGen:
+		return []model.Capability{model.CapabilityVideoGen}
+	case SurfaceSpeech, SurfaceMusic:
+		return []model.Capability{model.CapabilitySpeech}
+	case SurfaceEmbed, SurfaceRerank:
+		return []model.Capability{model.CapabilityEmbedding}
+	case SurfaceDecisions:
+		return []model.Capability{model.CapabilityDecision}
+	case SurfaceTranscribe:
+		return nil // whisper backend OR audio-capable chat model — see surfaceMismatch
 	}
 	req := []model.Capability{model.CapabilityCompletion}
 	switch {
@@ -77,14 +118,34 @@ var excludedForText = []model.Capability{
 	model.CapabilitySpeech,
 }
 
-// surfaceMismatch returns the first capability that disqualifies c from s's surface.
-func (s Signals) surfaceMismatch(c Candidate) (model.Capability, bool) {
+// surfaceMismatch returns why c's model class cannot serve s's surface, mirroring the
+// backend checks each handler makes after its capability gate.
+func (s Signals) surfaceMismatch(c Candidate) (string, bool) {
 	switch s.Surface {
 	case SurfaceChat, SurfaceGenerate:
 		for _, x := range excludedForText {
 			if slices.Contains(c.Capabilities, x) {
-				return x, true
+				return fmt.Sprintf("%s model cannot serve %s", x, s.Surface), true
 			}
+		}
+	case SurfaceSpeech:
+		if c.Backend(model.ModalitySpeech) == model.BackendMusic3 {
+			return "music3 backend serves /v1/audio/generations, not speech", true
+		}
+	case SurfaceMusic:
+		if c.Backend(model.ModalitySpeech) != model.BackendMusic3 {
+			return "speech backend is not music3", true
+		}
+	case SurfaceTranscribe:
+		// TranscriptionHandler runs whisper for modality_backends.transcribe=whisper and
+		// otherwise falls through to ChatHandler, which needs an audio-capable chat model.
+		if c.Backend(model.ModalityTranscribe) != model.BackendWhisper &&
+			!c.Has(model.CapabilityCompletion, model.CapabilityAudio) {
+			return "neither a whisper transcribe backend nor an audio-capable chat model", true
+		}
+	case SurfaceEmbed, SurfaceRerank:
+		if slices.Contains(c.Capabilities, model.CapabilityDecision) {
+			return "decision model cannot serve " + string(s.Surface), true
 		}
 	}
 	return "", false
@@ -94,11 +155,16 @@ func (s Signals) surfaceMismatch(c Candidate) (model.Capability, bool) {
 // with the reason when it may not. Context fit and availability are not checked — this is
 // the gate LA11 routers apply to the candidate their classifier picked.
 func (s Signals) Admits(c Candidate) (string, bool) {
-	if x, bad := s.surfaceMismatch(c); bad {
-		return fmt.Sprintf("%s model cannot serve %s", x, s.Surface), false
-	}
 	if missing := missingCaps(c, s.Required()); len(missing) > 0 {
 		return "missing capability: " + strings.Join(missing, ", "), false
+	}
+	if reason, bad := s.surfaceMismatch(c); bad {
+		return reason, false
+	}
+	if s.Check != nil {
+		if reason := s.Check(c); reason != "" {
+			return reason, false
+		}
 	}
 	return "", true
 }

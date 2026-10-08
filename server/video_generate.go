@@ -116,6 +116,19 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 	}
 	req := v.(openai.VideoCreateRequest)
 
+	if served, err := applyModelAlias(c, req.Model); err != nil {
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+		return
+	} else {
+		req.Model = served
+	}
+	if routed, rerr := s.routeForSurface(c, req.Model, videoRouteSignals(req)); rerr != nil {
+		writeRouterError(c, rerr.dec, rerr.err)
+		return
+	} else {
+		req.Model = routed
+	}
+
 	modelRef, err := parseAndValidateModelRef(req.Model)
 	if err != nil {
 		writeModelRefParseError(c, err, http.StatusBadRequest, "model is required")

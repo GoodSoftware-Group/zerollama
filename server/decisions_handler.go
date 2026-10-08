@@ -59,6 +59,14 @@ func (s *Server) DecisionsHandler(c *gin.Context) {
 		call.LLM.Model = served
 	}
 
+	if routed, rerr := s.routeForSurface(c, call.Req.Model, decisionsRouteSignals(call.Req)); rerr != nil {
+		writeRouterError(c, rerr.dec, rerr.err)
+		return
+	} else {
+		call.Req.Model = routed
+		call.LLM.Model = routed
+	}
+
 	out, err := s.runDecisions(c.Request.Context(), call)
 	if err != nil {
 		writeDecisionsError(c, err)

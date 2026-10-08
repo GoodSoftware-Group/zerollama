@@ -15,6 +15,7 @@ import (
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/middleware"
 	"github.com/ollama/ollama/openai"
+	"github.com/ollama/ollama/server/autoroute"
 	"github.com/ollama/ollama/server/modality"
 	"github.com/ollama/ollama/types/errtypes"
 	"github.com/ollama/ollama/types/model"
@@ -29,6 +30,19 @@ func (s *Server) SpeechHandler(c *gin.Context) {
 		return
 	}
 	req := v.(openai.SpeechCreateRequest)
+
+	if served, err := applyModelAlias(c, req.Model); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else {
+		req.Model = served
+	}
+	if routed, rerr := s.routeForSurface(c, req.Model, speechRouteSignals(req, autoroute.SurfaceSpeech)); rerr != nil {
+		writeRouterError(c, rerr.dec, rerr.err)
+		return
+	} else {
+		req.Model = routed
+	}
 
 	modelRef, err := parseAndValidateModelRef(req.Model)
 	if err != nil {

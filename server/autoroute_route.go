@@ -54,7 +54,10 @@ func localManifestExists(n model.Name) bool {
 
 // decideAuto runs the deterministic router over every local model. On error the returned
 // decision is non-nil (Auto.Rejected explains the filtering) unless listing models failed.
-func (s *Server) decideAuto(ctx context.Context, router string, sig autoroute.Signals) (*RouterDecision, error) {
+//
+// allow restricts candidates to those names (router.yaml candidates on non-text surfaces);
+// nil means every local model.
+func (s *Server) decideAuto(ctx context.Context, router string, sig autoroute.Signals, allow map[string]bool) (*RouterDecision, error) {
 	start := time.Now()
 	cands, failed, err := routeCandidates()
 	if err != nil {
@@ -63,7 +66,16 @@ func (s *Server) decideAuto(ctx context.Context, router string, sig autoroute.Si
 	for name, ferr := range failed {
 		slog.Debug("auto-router: skipping unreadable model", "model", name, "error", ferr)
 	}
-	d, err := autoroute.Decide(cands, sig, s.routeAvailability(ctx))
+	if allow != nil {
+		kept := cands[:0:0]
+		for _, c := range cands {
+			if allow[c.Name] {
+				kept = append(kept, c)
+			}
+		}
+		cands = kept
+	}
+	d, err := autoroute.Decide(cands, sig, s.routeAvailability(ctx, sig))
 	dec := &RouterDecision{
 		Router:     router,
 		Classifier: "deterministic",
@@ -121,7 +133,7 @@ func enforceRouterSurface(dec *RouterDecision, spec RouterSpec, sig autoroute.Si
 // per-candidate dry-run probe. It applies the same rules as evaluateCanLoadGgml (warm,
 // concurrency group, max loaded) plus load cooldown, without its runtime-health probe and
 // GPU discovery, which would otherwise repeat for every candidate. It never loads.
-func (s *Server) routeAvailability(ctx context.Context) autoroute.AvailabilityFunc {
+func (s *Server) routeAvailability(ctx context.Context, sig autoroute.Signals) autoroute.AvailabilityFunc {
 	runtimeOn := effectiveRuntimeURL() != ""
 	loaded := map[string]bool{}
 	loadsPaused := false
@@ -142,11 +154,12 @@ func (s *Server) routeAvailability(ctx context.Context) autoroute.AvailabilityFu
 	maxLoaded := sync.OnceValue(func() uint { return effectiveMaxLoadedModels(ctx) })
 
 	return func(c autoroute.Candidate) autoroute.Availability {
-		// WHY excluded: runtime proxy middlewares run before the handler rewrites the model,
-		// so a routed runtime model would hit the ggml path and 400 (ErrRuntimeInferenceModel).
-		// Routing ahead of the proxies is a follow-up (docs/auto-router.md §12).
-		if runtimeOn && c.RuntimeInference {
-			return autoroute.Availability{Excluded: "configured for the Python runtime sidecar (not auto-routable yet)"}
+		// WHY excluded on in-handler routing: the runtime proxy middlewares already ran, so a
+		// routed runtime model would hit the ggml path and 400 (ErrRuntimeInferenceModel).
+		// routeAheadMiddleware routes /api/chat, /api/generate and /v1/chat/completions
+		// before the proxies (BeforeRuntimeProxy), where runtime models are fine.
+		if runtimeOn && c.RuntimeInference && sig.Surface.IsText() && !sig.BeforeRuntimeProxy {
+			return autoroute.Availability{Excluded: "runtime-sidecar model: auto-routable only on /api/chat, /api/generate, /v1/chat/completions"}
 		}
 		a := autoroute.Availability{Warm: c.SchedKey != "" && loaded[c.SchedKey], CanLoad: true}
 		if a.Warm || sched == nil {

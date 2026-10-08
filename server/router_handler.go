@@ -81,6 +81,10 @@ func (s *Server) RouterDecideHandler(c *gin.Context) {
 // a dry run that differs from what chat actually does is worse than none.
 func (s *Server) resolveRouter(ctx context.Context, name string, sig autoroute.Signals) (dec *RouterDecision, isRouter bool, err error) {
 	if spec, ok := lookupRouter(name); ok {
+		if !sig.Surface.IsText() && sig.Surface != autoroute.SurfaceImage && sig.Surface != autoroute.SurfaceImageEdit {
+			d, err := s.decideRouterNonText(ctx, name, spec, sig)
+			return d, true, err
+		}
 		d, err := decideRouter(ctx, name, spec, sig.Text, s.scoreRouterPolicies, s.embedRouterText, s.rerankRouterDocs)
 		if err != nil {
 			return nil, true, err
@@ -94,10 +98,44 @@ func (s *Server) resolveRouter(ctx context.Context, name string, sig autoroute.S
 		return &d, true, nil
 	}
 	if isImplicitAutoName(name) {
-		d, err := s.decideAuto(ctx, name, sig)
+		d, err := s.decideAuto(ctx, name, sig, nil)
 		return d, true, err
 	}
 	return nil, false, nil
+}
+
+// decideRouterNonText resolves a router.yaml router on a non-text surface (speech, video,
+// embed, decisions, …). WHY not the classifier: LA11 policies label chat intents; scoring a
+// TTS input or an embedding batch against them is meaningless. Instead the router's
+// embedder / reranker pins embed / rerank, and other surfaces pick deterministically among
+// the router's own candidates and fallback.
+func (s *Server) decideRouterNonText(ctx context.Context, name string, spec RouterSpec, sig autoroute.Signals) (*RouterDecision, error) {
+	pin := ""
+	switch sig.Surface {
+	case autoroute.SurfaceEmbed:
+		pin = spec.Embedder
+	case autoroute.SurfaceRerank:
+		pin = spec.Reranker
+	}
+	allow := map[string]bool{}
+	add := func(n string) {
+		if n = strings.TrimSpace(n); n != "" {
+			allow[model.ParseName(n).DisplayShortest()] = true
+		}
+	}
+	if pin != "" {
+		add(pin)
+	} else {
+		for _, c := range spec.Candidates {
+			add(c.Model)
+		}
+		add(spec.Fallback)
+	}
+	dec, err := s.decideAuto(ctx, name, sig, allow)
+	if dec != nil && err == nil && pin != "" {
+		dec.Reason = "pinned"
+	}
+	return dec, err
 }
 
 // applyRouterRewrite resolves a router name to a concrete model in-band. router.yaml
