@@ -2483,6 +2483,9 @@ func (s *Server) ListHandler(c *gin.Context) {
 	// Host-aware CTX for zerollama ls (after digests/catalog merge).
 	s.enrichListHostContexts(c.Request.Context(), models)
 
+	if c.GetBool(middleware.CtxKeyListVirtualRouters) {
+		models = append(models, virtualRouterModels(models)...)
+	}
 	c.JSON(http.StatusOK, api.ListResponse{Models: models})
 }
 
@@ -2828,6 +2831,8 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/v1/gliner", s.GlinerHandler)
 	r.POST("/v1/gliner-decide", s.GlinerDecideHandler)
 	r.POST("/api/router/decide", s.RouterDecideHandler)
+	r.GET("/api/router/inventory", s.RouterInventoryHandler)
+	r.POST("/v1/route", s.RouteHandler)
 	r.GET("/api/router/corpus", s.RouterCorpusHandler)
 	r.POST("/api/router/corpus", s.RouterCorpusHandler)
 

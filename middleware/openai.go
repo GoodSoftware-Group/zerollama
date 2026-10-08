@@ -418,8 +418,14 @@ func (w *EmbedWriter) Write(data []byte) (int, error) {
 	return w.writeResponse(data)
 }
 
+// CtxKeyListVirtualRouters asks ListHandler to append router names (e.g. "auto") as
+// virtual models. Set only by ListMiddleware (/v1/models): OpenAI pickers should offer
+// "auto", but /api/tags feeds bench/launch/ls, which must only see real models.
+const CtxKeyListVirtualRouters = "zerollama.list.virtual_routers"
+
 func ListMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		c.Set(CtxKeyListVirtualRouters, true)
 		w := &ListWriter{
 			BaseWriter: BaseWriter{ResponseWriter: c.Writer},
 		}

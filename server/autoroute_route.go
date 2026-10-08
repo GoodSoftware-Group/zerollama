@@ -52,7 +52,8 @@ func localManifestExists(n model.Name) bool {
 	return false
 }
 
-// decideAuto runs the deterministic router over every local model.
+// decideAuto runs the deterministic router over every local model. On error the returned
+// decision is non-nil (Auto.Rejected explains the filtering) unless listing models failed.
 func (s *Server) decideAuto(ctx context.Context, router string, sig autoroute.Signals) (*RouterDecision, error) {
 	start := time.Now()
 	cands, failed, err := routeCandidates()
@@ -63,17 +64,19 @@ func (s *Server) decideAuto(ctx context.Context, router string, sig autoroute.Si
 		slog.Debug("auto-router: skipping unreadable model", "model", name, "error", ferr)
 	}
 	d, err := autoroute.Decide(cands, sig, s.routeAvailability(ctx))
-	if err != nil {
-		return nil, fmt.Errorf("router %q: %w", router, err)
-	}
-	return &RouterDecision{
+	dec := &RouterDecision{
 		Router:     router,
 		Classifier: "deterministic",
 		Candidate:  d.Model,
 		Reason:     d.Reason,
 		Auto:       &d,
 		LatencyMs:  time.Since(start).Milliseconds(),
-	}, nil
+	}
+	if err != nil {
+		// dec still carries Auto.Rejected so dry runs can list why each model was dropped.
+		return dec, fmt.Errorf("router %q: %w", router, err)
+	}
+	return dec, nil
 }
 
 // enforceRouterSurface checks the model an LA11 classifier picked against the request's

@@ -90,6 +90,7 @@ func (s *Server) MetricsHandler(c *gin.Context) {
 
 	writeCounter("zerollama_inference_queue_rejects_total", "Requests rejected for max queue (ErrMaxQueue)", metricsQueueRejects.Load())
 	writeCounter("zerollama_runner_crashes_total", "Runner/process crash or exit errors", metricsRunnerCrashes.Load())
+	writeRouterMetrics(&b)
 
 	c.Data(http.StatusOK, "text/plain; version=0.0.4; charset=utf-8", []byte(b.String()))
 }

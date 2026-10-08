@@ -20,19 +20,19 @@ import (
 
 // Candidate is one local model as the router sees it.
 type Candidate struct {
-	Name          string             // display name clients send (DisplayShortest)
-	Digest        string             // manifest digest — invalidation key and bench.json key
-	Capabilities  []model.Capability // serving set (what CheckCapabilities enforces), not the public subset
-	Backends      map[string]string  // ConfigV2.ModalityBackends
-	Format        string             // gguf | safetensors | …
-	Family        string
-	ContextLength int // trained / manifest limit; 0 = unknown (never filters)
-	SizeBytes     int64
+	Name          string             `json:"name"`               // display name clients send (DisplayShortest)
+	Digest        string             `json:"digest"`             // manifest digest — invalidation key and bench.json key
+	Capabilities  []model.Capability `json:"capabilities"`       // serving set (what CheckCapabilities enforces), not the public subset
+	Backends      map[string]string  `json:"backends,omitempty"` // ConfigV2.ModalityBackends
+	Format        string             `json:"format,omitempty"`   // gguf | safetensors | …
+	Family        string             `json:"family,omitempty"`
+	ContextLength int                `json:"context_length,omitempty"` // trained / manifest limit; 0 = unknown (never filters)
+	SizeBytes     int64              `json:"size"`
 
 	// Server-supplied facts the availability probe needs without re-opening the model.
-	ID               string // fully qualified name (GetModel key)
-	SchedKey         string // scheduler loaded-map / cooldown key
-	RuntimeInference bool   // model is configured for the Python runtime sidecar
+	ID               string `json:"id"`                          // fully qualified name (GetModel key)
+	SchedKey         string `json:"-"`                           // scheduler loaded-map / cooldown key (often a blob path)
+	RuntimeInference bool   `json:"runtime_inference,omitempty"` // model is configured for the Python runtime sidecar
 }
 
 // Has reports whether c has every capability in want.

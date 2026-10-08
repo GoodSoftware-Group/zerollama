@@ -42,6 +42,8 @@ func (s *Server) scoreRouterPolicies(ctx context.Context, classifier, prompt str
 	return resp.Candidates, nil
 }
 
+// RouterDecideHandler serves POST /api/router/decide — the LA11 dry run ({router, prompt}).
+// The prompt is treated as a plain chat turn; /v1/route accepts full request bodies.
 func (s *Server) RouterDecideHandler(c *gin.Context) {
 	var req routerDecideRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -57,17 +59,45 @@ func (s *Server) RouterDecideHandler(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "router and prompt are required"})
 		return
 	}
-	spec, ok := lookupRouter(name)
-	if !ok {
+	sig := autoroute.Signals{Surface: autoroute.SurfaceChat, Text: prompt, PromptTokens: estimateTokens(len(prompt))}
+	dec, isRouter, err := s.resolveRouter(c.Request.Context(), name, sig)
+	if !isRouter {
 		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("router %q not found", name)})
 		return
 	}
-	dec, err := decideRouter(c.Request.Context(), name, spec, prompt, s.scoreRouterPolicies, s.embedRouterText, s.rerankRouterDocs)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		writeRouterError(c, dec, err)
 		return
 	}
 	c.JSON(http.StatusOK, dec)
+}
+
+// resolveRouter answers "which model would this router pick for sig" without side effects.
+// isRouter is false when name is neither a router.yaml router nor the implicit "auto", in
+// which case the caller treats name as an ordinary model. On error dec may still be
+// non-nil and carry the filtered candidates (implicit "auto"), so callers can explain.
+//
+// WHY one function: the in-band rewrite, /v1/route and /api/router/decide must agree —
+// a dry run that differs from what chat actually does is worse than none.
+func (s *Server) resolveRouter(ctx context.Context, name string, sig autoroute.Signals) (dec *RouterDecision, isRouter bool, err error) {
+	if spec, ok := lookupRouter(name); ok {
+		d, err := decideRouter(ctx, name, spec, sig.Text, s.scoreRouterPolicies, s.embedRouterText, s.rerankRouterDocs)
+		if err != nil {
+			return nil, true, err
+		}
+		if d.Candidate == "" {
+			return nil, true, fmt.Errorf("router %q produced empty candidate", name)
+		}
+		if err := enforceRouterSurface(&d, spec, sig); err != nil {
+			return &d, true, err
+		}
+		return &d, true, nil
+	}
+	if isImplicitAutoName(name) {
+		d, err := s.decideAuto(ctx, name, sig)
+		return d, true, err
+	}
+	return nil, false, nil
 }
 
 // applyRouterRewrite resolves a router name to a concrete model in-band. router.yaml
@@ -78,27 +108,26 @@ func (s *Server) applyRouterRewrite(ctx context.Context, modelName string, sig a
 	if !envconfig.RouterRewrite() {
 		return modelName, nil, nil
 	}
-	if spec, ok := lookupRouter(modelName); ok {
-		dec, err := decideRouter(ctx, modelName, spec, sig.Text, s.scoreRouterPolicies, s.embedRouterText, s.rerankRouterDocs)
-		if err != nil {
-			return "", nil, err
-		}
-		if dec.Candidate == "" {
-			return "", nil, fmt.Errorf("router %q produced empty candidate", modelName)
-		}
-		if err := enforceRouterSurface(&dec, spec, sig); err != nil {
-			return "", nil, err
-		}
-		return dec.Candidate, &dec, nil
+	dec, isRouter, err := s.resolveRouter(ctx, modelName, sig)
+	if !isRouter {
+		return modelName, nil, nil
 	}
-	if isImplicitAutoName(modelName) {
-		dec, err := s.decideAuto(ctx, modelName, sig)
-		if err != nil {
-			return "", nil, err
-		}
-		return dec.Candidate, dec, nil
+	if err != nil {
+		metricsRouteError(modelName, sig.Surface)
+		return "", nil, err
 	}
-	return modelName, nil, nil
+	metricsRouteDecision(dec, sig.Surface)
+	return dec.Candidate, dec, nil
+}
+
+// writeRouterError writes a 503 for a failed dry run, including the filtered candidates
+// when the deterministic router produced them.
+func writeRouterError(c *gin.Context, dec *RouterDecision, err error) {
+	body := gin.H{"error": err.Error()}
+	if dec != nil && dec.Auto != nil && len(dec.Auto.Rejected) > 0 {
+		body["filtered"] = dec.Auto.Rejected
+	}
+	c.AbortWithStatusJSON(http.StatusServiceUnavailable, body)
 }
 
 func stampRouterHeaders(c *gin.Context, dec *RouterDecision) {

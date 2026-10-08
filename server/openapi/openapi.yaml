@@ -57,6 +57,12 @@ components:
       description: '`true` when the router used its fallback candidate.'
       schema:
         type: string
+    ZerollamaRouterReason:
+      description: >
+        Short reason for the router's choice — `warm`, `best-fit`, `only-candidate`
+        (implicit `auto`) or `surface-fallback` (router.yaml pick could not serve the request).
+      schema:
+        type: string
   schemas:
     ModelOptions:
       type: object
@@ -1906,8 +1912,144 @@ components:
             $ref: "#/components/schemas/RouterNeighbor"
         nearest_similarity:
           type: number
+        reason:
+          type: string
+          description: warm | best-fit | only-candidate | surface-fallback (empty for plain LA11 picks)
+        auto:
+          $ref: "#/components/schemas/AutoRouteDecision"
         latency_ms:
           type: integer
+    AutoRouteDecision:
+      type: object
+      description: Deterministic auto-router detail (implicit `auto`) — filters and ranking.
+      properties:
+        surface:
+          type: string
+          enum: [chat, generate, image, image_edit]
+        model:
+          type: string
+        reason:
+          type: string
+        ranked:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouteRanked"
+        filtered:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouteRejection"
+    RouteRanked:
+      type: object
+      properties:
+        model:
+          type: string
+        score:
+          type: number
+        warm:
+          type: boolean
+        needs_eviction:
+          type: boolean
+        reasons:
+          type: array
+          items:
+            type: string
+    RouteRejection:
+      type: object
+      properties:
+        model:
+          type: string
+        reason:
+          type: string
+          description: 'e.g. "missing capability: tools", "context 4096 < needed 9216", "cannot load now: loads paused"'
+    RouteRequest:
+      type: object
+      description: >
+        The request you are about to send (native `/api/chat`, OpenAI chat-completions, or
+        `/api/generate` shape) plus routing fields. Surface is inferred when omitted:
+        `messages` ⇒ chat, `width`/`height` ⇒ image, otherwise generate.
+      additionalProperties: true
+      properties:
+        router:
+          type: string
+          description: Router name (`auto` or a router.yaml entry). Defaults to `model`.
+        model:
+          type: string
+        surface:
+          type: string
+          enum: [chat, generate, image, image_edit]
+    RouteResponse:
+      allOf:
+        - $ref: "#/components/schemas/RouterDecision"
+        - type: object
+          properties:
+            surface:
+              type: string
+            model:
+              type: string
+              description: Chosen model (same as `candidate`).
+    RouteErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        filtered:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouteRejection"
+    RouterInventoryCandidate:
+      type: object
+      properties:
+        name:
+          type: string
+        id:
+          type: string
+        digest:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        backends:
+          type: object
+          additionalProperties:
+            type: string
+        format:
+          type: string
+        family:
+          type: string
+        context_length:
+          type: integer
+        size:
+          type: integer
+        runtime_inference:
+          type: boolean
+        warm:
+          type: boolean
+        can_load:
+          type: boolean
+        needs_eviction:
+          type: boolean
+        excluded:
+          type: string
+        detail:
+          type: string
+        tok_per_sec:
+          type: number
+        gen_sec:
+          type: number
+    RouterInventoryResponse:
+      type: object
+      properties:
+        auto_router:
+          type: boolean
+        candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouterInventoryCandidate"
+        failed:
+          type: object
+          additionalProperties:
+            type: string
     RouterCorpusEntry:
       type: object
       required: [text, labels]
@@ -3181,6 +3323,8 @@ paths:
               $ref: "#/components/headers/ZerollamaRouterChosen"
             X-Zerollama-Router-Fallback:
               $ref: "#/components/headers/ZerollamaRouterFallback"
+            X-Zerollama-Router-Reason:
+              $ref: "#/components/headers/ZerollamaRouterReason"
           content:
             application/json:
               schema:
@@ -3400,6 +3544,8 @@ paths:
               $ref: "#/components/headers/ZerollamaRouterChosen"
             X-Zerollama-Router-Fallback:
               $ref: "#/components/headers/ZerollamaRouterFallback"
+            X-Zerollama-Router-Reason:
+              $ref: "#/components/headers/ZerollamaRouterReason"
           content:
             application/json:
               schema:
@@ -3694,6 +3840,68 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InferenceError"
+  /v1/route:
+    post:
+      summary: Dry-run the auto-router
+      description: >
+        Returns the model a router (`auto` or a router.yaml entry) would pick for this exact
+        request, with filtered candidates and ranking, without running inference. Same logic
+        as the in-band rewrite on chat/generate/images (docs/auto-router.md).
+      operationId: route
+      x-codeSamples:
+        - lang: bash
+          label: Route a tools request
+          source: |
+            curl http://localhost:11434/v1/route -d '{
+              "model": "auto",
+              "messages": [{"role": "user", "content": "weather in Paris?"}],
+              "tools": [{"type": "function", "function": {"name": "get_weather"}}]
+            }'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RouteRequest"
+      responses:
+        "200":
+          description: Chosen model and why
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouteResponse"
+        "400":
+          description: Missing router/model, bad body, or unsupported surface
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "404":
+          description: Name is not a router
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "503":
+          description: No candidate can serve the request (`filtered` lists why)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouteErrorResponse"
+  /api/router/inventory:
+    get:
+      summary: Auto-router candidate inventory
+      description: >
+        Local models as the auto-router sees them — memoised capabilities, context length,
+        bench perf and live residency — plus models that could not be read. Never loads.
+      operationId: routerInventory
+      responses:
+        "200":
+          description: Candidates and failures
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouterInventoryResponse"
   /api/router/corpus:
     get:
       summary: KNN corpus counts
