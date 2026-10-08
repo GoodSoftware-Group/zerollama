@@ -15,3 +15,5 @@ re-applies these patches onto that tree before `build_mlx_dylibs_mac.sh`.
 
 `0001-mlx-c-regen-0.32.1.patch` (repo root of this dir) is **obsolete** on
 `MLX_C_VERSION` ≥ `ebc88f10` — do not apply.
+
+**Metal idle residency:** Ollama briefly carried `mlx/compat/mlx/0001-metal-residency-refresh.patch` (#18807); at **`MLX_VERSION=a59cc231`** the fix is **upstream in mlx** (#18854 dropped the carry patch). Rebuild dylibs after pin bump; the Go client sets `MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS=1000` when unset.

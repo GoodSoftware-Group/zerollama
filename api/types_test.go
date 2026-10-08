@@ -520,10 +520,9 @@ func TestThinking_UnmarshalJSON(t *testing.T) {
 			expectedThinking: &ThinkValue{Value: "xhigh"},
 		},
 		{
-			name:             "invalid_string",
+			name:             "model_defined_string",
 			input:            `{ "think": "invalid" }`,
-			expectedThinking: nil,
-			expectedError:    true,
+			expectedThinking: &ThinkValue{Value: "invalid"},
 		},
 	}
 

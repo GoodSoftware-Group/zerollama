@@ -3,12 +3,15 @@ package llm
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/ollama/ollama/api"
 )
 
 // DecisionsRequest is a Jev-shaped typed-decision batch (Laya System-1).
 type DecisionsRequest struct {
 	Model     string                      `json:"model,omitempty"`
 	State     any                         `json:"state"`
+	Images    []api.ImageData             `json:"images,omitempty"`
 	Questions map[string]DecisionQuestion `json:"questions"`
 }
 

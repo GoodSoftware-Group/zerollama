@@ -39,7 +39,7 @@ curl -sS http://127.0.0.1:11435/api/version | python3 -c \
 # expect: True
 ```
 
-`null` / missing → build predates MD1 (patches **0129–0131**).
+`null` / missing → build predates MD1 (patches **0127–0129**).
 
 ## When to Use
 
@@ -56,7 +56,7 @@ curl -sS http://127.0.0.1:11435/api/version | python3 -c \
 
 ## Prerequisites
 
-- Patches **0129–0131** + llama-server with `--multidecode` (Go non-embedding
+- Patches **0127–0129** + llama-server with `--multidecode` (Go non-embedding
   launches pass this automatically)
 - Local GGUF model tag (not `:cloud`)
 - Lab bind e.g. `:11435` / llama-server `:18082`

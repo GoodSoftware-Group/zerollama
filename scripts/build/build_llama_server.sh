@@ -56,6 +56,14 @@ _is_vendor_root() {
 ROOT="$(_resolve_llama_cpp_root)"
 BUILD="${ZEROLLAMA_BUILD_DIR:-${ROOT}/build}"
 BUILD_LOCK="${BUILD}/.zerollama_llama_server_build.lock.d"
+
+# Clef joint head (L6): sources at llama/clef/; server CMake links when this path exists.
+_ZEROLLAMA_CLEF_DIR="${ZEROLLAMA_CLEF_DIR:-${_ZEROLLAMA_ROOT}/llama/clef}"
+_clef_cmake_args() {
+  if [[ -f "${_ZEROLLAMA_CLEF_DIR}/clef.cpp" && -f "${_ZEROLLAMA_CLEF_DIR}/clef.h" ]]; then
+    printf '%s\n' "-DZEROLLAMA_CLEF_DIR=${_ZEROLLAMA_CLEF_DIR}"
+  fi
+}
 if [[ "${BUILD}" != "${ROOT}/build" ]]; then
   BUILD_LOCK="${ROOT}/.zerollama_llama_server_build.lock.d"
 fi
@@ -368,7 +376,8 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     -DLLAMA_BUILD_UI="${LLAMA_BUILD_UI:-${LLAMA_BUILD_WEBUI:-OFF}}" \
     -DLLAMA_BUILD_KOKORO="$(_zerollama_kokoro_cmake)" \
     -DLLAMA_BUILD_OMNIVOICE=OFF \
-    ${_UMA_CMAKE[@]+"${_UMA_CMAKE[@]}"}
+    ${_UMA_CMAKE[@]+"${_UMA_CMAKE[@]}"} \
+    $(_clef_cmake_args)
   cmake --build "${BUILD}" --target llama-server -j"$(_build_jobs)" || {
     echo "error: llama-server build failed; cleaning ${BUILD}" >&2
     rm -rf "${BUILD}"
@@ -427,7 +436,8 @@ if [[ "${GGML_VULKAN:-}" == "ON" || "${GGML_VULKAN:-}" == "1" ]]; then
     -DLLAMA_CURL=ON \
     -DLLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI}" \
     -DLLAMA_BUILD_KOKORO="$(_zerollama_kokoro_cmake)" \
-    -DLLAMA_BUILD_OMNIVOICE=OFF
+    -DLLAMA_BUILD_OMNIVOICE=OFF \
+    $(_clef_cmake_args)
   cmake --build "${BUILD}" --target llama-server -j"$(nproc)"
   BIN="${BUILD}/bin/llama-server"
   if [[ -x "${BIN}" ]]; then
@@ -556,6 +566,7 @@ cmake -S "${ROOT}" -B "${BUILD}" \
   -DLLAMA_USE_PREBUILT_WEBUI="${_LLAMA_PREBUILT_UI}" \
   -DLLAMA_BUILD_KOKORO="$(_zerollama_kokoro_cmake)" \
   -DLLAMA_BUILD_OMNIVOICE=OFF \
+  $(_clef_cmake_args) \
   "${CMAKE_EXTRA[@]}"
 
 cmake --build "${BUILD}" --target llama-server -j"$(_build_jobs)" || {

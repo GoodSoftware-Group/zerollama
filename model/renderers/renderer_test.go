@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/types/model"
 )
 
 type mockRenderer struct{}
@@ -15,6 +16,8 @@ func (m *mockRenderer) Render(msgs []api.Message, tools []api.Tool, think *api.T
 func (m *mockRenderer) LeadingBOS() string {
 	return ""
 }
+
+func (m *mockRenderer) Thinking() *model.Thinking { return nil }
 
 func TestRegisterCustomRenderer(t *testing.T) {
 	// Register a custom renderer
@@ -38,6 +41,7 @@ func TestBuiltInRendererStillWorks(t *testing.T) {
 	}{
 		{name: "qwen3-coder"},
 		{name: "qwen3.5"},
+		{name: "tev1"},
 		{name: "qwen3.8"},
 		{name: "nemotron-3-nano"},
 		{name: "nemotron-3.5-nano"},

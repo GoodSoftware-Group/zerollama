@@ -20,6 +20,7 @@ import (
 type Array struct {
 	ctx    C.mlx_array
 	name   string
+	scope  *Scope
 	pinned atomic.Int32
 }
 
@@ -42,6 +43,7 @@ func New(name string) *Array {
 		arrays = append(arrays, t)
 	}
 
+	currentScope.take(t)
 	return t
 }
 
@@ -175,8 +177,7 @@ func Sweep() {
 			arrays[n] = t
 			n++
 		} else if t.Valid() {
-			mlxCheck(C.mlx_array_free(t.ctx))
-			t.ctx.ctx = nil
+			t.free()
 		}
 	}
 	arrays = arrays[:n]
@@ -184,8 +185,30 @@ func Sweep() {
 
 // misc. utilities
 
-func (t *Array) Valid() bool {
+func (t *Array) valid() bool {
 	return t.ctx.ctx != nil
+}
+
+func (t *Array) Valid() bool {
+	return t.valid()
+}
+
+func (t *Array) free() {
+	if !t.valid() {
+		return
+	}
+	mlxCheck(C.mlx_array_free(t.ctx))
+	t.ctx.ctx = nil
+	arraysMu.Lock()
+	defer arraysMu.Unlock()
+	for i, a := range arrays {
+		if a == t {
+			last := len(arrays) - 1
+			arrays[i] = arrays[last]
+			arrays = arrays[:last]
+			break
+		}
+	}
 }
 
 func (t *Array) String() string {

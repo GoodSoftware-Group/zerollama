@@ -1,0 +1,19 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Thu, 8 Oct 2026 01:38:12 +0000
+Subject: [PATCH] fix: missing semicolon on TBQ fattn-vec extern decl
+
+---
+ ggml/src/ggml-cuda/fattn-vec.cuh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ggml/src/ggml-cuda/fattn-vec.cuh b/ggml/src/ggml-cuda/fattn-vec.cuh
+index cdff438d2..95243af37 100644
+--- a/ggml/src/ggml-cuda/fattn-vec.cuh
++++ b/ggml/src/ggml-cuda/fattn-vec.cuh
+@@ -620,4 +620,4 @@ extern DECL_FATTN_VEC_CASE(128, GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ3_0);
+ extern DECL_FATTN_VEC_CASE(256, GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ3_0);
+ extern DECL_FATTN_VEC_CASE( 64, GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ4_0);
+ extern DECL_FATTN_VEC_CASE(128, GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ4_0);
+-extern DECL_FATTN_VEC_CASE(256, GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ4_0)
++extern DECL_FATTN_VEC_CASE(256, GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ4_0);

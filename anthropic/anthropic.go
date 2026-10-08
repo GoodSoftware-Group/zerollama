@@ -21,6 +21,7 @@ import (
 	internalcloud "github.com/ollama/ollama/internal/cloud"
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/template"
+	"github.com/ollama/ollama/types/model"
 )
 
 // Error types matching Anthropic API
@@ -314,8 +315,9 @@ type StreamErrorEvent struct {
 	Error Error  `json:"error"`
 }
 
-// FromMessagesRequest converts an Anthropic MessagesRequest to an Ollama api.ChatRequest
-func FromMessagesRequest(r MessagesRequest) (*api.ChatRequest, error) {
+// FromMessagesRequest converts an Anthropic MessagesRequest to an Ollama api.ChatRequest.
+// An optional thinking descriptor preserves model-defined effort names for rendering.
+func FromMessagesRequest(r MessagesRequest, thinking ...*model.Thinking) (*api.ChatRequest, error) {
 	logutil.Trace("anthropic: converting request", "req", TraceMessagesRequest(r))
 	foldMessagesCompression(&r)
 	foldMessagesSessionCache(&r)
@@ -436,10 +438,18 @@ func FromMessagesRequest(r MessagesRequest) (*api.ChatRequest, error) {
 	var think *api.ThinkValue
 	if r.Thinking != nil && strings.EqualFold(r.Thinking.Type, "disabled") {
 		think = &api.ThinkValue{Value: false}
-	} else if t := thinkFromOutputEffort(r.OutputConfig); t != nil {
-		think = t
 	} else if r.Thinking != nil && r.Thinking.Type == "enabled" {
 		think = &api.ThinkValue{Value: true}
+	}
+	if think == nil && r.OutputConfig != nil {
+		effort := r.OutputConfig.Effort
+		if len(thinking) > 0 && thinking[0].Valid() {
+			if effort != "" {
+				think = &api.ThinkValue{Value: effort}
+			}
+		} else if t := thinkFromOutputEffort(r.OutputConfig); t != nil {
+			think = t
+		}
 	}
 
 	stream := r.Stream

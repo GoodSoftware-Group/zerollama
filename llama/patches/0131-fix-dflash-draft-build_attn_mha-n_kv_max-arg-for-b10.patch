@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Thu, 8 Oct 2026 01:26:43 +0000
+Subject: [PATCH] fix: dflash-draft build_attn_mha n_kv_max arg for b10864 API
+
+---
+ src/models/dflash-draft.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/models/dflash-draft.cpp b/src/models/dflash-draft.cpp
+index 313f1cda6..e90beac2a 100644
+--- a/src/models/dflash-draft.cpp
++++ b/src/models/dflash-draft.cpp
+@@ -280,7 +280,7 @@ llm_build_dflash_draft::llm_build_dflash_draft(
+         ggml_build_forward_expand(gf, Vcur);
+ 
+         cur = build_attn_mha(Qcur, Kcur, Vcur, nullptr, kq_mask, nullptr, nullptr,
+-                             1.0f / sqrtf(float(n_embd_head)), il);
++                             /*n_kv_max=*/0, 1.0f / sqrtf(float(n_embd_head)), il);
+         cb(cur, "kqv_out", il);
+ 
+         cur = build_lora_mm(model.layers[il].wo, cur);

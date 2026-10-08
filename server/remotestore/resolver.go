@@ -48,11 +48,12 @@ type Resolver struct {
 	Chain      *TransportChain
 	HTTP       *http.Client
 
-	mu        sync.Mutex
-	caps      map[string]Capability
-	pinned    map[string]int     // digest → refcount of loaded models holding this blob
-	ephemeral map[string]string  // digest → scratch path
-	dlGroup   singleflight.Group // deduplicates concurrent downloads of the same digest
+	mu         sync.Mutex
+	caps       map[string]Capability
+	pinned     map[string]int       // digest → refcount of loaded models holding this blob
+	ephemeral  map[string]string    // digest → scratch path
+	peerFailAt map[string]time.Time // base URL → last soft-fail for cooldown
+	dlGroup    singleflight.Group   // deduplicates concurrent downloads of the same digest
 }
 
 // Config builds a Resolver from environment defaults.
@@ -278,43 +279,72 @@ func (r *Resolver) ReleaseEphemeral(digest string) {
 }
 
 func (r *Resolver) download(ctx context.Context, digest, dest string) error {
-	partial := dest + ".partial"
-	_ = os.Remove(partial)
-
 	var last error
 	for _, base := range r.Servers {
+		if r.peerInCooldown(base) {
+			last = fmt.Errorf("peer %s in cooldown", base)
+			continue
+		}
 		cap := r.capability(ctx, base)
 		tcp := NewTCPTransport(r.Auth)
 		tcp.Client = r.HTTP
 		size, ok, err := tcp.HeadBlob(ctx, base, digest)
 		if err != nil {
 			last = err
+			if isSoftFail(err) {
+				r.markPeerFail(base)
+			}
 			continue
 		}
 		if !ok {
 			last = fmt.Errorf("blob not found on %s", base)
 			continue
 		}
-		_ = size
 
-		rc, n, via, err := r.Chain.FetchChunk(ctx, base, digest, 0, 0, cap)
+		_, _, err = r.downloadParallel(ctx, base, digest, dest, size, cap)
 		if err != nil {
 			last = err
+			if isSoftFail(err) {
+				r.markPeerFail(base)
+				continue
+			}
+			// Corrupt bytes on one peer: try others (leave .partial for inspection,
+			// but clear it before the next peer so WriteAt/single-stream starts clean).
+			if isDigestMismatch(err) {
+				slog.Warn("remotestore digest mismatch; trying next peer", "server", base, "digest", digest, "error", err)
+				_ = os.Remove(dest + ".partial")
+				continue
+			}
 			continue
 		}
-		err = writeAtomic(partial, dest, rc, n, digest)
-		rc.Close()
-		if err != nil {
-			last = err
-			continue
-		}
-		slog.Info("remotestore fetched blob", "digest", digest, "via", via, "server", base)
 		return nil
 	}
 	if last == nil {
 		last = fmt.Errorf("blob %s not found on any storage server", digest)
 	}
 	return last
+}
+
+func (r *Resolver) peerInCooldown(base string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.peerFailAt == nil {
+		return false
+	}
+	t, ok := r.peerFailAt[base]
+	if !ok {
+		return false
+	}
+	return time.Since(t) < peerCooldown
+}
+
+func (r *Resolver) markPeerFail(base string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.peerFailAt == nil {
+		r.peerFailAt = make(map[string]time.Time)
+	}
+	r.peerFailAt[base] = time.Now()
 }
 
 func (r *Resolver) capability(ctx context.Context, base string) Capability {
@@ -369,21 +399,23 @@ func writeAtomic(partial, final string, rc io.Reader, expect int64, digest strin
 		return fmt.Errorf("short write: got %d want %d", written, expect)
 	}
 	// Verify before rename so corrupt bytes never reach the final cache path.
+	// On mismatch leave .partial for inspection (no silent truncate/retry loop).
 	if digest != "" {
 		want := strings.TrimPrefix(normalizeDigest(digest), "sha256-")
 		got := hex.EncodeToString(h.Sum(nil))
 		if !strings.EqualFold(got, want) {
-			_ = os.Remove(partial)
-			return fmt.Errorf("digest mismatch: got %s want %s", got, want)
+			return fmt.Errorf("digest mismatch: got %s want %s (partial kept at %s)", got, want, partial)
 		}
 	}
-	return os.Rename(partial, final)
+	if err := os.Rename(partial, final); err != nil {
+		return err
+	}
+	return fsyncFileAndDir(final)
 }
 
-
 type blobStat struct {
-	path string
-	size int64
+	path  string
+	size  int64
 	atime time.Time
 }
 

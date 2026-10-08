@@ -475,7 +475,8 @@ func TestFetchVideoURL_AllowlistAndSize(t *testing.T) {
 }
 
 func TestFromChatRequest_ToolMultipartKeepsMetadata(t *testing.T) {
-	// SGLang #33898: tool role with image parts must keep tool_call_id without ToolCalls.
+	// Upstream #18722: tool + image parts stay split so each image keeps its
+	// position among text; every part keeps tool_call_id / name (no ToolCalls).
 	req := ChatCompletionRequest{
 		Model: "qwen3-vl",
 		Messages: []Message{{
@@ -494,15 +495,14 @@ func TestFromChatRequest_ToolMultipartKeepsMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Messages) != 1 {
-		t.Fatalf("messages=%d", len(out.Messages))
+	if len(out.Messages) != 2 {
+		t.Fatalf("messages=%d want 2 (text then image)", len(out.Messages))
 	}
-	m := out.Messages[0]
-	if m.ToolCallID != "call_1" || m.ToolName != "see" {
-		t.Fatalf("tool meta ToolCallID=%q ToolName=%q", m.ToolCallID, m.ToolName)
+	if out.Messages[0].Content != "shot" || out.Messages[0].ToolCallID != "call_1" || out.Messages[0].ToolName != "see" {
+		t.Fatalf("text part=%+v", out.Messages[0])
 	}
-	if len(m.Images) != 1 {
-		t.Fatalf("images=%d", len(m.Images))
+	if len(out.Messages[1].Images) != 1 || out.Messages[1].ToolCallID != "call_1" || out.Messages[1].ToolName != "see" {
+		t.Fatalf("image part=%+v", out.Messages[1])
 	}
 }
 

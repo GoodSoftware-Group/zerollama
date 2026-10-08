@@ -10,7 +10,13 @@ func marshalWithSpaces(v any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return addJSONSpaces(b), nil
+	return AddJSONSpaces(b), nil
+}
+
+// AddJSONSpaces adds Python-style separator spaces to compact JSON without
+// changing string values or escaping (System One / tev1 prompts).
+func AddJSONSpaces(b []byte) []byte {
+	return addJSONSpaces(b)
 }
 
 func addJSONSpaces(b []byte) []byte {

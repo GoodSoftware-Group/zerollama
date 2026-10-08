@@ -25,6 +25,14 @@ func (s *llamaServerRunner) Decisions(ctx context.Context, req DecisionsRequest)
 			Answers: map[string]json.RawMessage{},
 		}, nil
 	}
+	// Laya pack is text-token only. Multimodal System One (Clef images) must use
+	// the score path — never silently drop images on this Decider wire.
+	if len(req.Images) > 0 {
+		return DecisionsResponse{}, api.StatusError{
+			StatusCode:   http.StatusBadRequest,
+			ErrorMessage: "images are not supported on the Laya decisions backend; use a clef/tev1/nimble decision model",
+		}
+	}
 	if err := s.sem.Acquire(ctx, 1); err != nil {
 		return DecisionsResponse{}, err
 	}

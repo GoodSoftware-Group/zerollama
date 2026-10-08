@@ -347,15 +347,15 @@ bool laya_encode_embeddings(
 
     llama_set_embeddings(ctx, true);
 
-    llama_batch batch = llama_batch_init(n_tokens, 0, 1);
+    // tip b11351+: common_batch + llama_process (common_batch_add removed)
+    common_batch batch(ctx);
     for (int i = 0; i < n_tokens; ++i) {
-        common_batch_add(batch, tokens[(size_t) i], i, {0}, /*logits*/ true);
+        batch.add(tokens[(size_t) i], i, /*seq_id*/ 0, /*output*/ true);
     }
 
-    const int rc = llama_decode(ctx, batch);
+    const int rc = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get());
     if (rc != 0) {
-        llama_batch_free(batch);
-        err = string_format("llama_decode failed with code %d", rc);
+        err = string_format("llama_process failed with code %d", rc);
         return false;
     }
 
@@ -363,14 +363,12 @@ bool laya_encode_embeddings(
     for (int i = 0; i < n_tokens; ++i) {
         float * e = llama_get_embeddings_ith(ctx, i);
         if (e == nullptr) {
-            llama_batch_free(batch);
             err = string_format("llama_get_embeddings_ith failed at token %d", i);
             return false;
         }
         std::memcpy(embd_out.data() + (size_t) i * n_embd, e, (size_t) n_embd * sizeof(float));
     }
 
-    llama_batch_free(batch);
     return true;
 }
 

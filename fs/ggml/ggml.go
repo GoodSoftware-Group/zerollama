@@ -631,7 +631,14 @@ func (f GGML) GraphSize(context, batch uint64, numParallel int, kvCacheType stri
 	headsArr := f.KV().HeadCount()
 	headsKV := f.KV().HeadCountKVMax()
 	headsKVArr := f.KV().HeadCountKV()
-	vocab := uint64(f.KV()["tokenizer.ggml.tokens"].(*array[string]).size)
+	// Incomplete / synthetic GGUFs (list tests, metadata-only extracts) may omit
+	// tokenizer.ggml.tokens — never panic from GraphSize on /api/tags enrichment.
+	var vocab uint64
+	if tokens, ok := f.KV()["tokenizer.ggml.tokens"].(*array[string]); ok && tokens != nil {
+		vocab = uint64(tokens.size)
+	} else {
+		vocab = uint64(len(f.KV().Strings("tokenizer.ggml.tokens")))
+	}
 
 	embeddingHeads := f.KV().EmbeddingHeadCountMax()
 	embeddingHeadsK := f.KV().EmbeddingHeadCountK()

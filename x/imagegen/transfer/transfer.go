@@ -98,7 +98,10 @@ type AuthChallenge struct {
 const (
 	DefaultDownloadConcurrency = 64
 	DefaultUploadConcurrency   = 32
-	maxRetries                 = 6
+	maxRetries = 6
+	// maxTransientRetries is how many stalled or slow transfers a blob may
+	// attempt before counting against maxRetries (upstream #18625).
+	maxTransientRetries = 3
 	defaultUserAgent           = "ollama-transfer/1.0"
 
 	// resumeThreshold is the minimum blob size for resume support.

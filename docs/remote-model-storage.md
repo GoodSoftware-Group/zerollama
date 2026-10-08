@@ -6,7 +6,9 @@ Centralize GGUF (and other Ollama-shaped) model blobs on one or more storage ser
 
 **Why not NFS/S3 alone:** POSIX mounts and object stores are fine for cold archives, but they do not speak Ollama manifests, HMAC between zerollama peers, InfiniBand preference, or the tensor-addressed language we need for later streaming. A small daemon next to the models tree keeps the wire close to how zerollama already names blobs.
 
-Full operator guide: this file. Package: `server/remotestore/`. CLI: `zerollama storage serve|push`.
+Full operator guide: this file. Package: `server/remotestore/`. CLI: `zerollama storage serve|push|ls|verify|gc|sync`.
+
+**Quality bar (v1.1/v1.2):** ops surface (health/metrics/list/verify/gc), optional TLS, parallel Range-GET with stall retries, fsync-safe PUTs, multi-URL client failover, and async peer replication — without becoming S3/NFS. We match mature shared-storage *reliability and ops*, not object-store APIs.
 
 ---
 
@@ -35,6 +37,10 @@ Full operator guide: this file. Package: `server/remotestore/`. CLI: `zerollama 
 ```bash
 export ZEROLLAMA_STORAGE_SECRET='long-random-shared-secret'
 export OLLAMA_MODELS=/data/models   # canonical tree
+# optional HA peers (async replicate; write-local + best-effort):
+# export ZEROLLAMA_STORAGE_PEERS=http://storage-b:18090,http://storage-c:18090
+# optional TLS when the path leaves the fabric:
+# ./zerollama storage serve --listen 0.0.0.0:18090 --tls-cert cert.pem --tls-key key.pem
 ./zerollama storage serve --listen 0.0.0.0:18090
 ```
 
@@ -123,14 +129,34 @@ Roadmap transports: raw Ethernet L2 (`AF_PACKET`), UDP/ARQ; ODP/file-backed MRs.
 | Endpoint | Why |
 |----------|-----|
 | `GET /v1/capability` | Negotiate RDMA vs TCP (`verbs:true` when QP path is live) |
+| `GET /v1/health` | `live`/`ok` process up; `ready` when all configured peers are `ok` (or no peers); counts + peer status |
+| `GET /v1/metrics` | Prometheus text counters/gauges |
+| `GET /v1/blobs` / `GET /v1/manifests` | Paginated inventory (`?limit=&cursor=`) |
+| `POST /v1/verify` | Re-hash digests; report mismatches |
+| `POST /v1/gc` | Orphan blobs not referenced by any manifest (`{"apply":true}` to delete) |
 | `POST /v1/rdma/session` | Exchange RC QP endpoints (HMAC JSON) |
 | `POST\|DELETE /v1/rdma/mr` | Lease / release a blob-range MR for RDMA READ |
 | `HEAD\|GET /v1/blob/{sha256-…}` | Content-addressed bulk; Range-GET; HEAD on `.partial` sets `X-Zerollama-Partial` |
-| `PUT /v1/blob/{sha256-…}` | Full stream, or `Content-Range` resume (202 until complete, then 201) |
+| `PUT /v1/blob/{sha256-…}` | Full stream, or `Content-Range` resume (202 until complete, then 201); fsync before rename |
 | `GET\|PUT /v1/manifest/{host}/{ns}/{model}/{tag}` | Same layout as local manifests |
 | `GET /v1/tensor/{host}/{ns}/{model}/{tag}/{tensor_ref}` | Tensor-addressed convenience over byte ranges |
 
 All require HMAC.
+
+### Ops CLI
+
+```bash
+./zerollama storage ls http://storage-host:18090
+./zerollama storage ls http://storage-host:18090 --kind manifests
+./zerollama storage verify http://storage-host:18090
+./zerollama storage gc http://storage-host:18090          # dry-run
+./zerollama storage gc http://storage-host:18090 --apply
+./zerollama storage sync http://peer-host:18090           # one-shot push of local tree
+```
+
+### Peer replication (v1.2)
+
+`ZEROLLAMA_STORAGE_PEERS` configures async replicate-after-PUT and a 5‑minute reconciler. Writes are **local-first + best-effort async** (RPO ≈ reconciler interval). Clients with multiple `ZEROLLAMA_STORAGE_SERVERS` soft-failover on 5xx/timeouts and skip cooled-down peers (~30s).
 
 **Why two layers (bytes + tensors):** runners and migration need digests and ranges. Future stream/runtime paging wants names/roles (`layer.3.attn`). Server-side catalog resolve keeps clients from re-implementing GGUF offset math.
 
@@ -148,9 +174,11 @@ All require HMAC.
 
 | Variable | Role | Why |
 |----------|------|-----|
-| `ZEROLLAMA_STORAGE_SERVERS` | Comma-separated base URLs | Multi-server fallback |
+| `ZEROLLAMA_STORAGE_SERVERS` | Comma-separated base URLs | Multi-server fallback + soft-failover |
 | `ZEROLLAMA_STORAGE_SECRET` / `_FILE` | HMAC secret | Shared with `storage serve` |
 | `ZEROLLAMA_STORAGE_LISTEN` | Serve bind (default `0.0.0.0:18090`) | Lab port, not inference |
+| `ZEROLLAMA_STORAGE_PEERS` | Peer storage URLs | Async replicate + reconciler |
+| `ZEROLLAMA_STORAGE_TLS_CERT` / `_KEY` | Optional TLS files | When leaving the fabric |
 | `ZEROLLAMA_REMOTE_CACHE_MODE` | `persist` \| `ephemeral` | Footprint policy |
 | `ZEROLLAMA_REMOTE_CACHE_DIR` | Blob cache root (default `$OLLAMA_MODELS`) | Optional separate SSD |
 | `ZEROLLAMA_REMOTE_CACHE_MAX_BYTES` | LRU cap (`0` = unlimited) | Protect boot disk |
@@ -164,8 +192,21 @@ Auth + `BulkTransport` are **payload-agnostic**. **Why:** the next consumers (re
 
 ---
 
+## Quality vs S3/NFS (what we match / skip)
+
+| Bar | Status |
+|-----|--------|
+| Health + metrics + inventory + verify + GC | **Done** (v1.1; `live`/`ready`) |
+| Optional TLS + LAN HMAC | **Done** |
+| Crash-safe PUT (fsync file+dir + hash-before-rename) | **Done** |
+| Parallel / resumable pulls with stall cancel (no leaked reads) | **Done** |
+| Multi-peer async durability + client failover | **Done** (v1.2; unbounded queue; blobs before manifests; digest-mismatch tries next peer) |
+| Erasure coding / IAM / versioning / bucket ACL | **Out of scope** — use a real object store for cold archive if needed |
+| Live NFS mount under inference runners | **Rejected** — local cache + pin stays mandatory |
+
 ## Roadmap (explicitly deferred)
 
+- Sync write quorum (rejected for multi-GB PUT latency; async only for now)
 - ODP / file-backed MRs (skip bounce copy on capable NICs)
 - Raw L2 / UDP transports
 - llama.cpp `stream` (`llama_model_init_from_user`) and runtime tensor cache
@@ -195,6 +236,6 @@ CGO_ENABLED=1 go build -tags rdma -o zerollama .
 | `server/remotestore/storaged/` | HTTP server for `storage serve` |
 | `server/remotestore/catalog/` | GGUF → module-role index |
 | `server/remotestore/tensorproto/` | Spec-only tensor fetch types |
-| `cmd/storage.go` | `zerollama storage serve\|push` |
+| `cmd/storage.go` | `zerollama storage serve\|push\|ls\|verify\|gc\|sync` |
 | `server/images.go` | `ensureBlob` / `GetModel` miss-fetch |
 | `server/sched.go` | Pin on load, `ReleaseModelBlobs` on unload |

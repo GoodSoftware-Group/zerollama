@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/types/model"
 	"github.com/ollama/ollama/server/modality"
 )
 
@@ -893,4 +894,8 @@ func (r *Gemma4Renderer) formatArrayValue(arr []any) string {
 	}
 	sb.WriteString("]")
 	return sb.String()
+}
+
+func (r *Gemma4Renderer) Thinking() *model.Thinking {
+	return &model.Thinking{Values: []any{false, true}, Default: false}
 }

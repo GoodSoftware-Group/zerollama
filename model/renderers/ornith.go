@@ -1,5 +1,7 @@
 package renderers
 
+import "github.com/ollama/ollama/types/model"
+
 type OrnithRenderer struct {
 	Qwen35Renderer
 }
@@ -13,4 +15,8 @@ func newOrnithRenderer() Renderer {
 			useImgTags:                      RenderImgTags,
 		},
 	}
+}
+
+func (r *OrnithRenderer) Thinking() *model.Thinking {
+	return r.Qwen35Renderer.Thinking()
 }

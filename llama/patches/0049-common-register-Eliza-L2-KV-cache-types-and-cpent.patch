@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 17 Jul 2026 09:49:33 -0700
+Subject: [PATCH] common: register Eliza L2 KV cache types and -cpent
+
+---
+ common/arg.cpp  | 7 +++++++
+ common/common.h | 1 +
+ 2 files changed, 8 insertions(+)
+
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 14df92f3c..6b8099b95 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -1710,6 +1710,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.n_ctx_checkpoints = value;
+         }
+     ).set_env("LLAMA_ARG_CTX_CHECKPOINTS").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
++    add_opt(common_arg(
++        {"-cpent", "--checkpoint-every-n-tokens"}, "N",
++        string_format("create a checkpoint every n tokens during prefill (processing), -1 to disable (default: %d)", params.checkpoint_every_nt),
++        [](common_params & params, int value) {
++            params.checkpoint_every_nt = value;
++        }
++    ).set_env("LLAMA_ARG_CHECKPOINT_EVERY_NT").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+     add_opt(common_arg(
+         {"-cms", "--checkpoint-min-step"}, "N",
+         string_format("minimum spacing between context checkpoints in tokens (default: %d, 0 = no minimum)", params.checkpoint_min_step),
+diff --git a/common/common.h b/common/common.h
+index fd90c3b95..c6916b827 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -631,6 +631,7 @@ struct common_params {
+     int32_t n_ctx_checkpoints   = 32;    // max number of context checkpoints per slot
+     int32_t kv_unified_per_slot = 0;     // max context per parallel slot; 0 = unset
+     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
++    int32_t checkpoint_every_nt = 8192;  // L2 fork: checkpoint every n tokens during prefill (-1 disable)
+     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
+ 
+     std::string public_path   = "";                                                                         // NOLINT

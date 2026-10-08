@@ -21,9 +21,24 @@ type Batch struct {
 	// embedding for this step. It is nil for ordinary forward passes.
 	Hidden *mlx.Array
 
+	// Media lists a row's media items on embed/prefill forwards; nil for
+	// text-only decode paths.
+	Media []MediaItem
+
+	// Layout is an opaque per-row value from PrepareMedia; nil for text-only.
+	Layout []any
+
 	// Memo is per-forward memoization used to cache results, such as masks,
 	// which are often the same across layers.
 	Memo Memo
+}
+
+// MediaItem is one media occurrence spliced into a row's token stream.
+type MediaItem struct {
+	Seq      int
+	Pos      int
+	Features *mlx.Array
+	Opaque   any
 }
 
 type Memo struct {

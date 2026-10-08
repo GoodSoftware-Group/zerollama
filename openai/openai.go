@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1040,13 +1041,13 @@ func toolChoiceFromFunctionCall(v any) (any, error) {
 	}, nil
 }
 
-func FromChatRequest(r ChatCompletionRequest) (*api.ChatRequest, error) {
-	return FromChatRequestWithContext(context.Background(), r)
+func FromChatRequest(r ChatCompletionRequest, thinking ...*model.Thinking) (*api.ChatRequest, error) {
+	return FromChatRequestWithContext(context.Background(), r, thinking...)
 }
 
 // FromChatRequestWithContext converts a ChatCompletionRequest to api.ChatRequest.
 // Context is threaded to remote video_url GETs so disconnect aborts work; data: URIs ignore it.
-func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*api.ChatRequest, error) {
+func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest, thinking ...*model.Thinking) (*api.ChatRequest, error) {
 	if err := applyLegacyFunctions(&r); err != nil {
 		return nil, err
 	}
@@ -1076,95 +1077,179 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 			}
 			messages = append(messages, api.Message{Role: msg.Role, Content: content, Thinking: msg.Reasoning, ToolCalls: toolCalls, ToolName: toolName, ToolCallID: msg.ToolCallID})
 		case []any:
-			var textParts []string
-			var images []api.ImageData
-			var videos []api.VideoData
-			var audioClips []api.AudioData
-			for _, c := range content {
-				data, ok := c.(map[string]any)
-				if !ok {
-					return nil, errors.New("invalid message format")
-				}
-				switch data["type"] {
-				case "text":
-					text, ok := data["text"].(string)
+			// Tool results: emit per-part messages so images/video/audio keep their
+			// position among text (#18722). Text-only tool parts merge into one
+			// message. Non-tool array content still bags into one message (zerollama
+			// video/audio chat path).
+			isTool := strings.ToLower(msg.Role) == "tool"
+			start := len(messages)
+			if isTool {
+				for _, c := range content {
+					data, ok := c.(map[string]any)
 					if !ok {
 						return nil, errors.New("invalid message format")
 					}
-					textParts = append(textParts, text)
-				case "image_url":
-					var url string
-					if urlMap, ok := data["image_url"].(map[string]any); ok {
-						if url, ok = urlMap["url"].(string); !ok {
+					switch data["type"] {
+					case "text":
+						text, ok := data["text"].(string)
+						if !ok {
 							return nil, errors.New("invalid message format")
 						}
-					} else {
-						if url, ok = data["image_url"].(string); !ok {
+						messages = append(messages, api.Message{Role: msg.Role, Content: text})
+					case "image_url":
+						var url string
+						if urlMap, ok := data["image_url"].(map[string]any); ok {
+							if url, ok = urlMap["url"].(string); !ok {
+								return nil, errors.New("invalid message format")
+							}
+						} else if url, ok = data["image_url"].(string); !ok {
 							return nil, errors.New("invalid message format")
 						}
-					}
-
-					img, err := decodeImageURL(url)
-					if err != nil {
-						return nil, err
-					}
-
-					images = append(images, img)
-				case "video_url":
-					var videoURL string
-					if vmap, ok := data["video_url"].(map[string]any); ok {
-						if videoURL, ok = vmap["url"].(string); !ok {
+						img, err := decodeImageURL(url)
+						if err != nil {
+							return nil, err
+						}
+						messages = append(messages, api.Message{Role: msg.Role, Images: []api.ImageData{img}})
+					case "video_url":
+						var videoURL string
+						if vmap, ok := data["video_url"].(map[string]any); ok {
+							if videoURL, ok = vmap["url"].(string); !ok {
+								return nil, errors.New("invalid message format")
+							}
+						} else if videoURL, ok = data["video_url"].(string); !ok {
 							return nil, errors.New("invalid message format")
 						}
-					} else {
-						if videoURL, ok = data["video_url"].(string); !ok {
-							return nil, errors.New("invalid message format")
+						vb, err := decodeVideoURL(ctx, videoURL)
+						if err != nil {
+							return nil, err
 						}
+						messages = append(messages, api.Message{Role: msg.Role, Videos: []api.VideoData{vb}})
+					case "input_audio":
+						audioMap, ok := data["input_audio"].(map[string]any)
+						if !ok {
+							return nil, errors.New("invalid input_audio format")
+						}
+						b64Data, ok := audioMap["data"].(string)
+						if !ok {
+							return nil, errors.New("invalid input_audio format: missing data")
+						}
+						audioBytes, err := base64.StdEncoding.DecodeString(b64Data)
+						if err != nil {
+							return nil, fmt.Errorf("invalid input_audio base64 data: %w", err)
+						}
+						messages = append(messages, api.Message{Role: msg.Role, AudioClips: []api.AudioData{audioBytes}})
+					default:
+						return nil, errors.New("invalid message format")
 					}
-					vb, err := decodeVideoURL(ctx, videoURL)
-					if err != nil {
-						return nil, err
-					}
-					videos = append(videos, vb)
-				case "input_audio":
-					audioMap, ok := data["input_audio"].(map[string]any)
-					if !ok {
-						return nil, errors.New("invalid input_audio format")
-					}
-					b64Data, ok := audioMap["data"].(string)
-					if !ok {
-						return nil, errors.New("invalid input_audio format: missing data")
-					}
-					audioBytes, err := base64.StdEncoding.DecodeString(b64Data)
-					if err != nil {
-						return nil, fmt.Errorf("invalid input_audio base64 data: %w", err)
-					}
-					audioClips = append(audioClips, audioBytes)
-				default:
-					return nil, errors.New("invalid message format")
 				}
-			}
-			contentJoined := joinedTextParts(textParts)
-			messages = append(messages, api.Message{
-				Role:       msg.Role,
-				Content:    contentJoined,
-				Images:     images,
-				AudioClips: audioClips,
-				Videos:     videos,
-			})
-			// SGLang #33898: always keep tool metadata on multipart tool messages
-			// (image tool results often have no ToolCalls array).
-			if msg.Role == "tool" || len(msg.ToolCalls) > 0 {
+				parts := messages[start:]
+				hasMedia := slices.ContainsFunc(parts, func(m api.Message) bool {
+					return len(m.Images) > 0 || len(m.Videos) > 0 || len(m.AudioClips) > 0
+				})
+				if hasMedia {
+					for i := range parts {
+						parts[i].ToolName = toolName
+						parts[i].ToolCallID = msg.ToolCallID
+					}
+				} else if len(parts) > 0 || toolName != "" || msg.ToolCallID != "" {
+					var sb strings.Builder
+					for _, part := range parts {
+						sb.WriteString(part.Content)
+					}
+					messages = append(messages[:start], api.Message{
+						Role: msg.Role, Content: sb.String(), ToolName: toolName, ToolCallID: msg.ToolCallID,
+					})
+				}
+				if len(messages) > 0 && len(msg.ToolCalls) > 0 {
+					toolCalls, err := FromCompletionToolCall(msg.ToolCalls)
+					if err != nil {
+						return nil, err
+					}
+					messages[len(messages)-1].ToolCalls = toolCalls
+					messages[len(messages)-1].ToolName = toolName
+					messages[len(messages)-1].ToolCallID = msg.ToolCallID
+					messages[len(messages)-1].Thinking = msg.Reasoning
+				}
+			} else {
+				var textParts []string
+				var images []api.ImageData
+				var videos []api.VideoData
+				var audioClips []api.AudioData
+				for _, c := range content {
+					data, ok := c.(map[string]any)
+					if !ok {
+						return nil, errors.New("invalid message format")
+					}
+					switch data["type"] {
+					case "text":
+						text, ok := data["text"].(string)
+						if !ok {
+							return nil, errors.New("invalid message format")
+						}
+						textParts = append(textParts, text)
+					case "image_url":
+						var url string
+						if urlMap, ok := data["image_url"].(map[string]any); ok {
+							if url, ok = urlMap["url"].(string); !ok {
+								return nil, errors.New("invalid message format")
+							}
+						} else if url, ok = data["image_url"].(string); !ok {
+							return nil, errors.New("invalid message format")
+						}
+						img, err := decodeImageURL(url)
+						if err != nil {
+							return nil, err
+						}
+						images = append(images, img)
+					case "video_url":
+						var videoURL string
+						if vmap, ok := data["video_url"].(map[string]any); ok {
+							if videoURL, ok = vmap["url"].(string); !ok {
+								return nil, errors.New("invalid message format")
+							}
+						} else if videoURL, ok = data["video_url"].(string); !ok {
+							return nil, errors.New("invalid message format")
+						}
+						vb, err := decodeVideoURL(ctx, videoURL)
+						if err != nil {
+							return nil, err
+						}
+						videos = append(videos, vb)
+					case "input_audio":
+						audioMap, ok := data["input_audio"].(map[string]any)
+						if !ok {
+							return nil, errors.New("invalid input_audio format")
+						}
+						b64Data, ok := audioMap["data"].(string)
+						if !ok {
+							return nil, errors.New("invalid input_audio format: missing data")
+						}
+						audioBytes, err := base64.StdEncoding.DecodeString(b64Data)
+						if err != nil {
+							return nil, fmt.Errorf("invalid input_audio base64 data: %w", err)
+						}
+						audioClips = append(audioClips, audioBytes)
+					default:
+						return nil, errors.New("invalid message format")
+					}
+				}
+				messages = append(messages, api.Message{
+					Role:       msg.Role,
+					Content:    joinedTextParts(textParts),
+					Images:     images,
+					AudioClips: audioClips,
+					Videos:     videos,
+				})
 				if len(msg.ToolCalls) > 0 {
 					toolCalls, err := FromCompletionToolCall(msg.ToolCalls)
 					if err != nil {
 						return nil, err
 					}
 					messages[len(messages)-1].ToolCalls = toolCalls
+					messages[len(messages)-1].ToolName = toolName
+					messages[len(messages)-1].ToolCallID = msg.ToolCallID
+					messages[len(messages)-1].Thinking = msg.Reasoning
 				}
-				messages[len(messages)-1].ToolName = toolName
-				messages[len(messages)-1].ToolCallID = msg.ToolCallID
-				messages[len(messages)-1].Thinking = msg.Reasoning
 			}
 		default:
 			// content is only optional if tool calls are present
@@ -1284,7 +1369,7 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest) (*
 		} else if r.ReasoningEffort != nil {
 			effort = *r.ReasoningEffort
 		}
-		if t, err := thinkFromReasoningEffort(effort); err != nil {
+		if t, err := thinkFromReasoningEffort(effort, thinking...); err != nil {
 			return nil, err
 		} else if t != nil {
 			think = t

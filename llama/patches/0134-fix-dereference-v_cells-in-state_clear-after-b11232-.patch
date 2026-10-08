@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Thu, 8 Oct 2026 02:23:12 +0000
+Subject: [PATCH] fix: dereference v_cells in state_clear after b11232 COW
+
+Upstream state_clear landed between b11081 and b11232; COW made v_cells a
+pointer so v_cells[strm] typed as vector, not llama_kv_cells.
+---
+ src/llama-kv-cache.cpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index f88f8eec8..292e7e8ee 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -3673,7 +3673,7 @@ void llama_kv_cache::state_clear(llama_seq_id seq_id) {
+ 
+     const uint32_t strm = seq_to_stream[seq_id];
+ 
+-    const auto & cells = v_cells[strm];
++    const auto & cells = (*v_cells)[strm];
+ 
+     slot_info sinfo;
+     sinfo.s0 = strm;
+@@ -3705,7 +3705,7 @@ void llama_kv_cache::state_clear(llama_seq_id seq_id, uint32_t strm, const slot_
+         return;
+     }
+ 
+-    const auto & cells = v_cells[strm];
++    const auto & cells = (*v_cells)[strm];
+ 
+     const uint32_t cell_count = sinfo.size();
+ 

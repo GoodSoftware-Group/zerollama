@@ -18,7 +18,7 @@ static int64_t dflash_max_cross_ctx() {
 void llama_model_dflash_draft::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
     ml.get_key(LLM_KV_ATTENTION_CAUSAL,            hparams.causal_attn, false);
-    ml.get_key(LLM_KV_DFLASH_BLOCK_SIZE,           hparams.dflash_block_size, false);
+    ml.get_key(LLM_KV_DFLASH_DRAFT_BLOCK_SIZE,           hparams.dflash_draft_block_size, false);
     ml.get_key(LLM_KV_DFLASH_MASK_TOKEN_ID,        hparams.dflash_mask_token_id, false);
     ml.get_key(LLM_KV_DFLASH_N_TARGET_FEATURES,    hparams.dflash_n_target_features, false);
 
@@ -280,7 +280,7 @@ llm_build_dflash_draft::llm_build_dflash_draft(
         ggml_build_forward_expand(gf, Vcur);
 
         cur = build_attn_mha(Qcur, Kcur, Vcur, nullptr, kq_mask, nullptr, nullptr,
-                             1.0f / sqrtf(float(n_embd_head)), il);
+                             /*n_kv_max=*/0, 1.0f / sqrtf(float(n_embd_head)), il);
         cb(cur, "kqv_out", il);
 
         cur = build_lora_mm(model.layers[il].wo, cur);

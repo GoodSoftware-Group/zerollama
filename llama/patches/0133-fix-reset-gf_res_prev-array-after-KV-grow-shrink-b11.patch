@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Thu, 8 Oct 2026 02:01:22 +0000
+Subject: [PATCH] fix: reset gf_res_prev array after KV grow/shrink (b11081
+ dual-slot API)
+
+---
+ src/llama-context.cpp | 14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index c5d47b4f1..df8b1d31a 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -956,9 +956,12 @@ bool llama_context::n_ctx_grow(uint32_t n_ctx_req) {
+ 
+     llama_context_cuda_graph_invalidate(this);
+     sched_need_reserve = true;
+-    if (gf_res_prev) {
+-        gf_res_prev->reset();
++    for (auto & res : gf_res_prev) {
++        if (res) {
++            res->reset();
++        }
+     }
++    gf_res_prev_active = nullptr;
+ 
+     {
+         const auto mctx = memory->init_full();
+@@ -1007,9 +1010,12 @@ bool llama_context::n_ctx_shrink(uint32_t n_ctx_req) {
+ 
+     llama_context_cuda_graph_invalidate(this);
+     sched_need_reserve = true;
+-    if (gf_res_prev) {
+-        gf_res_prev->reset();
++    for (auto & res : gf_res_prev) {
++        if (res) {
++            res->reset();
++        }
+     }
++    gf_res_prev_active = nullptr;
+ 
+     {
+         const auto mctx = memory->init_full();

@@ -14,7 +14,12 @@ import (
 
 const scoreNProbs = 128
 
+var _ Scorer = (*llamaServerRunner)(nil)
+
 func (s *llamaServerRunner) Score(ctx context.Context, req ScoreRequest) (ScoreResponse, error) {
+	if ScoreUsesSystemOnePath(req) {
+		return s.scoreSystemOne(ctx, req)
+	}
 	if len(req.Candidates) == 0 {
 		return ScoreResponse{}, fmt.Errorf("candidates required")
 	}

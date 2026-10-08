@@ -417,6 +417,10 @@ func ImportSafetensorsFromDirectory(modelName, modelDir string, fn func(status s
 }
 
 func inferSafetensorsCapabilities(modelDir string) []string {
+	if caps, err := create.SourceCapabilities(modelDir); err == nil && len(caps) > 0 {
+		return caps
+	}
+
 	capabilities := []string{"completion"}
 
 	// Qwen3.5 multimodal checkpoints use ConditionalGeneration architectures.
@@ -602,6 +606,12 @@ func newManifestWriter(opts CreateOptions, capabilities []string, parserName, re
 			configData.FileType = strings.ToLower(strings.TrimSpace(opts.Quantize))
 		}
 		configData.Capabilities = caps
+		if slices.Contains(caps, "embedding") {
+			if _, embedLen, ctxLen, err := create.EmbeddingManifestCaps(opts.ModelDir); err == nil {
+				configData.EmbedLen = embedLen
+				configData.ContextLen = ctxLen
+			}
+		}
 		configData.Requires = MinOllamaVersion
 		configData.Parser = resolveParserName(opts.Modelfile, parserName)
 		configData.Renderer = resolveRendererName(opts.Modelfile, rendererName)
@@ -886,6 +896,12 @@ func parserNameForIdentifier(modelDir, s string) string {
 func rendererNameForIdentifier(modelDir, s string) string {
 	s = strings.ToLower(s)
 	switch {
+	case s == "cleffordecision":
+		return "clef"
+	case s == "strandsdeciderfordecision":
+		return "strands"
+	case s == "layafordecision":
+		return ""
 	case strings.HasPrefix(s, "museglimmer") || s == "muse_glimmer":
 		return "glimmer"
 	case strings.Contains(s, "laguna"):

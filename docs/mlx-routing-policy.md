@@ -23,6 +23,9 @@ These are **not interchangeable**. Converting GGUF → MLX or routing MLX throug
 ```text
 Is ModelFormat safetensors (IsMLX)?
   yes → mlxrunner / imagegen (sched.go). Never runtime-default.
+        On Darwin, registered MLX-native families (see `ollama show` → model_info
+        `zerollama.routing_note`) are the preferred path for safetensors you
+        created or imported — we do **not** flip GGUF defaults.
   no  → GGUF
         Modelfile inference: zerollama-runtime OR Phase 12 default-on eligible?
           yes → Python runtime (proxy / embed). ggml load deferred when safe.
@@ -75,7 +78,9 @@ if m.IsMLX() {
 | Opt model out of runtime default | Modelfile `MODALITY inference ggml` (future) or legacy caps |
 | Keep ggml only | `ZEROLLAMA_LEGACY_RUNNER=1` |
 | Route text GGUF via Python llama.cpp (experimental) | `./zerollama serve --llama-cpp-backend` or `ZEROLLAMA_LLAMA_CPP_BACKEND=1` |
-| MLX build | [apple-silicon-metal.md](./apple-silicon-metal.md#mlx-engine-optional) — **why** safetensors + `libmlxc.dylib`; rebuild at `MLX_VERSION` via `BUILD_MLX=1 ./scripts/build/build_zerollama_mac.sh` or `./scripts/build/build_production_mac.sh` |
+| MLX build | [apple-silicon-metal.md](./apple-silicon-metal.md#mlx-engine-optional) — **why** safetensors + `libmlxc.dylib`; rebuild at `MLX_VERSION` (`a59cc231` tip) via `BUILD_MLX=1 ./scripts/build/build_zerollama_mac.sh` or `./scripts/build/build_production_mac.sh` |
+| Show routing hint | `ollama show <safetensors-tag>` → `model_info.zerollama.routing_note` + `zerollama.inference_path` |
+| Doctor (Darwin) | `zerollama doctor` → mlx engine line reminds GGUF stays ggml Metal |
 | LM Studio MLX import | `OLLAMA_LMSTUDIO_IMPORT` (default on); `OLLAMA_LMSTUDIO_LIST_ALL=1` lists MLX even when disk tight — **why:** MLX repacks ~full model size into `OLLAMA_MODELS`; GGUF symlinks are near-zero copy |
 
 ---

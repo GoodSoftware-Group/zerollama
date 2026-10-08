@@ -23,7 +23,7 @@ if [[ ! -f "${LLAMA_CPP_ROOT}/CMakeLists.txt" ]]; then
   exit 1
 fi
 if [[ "${LLAMA_CPP_ROOT}" == "${_VENDOR_ROOT}" || "${LLAMA_CPP_ROOT}" == "${_VENDOR_ROOT}/" ]]; then
-  echo "sync_ane_hook: skip vendor tree (use llama/patches/0018 via ensure_llama_vendor_patches.sh)" >&2
+  echo "sync_ane_hook: skip vendor tree (use ANE patches (0023+) via sync / restore_ane_hook_intree.sh)" >&2
   exit 0
 fi
 if [[ ! -d "${CANON}" ]]; then

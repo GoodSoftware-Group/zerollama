@@ -1,5 +1,7 @@
 package model
 
+import "slices"
+
 // Native video frame sampling modes (manifest video_sampling.mode and env OLLAMA_VIDEO_SAMPLE_MODE).
 const (
 	VideoSampleModeFPS    = "fps"
@@ -141,6 +143,15 @@ type ConfigV2 struct {
 	// VisionPatchSize / VisionSpatialMergeSize tune native grid_thw estimates (Qwen/SGLang layout).
 	VisionPatchSize        int `json:"vision_patch_size,omitempty"`
 	VisionSpatialMergeSize int `json:"vision_spatial_merge_size,omitempty"`
+}
+
+// AddCapabilities preserves inherited and inferred capabilities (Modelfile CAPABILITY / create).
+func (c *ConfigV2) AddCapabilities(capabilities ...string) {
+	for _, capability := range capabilities {
+		if !slices.Contains(c.Capabilities, capability) {
+			c.Capabilities = append(c.Capabilities, capability)
+		}
+	}
 }
 
 // Draft describes an auxiliary draft model stored in the same manifest.

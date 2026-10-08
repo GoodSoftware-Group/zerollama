@@ -69,8 +69,9 @@ func Execute(args []string) error {
 	defer cancelRunner()
 
 	runner := Runner{
-		Requests:  make(chan Request),
-		mlxThread: worker,
+		Requests:      make(chan Request),
+		EmbedRequests: make(chan EmbeddingRequest),
+		mlxThread:     worker,
 	}
 
 	if err := worker.Do(context.Background(), func() error {
@@ -197,6 +198,10 @@ func Execute(args []string) error {
 			}
 		}
 	})
+
+	mux.HandleFunc("POST /v1/embeddings", runner.handleEmbed)
+
+	mux.HandleFunc("POST /v1/score", runner.scoreHandler)
 
 	mux.HandleFunc("POST /v1/tokenize", func(w http.ResponseWriter, r *http.Request) {
 		var b bytes.Buffer

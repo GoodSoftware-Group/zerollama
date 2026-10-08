@@ -452,6 +452,8 @@ type sourceQuantization struct {
 type sourceModelConfig struct {
 	ModelType          string             `json:"model_type"`
 	Architectures      []string           `json:"architectures"`
+	VisionConfig       *map[string]any    `json:"vision_config"`
+	HasVision          bool               `json:"has_vision"`
 	Quantization       sourceQuantization `json:"quantization"`
 	QuantizationConfig sourceQuantization `json:"quantization_config"`
 	TextConfig         struct {
@@ -461,19 +463,23 @@ type sourceModelConfig struct {
 	} `json:"text_config"`
 }
 
-func readSourceModelConfig(modelDir string) (sourceModelConfig, error) {
+func readSourceModelConfig(modelDir string) (sourceModelConfig, json.RawMessage, error) {
 	configPath := filepath.Join(modelDir, "config.json")
 	data, err := os.ReadFile(configPath)
+	if os.IsNotExist(err) {
+		cfg, layaRaw, err := readLayaConfig(modelDir)
+		return cfg, layaRaw, err
+	}
 	if err != nil {
-		return sourceModelConfig{}, err
+		return sourceModelConfig{}, nil, err
 	}
 
 	var cfg sourceModelConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return sourceModelConfig{}, err
+		return sourceModelConfig{}, nil, err
 	}
 
-	return cfg, nil
+	return cfg, data, nil
 }
 
 func (cfg sourceModelConfig) Architecture() string {
@@ -664,11 +670,15 @@ var tensorImportTransformRegistry = map[string]tensorImportTransformFactory{
 	"Qwen3NextMoeForConditionalGeneration": newQwen35ImportTransform,
 	"Gemma4ForCausalLM":                    newGemma4ImportTransform,
 	"Gemma4ForConditionalGeneration":       newGemma4ImportTransform,
+	"EmbeddingGemma2Model":                 newGemma4EmbeddingImportTransform,
 	"Cohere2MoeForCausalLM":                newCohere2MoeImportTransform,
 	"MuseGlimmerForConditionalGeneration":  newGlimmerImportTransform,
 	"NemotronH_Nano_VL_V2":                 newNemotronHImportTransform,
 	"NemotronH_Nano_Omni_Reasoning_V3":     newNemotronHImportTransform,
 	"NemotronHForCausalLM":                 newNemotronHImportTransform,
+	"LayaForDecision":                      func(string, sourceModelConfig) (tensorImportTransform, error) { return noopImportTransform{}, nil },
+	"ClefForDecision":                      newQwen35DecisionImportTransform,
+	"StrandsDeciderForDecision":            newQwen35DecisionImportTransform,
 }
 
 func newTensorImportTransform(modelDir string, cfg sourceModelConfig) (tensorImportTransform, error) {
@@ -686,9 +696,18 @@ func newTensorImportTransform(modelDir string, cfg sourceModelConfig) (tensorImp
 func CreateSafetensorsModel(modelName, modelDir, quantize string, createLayer LayerCreator, createTensorLayer QuantizingTensorLayerCreator, writeManifest ManifestWriter, fn func(status string), createPackedLayer ...PackedTensorLayerCreator) error {
 	var layers []LayerInfo
 	var configLayer LayerInfo
-	sourceConfig, err := readSourceModelConfig(modelDir)
+	sourceConfig, rawConfig, err := readSourceModelConfig(modelDir)
 	if err != nil {
 		return fmt.Errorf("failed to read source config.json: %w", err)
+	}
+	if _, err := os.Stat(filepath.Join(modelDir, "joint_head_config.json")); err == nil {
+		sourceConfig, rawConfig, _, err = prepareClefInventory(modelDir, sourceConfig, rawConfig)
+		if err != nil {
+			return err
+		}
+	}
+	if sourceConfig.Architecture() == "LayaForDecision" && quantize != "" {
+		return fmt.Errorf("Laya currently requires unquantized weights")
 	}
 	sourceQuantKind, err := inspectSourceQuantization(modelDir, sourceConfig)
 	if err != nil {
@@ -1236,7 +1255,7 @@ func CreateDraftSafetensorsLayers(modelDir, tensorPrefix, configPrefix, draftQua
 
 	var importTransform tensorImportTransform = noopImportTransform{}
 	if effectiveQuantize != "" {
-		sourceConfig, err := readSourceModelConfig(modelDir)
+		sourceConfig, _, err := readSourceModelConfig(modelDir)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read draft config.json: %w", err)
 		}

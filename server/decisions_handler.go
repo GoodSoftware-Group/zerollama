@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,11 +27,24 @@ import (
 // WHY OpenJev branches before scheduleRunner: sibling diffusion server is not a ggml Model
 // runner; Go packs prompt and proxies (LA16). Answers are calibrated:false until marker logits.
 func (s *Server) DecisionsHandler(c *gin.Context) {
-	var req api.DecisionsRequest
-	if err := c.ShouldBindJSON(&req); errors.Is(err, io.EOF) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<20)
+	body, err := io.ReadAll(c.Request.Body)
+	if errors.Is(err, io.EOF) || len(bytes.TrimSpace(body)) == 0 {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing request body"})
 		return
-	} else if err != nil {
+	}
+	if err != nil {
+		var sizeErr *http.MaxBytesError
+		if errors.As(err, &sizeErr) {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body must not exceed 32 MiB"})
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var req api.DecisionsRequest
+	if err := json.Unmarshal(body, &req); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -120,7 +135,31 @@ func (s *Server) DecisionsHandler(c *gin.Context) {
 		return
 	}
 
-	r, _, _, _, releaseQoS, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil, nil)
+	if m != nil && modelUsesSystemOneScore(m) {
+		dreq, err := unmarshalDecisionRequest(body, req)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		s.serveDecisionsSystemOneScore(c, m, name.String(), dreq, req.Options, req.KeepAlive)
+		return
+	}
+
+	if len(req.Images) > 0 {
+		// Laya Decider cannot consume images; score-path models should have been
+		// selected above. Fail clearly instead of ignoring multimodal state.
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+			"error": "images require a multimodal decision model (clef/tev1/nimble); Laya and text-only Deciders reject images",
+		})
+		return
+	}
+
+	caps := []model.Capability{}
+	if m != nil && capabilityContains(m.Config.Capabilities, model.CapabilityDecision) {
+		caps = append(caps, model.CapabilityDecision)
+	}
+
+	r, _, _, _, releaseQoS, err := s.scheduleRunner(c.Request.Context(), name.String(), caps, req.Options, req.KeepAlive, nil, nil, nil)
 	if err != nil {
 		handleScheduleError(c, req.Model, err)
 		return
@@ -160,6 +199,7 @@ func apiDecisionsToLLM(req api.DecisionsRequest) (llm.DecisionsRequest, error) {
 	out := llm.DecisionsRequest{
 		Model:     req.Model,
 		State:     req.State,
+		Images:    append([]api.ImageData(nil), req.Images...),
 		Questions: make(map[string]llm.DecisionQuestion, len(req.Questions)),
 	}
 	for id, q := range req.Questions {

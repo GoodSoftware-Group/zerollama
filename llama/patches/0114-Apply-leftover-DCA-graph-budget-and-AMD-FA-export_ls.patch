@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Odilitime <janesmith@airmail.cc>
+Date: Fri, 21 Aug 2026 01:04:00 -0700
+Subject: [PATCH] Apply leftover DCA graph budget and AMD FA export_lse guards.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+.rej hunks from the messy DCA squash: 24× node budget when Dual Chunk
+Attention is on, and skip AMD MMA when LSE export is required.
+---
+ ggml/src/ggml-cuda/fattn.cu | 28 ++++++++++++++++------------
+ src/llama-context.cpp       |  4 +++-
+ 2 files changed, 19 insertions(+), 13 deletions(-)
+
+diff --git a/ggml/src/ggml-cuda/fattn.cu b/ggml/src/ggml-cuda/fattn.cu
+index bdd33a19c..2ba0760ee 100644
+--- a/ggml/src/ggml-cuda/fattn.cu
++++ b/ggml/src/ggml-cuda/fattn.cu
+@@ -723,24 +723,28 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
+ 
+     // AMD MFMA needs a certain minimum batch size to outscale the tile kernel for large head sizes.
+     if (amd_mfma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
+-        if ((Q->ne[0] <= 64 && Q->ne[1] * gqa_ratio_eff > 8)) {
+-            return BEST_FATTN_KERNEL_MMA_F16;
+-        }
+-        if ((Q->ne[0] <= 128 && Q->ne[1] * gqa_ratio_eff > 16)) {
+-            return BEST_FATTN_KERNEL_MMA_F16;
+-        }
+-        if ((Q->ne[0] <= 256 && Q->ne[1] * gqa_ratio_eff > 64)) {
+-            return BEST_FATTN_KERNEL_MMA_F16;
+-        }
+-        if (Q->ne[0] > 256 && gqa_opt_applies && Q->ne[1] * gqa_ratio_eff > 128) {
+-            return BEST_FATTN_KERNEL_MMA_F16;
++        if (!export_lse) {
++            if ((Q->ne[0] <= 64 && Q->ne[1] * gqa_ratio_eff > 8)) {
++                return BEST_FATTN_KERNEL_MMA_F16;
++            }
++            if ((Q->ne[0] <= 128 && Q->ne[1] * gqa_ratio_eff > 16)) {
++                return BEST_FATTN_KERNEL_MMA_F16;
++            }
++            if ((Q->ne[0] <= 256 && Q->ne[1] * gqa_ratio_eff > 64)) {
++                return BEST_FATTN_KERNEL_MMA_F16;
++            }
++            if (Q->ne[0] > 256 && gqa_opt_applies && Q->ne[1] * gqa_ratio_eff > 128) {
++                return BEST_FATTN_KERNEL_MMA_F16;
++            }
+         }
+     }
+ 
+     // AMD WMMA is faster than the tile kernel if the wide tiles with high arithmetic intensity can be utilized.
+     if ((amd_wmma_available(cc) && gqa_opt_applies && Q->ne[0] <= 256) && Q->ne[0] != 40 && Q->ne[0] != 72 &&
+             Q->ne[1] * gqa_ratio_eff > (Q->ne[0] <= 128 ? 8 : 16)) {
+-        return BEST_FATTN_KERNEL_MMA_F16;
++        if (!export_lse) {
++            return BEST_FATTN_KERNEL_MMA_F16;
++        }
+     }
+ 
+     // If there are no tensor cores available, use the generic tile kernel:
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 61035503f..1fc98a579 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2578,7 +2578,9 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
+         // so they cost ~8.6 nodes per tensor against ~5.9 for a plain DFlash draft
+         res = std::max<uint32_t>(1024u, 12u*model.n_tensors());
+     } else {
+-        res = std::max<uint32_t>(1024u, 8u*model.n_tensors());
++        // Dual Chunk Attention: 3× FA + LSE merge / barriers per layer
++        const uint32_t mult = model.hparams.dca_enabled() ? 24u : 8u;
++        res = std::max<uint32_t>(1024u, mult * model.n_tensors());
+         for (const auto & lora : model.loras) {
+             res += lora->get_n_nodes();
+         }

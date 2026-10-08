@@ -182,7 +182,7 @@ set_target_output_directory(mlxc)
 # --- xgrammar (structured output for mlxrunner) ---
 # Pin matches upstream Ollama tip. Override with OLLAMA_XGRAMMAR_SOURCE or
 # FETCHCONTENT_SOURCE_DIR_XGRAMMAR for a sibling checkout.
-set(XGRAMMAR_VERSION v0.2.5)
+set(XGRAMMAR_VERSION v0.2.7)
 if(DEFINED ENV{OLLAMA_XGRAMMAR_SOURCE} AND NOT "$ENV{OLLAMA_XGRAMMAR_SOURCE}" STREQUAL "")
     get_filename_component(_xgrammar_src "$ENV{OLLAMA_XGRAMMAR_SOURCE}" ABSOLUTE BASE_DIR ${CMAKE_SOURCE_DIR})
     set(FETCHCONTENT_SOURCE_DIR_XGRAMMAR "${_xgrammar_src}" CACHE PATH "" FORCE)

@@ -1,9 +1,9 @@
 # MultiDecode (llama.cpp) — operator notes
 
-**Patches:**
-- [`0129`](../llama/patches/0129-llama-multidecode-ancestor-kq-mask.patch) — `batch.parent` ancestor KQ mask (MD0)
-- [`0130`](../llama/patches/0130-llama-multidecode-cell-node-id.patch) — cell `node_id` / `parent_node_id` + multi-step mask (MD1a)
-- [`0131`](../llama/patches/0131-server-multidecode-POST-v1-multidecode.patch) — llama-server `--multidecode` + `POST /v1/multidecode` (MD1b)
+**Patches** (b10969 series; numbers shifted after obsolete grammar patch drop):
+- [`0126`](../llama/patches/0126-llama-MultiDecode-ancestor-KQ-mask-via-batch.parent-.patch) — `batch.parent` ancestor KQ mask (MD0)
+- [`0127`](../llama/patches/0127-llama-MultiDecode-cell-node_id-multi-step-ancestor-m.patch) — cell `node_id` / `parent_node_id` + multi-step mask (MD1a)
+- [`0128`](../llama/patches/0128-server-multidecode-and-POST-v1-multidecode-0131.patch) — llama-server `--multidecode` + `POST /v1/multidecode` (MD1b)
 
 **Upstream idea:** [WestCoastML/multidecode](https://github.com/WestCoastML/multidecode)  
 **Findings:** [multidecode-llama-cpp-findings.md](./multidecode-llama-cpp-findings.md)  
@@ -34,7 +34,7 @@ typedef struct llama_batch {
 |------|--------|
 | `parent[i]` | Batch index of parent, or `-1` for a root; parents must appear earlier in the batch |
 | `pos[i]` | Tree depth for RoPE (siblings may share the same depth) |
-| `node_id` / `parent_node_id` | Durable ids written into KV cells for multi-step (0130) |
+| `node_id` / `parent_node_id` | Durable ids written into KV cells for multi-step (0127) |
 | Sequences | Single `seq_id` for the whole forest |
 | Ubatch | Entire forest must fit in one ubatch (`n_batch` / `n_ubatch` ≥ `n_tokens`) |
 | SWA | Not supported (assert) |

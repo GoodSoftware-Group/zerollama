@@ -58,6 +58,8 @@ zerollama serve
 
 **Why pin bumps rebase patches, not chase llama.cpp HEAD daily:** keep a reviewed tip so Phase 17 diffs and zerollama-only routes (`POST /kv/seq-copy`) stay reviewable. This pin is intentionally **ggml-org master** at the time of the Jul 2026 bump.
 
+**L6 toward Ollama tip b11351:** do not fast-forward in one shot — use the runged operator runbook in [llama-cpp-pin-ladder.md](./llama-cpp-pin-ladder.md) (Clef `score_fields` floor **b11232+**).
+
 ---
 
 ## Patch series (current pin)

@@ -658,6 +658,9 @@ func doctorCheckMLX(repo string) doctorCheck {
 		detail = "dev tree MLX loaded; production layout available at dist/darwin-arm64/"
 		fix = "cd dist/darwin-arm64 && ./zerollama serve for release MLX layout"
 	}
+	if status == "ok" && runtime.GOOS == "darwin" {
+		detail += " — safetensors use mlxrunner; GGUF library models stay on ggml Metal (see docs/mlx-routing-policy.md)"
+	}
 	return doctorCheck{
 		Name:    name,
 		Status:  status,

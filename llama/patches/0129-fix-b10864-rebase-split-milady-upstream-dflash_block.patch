@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Thu, 8 Oct 2026 01:18:44 +0000
+Subject: [PATCH] =?UTF-8?q?fix:=20b10864=20rebase=20=E2=80=94=20split=20mi?=
+ =?UTF-8?q?lady/upstream=20dflash=5Fblock=5Fsize=20+=20DCA=20rope=20cparam?=
+ =?UTF-8?q?s?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ src/llama-context.cpp       | 2 +-
+ src/llama-hparams.h         | 5 +++--
+ src/llama-model.cpp         | 2 +-
+ src/models/dflash-draft.cpp | 2 +-
+ 4 files changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 1fc98a579..c5d47b4f1 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -179,7 +179,7 @@ llama_context::llama_context(
+     if (hparams.dca_enabled()) {
+         cparams.rope_freq_scale = 1.0f;
+         cparams.yarn_ext_factor = 0.0f;
+-        rope_scaling_type = LLAMA_ROPE_SCALING_TYPE_NONE;
++        cparams.rope_scaling_type = LLAMA_ROPE_SCALING_TYPE_NONE;
+     }
+ 
+     if (cparams.yarn_ext_factor < 0.0f) { // negative indicates 'not set'
+diff --git a/src/llama-hparams.h b/src/llama-hparams.h
+index d195023b7..c8bb631b0 100644
+--- a/src/llama-hparams.h
++++ b/src/llama-hparams.h
+@@ -261,8 +261,8 @@ struct llama_hparams {
+     // e.g. the eagle3 encoder fuses target_layers * target_hidden features
+     uint32_t n_embd_inp_enc_impl = 0;
+ 
+-    // milady dflash-draft metadata
+-    uint32_t dflash_block_size        = 16;
++    // milady dflash-draft metadata (distinct from upstream LLM_ARCH_DFLASH)
++    uint32_t dflash_draft_block_size  = 16;
+     uint32_t dflash_mask_token_id     = 0;
+     uint32_t dflash_n_target_features = 25600;
+     uint32_t dflash_n_target_layers   = 0;
+@@ -271,6 +271,7 @@ struct llama_hparams {
+     // output embedding dimension (0 = use n_embd)
+     uint32_t n_embd_out_impl = 0;
+ 
++    // upstream LLM_ARCH_DFLASH selector metadata
+     uint32_t dflash_block_size       = 0;
+     uint32_t dflash_conv_kernel_size = 0;
+     uint32_t dflash_conv_group_size  = 0;
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 901e5f91f..c5d3794c3 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -3516,7 +3516,7 @@ int32_t llama_model_dflash_block_size(const struct llama_model * model) {
+     if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
+         return 0;
+     }
+-    return (int32_t) model->hparams.dflash_block_size;
++    return (int32_t) model->hparams.dflash_draft_block_size;
+ }
+ 
+ int32_t llama_model_dflash_n_target_layers(const struct llama_model * model) {
+diff --git a/src/models/dflash-draft.cpp b/src/models/dflash-draft.cpp
+index aafb95188..313f1cda6 100644
+--- a/src/models/dflash-draft.cpp
++++ b/src/models/dflash-draft.cpp
+@@ -18,7 +18,7 @@ static int64_t dflash_max_cross_ctx() {
+ void llama_model_dflash_draft::load_arch_hparams(llama_model_loader & ml) {
+     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+     ml.get_key(LLM_KV_ATTENTION_CAUSAL,            hparams.causal_attn, false);
+-    ml.get_key(LLM_KV_DFLASH_DRAFT_BLOCK_SIZE,           hparams.dflash_block_size, false);
++    ml.get_key(LLM_KV_DFLASH_DRAFT_BLOCK_SIZE,           hparams.dflash_draft_block_size, false);
+     ml.get_key(LLM_KV_DFLASH_MASK_TOKEN_ID,        hparams.dflash_mask_token_id, false);
+     ml.get_key(LLM_KV_DFLASH_N_TARGET_FEATURES,    hparams.dflash_n_target_features, false);
+ 

@@ -176,11 +176,25 @@ var (
 // warns when load exceeds memory, and applies per-request VRAM policy from options
 // (ggml_clamp_num_ctx, ggml_auto_kv_quant, kv_cache_type).
 // show surfaces VRAM suggest via enrichShowGgmlNumCtx without clamping.
+// deprecatedOptions may still be set per request and reach the runner, but
+// callers should migrate away. Create/Modelfile PARAMETER typical_p is rejected.
+var deprecatedOptions = []string{"typical_p"}
+
+func warnDeprecatedOptions(opts map[string]any) {
+	for _, name := range deprecatedOptions {
+		if opts[name] != nil {
+			slog.Warn("deprecated option provided", "option", name)
+		}
+	}
+}
+
 func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Options, error) {
 	opts := api.DefaultOptions()
 	if opts.NumCtx == 0 {
 		opts.NumCtx = s.defaultNumCtx
 	}
+
+	warnDeprecatedOptions(requestOpts)
 
 	// api.Options stores defaulted values, so lower layers cannot distinguish
 	// an unset draft_num_predict from the default. Track that while we still
@@ -667,15 +681,23 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		return
 	}
 
-	// Default think=false for thinking models before parser Init / template render.
+	thinkingMeta := m.genericThinking()
+	if thinkingMeta == nil {
+		if err := api.ValidateLegacyThinking(req.Think); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	req.Think = renderers.ResolveThinking(req.Think, thinkingMeta)
+
+	// Default think=false when the model has no advertised thinking metadata.
 	// Why order matters: Init previously ran with Think=nil. For PARSER
 	// qwen3-thinking, nil → defaultThinking=true → CollectingThinking, so
 	// /api/generate answers landed in Thinking with empty Response (harness
-	// trap 12/64 / milkey-class). Chat already defaulted before Init; generate
-	// must match. See docs/doctor-model-repair.md.
+	// trap 12/64 / milkey-class). See docs/doctor-model-repair.md.
 	modelCaps := m.Capabilities()
 	if slices.Contains(modelCaps, model.CapabilityThinking) {
-		if req.Think == nil {
+		if req.Think == nil && thinkingMeta == nil {
 			req.Think = &api.ThinkValue{Value: false}
 		}
 	} else if req.Think != nil && req.Think.Bool() {
@@ -694,10 +716,9 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 	}
 
 	parserName := resolveParserName(m)
-	if !req.Raw && parserName != "" {
+	if thinkingMeta == nil && !req.Raw && parserName != "" {
 		builtinParser = parsers.ParserForName(parserName)
 		if builtinParser != nil {
-			// no tools or last message for generate endpoint
 			builtinParser.Init(nil, nil, req.Think)
 		}
 	}
@@ -711,6 +732,13 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 
 	if slices.Contains(modelCaps, model.CapabilityThinking) {
 		caps = append(caps, model.CapabilityThinking)
+	}
+
+	if thinkingMeta != nil && !req.Raw && parserName != "" {
+		builtinParser = parsers.ParserForName(parserName)
+		if builtinParser != nil {
+			builtinParser.Init(nil, nil, req.Think)
+		}
 	}
 
 	// SGLang #32914: reject images on text-only generate before scheduleRunner.
@@ -1296,20 +1324,69 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 		return
 	}
 
-	var input []string
+	type embedInput struct {
+		text  string
+		media [][]byte
+	}
+
+	var input []embedInput
+
+	parseMultimodalItem := func(m map[string]any) (embedInput, error) {
+		var item embedInput
+		for key, v := range m {
+			str, ok := v.(string)
+			if !ok {
+				return item, fmt.Errorf("input.%s must be a string", key)
+			}
+			switch key {
+			case "text":
+				item.text = str
+			case "image", "audio":
+				raw, err := base64.StdEncoding.DecodeString(str)
+				if err != nil {
+					return item, fmt.Errorf("input.%s: %v", key, err)
+				}
+				item.media = append(item.media, raw)
+			case "video":
+				return item, fmt.Errorf("input.video not supported")
+			default:
+				return item, fmt.Errorf("unknown input field %q", key)
+			}
+		}
+		if item.text == "" && len(item.media) == 0 {
+			return item, errors.New("input item has no text, image, or audio")
+		}
+		return item, nil
+	}
 
 	switch i := req.Input.(type) {
 	case string:
-		if len(i) > 0 {
-			input = append(input, i)
+		if i != "" {
+			input = append(input, embedInput{text: i})
 		}
+	case map[string]any:
+		item, err := parseMultimodalItem(i)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		input = append(input, item)
 	case []any:
 		for _, v := range i {
-			if _, ok := v.(string); !ok {
+			switch v := v.(type) {
+			case string:
+				input = append(input, embedInput{text: v})
+			case map[string]any:
+				item, err := parseMultimodalItem(v)
+				if err != nil {
+					c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+				input = append(input, item)
+			default:
 				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid input type"})
 				return
 			}
-			input = append(input, v.(string))
 		}
 	default:
 		if req.Input != nil {
@@ -1338,75 +1415,184 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 		return
 	}
 
-	kvData, _, err := getModelData(m.ModelPath, false)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+	var kvData ggml.KV
+	if !m.IsMLX() {
+		kvData, _, err = getModelData(m.ModelPath, false)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	ctx := c.Request.Context()
 
-	embedWithRetry := func(text string) ([]float32, int, error) {
-		emb, tokCount, err := r.Embedding(ctx, text)
+	var mediaEmbedder interface {
+		EmbedWithMedia(ctx context.Context, input string, media [][]byte) ([]float32, int, error)
+	}
+	var mediaErr error
+	resolveMediaEmbedder := func() bool {
+		if mediaEmbedder != nil || mediaErr != nil {
+			return mediaErr == nil
+		}
+		me, ok := r.(interface {
+			EmbedWithMedia(ctx context.Context, input string, media [][]byte) ([]float32, int, error)
+		})
+		if !ok {
+			mediaErr = errors.New("model does not support media embeddings")
+			return false
+		}
+		mediaEmbedder = me
+		return true
+	}
+	resolveMediaEmbedder()
+
+	adjustTokenLimit := func(tokens []int, limit int) int {
+		if kvData != nil {
+			if bos := kvData.Uint("tokenizer.ggml.bos_token_id"); len(tokens) > 0 && tokens[0] != int(bos) && kvData.Bool("add_bos_token", true) {
+				limit--
+			}
+			if eos := kvData.Uint("tokenizer.ggml.eos_token_id"); len(tokens) > 0 && tokens[len(tokens)-1] != int(eos) && kvData.Bool("add_eos_token", true) {
+				limit--
+			}
+		}
+		return limit
+	}
+
+	inputTokensAndContext := func(text string) ([]int, int, error) {
+		tokens, err := r.Tokenize(ctx, text)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		ctxLen := int(m.Config.ContextLen)
+		if ctxLen == 0 && kvData != nil {
+			ctxLen = int(kvData.ContextLength())
+		}
+		if opts.NumCtx > 0 {
+			ctxLen = min(opts.NumCtx, ctxLen)
+		}
+
+		return tokens, adjustTokenLimit(tokens, ctxLen), nil
+	}
+
+	truncateInputToLimit := func(text string, limit int) (string, bool, error) {
+		tokens, ctxLen, err := inputTokensAndContext(text)
+		if err != nil {
+			return "", false, err
+		}
+		if limit > 0 {
+			ctxLen = min(ctxLen, adjustTokenLimit(tokens, limit))
+		}
+
+		if ctxLen <= 0 {
+			return "", false, fmt.Errorf("input after truncation exceeds maximum context length")
+		}
+		if len(tokens) <= ctxLen {
+			return text, false, nil
+		}
+
+		truncated, err := r.Detokenize(ctx, tokens[:ctxLen])
+		if err != nil {
+			return "", false, err
+		}
+		return truncated, true, nil
+	}
+
+	truncateInput := func(text string) (string, bool, error) {
+		return truncateInputToLimit(text, 0)
+	}
+
+	embedWithRetry := func(item embedInput) ([]float32, int, error) {
+		text := item.text
+		if req.Truncate != nil && !*req.Truncate {
+			tokens, ctxLen, err := inputTokensAndContext(text)
+			if err != nil {
+				return nil, 0, err
+			}
+			if ctxLen <= 0 {
+				return nil, 0, fmt.Errorf("input after truncation exceeds maximum context length")
+			}
+			if len(tokens) > ctxLen {
+				return nil, 0, api.StatusError{
+					StatusCode:   http.StatusBadRequest,
+					ErrorMessage: "the input length exceeds the context length",
+				}
+			}
+		} else {
+			var err error
+			text, _, err = truncateInput(text)
+			if err != nil {
+				return nil, 0, err
+			}
+		}
+
+		run := func(ctx context.Context, text string) ([]float32, int, error) {
+			if len(item.media) == 0 {
+				return r.Embedding(ctx, text)
+			}
+			if !resolveMediaEmbedder() {
+				return nil, 0, api.StatusError{StatusCode: http.StatusNotImplemented, ErrorMessage: mediaErr.Error()}
+			}
+			return mediaEmbedder.EmbedWithMedia(ctx, text, item.media)
+		}
+
+		emb, tokCount, err := run(ctx, text)
 		if err == nil {
 			return emb, tokCount, nil
 		}
 
 		var serr api.StatusError
-		if !errors.As(err, &serr) || serr.StatusCode != http.StatusBadRequest {
+		if !errors.As(err, &serr) || serr.StatusCode != http.StatusRequestEntityTooLarge {
 			return nil, 0, err
 		}
 		if req.Truncate != nil && !*req.Truncate {
 			return nil, 0, err
 		}
 
-		tokens, err := r.Tokenize(ctx, text)
-		if err != nil {
+		truncated, ok, terr := truncateInputToLimit(text, opts.NumBatch)
+		if terr != nil {
+			return nil, 0, terr
+		}
+		if !ok {
+			if len(item.media) == 0 {
+				return nil, 0, fmt.Errorf("input exceeds maximum context length and cannot be truncated further")
+			}
 			return nil, 0, err
 		}
 
-		// TODO @nicolepardal: avoid reaching into kvData here; pass required tokenizer metadata via model/options instead
-		ctxLen := min(opts.NumCtx, int(kvData.ContextLength()))
-		if bos := kvData.Uint("tokenizer.ggml.bos_token_id"); len(tokens) > 0 && tokens[0] != int(bos) && kvData.Bool("add_bos_token", true) {
-			ctxLen--
-		}
-		if eos := kvData.Uint("tokenizer.ggml.eos_token_id"); len(tokens) > 0 && tokens[len(tokens)-1] != int(eos) && kvData.Bool("add_eos_token", true) {
-			ctxLen--
-		}
-
-		if len(tokens) <= ctxLen {
-			return nil, 0, fmt.Errorf("input exceeds maximum context length and cannot be truncated further")
-		}
-		if ctxLen <= 0 {
-			return nil, 0, fmt.Errorf("input after truncation exceeds maximum context length")
-		}
-
-		truncatedTokens := tokens[:ctxLen]
-		truncated, err := r.Detokenize(ctx, truncatedTokens)
-		if err != nil {
-			return nil, 0, err
-		}
-		return r.Embedding(ctx, truncated)
+		return run(ctx, truncated)
 	}
 
 	var g errgroup.Group
 	embeddings := make([][]float32, len(input))
 	var totalTokens uint64
-	for i, text := range input {
+	for i, item := range input {
 		g.Go(func() error {
-			embedding, tokenCount, err := embedWithRetry(text)
+			embedding, tokenCount, err := embedWithRetry(item)
 			if err != nil {
 				return err
 			}
-			// TODO: this first normalization should be done by the model
 			embedding, err = normalize(embedding)
 			if err != nil {
 				return err
 			}
 			if req.Dimensions > 0 {
-				embedding, err = applyEmbeddingDimensions(embedding, req.Dimensions)
-				if err != nil {
-					return err
+				if req.Dimensions > len(embedding) {
+					return fmt.Errorf("dimensions %d exceeds embedding length %d", req.Dimensions, len(embedding))
+				}
+				if ed, ok := r.(interface{ EmbeddingDimensions() []int }); ok {
+					if valid := ed.EmbeddingDimensions(); len(valid) > 0 && !slices.Contains(valid, req.Dimensions) {
+						return api.StatusError{
+							StatusCode:   http.StatusBadRequest,
+							ErrorMessage: fmt.Sprintf("dimensions %d not supported by this model; valid values are %v", req.Dimensions, valid),
+						}
+					}
+				}
+				if req.Dimensions < len(embedding) {
+					embedding, err = normalize(embedding[:req.Dimensions])
+					if err != nil {
+						return err
+					}
 				}
 			}
 			embeddings[i] = embedding
@@ -1984,7 +2170,8 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 		Parser:       m.Config.Parser,
 		Details:      modelDetails,
 		Messages:     msgs,
-		Capabilities: m.Capabilities(),
+		Capabilities: m.publicCapabilities(),
+		Thinking:     m.Thinking(),
 		SupportsMTP:  m.EmbeddedMTP || m.HasMTPCompanion,
 		ModifiedAt:   mf.FileInfo().ModTime(),
 		Requires:     m.Config.Requires,
@@ -2094,6 +2281,7 @@ func GetModelInfo(req api.ShowRequest) (*api.ShowResponse, error) {
 		} else {
 			resp.ModelInfo = info
 		}
+		enrichShowMLXRouting(resp.ModelInfo, m)
 		// Populate tensor info if verbose
 		if req.Verbose {
 			if tensors, err := xserver.GetSafetensorsTensorInfo(name); err == nil {
@@ -2227,7 +2415,7 @@ func (s *Server) ListHandler(c *gin.Context) {
 			var supportsMTP bool
 			if mdl, err := GetModel(loc.name.String()); err == nil {
 				enrichModelDetailsFromPath(&details, mdl.ModelPath)
-				capabilities = mdl.Capabilities()
+				capabilities = mdl.publicCapabilities()
 				supportsMTP = mdl.EmbeddedMTP || mdl.HasMTPCompanion
 			}
 			if cf.ModelFormat == "safetensors" && slices.Contains(cf.Capabilities, "completion") {
@@ -2626,13 +2814,13 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	// Inference (OpenAI compatibility)
 	// TODO(cloud-stage-a): apply Modelfile overlay deltas for local models with cloud
 	// parents on v1 request families while preserving this explicit :cloud passthrough.
-	r.POST("/v1/chat/completions", s.withInferenceRequestLogging("/v1/chat/completions", s.hostMemGuard(), cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), s.runtimeV1ChatCompletionsProxy(), s.sglangChatCompletionsProxy(), middleware.ChatMiddleware(), s.ChatHandler)...)
+	r.POST("/v1/chat/completions", s.withInferenceRequestLogging("/v1/chat/completions", s.hostMemGuard(), cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), s.runtimeV1ChatCompletionsProxy(), s.sglangChatCompletionsProxy(), middleware.ChatMiddleware(lookupThinking), s.ChatHandler)...)
 	r.POST("/v1/chat/completions/batch", s.withInferenceRequestLogging("/v1/chat/completions/batch", s.runtimeV1ChatCompletionsBatchProxy())...)
 	r.POST("/v1/completions", s.withInferenceRequestLogging("/v1/completions", s.hostMemGuard(), cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.CompletionsMiddleware(), s.GenerateHandler)...)
 	r.POST("/v1/embeddings", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.EmbeddingsMiddleware(), s.EmbedHandler)
 	r.GET("/v1/models", middleware.ListMiddleware(), s.ListHandler)
 	r.GET("/v1/models/:model", s.maybeProxyElizaV1ModelGet(), middleware.RetrieveMiddleware(), s.ShowHandler)
-	r.POST("/v1/responses", s.withInferenceRequestLogging("/v1/responses", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.ResponsesMiddleware(), s.ChatHandler)...)
+	r.POST("/v1/responses", s.withInferenceRequestLogging("/v1/responses", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.ResponsesMiddleware(lookupThinking), s.ChatHandler)...)
 	// OpenAI-compatible image generation endpoints
 	r.POST("/v1/images/generations", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.ImageGenerationsMiddleware(), s.GenerateHandler)
 	r.POST("/v1/images/edits", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.ImageEditsMiddleware(), s.GenerateHandler)
@@ -2656,7 +2844,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.GET("/v1/media/:session", s.MediaListHandler)
 
 	// Inference (Anthropic compatibility)
-	r.POST("/v1/messages", s.withInferenceRequestLogging("/v1/messages", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.AnthropicMessagesMiddleware(), s.ChatHandler)...)
+	r.POST("/v1/messages", s.withInferenceRequestLogging("/v1/messages", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.AnthropicMessagesMiddleware(lookupThinking), s.ChatHandler)...)
 
 	s.registerTrainingRoutes(r)
 
@@ -3496,10 +3684,22 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		caps = append(caps, model.CapabilityTools)
 	}
 
+	thinkingMeta := m.genericThinking()
+	if thinkingMeta == nil {
+		if err := api.ValidateLegacyThinking(req.Think); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if shouldUseHarmony(m) && req.Think != nil && req.Think.IsString() && req.Think.String() == "max" {
+		req.Think = &api.ThinkValue{Value: "high"}
+	}
+	req.Think = renderers.ResolveThinking(req.Think, thinkingMeta)
+
 	modelCaps := m.Capabilities()
 	if slices.Contains(modelCaps, model.CapabilityThinking) {
 		caps = append(caps, model.CapabilityThinking)
-		if req.Think == nil {
+		if req.Think == nil && thinkingMeta == nil {
 			req.Think = &api.ThinkValue{Value: false}
 		}
 	} else {

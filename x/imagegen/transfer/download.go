@@ -104,12 +104,14 @@ func download(ctx context.Context, opts DownloadOptions) error {
 
 func (d *downloader) download(ctx context.Context, blob Blob) error {
 	var lastErr error
-	var slowRetries int
+	var slowRetries, stallRetries, retries int
 	attempt := 0
 
 	for attempt < maxRetries {
-		if attempt > 0 {
-			if err := backoff(ctx, attempt, time.Second<<uint(attempt-1)); err != nil {
+		// Keyed to every retry (including stalls) so repeated stalls cannot spin
+		// without pausing (upstream #18625).
+		if retries > 0 {
+			if err := backoff(ctx, retries, time.Second<<uint(min(retries, maxRetries)-1)); err != nil {
 				return err
 			}
 		}
@@ -136,21 +138,25 @@ func (d *downloader) download(ctx context.Context, blob Blob) error {
 			os.Remove(dest + ".tmp")
 		}
 
+		retries++
+
 		switch {
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 			return err
 		case errors.Is(err, errStalled):
-			// Don't count stall retries against limit
+			if stallRetries++; stallRetries >= maxTransientRetries {
+				attempt++
+			}
 		case errors.Is(err, errSlow):
-			if slowRetries++; slowRetries >= 3 {
-				attempt++ // Only count after 3 slow retries
+			if slowRetries++; slowRetries >= maxTransientRetries {
+				attempt++
 			}
 		default:
 			attempt++
 		}
 		lastErr = err
 	}
-	return fmt.Errorf("%w: %v", errMaxRetriesExceeded, lastErr)
+	return fmt.Errorf("%w: %w", errMaxRetriesExceeded, lastErr)
 }
 
 func (d *downloader) downloadOnce(ctx context.Context, blob Blob) (int64, error) {
@@ -180,6 +186,11 @@ func (d *downloader) downloadOnce(ctx context.Context, blob Blob) (int64, error)
 		}
 	}
 
+	// Body read cancels through this context so the stall watchdog in copy can
+	// interrupt a request that has stopped delivering bytes (#18625).
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	req.Header.Set("User-Agent", d.userAgent)
 	// Add auth only for same-host (not CDN)
@@ -206,10 +217,10 @@ func (d *downloader) downloadOnce(ctx context.Context, blob Blob) (int64, error)
 		return 0, fmt.Errorf("status %d", resp.StatusCode)
 	}
 
-	return d.save(ctx, blob, resp.Body, existingSize)
+	return d.save(ctx, cancel, blob, resp.Body, existingSize)
 }
 
-func (d *downloader) save(ctx context.Context, blob Blob, r io.Reader, existingSize int64) (int64, error) {
+func (d *downloader) save(ctx context.Context, cancel context.CancelCauseFunc, blob Blob, r io.Reader, existingSize int64) (int64, error) {
 	dest := filepath.Join(d.destDir, digestToPath(blob.Digest))
 	tmp := dest + ".tmp"
 	os.MkdirAll(filepath.Dir(dest), 0o755)
@@ -247,7 +258,7 @@ func (d *downloader) save(ctx context.Context, blob Blob, r io.Reader, existingS
 	}
 	defer f.Close()
 
-	n, err := d.copy(ctx, f, r, h)
+	n, err := d.copy(ctx, cancel, f, r, h)
 	if err != nil {
 		// Don't remove .tmp here — download() handles cleanup based on blob size
 		return existingSize + n, err
@@ -266,14 +277,11 @@ func (d *downloader) save(ctx context.Context, blob Blob, r io.Reader, existingS
 	return totalWritten, os.Rename(tmp, dest)
 }
 
-func (d *downloader) copy(ctx context.Context, dst io.Writer, src io.Reader, h io.Writer) (int64, error) {
+func (d *downloader) copy(ctx context.Context, cancel context.CancelCauseFunc, dst io.Writer, src io.Reader, h io.Writer) (int64, error) {
 	var n int64
 	var lastRead atomic.Int64
 	lastRead.Store(time.Now().UnixNano())
 	start := time.Now()
-
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
 
 	go func() {
 		tick := time.NewTicker(time.Second)

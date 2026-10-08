@@ -1,0 +1,9 @@
+Provenance (refreshed by scripts/phase/stage_clef_for_pin.sh):
+
+  source tree: /root/zerollama/../ollama-upstream
+  HEAD:        e3cddc3e
+  files:       llama/clef/clef.{h,cpp}
+               llama/compat/002-clef.patch → llama/clef/upstream-002-clef.patch
+
+WHY not under llama/compat/*.patch until pin ≥ b11232:
+  apply-patch.cmake would auto-apply and fail on b10615 server-context hunks.

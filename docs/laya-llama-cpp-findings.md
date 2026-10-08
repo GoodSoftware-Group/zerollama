@@ -1,7 +1,7 @@
 # Laya llama.cpp — findings & learnings
 
 **Audience:** anyone extending `LLM_ARCH_LAYA`, the convert script, or `/v1/decisions`.  
-**Related:** [laya-llama-cpp.md](./laya-llama-cpp.md), ROADMAP **Typed decisions (Laya)**, patches **0127–0128**, OpenAPI `/v1/decisions`, skill `typed-decisions`.  
+**Related:** [laya-llama-cpp.md](./laya-llama-cpp.md), ROADMAP **Typed decisions (Laya)**, patches **0125–0126**, OpenAPI `/v1/decisions`, skill `typed-decisions`.  
 **Status:** LAYA1–LAYA2 active (Sep 2026); LAYA4 MLX parked.
 
 ---

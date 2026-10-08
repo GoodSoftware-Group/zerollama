@@ -42,6 +42,7 @@ var (
 	errNeitherFromOrFiles      = errors.New("neither 'from' or 'files' was specified")
 	errFilePath                = errors.New("file path must be relative")
 	errRemoteDraftUnsupported  = errors.New("DRAFT cannot be used with remote models")
+	errTypicalPDeprecated      = errors.New("typical_p is deprecated and cannot be set as a model parameter; pass it as a request option instead")
 )
 
 func (s *Server) CreateHandler(c *gin.Context) {
@@ -62,6 +63,17 @@ func (s *Server) CreateHandler(c *gin.Context) {
 	config.Renderer = r.Renderer
 	config.Parser = r.Parser
 	config.Requires = r.Requires
+
+	if r.Parameters["typical_p"] != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": errTypicalPDeprecated.Error()})
+		return
+	}
+	for _, capability := range r.Capabilities {
+		if !model.Capability(capability).IsValid() {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("unknown capability: %q", capability)})
+			return
+		}
+	}
 
 	for v, digest := range r.Files {
 		if !fs.ValidPath(v) {
@@ -298,6 +310,8 @@ func (s *Server) CreateHandler(c *gin.Context) {
 			config.ContextLen = int(vFromInfo("context_length"))
 			config.EmbedLen = int(vFromInfo("embedding_length"))
 		}
+
+		config.AddCapabilities(r.Capabilities...)
 
 		if err := createModel(r, name, baseLayers, config, fn); err != nil {
 			if errors.Is(err, errBadTemplate) {

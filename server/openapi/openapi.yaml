@@ -1499,19 +1499,29 @@ components:
         free text; score/rerank return one scalar per candidate, not calibrated
         choice/score/noul + act head. `state` is string|object|array; `questions`
         maps stable ids → typed defs. Wire caps match Unsloth Desktop / Jev Decision
-        API: ≤64 questions, ≤255 choice options, ≤10 score levels. Requires a Laya
-        GGUF (`general.architecture=laya`) or CLM/OpenJev backend.
+        API: ≤64 questions, ≤255 choice options, ≤10 score levels. Backends: Laya
+        GGUF (`general.architecture=laya`), CLM/OpenJev/GLiNER-Decide URLs, or local
+        **score** models (tev1 / nimble / Clef / Strands) via `decision.Compile`.
       properties:
         model:
           type: string
           description: >
-            Local tag or alias that loads as Laya/CLM/OpenJev. Common Laya HF
+            Local tag or alias that loads as Laya/CLM/OpenJev/score-decision. Common Laya HF
             variant names when created from convert: `laya`, `laya-multilingual`
             (~678 MB / ~4 GB RAM), `laya-english`, `laya-typed-decisions`.
             Unsloth also accepts `default` / `jev-latest` for the Desktop-selected
             model — map those via Modelfile aliases if you need drop-in clients.
         state:
           description: Conversation/state payload (string | object | array)
+        images:
+          type: array
+          items:
+            type: string
+            format: byte
+          description: >
+            Optional base64-encoded images for Clef multimodal System One (L2).
+            Rejected for tev1/nimble/strands encodings. Requires vision-capable
+            decision model + llama-server score_fields (pin L6 for full Clef).
         questions:
           type: object
           maxProperties: 64

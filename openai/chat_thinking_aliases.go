@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/types/model"
 )
 
 // Known nested keys under chat_template_kwargs. Anything else → HTTP 400 (trap 07).
@@ -50,18 +51,42 @@ func thinkFromReasoningBudget(budget *int) (*api.ThinkValue, error) {
 	return &api.ThinkValue{Value: true}, nil
 }
 
-func thinkFromReasoningEffort(effort string) (*api.ThinkValue, error) {
-	if effort == "" {
+// ThinkingFromReasoningEffort preserves model-defined names when metadata is present.
+func ThinkingFromReasoningEffort(effort string, thinking ...*model.Thinking) (*api.ThinkValue, error) {
+	switch effort {
+	case "":
 		return nil, nil
-	}
-	tv := api.ThinkValue{Value: effort}
-	if effort != "none" && !tv.IsValid() {
-		return nil, fmt.Errorf("invalid reasoning value: '%s' (must be \"high\", \"medium\", \"low\", \"xhigh\", \"max\", or \"none\")", effort)
-	}
-	if effort == "none" {
+	case "none":
 		return &api.ThinkValue{Value: false}, nil
 	}
-	return &api.ThinkValue{Value: effort}, nil
+	requestedEffort := effort
+	switch effort {
+	case "minimal":
+		effort = "low"
+	case "xhigh", "ultra":
+		effort = "max"
+	}
+	think := &api.ThinkValue{Value: effort}
+	err := api.ValidateLegacyThinking(think)
+	if len(thinking) > 0 && thinking[0].Valid() {
+		if err == nil && thinking[0].Supports(true) {
+			for _, value := range thinking[0].Values {
+				if _, named := value.(string); named {
+					return &api.ThinkValue{Value: requestedEffort}, nil
+				}
+			}
+			return &api.ThinkValue{Value: true}, nil
+		}
+		return &api.ThinkValue{Value: requestedEffort}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("invalid reasoning value: %q (must be \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\", \"ultra\", \"max\", or \"none\")", requestedEffort)
+	}
+	return think, nil
+}
+
+func thinkFromReasoningEffort(effort string, thinking ...*model.Thinking) (*api.ThinkValue, error) {
+	return ThinkingFromReasoningEffort(effort, thinking...)
 }
 
 // thinkFromEnableThinkingAliases maps vLLM/SGLang-style thinking knobs onto Think.

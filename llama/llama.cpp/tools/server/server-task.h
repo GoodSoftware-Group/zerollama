@@ -157,6 +157,7 @@ struct server_task {
     // used by SERVER_TASK_TYPE_INFERENCE
     task_params   params;
     server_tokens tokens;
+    common_json score_fields; // optional decision question and option spans
 
     // only used by CLI, this allow tokenizing CLI inputs on server side
     // we need this because mtmd_context and vocab are not accessible outside of server_context
@@ -469,6 +470,7 @@ struct server_task_result_cmpl_partial : server_task_result {
 };
 
 struct server_task_result_embd : server_task_result {
+    common_json score_logits;
     std::vector<std::vector<float>> embedding;
 
     int32_t n_tokens;

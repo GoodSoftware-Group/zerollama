@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Fri, 10 Jul 2026 00:52:55 -0700
+Subject: [PATCH] fix string arr kv loading
+
+---
+ ggml/include/gguf.h | 1 +
+ ggml/src/gguf.cpp   | 7 +++++--
+ src/llama-vocab.cpp | 7 ++-----
+ 3 files changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/ggml/include/gguf.h b/ggml/include/gguf.h
+index b3a1e1230..ddd1f8c77 100644
+--- a/ggml/include/gguf.h
++++ b/ggml/include/gguf.h
+@@ -121,6 +121,7 @@ extern "C" {
+     // get raw pointer to the first element of the array with the given key_id
+     // for bool arrays, note that they are always stored as int8 on all platforms (usually this makes no difference)
+     GGML_API const void * gguf_get_arr_data(const struct gguf_context * ctx, int64_t key_id);
++    GGML_API size_t       gguf_get_arr_data_n(const struct gguf_context * ctx, int64_t key_id);
+ 
+     // get ith C string from array with given key_id
+     GGML_API const char * gguf_get_arr_str (const struct gguf_context * ctx, int64_t key_id, size_t i);
+diff --git a/ggml/src/gguf.cpp b/ggml/src/gguf.cpp
+index 75ceade7d..468afb03f 100644
+--- a/ggml/src/gguf.cpp
++++ b/ggml/src/gguf.cpp
+@@ -1089,10 +1089,14 @@ enum gguf_type gguf_get_arr_type(const struct gguf_context * ctx, int64_t key_id
+ 
+ const void * gguf_get_arr_data(const struct gguf_context * ctx, int64_t key_id) {
+     GGML_ASSERT(key_id >= 0 && key_id < gguf_get_n_kv(ctx));
+-    GGML_ASSERT(ctx->kv[key_id].get_type() != GGUF_TYPE_STRING);
+     return ctx->kv[key_id].data.data();
+ }
+ 
++size_t gguf_get_arr_data_n(const struct gguf_context * ctx, int64_t key_id) {
++    GGML_ASSERT(key_id >= 0 && key_id < gguf_get_n_kv(ctx));
++    return ctx->kv[key_id].data.size();
++}
++
+ const char * gguf_get_arr_str(const struct gguf_context * ctx, int64_t key_id, size_t i) {
+     GGML_ASSERT(key_id >= 0 && key_id < gguf_get_n_kv(ctx));
+     GGML_ASSERT(ctx->kv[key_id].get_type() == GGUF_TYPE_STRING);
+@@ -1186,7 +1190,6 @@ const char * gguf_get_val_str(const struct gguf_context * ctx, int64_t key_id) {
+ const void * gguf_get_val_data(const struct gguf_context * ctx, int64_t key_id) {
+     GGML_ASSERT(key_id >= 0 && key_id < gguf_get_n_kv(ctx));
+     GGML_ASSERT(ctx->kv[key_id].get_ne() == 1);
+-    GGML_ASSERT(ctx->kv[key_id].get_type() != GGUF_TYPE_STRING);
+     return ctx->kv[key_id].data.data();
+ }
+ 
+diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
+index e5703f3e8..586bafdd8 100644
+--- a/src/llama-vocab.cpp
++++ b/src/llama-vocab.cpp
+@@ -2052,11 +2052,8 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
+                     throw std::runtime_error(format("invalid gguf type for %s", kv(LLM_KV_TOKENIZER_PRECOMPILED_CHARSMAP).c_str()));
+                 }
+                 const gguf_type pc_type = gguf_get_arr_type(ctx, precompiled_charsmap_keyidx);
+-                if (pc_type != GGUF_TYPE_INT8 && pc_type != GGUF_TYPE_UINT8) {
+-                    throw std::runtime_error(format("invalid gguf type for %s", kv(LLM_KV_TOKENIZER_PRECOMPILED_CHARSMAP).c_str()));
+-                }
+-
+-                const size_t n_precompiled_charsmap = gguf_get_arr_n(ctx, precompiled_charsmap_keyidx);
++                (void)pc_type;
++                const size_t n_precompiled_charsmap = gguf_get_arr_data_n(ctx, precompiled_charsmap_keyidx);
+                 const char * pc = (const char *) gguf_get_arr_data(ctx, precompiled_charsmap_keyidx);
+                 precompiled_charsmap.assign(pc, pc + n_precompiled_charsmap);
+                 if (precompiled_charsmap.size() < sizeof(uint32_t)) {

@@ -95,6 +95,16 @@ func (s *Server) initRDMA() {
 	slog.Info("storaged RDMA verbs ready", "device", device, "gid", gid, "gid_index", gidIdx, "port", port, "lid", lid)
 }
 
+func (s *Server) rdmaSessionCount() int {
+	if s.hub == nil {
+		return 0
+	}
+	s.hub.mu.Lock()
+	n := len(s.hub.sess)
+	s.hub.mu.Unlock()
+	return n
+}
+
 func (s *Server) rdmaCapability() *remotestore.RDMACap {
 	if s.hub == nil || s.hub.dev == nil {
 		return probeSysfsRDMACap()

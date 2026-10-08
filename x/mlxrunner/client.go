@@ -1,7 +1,9 @@
 package mlxrunner
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -330,7 +332,52 @@ func (c *Client) Detokenize(ctx context.Context, tokens []int) (string, error) {
 
 // Embedding implements llm.LlamaServer.
 func (c *Client) Embedding(ctx context.Context, input string) ([]float32, int, error) {
-	return nil, 0, errors.New("not supported")
+	return c.embed(ctx, embedWireRequest{Content: input})
+}
+
+// EmbedWithMedia embeds a single text input with media blobs alongside.
+func (c *Client) EmbedWithMedia(ctx context.Context, input string, media [][]byte) ([]float32, int, error) {
+	if len(media) == 0 {
+		return c.Embedding(ctx, input)
+	}
+	wire := embedWireRequest{Content: input, Media: make([]string, len(media))}
+	for i, blob := range media {
+		wire.Media[i] = base64.StdEncoding.EncodeToString(blob)
+	}
+	return c.embed(ctx, wire)
+}
+
+func (c *Client) embed(ctx context.Context, wire embedWireRequest) ([]float32, int, error) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(wire); err != nil {
+		return nil, 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("http://127.0.0.1:%d/v1/embeddings", c.port), &buf)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, 0, api.StatusError{
+			StatusCode:   resp.StatusCode,
+			ErrorMessage: strings.TrimSpace(string(body)),
+		}
+	}
+
+	var er embedWireResponse
+	if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
+		return nil, 0, err
+	}
+	return er.Embedding, er.PromptEvalCount, nil
 }
 
 // GetDeviceInfos implements llm.LlamaServer.
@@ -424,6 +471,13 @@ func (c *Client) Load(ctx context.Context, systemInfo ml.SystemInfo, gpus []ml.D
 	cmd := exec.Command(exe, "runner", "--mlx-engine", "--model", c.modelName, "--port", strconv.Itoa(port))
 	proctitle.SetRunnerArgv0(cmd)
 	cmd.Env = os.Environ()
+
+	// Keep Metal weights resident between requests (upstream #18807; MLX tip a59cc231).
+	if runtime.GOOS == "darwin" {
+		if _, ok := os.LookupEnv("MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS"); !ok {
+			setEnv(cmd, "MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS", "1000")
+		}
+	}
 
 	// Set library path environment variable for MLX libraries
 	// Linux: LD_LIBRARY_PATH, macOS: DYLD_LIBRARY_PATH, Windows: PATH

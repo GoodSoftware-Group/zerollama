@@ -1,7 +1,7 @@
 ---
 name: typed-decisions
 description: "Answer typed System-1 questions (choice / score / noul) via zerollama POST /v1/decisions — Laya GGUF (calibrated), Contrastive-LM (calibrated), DiffusionGemma/OpenJev (DG8/DG9 opt-in), or GLiNER2.5-Decide (uncalibrated self-host); not chat, not score endpoint, not rerank, not NER extract."
-version: 1.3.0
+version: 1.3.1
 author: Hermes Agent
 license: MIT
 platforms: [macos, linux]
@@ -21,6 +21,8 @@ Run **System-1** typed decisions on
 | Backend | How | Calibrated? |
 |---------|-----|-------------|
 | **Laya** GGUF | llama-server `--decisions` + act/escalate | **Yes** |
+| **Score System One** (tev1 / nimble / Clef text) | `decision.Compile` → llama-server **or MLX** score (`CapabilityDecision`) | **Yes** (softmax over candidates) |
+| **Strands** (PointerRows) | MLX only (`x/mlxrunner` + `x/models/strands`) — CUDA/llama-server returns 400 | **Yes** (pointer head) |
 | **CLM** | `ZEROLLAMA_CLM_HEADS` + emb URL (or `ZEROLLAMA_CLM_URL`) | **Yes** |
 | **OpenJev / DiffusionGemma** | `ZEROLLAMA_OPENJEV_URL` → sibling `llama-diffusion-gemma-server` | **Choice/score (DG8)** when `CALIBRATED=1`; **noul (DG9)** when + `NOUL_CALIBRATED=1` |
 | **GLiNER2.5-Decide** | `ZEROLLAMA_GLINER_DECIDE_URL` → Python `gliner2` sibling | **No** (`calibrated:false` until fixture gate) |
@@ -53,7 +55,8 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/v1/syste
 
 ## Prerequisites
 
-- **Laya:** patches **0127–0128** + Laya GGUF — [docs/laya-llama-cpp.md](../../docs/laya-llama-cpp.md)
+- **Laya:** patches **0125–0126** + Laya GGUF — [docs/laya-llama-cpp.md](../../docs/laya-llama-cpp.md)
+- **Score System One:** [docs/system-one-score.md](../../docs/system-one-score.md) — tev1/nimble Rows on CUDA **or** Mac MLX; Strands **MLX only**; Clef **text** on MLX now, Clef **GGUF/images** need pin **L6** / vision merge
 - **CLM:** heads GGUF + emb URL — [docs/clm.md](../../docs/clm.md)
 - **OpenJev:** sibling build + `ZEROLLAMA_OPENJEV_URL` — [docs/diffusion-gemma-llama-cpp.md](../../docs/diffusion-gemma-llama-cpp.md) · [findings](../../docs/diffusion-gemma-llama-cpp-findings.md)
 - **GLiNER2.5-Decide:** `serve_gliner_decide_lab.sh` + `ZEROLLAMA_GLINER_DECIDE_URL` — [docs/gliner-decide.md](../../docs/gliner-decide.md) (not NER `/v1/extract`)
@@ -65,9 +68,10 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/v1/syste
 
 | Field | Required | Notes |
 |---|---|---|
-| `model` | yes | Laya tag (`laya`, `laya-multilingual`, `laya-english`, `laya-typed-decisions`), `clm`, `openjev`, or alias |
+| `model` | yes | Laya tag, **decision-capable** safetensors (renderer `tev1`/`clef`/`strands` or capability `decision`), `clm`, `openjev`, or alias |
 | `state` | yes | string \| object \| array — shared context |
-| `questions` | yes | map of `question_id` → `{type, instructions, criteria?, labels?}` (**≤64**) |
+| `images` | no | Base64 image blobs — **Clef** multimodal only; rejected for tev1/nimble/strands score encodings |
+| `questions` | yes | map of `question_id` → `{type, instructions, criteria?, labels?}` (**≤64**); **insertion order** matters for score models |
 
 `questions[id].type` ∈ `choice` | `score` | `noul`. Caps: **≤255** choice options, **≤10** score levels.
 
@@ -127,6 +131,9 @@ curl -s http://127.0.0.1:11439/v1/decisions -H 'content-type: application/json' 
 ## Pitfalls
 
 - **Wrong model arch → 501** — chat GGUFs cannot decisions (Laya needs `arch=laya`).
+- **Strands on CUDA → 400** — `pointer_rows` need an MLX decision runner; do not expect llama-server to score Strands.
+- **Clef GGUF on b10615 → runner error** — create/import OK; live joint-head score needs pin **b11232+** (L6). Prefer MLX text Clef or Laya until then.
+- **Clef images on MLX** — text schema works; multimodal images still blocked until Qwen3.5 MLX vision lands.
 - **Oversize batch → 400** — >64 questions, >255 choice options, or >10 score levels (Jev/Unsloth caps).
 - **Confidence ≠ Jev** — do not reuse cloud Jev confidence thresholds; use `probabilities` / `noul`.
 - **OpenJev default uncalibrated** — without opt-in envs, `calibrated:false` even with canvas gather; do not escalate policy on `probabilities` as if Laya unless flags are on.
@@ -138,5 +145,5 @@ curl -s http://127.0.0.1:11439/v1/decisions -H 'content-type: application/json' 
 
 ## Related
 
-- Docs: [laya](../../docs/laya-llama-cpp.md) · [clm](../../docs/clm.md) · [diffusion](../../docs/diffusion-gemma-llama-cpp.md) · [readout design](../../docs/diffusion-gemma-readout-design.md) · [gliner-decide](../../docs/gliner-decide.md)
+- Docs: [laya](../../docs/laya-llama-cpp.md) · [system-one-score](../../docs/system-one-score.md) · [clm](../../docs/clm.md) · [diffusion](../../docs/diffusion-gemma-llama-cpp.md) · [readout design](../../docs/diffusion-gemma-readout-design.md) · [gliner-decide](../../docs/gliner-decide.md)
 - ROADMAP typed-decisions **LAYA\*** / **CLM\*** / **DG\*** / **GD\***

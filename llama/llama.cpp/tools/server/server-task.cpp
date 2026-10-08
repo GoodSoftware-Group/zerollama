@@ -1495,6 +1495,9 @@ json server_task_result_cmpl_partial::to_json_anthropic() {
 // server_task_result_embd
 //
 json server_task_result_embd::to_json() {
+    if (!score_logits.is_null()) {
+        return json {{"logits", score_logits}, {"tokens_evaluated", n_tokens}};
+    }
     return res_type == TASK_RESPONSE_TYPE_OAI_EMBD
         ? to_json_oaicompat()
         : to_json_non_oaicompat();

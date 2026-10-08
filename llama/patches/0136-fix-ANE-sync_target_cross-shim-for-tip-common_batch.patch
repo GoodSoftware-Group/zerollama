@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Thu, 8 Oct 2026 03:10:13 +0000
+Subject: [PATCH] fix: ANE sync_target_cross shim for tip common_batch
+
+b11351 process() owns common_batch (llama_batch_ext*); pass a thin
+llama_batch with n_tokens so Linux stubs and Darwin hooks still compile.
+---
+ common/speculative.cpp | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index 07bcd1811..9936a9296 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -320,7 +320,10 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+         }
+ 
+         // B8: stage target pre-norm into cross.v_embd before draft sync-decode (Metal dflash + ANE).
+-        common_ane_draft_sync_target_cross(ctx_dft, params.ctx_tgt, batch.get());
++        // Tip common_batch exposes llama_batch_ext*; ANE hook still takes llama_batch (n_tokens + optional pos/logits).
++        llama_batch lb = {};
++        lb.n_tokens = batch.size();
++        common_ane_draft_sync_target_cross(ctx_dft, params.ctx_tgt, lb);
+ 
+         const int ret = llama_process(ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+ 

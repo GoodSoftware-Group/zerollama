@@ -1,0 +1,696 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@localhost>
+Date: Wed, 30 Sep 2026 10:47:48 -0700
+Subject: [PATCH] llama: MultiDecode ancestor KQ mask via batch.parent (0129)
+
+Optional llama_batch.parent enables forest packing with tree-depth pos
+and ancestor-only attention (siblings masked). Shared KV for common
+prefix; exact next-token logits at leaves. v0: single seq, one ubatch.
+---
+ examples/CMakeLists.txt                       |   1 +
+ examples/multidecode/CMakeLists.txt           |   5 +
+ .../multidecode/multidecode-exactness.cpp     | 245 ++++++++++++++++++
+ include/llama.h                               |   5 +
+ src/llama-batch.cpp                           | 118 +++++++++
+ src/llama-batch.h                             |   2 +
+ src/llama-kv-cache-dsv4.cpp                   |   1 +
+ src/llama-kv-cache.cpp                        |  72 +++++
+ src/llama-kv-cache.h                          |   4 +
+ 9 files changed, 453 insertions(+)
+ create mode 100644 examples/multidecode/CMakeLists.txt
+ create mode 100644 examples/multidecode/multidecode-exactness.cpp
+
+diff --git a/examples/CMakeLists.txt b/examples/CMakeLists.txt
+index 39f802d25..25804ce4a 100644
+--- a/examples/CMakeLists.txt
++++ b/examples/CMakeLists.txt
+@@ -29,6 +29,7 @@ else()
+     add_subdirectory(retrieval)
+     add_subdirectory(simple)
+     add_subdirectory(simple-chat)
++    add_subdirectory(multidecode)
+     add_subdirectory(speculative)
+     add_subdirectory(speculative-simple)
+     add_subdirectory(gen-docs)
+diff --git a/examples/multidecode/CMakeLists.txt b/examples/multidecode/CMakeLists.txt
+new file mode 100644
+index 000000000..8713adf80
+--- /dev/null
++++ b/examples/multidecode/CMakeLists.txt
+@@ -0,0 +1,5 @@
++set(TARGET llama-multidecode-exactness)
++add_executable(${TARGET} multidecode-exactness.cpp)
++install(TARGETS ${TARGET} RUNTIME)
++target_link_libraries(${TARGET} PRIVATE llama ${CMAKE_THREAD_LIBS_INIT})
++target_compile_features(${TARGET} PRIVATE cxx_std_17)
+diff --git a/examples/multidecode/multidecode-exactness.cpp b/examples/multidecode/multidecode-exactness.cpp
+new file mode 100644
+index 000000000..ea2feb573
+--- /dev/null
++++ b/examples/multidecode/multidecode-exactness.cpp
+@@ -0,0 +1,245 @@
++// MultiDecode exactness lab (zerollama 0129)
++//
++// Packs shared prefix + 2 branches into one forest decode with parent[] + tree-depth pos[],
++// then compares leaf logits to two independent linear prefills.
++//
++// Usage:
++//   MULTIDECODE_MODEL=/path/model.gguf ./llama-multidecode-exactness
++//   # or: ./llama-multidecode-exactness -m /path/model.gguf
++// Skip (exit 0) if no model is provided.
++
++#include "llama.h"
++
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <vector>
++
++static void print_usage(const char * argv0) {
++    fprintf(stderr,
++            "usage: %s [-m model.gguf] [-ngl N]\n"
++            "  or set MULTIDECODE_MODEL=/path/model.gguf\n"
++            "  exits 0 without a model (CI skip)\n",
++            argv0);
++}
++
++static std::vector<llama_token> tokenize(const llama_vocab * vocab, const std::string & text, bool add_special) {
++    const int n = -llama_tokenize(vocab, text.c_str(), text.size(), nullptr, 0, add_special, true);
++    std::vector<llama_token> out(n);
++    if (llama_tokenize(vocab, text.c_str(), text.size(), out.data(), out.size(), add_special, true) < 0) {
++        fprintf(stderr, "tokenize failed\n");
++        exit(1);
++    }
++    return out;
++}
++
++static float max_abs_diff(const float * a, const float * b, int n) {
++    float m = 0.0f;
++    for (int i = 0; i < n; ++i) {
++        m = std::max(m, std::fabs(a[i] - b[i]));
++    }
++    return m;
++}
++
++static int decode_linear_leaf_logits(
++        llama_context * ctx,
++        const std::vector<llama_token> & tokens,
++        std::vector<float> & out_logits) {
++    llama_memory_clear(llama_get_memory(ctx), true);
++
++    const int n = (int) tokens.size();
++    llama_batch batch = llama_batch_init(n, 0, 1);
++    batch.n_tokens = n;
++    for (int i = 0; i < n; ++i) {
++        batch.token[i]     = tokens[i];
++        batch.pos[i]       = i;
++        batch.n_seq_id[i]  = 1;
++        batch.seq_id[i][0] = 0;
++        batch.logits[i]    = (i == n - 1) ? 1 : 0;
++    }
++    // parent stays NULL (standard causal)
++    if (llama_decode(ctx, batch) != 0) {
++        fprintf(stderr, "linear llama_decode failed\n");
++        llama_batch_free(batch);
++        return 1;
++    }
++    const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(ctx)));
++    const float * logits = llama_get_logits_ith(ctx, n - 1);
++    if (!logits) {
++        fprintf(stderr, "linear: null logits\n");
++        llama_batch_free(batch);
++        return 1;
++    }
++    out_logits.assign(logits, logits + n_vocab);
++    llama_batch_free(batch);
++    return 0;
++}
++
++int main(int argc, char ** argv) {
++    std::string model_path;
++    int ngl = 99;
++
++    if (const char * env = getenv("MULTIDECODE_MODEL")) {
++        model_path = env;
++    }
++
++    for (int i = 1; i < argc; ++i) {
++        if (strcmp(argv[i], "-m") == 0 && i + 1 < argc) {
++            model_path = argv[++i];
++        } else if (strcmp(argv[i], "-ngl") == 0 && i + 1 < argc) {
++            ngl = std::atoi(argv[++i]);
++        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
++            print_usage(argv[0]);
++            return 0;
++        }
++    }
++
++    if (model_path.empty()) {
++        fprintf(stderr, "multidecode-exactness: no model (set MULTIDECODE_MODEL or -m); skip\n");
++        return 0;
++    }
++
++    ggml_backend_load_all();
++
++    llama_model_params mparams = llama_model_default_params();
++    mparams.n_gpu_layers = ngl;
++    llama_model * model = llama_model_load_from_file(model_path.c_str(), mparams);
++    if (!model) {
++        fprintf(stderr, "failed to load model: %s\n", model_path.c_str());
++        return 1;
++    }
++
++    const llama_vocab * vocab = llama_model_get_vocab(model);
++    const int n_vocab = llama_vocab_n_tokens(vocab);
++
++    // Forest: prefix + two short branches (shared root path)
++    const auto prefix = tokenize(vocab, "The capital of France is", true);
++    const auto branch_a = tokenize(vocab, " Paris", false);
++    const auto branch_b = tokenize(vocab, " Lyon", false);
++
++    if (prefix.empty() || branch_a.empty() || branch_b.empty()) {
++        fprintf(stderr, "empty tokenize result\n");
++        return 1;
++    }
++
++    // Build flat forest batch:
++    //   [prefix...][branch_a...][branch_b...]
++    // parents: chain within each path; branch roots attach to last prefix token
++    std::vector<llama_token> forest_tok;
++    std::vector<llama_pos>   forest_pos;
++    std::vector<int32_t>     forest_parent;
++    std::vector<int8_t>      forest_logits;
++
++    auto append_chain = [&](const std::vector<llama_token> & toks, int32_t parent0, llama_pos depth0, bool mark_leaf) {
++        int32_t prev = parent0;
++        for (size_t i = 0; i < toks.size(); ++i) {
++            forest_tok.push_back(toks[i]);
++            forest_pos.push_back(depth0 + (llama_pos) i);
++            forest_parent.push_back(prev);
++            forest_logits.push_back(0);
++            prev = (int32_t) forest_tok.size() - 1;
++        }
++        if (mark_leaf && !forest_logits.empty()) {
++            forest_logits.back() = 1;
++        }
++        return prev; // last index
++    };
++
++    // prefix: roots with parent -1, depths 0..n-1
++    int32_t last_prefix = -1;
++    for (size_t i = 0; i < prefix.size(); ++i) {
++        forest_tok.push_back(prefix[i]);
++        forest_pos.push_back((llama_pos) i);
++        forest_parent.push_back(last_prefix);
++        forest_logits.push_back(0);
++        last_prefix = (int32_t) forest_tok.size() - 1;
++    }
++    const int leaf_a = append_chain(branch_a, last_prefix, (llama_pos) prefix.size(), true);
++    const int leaf_b = append_chain(branch_b, last_prefix, (llama_pos) prefix.size(), true);
++    (void) leaf_a;
++    (void) leaf_b;
++
++    const int n_forest = (int) forest_tok.size();
++    fprintf(stderr, "forest tokens=%d prefix=%zu branch_a=%zu branch_b=%zu leaves=%d,%d\n",
++            n_forest, prefix.size(), branch_a.size(), branch_b.size(), leaf_a, leaf_b);
++
++    llama_context_params cparams = llama_context_default_params();
++    cparams.n_ctx   = n_forest + 32;
++    cparams.n_batch = n_forest;
++    cparams.n_ubatch = n_forest;
++    cparams.n_seq_max = 1;
++
++    llama_context * ctx = llama_init_from_model(model, cparams);
++    if (!ctx) {
++        fprintf(stderr, "failed to create context\n");
++        return 1;
++    }
++
++    // --- Path A: MultiDecode forest ---
++    llama_memory_clear(llama_get_memory(ctx), true);
++    llama_batch batch = llama_batch_init(n_forest, 0, 1);
++    batch.n_tokens = n_forest;
++    batch.parent = (int32_t *) malloc(sizeof(int32_t) * n_forest);
++    for (int i = 0; i < n_forest; ++i) {
++        batch.token[i]     = forest_tok[i];
++        batch.pos[i]       = forest_pos[i];
++        batch.parent[i]    = forest_parent[i];
++        batch.n_seq_id[i]  = 1;
++        batch.seq_id[i][0] = 0;
++        batch.logits[i]    = forest_logits[i];
++    }
++
++    if (llama_decode(ctx, batch) != 0) {
++        fprintf(stderr, "MultiDecode llama_decode failed\n");
++        llama_batch_free(batch);
++        llama_free(ctx);
++        llama_model_free(model);
++        return 1;
++    }
++
++    // logits rows appear in batch order for marked outputs → leaf_a then leaf_b
++    const float * md_a = llama_get_logits_ith(ctx, leaf_a);
++    const float * md_b = llama_get_logits_ith(ctx, leaf_b);
++    if (!md_a || !md_b) {
++        fprintf(stderr, "MultiDecode: null leaf logits (a=%p b=%p)\n", (const void *) md_a, (const void *) md_b);
++        llama_batch_free(batch);
++        llama_free(ctx);
++        llama_model_free(model);
++        return 1;
++    }
++    std::vector<float> md_logits_a(md_a, md_a + n_vocab);
++    std::vector<float> md_logits_b(md_b, md_b + n_vocab);
++    llama_batch_free(batch);
++
++    // --- Path B: two linear prefills ---
++    std::vector<llama_token> path_a = prefix;
++    path_a.insert(path_a.end(), branch_a.begin(), branch_a.end());
++    std::vector<llama_token> path_b = prefix;
++    path_b.insert(path_b.end(), branch_b.begin(), branch_b.end());
++
++    std::vector<float> lin_a, lin_b;
++    if (decode_linear_leaf_logits(ctx, path_a, lin_a) != 0) {
++        return 1;
++    }
++    if (decode_linear_leaf_logits(ctx, path_b, lin_b) != 0) {
++        return 1;
++    }
++
++    const float eps = 2e-2f; // fp16-tolerant
++    const float da = max_abs_diff(md_logits_a.data(), lin_a.data(), n_vocab);
++    const float db = max_abs_diff(md_logits_b.data(), lin_b.data(), n_vocab);
++
++    fprintf(stderr, "max_abs_diff leaf_a=%.6g leaf_b=%.6g (eps=%.3g)\n", da, db, eps);
++
++    llama_free(ctx);
++    llama_model_free(model);
++
++    if (da > eps || db > eps) {
++        fprintf(stderr, "FAIL: MultiDecode logits diverge from linear baselines\n");
++        return 1;
++    }
++    fprintf(stderr, "PASS: MultiDecode leaf logits match linear prefills\n");
++    return 0;
++}
+diff --git a/include/llama.h b/include/llama.h
+index 86228f0b7..c81011be3 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -261,6 +261,10 @@ extern "C" {
+     //               - if embeddings: all tokens are output
+     //               - if not:        only the last token is output
+     //            )
++    // - parent : MultiDecode ancestor mask (zerollama / WestCoastML). If non-NULL, length n_tokens;
++    //            parent[i] is the batch index of token i's parent, or -1 for a root. pos[] should be
++    //            tree depth for RoPE; KQ mask keeps only self+ancestors (siblings masked). NULL = off
++    //            (standard causal). v0: single seq_id, full forest in one ubatch, fresh KV.
+     //
+     typedef struct llama_batch {
+         int32_t n_tokens;
+@@ -271,6 +275,7 @@ extern "C" {
+         int32_t      *  n_seq_id;
+         llama_seq_id ** seq_id;
+         int8_t       *  logits;   // TODO: rename this to "output"
++        int32_t      *  parent;   // MultiDecode; NULL = off
+     } llama_batch;
+ 
+     enum llama_model_kv_override_type {
+diff --git a/src/llama-batch.cpp b/src/llama-batch.cpp
+index 7a17b3a4e..5ae9ef7f0 100644
+--- a/src/llama-batch.cpp
++++ b/src/llama-batch.cpp
+@@ -11,6 +11,7 @@
+ #include <cstring>
+ #include <algorithm>
+ #include <sstream>
++#include <unordered_map>
+ 
+ llama_batch_allocr::llama_batch_allocr(uint32_t n_pos_per_embd) : n_pos_per_embd(n_pos_per_embd) {
+     const char * LLAMA_BATCH_DEBUG = getenv("LLAMA_BATCH_DEBUG");
+@@ -146,6 +147,40 @@ bool llama_batch_allocr::init(
+         }
+     }
+ 
++    // MultiDecode: validate parent[] (ancestor mask). Requires explicit pos[] (tree depth).
++    if (batch.parent) {
++        if (!batch.pos) {
++            LLAMA_LOG_ERROR("%s: MultiDecode parent[] requires explicit pos[] (tree depth for RoPE)\n", __func__);
++            return false;
++        }
++        for (int32_t i = 0; i < batch.n_tokens; ++i) {
++            const int32_t p = batch.parent[i];
++            if (p < -1 || p >= batch.n_tokens || p == i) {
++                LLAMA_LOG_ERROR("%s: invalid parent[%d] = %d\n", __func__, i, p);
++                return false;
++            }
++            if (p >= 0 && p >= i) {
++                // causal packing: parents must appear earlier in the batch
++                LLAMA_LOG_ERROR("%s: parent[%d] = %d must be a prior batch index (DFS/BFS order)\n", __func__, i, p);
++                return false;
++            }
++        }
++        // cycle / depth guard
++        for (int32_t i = 0; i < batch.n_tokens; ++i) {
++            int32_t cur = i;
++            for (int d = 0; d <= batch.n_tokens; ++d) {
++                cur = batch.parent[cur];
++                if (cur < 0) {
++                    break;
++                }
++                if (d == batch.n_tokens) {
++                    LLAMA_LOG_ERROR("%s: parent[] cycle involving token %d\n", __func__, i);
++                    return false;
++                }
++            }
++        }
++    }
++
+     //
+     // build output/logits array
+     //
+@@ -256,6 +291,7 @@ bool llama_batch_allocr::init(
+             /*.seq_id_unq   =*/ this->seq_id_unq.data(),
+             /*.seq_idx      =*/ this->seq_idx.data(),
+             /*.output       =*/ batch.logits,
++            /*.parent       =*/ batch.parent,
+             /*.data         =*/ {},
+         };
+ 
+@@ -284,6 +320,34 @@ bool llama_batch_allocr::init(
+     // consistency checks
+     //
+ 
++    // MultiDecode: tree-depth pos may duplicate across siblings and decrease across branches.
++    // Skip linear-sequence continuity checks when parent[] is set; mask logic owns causality.
++    if (batch.parent) {
++        // v0: single sequence id for the whole forest
++        llama_seq_id sid0 = -1;
++        for (int32_t i = 0; i < batch.n_tokens; ++i) {
++            if (batch.n_seq_id[i] != 1) {
++                LLAMA_LOG_ERROR("%s: MultiDecode v0 requires n_seq_id[i]==1 (got %d at i=%d)\n",
++                        __func__, batch.n_seq_id[i], i);
++                return false;
++            }
++            if (sid0 < 0) {
++                sid0 = batch.seq_id[i][0];
++            } else if (batch.seq_id[i][0] != sid0) {
++                LLAMA_LOG_ERROR("%s: MultiDecode v0 requires a single seq_id (got %d and %d)\n",
++                        __func__, sid0, batch.seq_id[i][0]);
++                return false;
++            }
++        }
++        if (has_cpl) {
++            LLAMA_LOG_ERROR("%s: MultiDecode does not support coupled sequences\n", __func__);
++            return false;
++        }
++        // skip remaining linear pos checks (tree-depth pos may duplicate / decrease across branches)
++        split_reset();
++        return true;
++    }
++
+     if (n_pos_per_embd > 1) {
+         // M-RoPE case: allow position to "jump" forward only (non-continuous positions are allowed)
+         for (uint32_t s = 0; s < n_seq_max; ++s) {
+@@ -462,6 +526,7 @@ llama_ubatch llama_batch_allocr::ubatch_reserve(uint32_t n_seq_tokens, uint32_t
+         /*.seq_id_unq   =*/ udata->seq_id_unq.data(),
+         /*.seq_idx      =*/ udata->seq_idx.data(),
+         /*.output       =*/ udata->output.data(),
++        /*.parent       =*/ nullptr,
+         /*.data         =*/ std::move(udata),
+     };
+ 
+@@ -517,6 +582,21 @@ llama_ubatch llama_batch_allocr::split_simple(uint32_t n_ubatch) {
+         return {};
+     }
+ 
++    // MultiDecode v0: forest must fit in a single ubatch (parent indices are batch-local).
++    if (batch.parent) {
++        uint32_t n_remain = 0;
++        for (uint32_t i = 0; i < used.size(); ++i) {
++            if (!used[i]) {
++                ++n_remain;
++            }
++        }
++        if (n_remain > n_ubatch) {
++            LLAMA_LOG_ERROR("%s: MultiDecode forest (%u tokens) exceeds n_ubatch=%u — raise n_batch/n_ubatch\n",
++                    __func__, n_remain, n_ubatch);
++            return {};
++        }
++    }
++
+     std::vector<int32_t> idxs;
+ 
+     while (true) {
+@@ -540,6 +620,12 @@ llama_ubatch llama_batch_allocr::split_simple(uint32_t n_ubatch) {
+ }
+ 
+ llama_ubatch llama_batch_allocr::split_equal(uint32_t n_ubatch, bool sequential, uint32_t n_keep_tail) {
++    if (batch.parent) {
++        // MultiDecode forests are unequal-length branches — use split_simple with a large n_ubatch.
++        LLAMA_LOG_ERROR("%s: MultiDecode does not support split_equal; use split_simple with n_ubatch >= n_tokens\n", __func__);
++        return {};
++    }
++
+     if (sequential && has_cpl) {
+         LLAMA_LOG_ERROR("%s: sequential split is not supported when there are coupled sequences in the input batch (you may need to use the -kvu flag)\n", __func__);
+ 
+@@ -799,12 +885,22 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
+     udata->seq_id_unq.resize(0);
+     udata->seq_idx   .resize(LLAMA_MAX_SEQ, -1);
+     udata->output    .resize(n_tokens);
++    if (batch.parent) {
++        udata->parent.resize(n_tokens, -1);
++    }
+ 
+     udata->batch_idxs = idxs;
+     udata->seq_id_data.reserve(n_tokens);
+ 
+     seq_set_t seq_set_unq;
+ 
++    // map original batch index -> ubatch local index (for remapping parent[])
++    std::unordered_map<int32_t, int32_t> src_to_local;
++    src_to_local.reserve(idxs.size());
++    for (size_t i = 0; i < idxs.size(); ++i) {
++        src_to_local[idxs[i]] = (int32_t) i;
++    }
++
+     for (size_t i = 0; i < idxs.size(); ++i) {
+         if (batch.token) {
+             udata->token[i] = batch.token[idxs[i]];
+@@ -826,6 +922,21 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
+         udata->n_seq_id[i] = batch.n_seq_id[idxs[i]];
+         udata->output[i]   = batch.logits[idxs[i]];
+ 
++        if (batch.parent) {
++            const int32_t p = batch.parent[idxs[i]];
++            if (p < 0) {
++                udata->parent[i] = -1;
++            } else {
++                auto it = src_to_local.find(p);
++                if (it == src_to_local.end()) {
++                    LLAMA_LOG_ERROR("%s: MultiDecode parent[%d]=%d not in ubatch (forest must be unsplittable)\n",
++                            __func__, idxs[i], p);
++                    return {};
++                }
++                udata->parent[i] = it->second;
++            }
++        }
++
+         for (int s = 0; s < udata->n_seq_id[i]; ++s) {
+             const llama_seq_id seq_id = batch.seq_id[idxs[i]][s];
+ 
+@@ -851,6 +962,8 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
+         }
+     }
+ 
++    int32_t * parent_ptr = batch.parent ? udata->parent.data() : nullptr;
++
+     llama_ubatch res {
+         /*.b_equal_seqs =*/ equal_seqs,
+         /*.n_tokens     =*/ n_tokens,
+@@ -867,6 +980,7 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
+         /*.seq_id_unq   =*/ udata->seq_id_unq.data(),
+         /*.seq_idx      =*/ udata->seq_idx.data(),
+         /*.output       =*/ udata->output.data(),
++        /*.parent       =*/ parent_ptr,
+         /*.data         =*/ std::move(udata),
+     };
+ 
+@@ -975,6 +1089,7 @@ struct llama_batch llama_batch_get_one(
+         /*n_seq_id =*/ nullptr,
+         /*seq_id   =*/ nullptr,
+         /*logits   =*/ nullptr,
++        /*parent   =*/ nullptr,
+     };
+ }
+ 
+@@ -987,6 +1102,7 @@ struct llama_batch llama_batch_init(int32_t n_tokens_alloc, int32_t embd, int32_
+         /*n_seq_id =*/ nullptr,
+         /*seq_id   =*/ nullptr,
+         /*logits   =*/ nullptr,
++        /*parent   =*/ nullptr,
+     };
+ 
+     if (embd) {
+@@ -1004,6 +1120,7 @@ struct llama_batch llama_batch_init(int32_t n_tokens_alloc, int32_t embd, int32_
+     batch.seq_id[n_tokens_alloc] = nullptr;
+ 
+     batch.logits   = (int8_t *)        malloc(sizeof(int8_t)         * n_tokens_alloc);
++    // parent stays NULL — MultiDecode callers allocate explicitly (NULL = standard causal)
+ 
+     return batch;
+ }
+@@ -1020,6 +1137,7 @@ void llama_batch_free(struct llama_batch batch) {
+         free(batch.seq_id);
+     }
+     if (batch.logits)   free(batch.logits);
++    if (batch.parent)   free(batch.parent);
+ }
+ 
+ 
+diff --git a/src/llama-batch.h b/src/llama-batch.h
+index 18e8144c8..0c8471671 100644
+--- a/src/llama-batch.h
++++ b/src/llama-batch.h
+@@ -52,6 +52,7 @@ struct llama_ubatch {
+     llama_seq_id *  seq_id_unq; // [n_seqs_unq]       | s   | seq_id
+     int32_t      *  seq_idx;    // [LLAMA_MAX_SEQ]    | -   | seq_idx
+     int8_t       *  output;     // [n_tokens]         | i   | -
++    int32_t      *  parent;     // [n_tokens] MultiDecode; NULL = off
+ 
+     struct data_t {
+         std::vector<llama_token>    token;
+@@ -63,6 +64,7 @@ struct llama_ubatch {
+         std::vector<int32_t>        seq_idx;
+         std::vector<int8_t>         output;
+         std::vector<int32_t>        batch_idxs;  // original batch index for each token
++        std::vector<int32_t>        parent;      // MultiDecode ancestor KQ mask
+ 
+         std::vector<llama_seq_id> seq_id_data;
+     };
+diff --git a/src/llama-kv-cache-dsv4.cpp b/src/llama-kv-cache-dsv4.cpp
+index 948d08146..e4e983875 100644
+--- a/src/llama-kv-cache-dsv4.cpp
++++ b/src/llama-kv-cache-dsv4.cpp
+@@ -164,6 +164,7 @@ static llama_ubatch dsv4_build_raw_write_ubatch(const llama_ubatch & ubatch) {
+         /*.seq_id_unq   =*/ data->seq_id_unq.data(),
+         /*.seq_idx      =*/ data->seq_idx.data(),
+         /*.output       =*/ data->output.data(),
++        /*.parent       =*/ nullptr,
+         /*.data         =*/ data,
+     };
+ 
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 154f298a3..f25bba1a4 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -2039,6 +2039,7 @@ bool llama_kv_cache::check_and_clear_resized() {
+     const bool r = was_resized;
+     was_resized = false;
+     return r;
++}
+ 
+ uint32_t llama_kv_cache::get_n_stream() const {
+     return n_stream;
+@@ -2631,6 +2632,73 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
+     //LLAMA_LOG_ERROR("%s: kq mask time: %0.3f ms\n", __func__, (t_end - t_start)/1000.0);
+ }
+ 
++void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const {
++    const uint32_t n_tokens = ubatch->n_tokens;
++
++    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
++    GGML_ASSERT(ubatch->parent != nullptr);
++    GGML_ASSERT(sinfo.n_stream() == 1); // MultiDecode v0: single stream
++    GGML_ASSERT(swa_type == LLAMA_SWA_TYPE_NONE);
++
++    const int64_t n_kv     = dst->ne[0];
++    const int64_t n_stream = dst->ne[3];
++    GGML_ASSERT(n_stream == 1);
++    GGML_ASSERT(n_tokens % n_stream == 0);
++    GGML_ASSERT(sinfo.size() == n_tokens);
++
++    // reverse map: cell index -> ubatch token index (v0 fresh forest = all cells from this ubatch)
++    std::vector<int32_t> cell_to_tok(n_kv, -1);
++    for (uint32_t i = 0; i < n_tokens; ++i) {
++        const uint32_t cell = sinfo.idxs[0][i];
++        GGML_ASSERT(cell < (uint32_t) n_kv);
++        cell_to_tok[cell] = (int32_t) i;
++    }
++
++    auto fill = [&](auto * data) {
++        using T = std::remove_reference_t<decltype(*data)>;
++        const T mask_keep = llama_cast<T>(0.0f);
++        const T mask_drop = llama_cast<T>(-INFINITY);
++
++        const llama_seq_id seq_id = ubatch->seq_id[0][0];
++        const auto & cells = (*v_cells).at(seq_to_stream[seq_id]);
++
++        for (uint32_t i = 0; i < n_tokens; ++i) {
++            // ancestor bitset over ubatch token indices
++            std::vector<char> allow(n_tokens, 0);
++            allow[i] = 1;
++            int32_t cur = ubatch->parent[i];
++            int depth = 0;
++            while (cur >= 0 && depth <= (int) n_tokens) {
++                GGML_ASSERT(cur < (int32_t) n_tokens);
++                allow[cur] = 1;
++                cur = ubatch->parent[cur];
++                ++depth;
++            }
++
++            const uint64_t idst = n_kv * i;
++            for (uint32_t j = 0; j < (uint32_t) n_kv; ++j) {
++                if (cells.is_empty(j) || !cells.seq_has(j, seq_id)) {
++                    data[idst + j] = mask_drop;
++                    continue;
++                }
++                const int32_t tok = cell_to_tok[j];
++                if (tok >= 0 && allow[tok]) {
++                    data[idst + j] = mask_keep;
++                } else {
++                    // cell not in this ubatch forest map, or not an ancestor — drop
++                    data[idst + j] = mask_drop;
++                }
++            }
++        }
++    };
++
++    if (dst->type == GGML_TYPE_F16) {
++        fill((ggml_fp16_t *) dst->data);
++    } else {
++        fill((float *) dst->data);
++    }
++}
++
+ void llama_kv_cache::set_input_kq_mask_dca(ggml_tensor * dst, const llama_ubatch * ubatch, int dca_stage) const {
+     const uint32_t n_tokens = ubatch->n_tokens;
+ 
+@@ -3810,6 +3878,10 @@ void llama_kv_cache_context::set_input_v_idxs(ggml_tensor * dst, const llama_uba
+ }
+ 
+ void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {
++    if (ubatch->parent != nullptr) {
++        kv->set_input_kq_mask_multidecode(dst, ubatch, sinfos[i_cur]);
++        return;
++    }
+     kv->set_input_kq_mask(dst, ubatch, causal_attn);
+ }
+ 
+diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
+index b754ef74e..a734348de 100644
+--- a/src/llama-kv-cache.h
++++ b/src/llama-kv-cache.h
+@@ -248,6 +248,10 @@ public:
+     void set_input_k_shift(ggml_tensor * dst) const;
+ 
+     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
++    // Dual Chunk Attention stage mask: dca_stage 0=intra, 1=succ, 2=inter
++    void set_input_kq_mask_dca(ggml_tensor * dst, const llama_ubatch * ubatch, int dca_stage) const;
++    // MultiDecode: ancestor-only KQ mask using ubatch->parent + slot cell indices
++    void set_input_kq_mask_multidecode(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const;
+     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+ 
+     void set_input_k_rot(ggml_tensor * dst) const;

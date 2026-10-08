@@ -23,6 +23,7 @@ import (
 	"golang.org/x/text/transform"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/types/model"
 )
 
 var ErrModelNotFound = errors.New("no Modelfile or safetensors files found")
@@ -133,6 +134,11 @@ func (f Modelfile) CreateRequest(relativeDir string) (*api.CreateRequest, error)
 			req.Renderer = c.Args
 		case "parser":
 			req.Parser = c.Args
+		case "capability":
+			if !model.Capability(c.Args).IsValid() {
+				return nil, fmt.Errorf("unknown capability: %q", c.Args)
+			}
+			req.Capabilities = append(req.Capabilities, c.Args)
 		case "requires":
 			// golang.org/x/mod/semver requires "v" prefix
 			requires := c.Args
@@ -403,7 +409,7 @@ func (c Command) String() string {
 	switch c.Name {
 	case "model":
 		fmt.Fprintf(&sb, "FROM %s", c.Args)
-	case "license", "template", "system", "adapter", "renderer", "parser", "requires", "draft":
+	case "license", "template", "system", "adapter", "renderer", "parser", "requires", "draft", "capability":
 		fmt.Fprintf(&sb, "%s %s", strings.ToUpper(c.Name), quote(c.Args))
 	case "message":
 		role, message, _ := strings.Cut(c.Args, ": ")
@@ -429,7 +435,7 @@ const (
 var (
 	errMissingFrom        = errors.New("no FROM line")
 	errInvalidMessageRole = errors.New("message role must be one of \"system\", \"user\", or \"assistant\"")
-	errInvalidCommand     = errors.New("command must be one of \"from\", \"license\", \"template\", \"system\", \"adapter\", \"renderer\", \"parser\", \"parameter\", \"message\", or \"requires\"")
+	errInvalidCommand     = errors.New("command must be one of \"from\", \"license\", \"template\", \"system\", \"adapter\", \"renderer\", \"parser\", \"parameter\", \"message\", \"capability\", or \"requires\"")
 )
 
 type ParserError struct {
@@ -689,7 +695,7 @@ func isValidMessageRole(role string) bool {
 
 func isValidCommand(cmd string) bool {
 	switch strings.ToLower(cmd) {
-	case "from", "license", "template", "system", "adapter", "draft", "renderer", "parser", "parameter", "message", "requires":
+	case "from", "license", "template", "system", "adapter", "draft", "renderer", "parser", "parameter", "message", "capability", "requires":
 		return true
 	default:
 		return false

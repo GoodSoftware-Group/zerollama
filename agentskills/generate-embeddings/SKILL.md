@@ -88,7 +88,19 @@ curl -s http://localhost:11434/api/embed -d '{
   "input": "Generate embeddings for this text",
   "dimensions": 128
 }'
+
+# Multimodal (MLX embeddinggemma-2 / EmbeddingGemma2Model): one map per item
+# image/audio values are base64-encoded blobs (PNG/JPEG/GIF/WebP or wav/ogg).
+curl -s http://localhost:11434/api/embed -d '{
+  "model": "embeddinggemma-2",
+  "input": {
+    "text": "Describe this image",
+    "image": "'$(base64 -w0 /path/to/photo.png)'"
+  }
+}'
 ```
+
+**Mac-only smoke:** multimodal embed requires Apple Silicon MLX (`x/mlxrunner` subprocess). Linux CUDA production stacks use GGUF text embedders on `/api/embed`; map-shaped inputs return **501** when the runner has no `EmbedWithMedia`.
 
 Response includes `embeddings` (array of float arrays, one per input, in
 the same order) plus `total_duration`/`load_duration`/`prompt_eval_count`.

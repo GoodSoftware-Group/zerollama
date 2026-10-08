@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/types/model"
 )
 
 // ResponsesContent is a discriminated union for input content types.
@@ -390,6 +391,9 @@ type ResponsesRequest struct {
 	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
 
 	Reasoning ResponsesReasoning `json:"reasoning"`
+
+	// Think is an Ollama extension when native thinking control is not exactly OpenAI reasoning effort.
+	Think *api.ThinkValue `json:"think,omitempty"`
 	// ReasoningBudgetTokens outranks reasoning.effort (mlx-serve). 0 off, >0 on.
 	ReasoningBudgetTokens *int `json:"reasoning_budget_tokens,omitempty"`
 
@@ -434,8 +438,8 @@ type ResponsesRequest struct {
 	ServiceTier    string          `json:"service_tier,omitempty"`
 }
 
-// FromResponsesRequest converts a ResponsesRequest to api.ChatRequest
-func FromResponsesRequest(r ResponsesRequest) (*api.ChatRequest, error) {
+// FromResponsesRequest converts a ResponsesRequest to api.ChatRequest.
+func FromResponsesRequest(r ResponsesRequest, thinking ...*model.Thinking) (*api.ChatRequest, error) {
 	foldResponsesCompression(&r)
 	foldResponsesSessionCache(&r)
 	foldResponsesLogitBias(&r)
@@ -606,15 +610,26 @@ func FromResponsesRequest(r ResponsesRequest) (*api.ChatRequest, error) {
 	}
 
 	thinkFromAlias := false
-	var think *api.ThinkValue
-	if t, err := thinkFromReasoningBudget(r.ReasoningBudgetTokens); err != nil {
-		return nil, err
-	} else if t != nil {
-		think = t
-		thinkFromAlias = true
+	think := r.Think
+	if think != nil {
+		if !think.IsValid() {
+			return nil, fmt.Errorf("invalid think value")
+		}
+		if len(thinking) == 0 || !thinking[0].Valid() {
+			if err := api.ValidateLegacyThinking(think); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		if t, err := thinkFromReasoningBudget(r.ReasoningBudgetTokens); err != nil {
+			return nil, err
+		} else if t != nil {
+			think = t
+			thinkFromAlias = true
+		}
 	}
 	if think == nil {
-		if t, err := thinkFromReasoningEffort(r.Reasoning.Effort); err != nil {
+		if t, err := thinkFromReasoningEffort(r.Reasoning.Effort, thinking...); err != nil {
 			return nil, err
 		} else if t != nil {
 			think = t

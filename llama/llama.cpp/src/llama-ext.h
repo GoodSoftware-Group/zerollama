@@ -120,6 +120,8 @@ LLAMA_API llama_context * llama_get_ctx_other(struct llama_context * ctx);
 // model/context data extraction
 //
 
+LLAMA_API int32_t llama_model_dflash_selector_top_k(const struct llama_model * model);
+
 //
 // cross-attention encoder cache (dflash target_hidden window; T5 encoder path)
 //

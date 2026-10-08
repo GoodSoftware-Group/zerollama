@@ -41,6 +41,16 @@ compat handlers already existed for CMake builds. See
   registration patch. (Those files *add* archs; the files above *translate*
   existing GGUFs onto archs llama.cpp already has.)
 
+### Clef (L6 — do not auto-apply on b10615)
+
+Upstream Ollama ships `002-clef.patch` here for llama-server `score_fields`.
+Zerollama keeps that file under **`llama/clef/upstream-002-clef.patch`** until
+the vendor pin is ≥ **b11232**. `apply-patch.cmake` uses `GLOB_RECURSE` on
+`*.patch`; dropping the upstream Clef patch into this directory on **b10615**
+breaks configure (`server-context.cpp` hunks fail). See
+[docs/llama-cpp-pin-ladder.md](../../docs/llama-cpp-pin-ladder.md) and
+`./scripts/phase/stage_clef_for_pin.sh --wire`.
+
 The compatibility source files stay in this directory and are linked into the
 fetched llama.cpp targets. The patch file only adds call sites.
 

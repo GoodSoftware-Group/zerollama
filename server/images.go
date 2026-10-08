@@ -56,6 +56,7 @@ var (
 	errCapabilitySpeech     = errors.New("speech")
 	errCapabilityVideo      = errors.New("video")
 	errCapabilityVideoGen   = errors.New("video generation")
+	errCapabilityDecision   = errors.New("decision")
 	errInsecureProtocol     = errors.New("insecure protocol http")
 )
 
@@ -106,6 +107,9 @@ type Model struct {
 	// GetModel. Why: scheduler Pin/Unpin needs digests without re-parsing the
 	// manifest after runner.model is nil'd on unload.
 	BlobDigests []string `json:"-"`
+
+	// metadata is the persisted GGUF KV extract for the primary weights blob (#17858).
+	metadata ggufMetadata
 }
 
 func (m *Model) IsMLX() bool {
@@ -343,6 +347,21 @@ func (m *Model) Capabilities() []model.Capability {
 	return capabilities
 }
 
+// publicCapabilities limits decision models to decision and explicitly declared
+// vision support. Serving still uses Capabilities so schedule/CheckCapabilities
+// see the full set.
+func (m *Model) publicCapabilities() []model.Capability {
+	capabilities := m.Capabilities()
+	if slices.Contains(capabilities, model.CapabilityDecision) {
+		public := []model.Capability{model.CapabilityDecision}
+		if slices.Contains(m.Config.Capabilities, "vision") && slices.Contains(capabilities, model.CapabilityVision) {
+			public = append(public, model.CapabilityVision)
+		}
+		return public
+	}
+	return capabilities
+}
+
 // CheckCapabilities checks if the model has the specified capabilities returning an error describing
 // any missing or unknown capabilities
 func (m *Model) CheckCapabilities(want ...model.Capability) error {
@@ -362,6 +381,7 @@ func (m *Model) CheckCapabilities(want ...model.Capability) error {
 		model.CapabilitySpeech:     errCapabilitySpeech,
 		model.CapabilityVideo:      errCapabilityVideo,
 		model.CapabilityVideoGen:   errCapabilityVideoGen,
+		model.CapabilityDecision:   errCapabilityDecision,
 	}
 
 	for _, cap := range want {
@@ -413,6 +433,9 @@ func textSurfaceWrongModalityMessage(m *Model, name, surface string) string {
 	}
 	if slices.Contains(caps, model.CapabilityVideoGen) {
 		return fmt.Sprintf("%q is a video model; use POST /v1/videos", name)
+	}
+	if slices.Contains(caps, model.CapabilityDecision) {
+		return fmt.Sprintf("%q is a decision model; use POST /v1/decisions or POST /v1/systemone", name)
 	}
 	return fallback
 }
@@ -471,6 +494,13 @@ func (m *Model) String() string {
 		modelfile.Commands = append(modelfile.Commands, parser.Command{
 			Name: "parser",
 			Args: m.Config.Parser,
+		})
+	}
+
+	for _, capability := range m.Config.Capabilities {
+		modelfile.Commands = append(modelfile.Commands, parser.Command{
+			Name: "capability",
+			Args: capability,
 		})
 	}
 
@@ -575,6 +605,9 @@ func loadModelUncached(name string) (*Model, error) {
 		case "application/vnd.ollama.image.model":
 			m.ModelPath = filename
 			m.ParentModel = layer.From
+			if md, err := readGGUFMetadata(layer.Digest); err == nil {
+				m.metadata = md
+			}
 			// HasChatTemplate is set from loadGGUFMetadataAt below (one GGUF header read).
 		case manifest.MediaTypeImageDraft:
 			m.DraftPath = filename

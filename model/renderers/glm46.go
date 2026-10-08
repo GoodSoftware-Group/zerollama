@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/types/model"
 )
 
 type GLM46Renderer struct{}
@@ -111,4 +112,8 @@ func (r *GLM46Renderer) Render(messages []api.Message, tools []api.Tool, thinkVa
 	}
 
 	return sb.String(), nil
+}
+
+func (r *GLM46Renderer) Thinking() *model.Thinking {
+	return &model.Thinking{Values: []any{false, true}, Default: true}
 }

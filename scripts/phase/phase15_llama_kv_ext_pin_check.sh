@@ -21,9 +21,9 @@ echo "== Phase 15 llama-kv-ext pin check (pin=${PIN}, LLAMA_CPP_VERSION=${VERSIO
 IN_TREE=(
   "${ROOT}/llama/llama.cpp/include/llama-kv-ext.h"
   "${ROOT}/llama/llama.cpp/src/llama-memory-kv-ext.cpp"
-  "${ROOT}/llama/patches/0019-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch"
-  "${ROOT}/llama/patches/0021-ollama-llama-kv-ext-donor-buffer-v48.patch"
-  "${ROOT}/llama/patches/0022-ollama-llama-kv-ext-donor-buffer-metal-v49.patch"
+  "${ROOT}/llama/patches/0017-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch"
+  "${ROOT}/llama/patches/0020-ollama-llama-kv-ext-CPU-donor-buffer-overlay-bind-v4.patch"
+  "${ROOT}/llama/patches/0022-ollama-llama-kv-ext-Metal-device-buft-donor-consume-.patch"
 )
 
 for f in "${IN_TREE[@]}"; do
@@ -157,9 +157,9 @@ report = {
     "status": "pass",
     "pin": os.environ.get("PIN", ""),
     "llama_cpp_version": os.environ.get("VERSION", ""),
-    "patch": "0019-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch",
-    "patch_alias": "0021-ollama-llama-kv-ext-donor-buffer-v48.patch",
-    "patch_alias_v49": "0022-ollama-llama-kv-ext-donor-buffer-metal-v49.patch",
+    "patch": "0017-ollama-llama-kv-ext-Phase-15-tensor-page-bind-b9611.patch",
+    "patch_alias": "0020-ollama-llama-kv-ext-CPU-donor-buffer-overlay-bind-v4.patch",
+    "patch_alias_v49": "0022-ollama-llama-kv-ext-Metal-device-buft-donor-consume-.patch",
     "staging_api": [
         "llama_memory_kv_cell_for_pos",
         "llama_memory_kv_cell_map_range",
@@ -189,4 +189,4 @@ print(f"report: {out}")
 PY
 fi
 
-echo "PASS: llama-kv-ext in-tree + patches 0019/0021/0022 present; upstream memory deps OK at pin ${PIN}"
+echo "PASS: llama-kv-ext in-tree + patches 0017/0020/0022 present; upstream memory deps OK at pin ${PIN}"

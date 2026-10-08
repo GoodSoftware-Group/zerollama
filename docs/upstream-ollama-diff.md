@@ -25,7 +25,7 @@ Clone beside zerollama (no merge into this repo):
 # default: ../ollama-upstream
 ```
 
-**Last pulled:** 2026-09-22 — `../ollama-upstream` `main` @ **`c1737589`** (latest tag **v0.34.3**; tip **v0.34.4-rc0**; `LLAMA_CPP_VERSION` **b11081**; MLX **`59d600b5`** / MLX-C **`ebc88f10`**). Previous lab tip was **v0.33.3** / `b68365a0`.
+**Last pulled:** 2026-10-07 — `../ollama-upstream` `main` @ **`e3cddc3e`** (latest tag **v0.40.0**; tip **v0.40.1-rc0** / `v0.40.1-2-ge3cddc3e`; `LLAMA_CPP_VERSION` **b11351**; MLX **`a59cc231`** / MLX-C **`ebc88f10`**). Previous triage tip was **`c1737589`** / v0.34.4-rc0.
 
 Build and run on a different port for A/B:
 
@@ -74,10 +74,10 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 | Python runtime | None | `runtime/` FastAPI sidecar/embed |
 | Training | None | `/api/train/*`, `training.py`, pyembed |
 | Remote cloud | ollama.com | **Eliza Cloud** default |
-| llama.cpp pin | **`b11081`** (Ollama tip) | **`b10615`** + `llama/patches/` — [LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) |
+| llama.cpp pin | **`b11351`** (Ollama tip) | **`b10615`** + `llama/patches/` — [LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md); L6 ladder [llama-cpp-pin-ladder.md](./llama-cpp-pin-ladder.md) |
 | Ollama-specific llama fixes | `llama/compat/` + CMake `PATCH_COMMAND` | `llama/patches/` + compat/kv-ext/seq-copy |
 | GPU discovery | `discover/llama_server.go` probe | **Hybrid** — llama-server when Linux auto or `ZEROLLAMA_LLAMA_SERVER=1`; ggml `/info` bootstrap otherwise (**why:** Mac default stays ggml; upstream sched inputs on Linux) |
-| MLX MTP / speculation | Draft-cache token-pair trie, flush 256, host speculate + xgrammar | Pin `MLX_VERSION=59d600b5`; M15a live-session retained; xgrammar **ported** (spec under format still off) |
+| MLX MTP / speculation | Draft-cache token-pair trie, flush 256, host speculate + xgrammar | Pin `MLX_VERSION=a59cc231`; M15a live-session retained; xgrammar **0.2.7** + spec-under-grammar **ported** |
 
 ---
 
@@ -85,11 +85,11 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 
 | Artifact | Upstream | Zerollama | Notes |
 |----------|----------|-----------|-------|
-| Ollama release | **v0.34.3** / tip **v0.34.4-rc0** (`c1737589`) | Selective cherry-picks through **v0.33.3** MLX/CLI; **v0.34.x not ported** (see Sep 2026 triage below) | Fetch: `./scripts/gpu/clone_upstream_ollama.sh`; compare at `../ollama-upstream` |
-| llama.cpp tag | **`b11081`** | **`b10615`** | Do not fast-forward vendor to b11081 without a patch rebase; [LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) |
+| Ollama release | **v0.40.0** / tip **v0.40.1-rc0** (`e3cddc3e`) | Selective cherry-picks; **Oct 2026 product ladders** (see below) | Fetch: `./scripts/gpu/clone_upstream_ollama.sh`; compare at `../ollama-upstream` |
+| llama.cpp tag | **`b11351`** | **`b10615`** | L6 enabler: ladder + Clef staging — [pin ladder](./llama-cpp-pin-ladder.md); do not fast-forward without patch rebase; [LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) |
 | Compat layer | `llama/compat/` + `cmake/apply-git-patches.cmake` | **Partial** — in-tree `llama/compat/` + patches | Full CMake overlay adoption still incremental; see [ggml-b9509-migration.md](./ggml-b9509-migration.md) |
 | llama-server build | `cmake -S llama/server --preset cpu` (or GPU preset) | `./scripts/build/build_llama_server.sh` on sibling tree | Align presets when porting |
-| MLX | **`59d600b5`** / **`ebc88f10`** (tip) | **`59d600b5`** / **`ebc88f10`** (`MLX_VERSION` / `MLX_C_VERSION`) | Pins matched Sep 2026; carry `mlx/compat/mlx-c/`; xgrammar **ported** (`libollama_xgrammar`). Still keep `x/mlxrunner` (no package move); Pin-Sweep still open |
+| MLX | **`a59cc231`** / **`ebc88f10`** (tip) | **`a59cc231`** / **`ebc88f10`** (`MLX_VERSION` / `MLX_C_VERSION`) | L3 Oct 2026 — idle residency in MLX tip + client default `MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS=1000`; carry `mlx/compat/mlx-c/`; xgrammar **0.2.7**; still `x/mlxrunner` (no package move); Pin-Sweep still open |
 
 **Phase 15 blocker context:** native tensor page bind depends on llama.cpp APIs; staying on an old pin widens the gap. Bumping toward upstream’s pin is prerequisite work, not optional polish.
 
@@ -235,16 +235,14 @@ See [apple-silicon-metal.md](./apple-silicon-metal.md#compare-with-upstream-olla
 
 ## What upstream is investing in now (directional)
 
-From **v0.33.3** → tip **v0.34.4-rc0** (`c1737589`, +73 commits):
+From **`c1737589`** → tip **`e3cddc3e`** (**v0.40.0** / v0.40.1-rc0, +55 commits):
 
-- **MLX engine moved** out of `x/` → top-level `mlxrunner/` + package folds; Pin/Sweep → scoped array lifetimes
-- MLX **create** is first-class (server-side safetensors import; GGUF conversion deleted from Go)
-- **Thinking + structured format in one pass** (MLX xgrammar structural tags; llama-server GBNF after think-close)
-- **Thinking levels** advertised on API / renderers / Anthropic+OpenAI middleware
-- MLX polish: Qwen 3.8 gated-delta prefill, Gemma4 dynamic image budget, Nemotron-H vision, KV eviction/spec buffer fixes
-- **GGUF metadata extract-once** (`server/gguf_metadata.go`) replacing dual capability caches
-- **ChatGPT / Codex Desktop** app+proxy (skip for zerollama)
-- llama.cpp **b10760 → b11081**; MLX **`59d600b5`** / MLX-C **`ebc88f10`**
+- **System One** `/v1/systemone` + **Clef** / Nimble / Tev1 decision models (GGUF score path + MLX)
+- Modelfile **`CAPABILITY`** + decision-only public capabilities
+- **MLX default on Apple Silicon** for supported arches (v0.40 headline)
+- Multimodal embeddings (embeddinggemma / gemma4embedding)
+- OpenAI tool message array/image position fixes; pull stall watchdog; typical_p soft-deprecate
+- llama.cpp **b11081 → b11351**; MLX **`59d600b5` → `a59cc231`**
 
 Absent: Python runtime, training API, native KV experiments, Eliza.
 
@@ -339,16 +337,18 @@ Path-filtered **+73** commits on sibling. Do **not** rebase. Prior **v0.32.15 �
 
 | Area | SHA / PR | Why / how |
 |------|----------|-----------|
-| Thinking levels API | `d0c8cdb7` **#18473** | Advertise model thinking levels + defaults on `/api` + Anthropic/OpenAI middleware. We already have effort/renderer quirks; this formalizes discovery — **deferred** (Codex/middleware-heavy) |
+| Thinking levels API | `d0c8cdb7` **#18473** | **Done (Oct 2026)** — `types/model/thinking.go`, renderer `Thinking()`, `/api/show` `thinking`, OpenAI/Anthropic middleware `lookupThinking`, `ResolveThinking` on native chat/generate (zerollama still defaults `think=false` when metadata absent) |
 | Format after thinking (MLX) | `1ce2b680` | **Done (Sep 2026)** — `requestGrammar` wraps ThinkingClose as structural sequence ahead of schema |
-| GGUF metadata extract-once | `ea8d6500` **#17858** | Persist `<OLLAMA_MODELS>/metadata/sha256-*.json`; unify Capabilities. We still use `model_inference_cache.go` — good `/api/tags` win, but large |
+| GGUF metadata extract-once | `ea8d6500` **#17858** | **Partial (Oct 2026)** — `server/gguf_metadata.go` persists `<OLLAMA_MODELS>/metadata/sha256-*.json` on `GetModel` (ggml decode); `model_inference_cache.go` retained; full upstream `model_list.go` `/api/tags` path not ported |
 | GGUF sampler defaults | `f348c7e3` **#16471** | **Done (Sep 2026)** — `types/model/generation.go`; GGUF `general.sampling.*` + HF `generation_defaults` on create; `modelOptions` applies GenerationDefaults before GenSampling / PARAMETER |
 
 ### Bring (MLX — high value, needs pin / layout care)
 
 | Area | SHA / PR | Why / how |
 |------|----------|-----------|
-| Structured `format` (xgrammar) | `147509c0` + `4986e923` + `b68365a0` (+ tip grammar) | **Done core (Sep 2026):** `x/mlxrunner/xgrammar/` + `grammar.go`; client structural tags + ThinkingClose; Prepare/mask/accept on non-spec path. **Still open:** speculation under grammar (`4986e923`) |
+| Structured `format` (xgrammar) | `147509c0` + `4986e923` + `b68365a0` (+ tip grammar) | **Done (Oct 2026):** `x/mlxrunner/xgrammar/` + `XGRAMMAR_VERSION=v0.2.7`; spec-under-grammar (`4986e923`) in `speculate.go` |
+| MLX idle residency (#18807/#18854) | `cf6c9de6`, `cf2a313a` | **Done (Oct 2026):** `MLX_VERSION=a59cc231` (patch upstream); client sets `MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS=1000` on Darwin |
+| Tokenizer publisher (#18779) | `195f4cdc` | **Done (Oct 2026):** `x/tokenizer/` pretokenizer/BPE/normalization; HF reference tests deferred (needs upstream manifest-list APIs) |
 | Qwen 3.8 gated-delta prefill | `c0f8da35` **#18550** | **Partial (Sep 2026):** `mlx.SwiGLUScaled` + `nn.SwiGLU` defer `GlobalScale` (direct Mul, not Nvfp4MaxProduct); `qwen3_5.DenseMLP` wired. **Skipped:** upstream long-scan gated-delta kernel — we already use `FastGatedDelta` |
 | Gemma4 dynamic image budget | `b8c3d1f6` **#18603** | Only after Gemma4 MM lands (we are text-only today) |
 | Nemotron-H vision | `2c731642` **#17714** | Optional; only if we ship that family |
@@ -370,10 +370,10 @@ Path-filtered **+73** commits on sibling. Do **not** rebase. Prior **v0.32.15 �
 
 | Area | Why |
 |------|-----|
-| llama.cpp **b10864 / b10969 / b11081** | Fights `llama/patches/`; stay on **b10615** until a deliberate vendor rebase |
+| llama.cpp tip | Matched **b11351** ([ladder](./llama-cpp-pin-ladder.md)); next pin bumps follow Ollama |
 | ChatGPT / Codex Desktop `app/` + proxy | Product (ollama.com / desktop) |
 | Remove built-in agent / TUI agent | We never shipped their agent; no-op |
-| Deprecate `typical_p` (`2c29c9f0`) | We still expose `/v1` typical_p for MLX + llama-server |
+| Hard-fail request `typical_p` | Soft-deprecate only — warn on request; reject Modelfile/create PARAMETER; still wire `/v1` typical_p for MLX + llama-server |
 | First-run CLI onboarding shared with desktop | Desktop-coupled |
 | CI/docker/docs-only | No product delta |
 
@@ -397,8 +397,29 @@ Path-filtered **+73** commits on sibling. Do **not** rebase. Prior **v0.32.15 �
 7. ~~Deprecate **`OLLAMA_NEW_ENGINE`** / **`runner/ollamarunner`** for plain text GGUF~~ — **partial**; explicit `--llama-server-backend` now routes vision/thinking GGUF; Linux auto + Mac default vision still ggml.
 8. Path-filter **v0.32.12–v0.32.15**: Qwen 3.8 renderer, repeat_penalty 1.0, skipVerify, parse-error cancel — **done (Aug 2026)**. WebP (#17755) + metadata cache (#17752) — **done**.
 9. Path-filter **v0.32.15–v0.33.3** — **done (Sep 2026)** for CLI + MLX load/trie/errors + **#16471**. xgrammar **done** (see item 10).
-10. Path-filter **v0.33.3–v0.34.4-rc0** — **triaged (Sep 2026)**. **Done:** #18374 / #18319 / #18533 / ThinkingClose + format-after-think / **#16471** / **#17943** / **#18550** / **#18376** / **#18438** / MLX memory hygiene through `8d66f083` / **xgrammar core** + ThinkingClose structural tags. **Blocked:** `45a02807` (needs media.go). **Still open:** spec under grammar; thinking-levels `#18473` (deferred); Pin-Sweep.
-11. Skip llama.cpp **b11081** until `llama/patches/` rebases; GGUF pin stays **b10615**.
+10. Path-filter **v0.33.3–v0.34.4-rc0** — **triaged (Sep 2026)**. **Done:** #18374 / #18319 / #18533 / ThinkingClose + format-after-think / **#16471** / **#17943** / **#18550** / **#18376** / **#18438** / MLX memory hygiene through `8d66f083` / **xgrammar core** + ThinkingClose structural tags / **#18473** thinking discovery. **Blocked:** `45a02807` (needs media.go). **Still open:** spec under grammar; `#17858` tags/capabilities unify; Pin-Sweep.
+11. llama.cpp pin is **b11351** (L6 tip / Ollama v0.40.x) — [pin ladder](./llama-cpp-pin-ladder.md).
+12. Product-first ladders **`c1737589` → v0.40.1-rc0** — see Oct 2026 section below (L0–L6).
+
+---
+
+## Cherry-pick status (Oct 2026, `c1737589` → **v0.40.1-rc0** / `e3cddc3e`)
+
+**Principle:** great UX/DX over minimal merge effort. Laddered bring; no full rebase; keep runtime / training / Eliza / Phase 15. Skip only desktop + ollama.com.
+
+| Ladder | Goal | Status |
+|--------|------|--------|
+| **L0** | Clone tip + this section + siblings last-checked | **Done (Oct 2026)** — `../ollama-upstream` @ `e3cddc3e` |
+| **L1** | DX truth: `CAPABILITY` / `CapabilityDecision` / decision-only show-list; OpenAI tool parts; embed 413; typical_p warn; pull stall watchdog | **Done (Oct 2026)** — Modelfile `CAPABILITY` + `IsValid` (keeps video/speech/video_gen); `publicCapabilities` on show/list; OpenAI #18722 tool+media split; embed retry 400/413 + mediaLen hook; request `typical_p` warn + create reject; `x/imagegen/transfer` stall cancel + `maxTransientRetries=3` |
+| **L2** | System One product: decision types/score/images; Clef; Laya/Clef create; MLX System One — one wire, many backends | **Done on b10615 (Oct 2026)** — `decision/` + CUDA Rows score; `tev1` renderer/parser alias; Strands PointerRows → honest 400 on llama-server; **MLX** `x/mlxrunner` `POST /v1/score` (tev1/nimble/strands/clef text); Clef **GGUF/images** remain **L6** / vision ([WHY](./system-one-score.md)) |
+| **L3** | Mac MLX UX: pin `a59cc231`; idle residency; tokenizer; xgrammar 0.2.7 + spec-under-grammar; opinionated MLX-preferred for clear safetensors families | **Partial (Oct 2026)** — pin + client residency env + routing notes landed; **Mac dylib rebuild / Metal sign-off still required** on operator hosts; tokenizer rewrite needs Mac soak |
+| **L4** | Multimodal embed (embeddinggemma / gemma4embedding) + honest `/api/embed` errors | **Partial (Oct 2026)** — create + `/api/embed` map inputs + 413/400 wiring landed; **full MLX multimodal embed is Darwin-path**; Linux returns honest 501 without `EmbedWithMedia` |
+| **L5** | Thinking levels `#18473`; GGUF metadata `#17858`; Laya create ↔ convert | **Partial (Oct 2026)** — thinking on show + middleware; legacy `xhigh` kept (Qwen 3.8); GGUF metadata persist/load (tags list still inference cache); Laya create metadata aligned |
+| **L6** | llama.cpp pin debt toward **b11351** (enabler; parallel, not gate for L1–L2) | **Done tip (Oct 2026)** — pin **b11351** + **135** patches (`vendor/llama-cpp-b11351/`); Clef on tip `common_batch`; prior rungs kept for rollback ([ladder](./llama-cpp-pin-ladder.md)) |
+
+### Skip (not our product)
+
+Desktop `app/` / Settings / CLI onboarding; ollama.com cloud usage/balance `#18829`; README churn; wholesale `sched.go` / deleting ggml or `runtime/`; blind “MLX for everything” without doctor/show matrix.
 
 ---
 

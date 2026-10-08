@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Restore zerollama-only ANE draft hook sources under llama/llama.cpp after vendor rsync.
-# Why: vendor/ lacks ane_draft_* until llama/patches/0018 lands; rsync --delete would drop them.
+# Why: vendor/ lacks ane_draft_* until ANE patches (0023+) land; rsync --delete would drop them.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

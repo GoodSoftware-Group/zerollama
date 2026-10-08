@@ -518,7 +518,7 @@ func EmbeddingsMiddleware() gin.HandlerFunc {
 	}
 }
 
-func ChatMiddleware() gin.HandlerFunc {
+func ChatMiddleware(thinkingLookup ...ThinkingLookup) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		body, err := io.ReadAll(c.Request.Body)
 		if err != nil {
@@ -540,7 +540,8 @@ func ChatMiddleware() gin.HandlerFunc {
 
 		var b bytes.Buffer
 
-		chatReq, err := openai.FromChatRequestWithContext(c.Request.Context(), req)
+		thinking := modelThinking(thinkingLookup, req.Model)
+		chatReq, err := openai.FromChatRequestWithContext(c.Request.Context(), req, thinking)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 			return
@@ -639,7 +640,7 @@ func (w *ResponsesWriter) Write(data []byte) (int, error) {
 	return w.writeResponse(data)
 }
 
-func ResponsesMiddleware() gin.HandlerFunc {
+func ResponsesMiddleware(thinkingLookup ...ThinkingLookup) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.GetHeader("Content-Encoding") == "zstd" {
 			reader, err := zstd.NewReader(c.Request.Body, zstd.WithDecoderMaxMemory(8<<20))
@@ -658,7 +659,8 @@ func ResponsesMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		chatReq, err := openai.FromResponsesRequest(req)
+		thinking := modelThinking(thinkingLookup, req.Model)
+		chatReq, err := openai.FromResponsesRequest(req, thinking)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 			return

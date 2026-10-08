@@ -14,7 +14,7 @@ Laya ([NandhaKishorM/laya](https://github.com/NandhaKishorM/laya)) is a **non-au
 **Why CPU decision head:** encoder runs on GPU like embed; head (~26 MB) applies on CPU after `t_embd` — avoids new GPU kernels while keeping GPU encode.  
 **Why Go packs:** LA16 pattern — Go owns `{state,questions}` → tokenized batch; llama-server owns encode+head. Same split as `/v1/rerank`.
 
-Patches: **0127** (arch + `laya.cpp`) · **0128** (`--decisions`, `POST /v1/decisions`). Pin: [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md).
+Patches: **0124** (arch + `laya.cpp`) · **0125** (`--decisions`, `POST /v1/decisions`). Pin: [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md).
 
 ## Convert
 
@@ -36,7 +36,7 @@ Checkpoint must include `model.safetensors`, `rl_agent_config.json`, `encoder/co
 ## llama-server (lab ports only)
 
 ```bash
-./scripts/build/build_llama_server.sh   # after syncing patches 0127–0128
+./scripts/build/build_llama_server.sh   # after syncing patches 0124–0125
 ./build/bin/llama-server -m /tmp/laya-f16.gguf --decisions --port 18082 \
   --embeddings --pooling none
 

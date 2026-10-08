@@ -63,6 +63,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Launch model inventory](./launch-model-inventory.md) — **why** `zerollama launch` loads `/api/tags` once and passes `LaunchModel` metadata to agent configs (no N× Show).
 * [Model bench cache](./bench-cache.md) — **why** `zerollama bench` caches decode tok/s by digest and **`zerollama ls`** shows **TOK/S** without re-running inference.
 * [ggml @ b9509 migration](./ggml-b9509-migration.md) — **why** vendored ggml/llama.cpp rebased to real upstream tags (**current: b9781 / v0.30.11**); 16 patches; sync workflow; **why `make sync` must not reset vendor**.
+* [llama.cpp pin-debt ladder (L6)](./llama-cpp-pin-ladder.md) — tip **b11351** (137 patches); Clef floor **b11232+**; rollback via `vendor/llama-cpp-b11232/`.
 * [llama.cpp backend (experimental)](./llama-cpp-backend.md) — route text GGUF through Python runtime + sibling llama.cpp; benchmark vs ggml.
 
 ### Apple Silicon (repo)
@@ -102,7 +103,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [GLiNER2.5-Decide (triage Decider)](./gliner-decide.md) — **why** Fastino encoder ≠ NER extract; dual `/v1/decisions` + `/v1/gliner-decide`. [findings](./gliner-decide-findings.md).
 * [Fleet scheduling (multi-node)](./fleet-scheduling.md) — **why** a management node above per-node schedulers; warm-model routing; filter-then-score (F7); anti-patterns (scatter-gather, long quotes).
 * [Fleet management operator guide](./fleet-management.md) — **why** F3 is thin (poll + assign, no remote load); `zerollama fleet serve`; API, env, agent pattern.
-* [Remote model storage](./remote-model-storage.md) — **why** central content-addressed blobs + HMAC LAN auth + fetch-on-miss; RDMA-prefer/TCP fallback; pin/refcount LRU; ephemeral cleanup; tensor catalog language for later streaming (spec-only in v1).
+* [Remote model storage](./remote-model-storage.md) — **why** central content-addressed blobs + HMAC LAN auth + fetch-on-miss; health/metrics/ls/verify/gc; optional TLS; parallel Range-GET; async peer replicate; RDMA-prefer/TCP fallback; pin/refcount LRU; tensor catalog language for later streaming (spec-only).
 * [Phase 11 runtime admission](./phase11-runtime-admission.md) — **why** opinionated VRAM + inference-first policy; priority classes; enqueue/dequeue flow; `/health` gates; `VRAM_MIN_FREE` / `TRAINING_VRAM_RESERVE`.
 * [Phase 13 runtime VRAM estimates](./phase13-runtime-vram.md) — **why** GGUF VRAM heuristics, `suggested_max_num_ctx`, opt-in clamp, autotune, autoconfig, operator CLI. Complements **L1** throughput profiles: [gpu-profiles-l1.md](./gpu-profiles-l1.md).
 * [Phase 14 in-process llama](./phase14-inprocess-llama.md) — **why** subprocess HTTP was replaced for forward; three backends; render tokenize; sampling parity; 5080 sign-off scripts.

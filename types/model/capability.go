@@ -12,12 +12,26 @@ const (
 	CapabilityVideo     = Capability("video")
 	CapabilityEmbedding = Capability("embedding")
 	CapabilityThinking  = Capability("thinking")
-	CapabilityImage = Capability("image") // image generation (CLI aliases: image_gen, image-gen)
+	CapabilityImage     = Capability("image") // image generation (CLI aliases: image_gen, image-gen)
 	// CapabilityVideoGen is text-to-video generation (distinct from CapabilityVideo VLM understanding).
 	CapabilityVideoGen = Capability("video_gen")
-	CapabilityAudio     = Capability("audio")
-	CapabilitySpeech    = Capability("speech") // text-to-speech
+	CapabilityAudio    = Capability("audio")
+	CapabilitySpeech   = Capability("speech") // text-to-speech
+	// CapabilityDecision marks System-1 / Jev models (choice / score / noul) — not chat.
+	CapabilityDecision = Capability("decision")
 )
+
+// IsValid reports whether c is a recognized capability label (Modelfile CAPABILITY).
+func (c Capability) IsValid() bool {
+	switch c {
+	case CapabilityCompletion, CapabilityTools, CapabilityInsert, CapabilityVision,
+		CapabilityVideo, CapabilityEmbedding, CapabilityThinking, CapabilityImage,
+		CapabilityVideoGen, CapabilityAudio, CapabilitySpeech, CapabilityDecision:
+		return true
+	default:
+		return false
+	}
+}
 
 func (c Capability) String() string {
 	return string(c)

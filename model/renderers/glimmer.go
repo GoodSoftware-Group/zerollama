@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/types/model"
 )
 
 const (
@@ -374,4 +375,8 @@ func (r *GlimmerRenderer) Render(messages []api.Message, tools []api.Tool, think
 	sb.WriteString(glimmerStart)
 	sb.WriteString("assistant")
 	return sb.String(), nil
+}
+
+func (r *GlimmerRenderer) Thinking() *model.Thinking {
+	return &model.Thinking{Values: []any{false, "low", "medium", "high", "max"}, Default: "high"}
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/x/internal/mlxthread"
+	"github.com/ollama/ollama/x/mlxrunner/cache"
 	"github.com/ollama/ollama/x/mlxrunner/mlx"
 	"github.com/ollama/ollama/x/mlxrunner/model"
 	"github.com/ollama/ollama/x/mlxrunner/model/base"
@@ -43,8 +44,11 @@ type Runner struct {
 	Model         base.Model
 	Tokenizer     *tokenizer.Tokenizer
 	Requests      chan Request
+	EmbedRequests chan EmbeddingRequest
 	Sampler       *sample.Sampler
 	cache         kvCache
+	scoreCache    *kvCache
+	scoreHidden   *cache.HiddenCache
 	contextLength int
 	mlxThread     *mlxthread.Thread
 	// spec is the speculative-decoding subsystem (MTP and/or PLD).
@@ -366,6 +370,17 @@ func (r *Runner) Run(host, port string, mux http.Handler) error {
 				}
 
 				close(request.Responses)
+			case erequest := <-r.EmbedRequests:
+				run := func() error { return r.runEmbed(erequest.Ctx, erequest) }
+				var err error
+				if r.mlxThread == nil {
+					err = run()
+				} else {
+					err = r.mlxThread.Do(erequest.Ctx, run)
+				}
+				if err != nil {
+					slog.Info("Embedding request terminated", "error", err)
+				}
 			}
 		}
 	})

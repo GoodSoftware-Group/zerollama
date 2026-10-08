@@ -62,7 +62,7 @@ Other checkouts under the same parent (`ggml/`, `shard/`, rotorquant labs, …) 
 | LocalAI | v4.5.6 tree | 2026-07-03 | LA11+ candidates in [localai-borrowings.md](./localai-borrowings.md) |
 | Wan2GP `main` | `7e45fe7e2110` | 2026-08-11 | **Brought:** `mmgp==3.7.12` attach for 16g TI2V — [wangp-borrowings.md](./wangp-borrowings.md) |
 | mlx-serve | README / `pld_index.zig` | 2026-08-24 | **Brought:** PLD + spec gates — [mlx-serve-borrowings.md](./mlx-serve-borrowings.md) |
-| Ollama `main` | `c1737589` (latest tag **v0.34.3**; tip **v0.34.4-rc0**; llama.cpp **b11081**) | 2026-09-22 | Fast-forward + triage — [upstream-ollama-diff.md](./upstream-ollama-diff.md#cherry-pick-status-sep-2026-v0333--v0344-rc0--c1737589); **Done:** #18374 / #18319 / #18533. **Next:** thinking levels + format-after-think; MLX xgrammar before pin bump |
+| Ollama `main` | `e3cddc3e` (latest tag **v0.40.0**; tip **v0.40.1-rc0**; llama.cpp **b11351**; MLX **`a59cc231`**) | 2026-10-07 | Product-first ladders L0–L6 — [upstream-ollama-diff.md](./upstream-ollama-diff.md#cherry-pick-status-oct-2026-c1737589--v0401-rc0--e3cddc3e); prior Sep tip `c1737589` |
 
 ---
 

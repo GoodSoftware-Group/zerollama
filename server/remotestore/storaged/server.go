@@ -7,7 +7,6 @@ package storaged
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash"
@@ -18,6 +17,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/ollama/ollama/server/remotestore"
 	"github.com/ollama/ollama/server/remotestore/catalog"
@@ -33,7 +34,18 @@ type Server struct {
 	ModelsDir string
 	Auth      *remotestore.Auth
 	Mux       *http.ServeMux
+	Peers     []string // peer storage base URLs for async replication
+	HTTP      *http.Client
+
+	metrics    metrics
 	rdmaServer // build-tagged: real verbs hub or empty stub
+
+	replOnce   sync.Once
+	replMu     sync.Mutex
+	replQ      []replicateJob
+	replWake   chan struct{}
+	peerMu     sync.Mutex
+	peerStatus map[string]string
 }
 
 // New constructs a Server and registers routes.
@@ -42,8 +54,15 @@ func New(modelsDir string, auth *remotestore.Auth) *Server {
 		ModelsDir: modelsDir,
 		Auth:      auth,
 		Mux:       http.NewServeMux(),
+		HTTP:      &http.Client{Timeout: 60 * time.Minute},
 	}
 	s.Mux.HandleFunc(remotestore.CapabilityPath, s.handleCapability)
+	s.Mux.HandleFunc("/v1/health", s.handleHealth)
+	s.Mux.HandleFunc("/v1/metrics", s.handleMetrics)
+	s.Mux.HandleFunc("/v1/blobs", s.handleBlobsList)
+	s.Mux.HandleFunc("/v1/manifests", s.handleManifestsList)
+	s.Mux.HandleFunc("/v1/verify", s.handleVerify)
+	s.Mux.HandleFunc("/v1/gc", s.handleGC)
 	s.Mux.HandleFunc("/v1/blob/", s.handleBlob)
 	s.Mux.HandleFunc("/v1/manifest/", s.handleManifest)
 	s.Mux.HandleFunc("/v1/tensor/", s.handleTensor)
@@ -112,10 +131,13 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			w.Header().Set("Accept-Ranges", "bytes")
 			w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+			s.metrics.incGet(fi.Size())
 			if r.Method == http.MethodHead {
 				w.WriteHeader(http.StatusOK)
 				return
 			}
+			s.metrics.inFlight.Add(1)
+			defer s.metrics.inFlight.Add(-1)
 			http.ServeFile(w, r, path)
 			return
 		}
@@ -169,30 +191,41 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) putBlobFull(w http.ResponseWriter, r *http.Request, path, digest string) {
+	s.metrics.inFlight.Add(1)
+	defer s.metrics.inFlight.Add(-1)
 	tmp := path + ".partial"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
+		s.metrics.errors.Add(1)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	h := sha256.New()
-	_, err = io.Copy(io.MultiWriter(f, h), r.Body)
+	n, err := io.Copy(io.MultiWriter(f, h), r.Body)
+	if syncErr := f.Sync(); syncErr != nil && err == nil {
+		err = syncErr
+	}
 	cerr := f.Close()
 	if err != nil {
 		_ = os.Remove(tmp)
+		s.metrics.errors.Add(1)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if cerr != nil {
 		_ = os.Remove(tmp)
+		s.metrics.errors.Add(1)
 		http.Error(w, cerr.Error(), http.StatusInternalServerError)
 		return
 	}
 	if err := finalizeBlobPartial(tmp, path, digest, h); err != nil {
 		_ = os.Remove(tmp)
+		s.metrics.errors.Add(1)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.metrics.incPut(n)
+	s.enqueueReplicateBlob(digest)
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -232,17 +265,25 @@ func (s *Server) putBlobRange(w http.ResponseWriter, r *http.Request, path, dige
 		return
 	}
 	expect := cr.end - cr.start + 1
+	s.metrics.inFlight.Add(1)
+	defer s.metrics.inFlight.Add(-1)
 	n, err := io.Copy(f, io.LimitReader(r.Body, expect))
+	if syncErr := f.Sync(); syncErr != nil && err == nil {
+		err = syncErr
+	}
 	cerr := f.Close()
 	if err != nil {
+		s.metrics.errors.Add(1)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if cerr != nil {
+		s.metrics.errors.Add(1)
 		http.Error(w, cerr.Error(), http.StatusInternalServerError)
 		return
 	}
 	if n != expect {
+		s.metrics.errors.Add(1)
 		http.Error(w, fmt.Sprintf("short write: got %d want %d", n, expect), http.StatusBadRequest)
 		return
 	}
@@ -258,14 +299,18 @@ func (s *Server) putBlobRange(w http.ResponseWriter, r *http.Request, path, dige
 
 	sum, err := hashFile(tmp)
 	if err != nil {
+		s.metrics.errors.Add(1)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if err := finalizeBlobPartial(tmp, path, digest, sum); err != nil {
 		_ = os.Remove(tmp)
+		s.metrics.errors.Add(1)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.metrics.incPut(newSize)
+	s.enqueueReplicateBlob(digest)
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -281,16 +326,6 @@ func hashFile(path string) (hash hash.Hash, err error) {
 	}
 	return h, nil
 }
-
-func finalizeBlobPartial(tmp, path, digest string, h hash.Hash) error {
-	got := hex.EncodeToString(h.Sum(nil))
-	want := strings.TrimPrefix(strings.ReplaceAll(digest, ":", "-"), "sha256-")
-	if !strings.EqualFold(got, want) {
-		return fmt.Errorf("digest mismatch")
-	}
-	return os.Rename(tmp, path)
-}
-
 
 func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	rel := strings.TrimPrefix(r.URL.Path, "/v1/manifest/")
@@ -334,10 +369,23 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := os.WriteFile(path, body, 0o644); err != nil {
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, body, 0o644); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if err := fsyncPath(tmp); err != nil {
+			_ = os.Remove(tmp)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			_ = os.Remove(tmp)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = fsyncDir(filepath.Dir(path))
+		s.enqueueReplicateManifest(filepath.ToSlash(rel))
 		w.WriteHeader(http.StatusCreated)
 
 	default:

@@ -726,6 +726,9 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_STORAGE_SERVERS":                {"ZEROLLAMA_STORAGE_SERVERS", StorageServers(), "Comma-separated remote model storage base URLs"},
 		"ZEROLLAMA_STORAGE_SECRET":                 {"ZEROLLAMA_STORAGE_SECRET", "(set/unset)", "HMAC shared secret for remote model storage"},
 		"ZEROLLAMA_STORAGE_LISTEN":                 {"ZEROLLAMA_STORAGE_LISTEN", StorageListen(), "zerollama storage serve listen address (default 0.0.0.0:18090)"},
+		"ZEROLLAMA_STORAGE_PEERS":                  {"ZEROLLAMA_STORAGE_PEERS", StoragePeers(), "Comma-separated peer storage URLs for async replication"},
+		"ZEROLLAMA_STORAGE_TLS_CERT":               {"ZEROLLAMA_STORAGE_TLS_CERT", StorageTLSCert(), "Optional TLS certificate path for storage serve"},
+		"ZEROLLAMA_STORAGE_TLS_KEY":                {"ZEROLLAMA_STORAGE_TLS_KEY", StorageTLSKey(), "Optional TLS key path for storage serve"},
 		"ZEROLLAMA_REMOTE_CACHE_MAX_BYTES":         {"ZEROLLAMA_REMOTE_CACHE_MAX_BYTES", RemoteCacheMaxBytes(), "Max bytes for local remote-blob cache (0=unlimited)"},
 		"ZEROLLAMA_FLEET_POLL_INTERVAL":            {"ZEROLLAMA_FLEET_POLL_INTERVAL", Var("ZEROLLAMA_FLEET_POLL_INTERVAL"), "Fleet peer poll interval (default 3s)"},
 		"ZEROLLAMA_FLEET_ASSIGN_SECRET":            {"ZEROLLAMA_FLEET_ASSIGN_SECRET", "(set/unset)", "F5 HMAC secret for assignment tokens (empty disables)"},
@@ -1445,6 +1448,37 @@ func StorageListen() string {
 		return v
 	}
 	return "0.0.0.0:18090"
+}
+
+// StoragePeers is a comma-separated list of peer storage base URLs for replication.
+func StoragePeers() string {
+	return strings.TrimSpace(Var("ZEROLLAMA_STORAGE_PEERS"))
+}
+
+// StorageTLSCert is an optional TLS certificate path for storage serve.
+func StorageTLSCert() string {
+	return strings.TrimSpace(Var("ZEROLLAMA_STORAGE_TLS_CERT"))
+}
+
+// StorageTLSKey is an optional TLS private key path for storage serve.
+func StorageTLSKey() string {
+	return strings.TrimSpace(Var("ZEROLLAMA_STORAGE_TLS_KEY"))
+}
+
+// ParseStoragePeers splits ZEROLLAMA_STORAGE_PEERS into base URLs.
+func ParseStoragePeers() []string {
+	raw := StoragePeers()
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, strings.TrimRight(p, "/"))
+		}
+	}
+	return out
 }
 
 // RemoteCacheMaxBytes is the local remote-blob cache cap (0 = unlimited).

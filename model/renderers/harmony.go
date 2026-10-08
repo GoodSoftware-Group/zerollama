@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/types/model"
 )
 
 const (
@@ -202,4 +203,8 @@ func (r *HarmonyRenderer) renderAssistantHistory(msg api.Message) string {
 	}
 
 	return sb.String()
+}
+
+func (r *HarmonyRenderer) Thinking() *model.Thinking {
+	return &model.Thinking{Values: []any{"low", "medium", "high"}, Default: "medium"}
 }

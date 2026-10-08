@@ -18,7 +18,7 @@ func llama32GGMLFixturePath(tb testing.TB, file string) string {
 		tb.Fatal("failed to resolve test file path")
 	}
 
-	return filepath.Join(filepath.Dir(filename), "..", "..", "tokenizer", "testdata", "llama3.2", file)
+	return filepath.Join(filepath.Dir(filename), "testdata", "llama3.2", file)
 }
 
 func loadLlama32FromGGMLFixture(tb testing.TB) *Tokenizer {

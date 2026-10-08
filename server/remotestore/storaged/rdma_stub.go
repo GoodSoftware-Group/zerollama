@@ -14,6 +14,8 @@ type rdmaServer struct{}
 
 func (s *Server) initRDMA() {}
 
+func (s *Server) rdmaSessionCount() int { return 0 }
+
 func (s *Server) rdmaCapability() *remotestore.RDMACap {
 	ents, err := os.ReadDir("/sys/class/infiniband")
 	if err != nil {

@@ -105,7 +105,7 @@ if ! GOFLAGS=-mod=readonly go generate ./ml/backend/ggml/ggml/src; then
   )
 fi
 
-echo ">>> restore ANE hook in-tree (vendor lacks 0018 until git am)" >&2
+echo ">>> restore ANE hook in-tree (vendor lacks ane_draft_* until ANE patches apply)" >&2
 "${ROOT}/scripts/vendor/restore_ane_hook_intree.sh"
 
 echo ">>> OK: vendored trees synced from ${VENDOR}" >&2
