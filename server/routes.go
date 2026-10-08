@@ -598,7 +598,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		req.Model = served
 	}
 
-	if routed, dec, err := s.applyRouterRewrite(c.Request.Context(), req.Model, req.Prompt); err != nil {
+	if routed, dec, err := s.applyRouterRewrite(c.Request.Context(), req.Model, generateRouteSignals(c, &req)); err != nil {
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
 	} else if dec != nil {
@@ -3539,7 +3539,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		req.Model = served
 	}
 
-	if routed, dec, err := s.applyRouterRewrite(c.Request.Context(), req.Model, lastUserMessageText(req.Messages)); err != nil {
+	if routed, dec, err := s.applyRouterRewrite(c.Request.Context(), req.Model, chatRouteSignals(c, &req)); err != nil {
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
 	} else if dec != nil {

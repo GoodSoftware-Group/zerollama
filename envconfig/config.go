@@ -486,6 +486,14 @@ func RouterRewrite() bool {
 	return true
 }
 
+// AutoRouter enables the implicit deterministic router for model "auto" when router.yaml
+// does not define one (docs/auto-router.md AR1). Default on; ZEROLLAMA_AUTO_ROUTER=0 makes
+// "auto" an ordinary (usually missing) model name again.
+func AutoRouter() bool {
+	s := strings.TrimSpace(strings.ToLower(Var("ZEROLLAMA_AUTO_ROUTER")))
+	return s != "0" && s != "false" && s != "off"
+}
+
 // ChatCompression opts in summary-style compression for ordinary chats.
 // Agent threads with tool output or thinking auto-elide (placeholder) without this.
 func ChatCompression() bool {
@@ -715,6 +723,7 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_BACKEND_PARENT_WATCH":           {"ZEROLLAMA_BACKEND_PARENT_WATCH", BackendParentWatch(), "Linux: SIGKILL runner subprocesses if the parent dies (default on)"},
 		"ZEROLLAMA_ROUTER_CONFIG":                  {"ZEROLLAMA_ROUTER_CONFIG", RouterConfigPath(), "LA11 router YAML (default ~/.ollama/router.yaml; 0=off)"},
 		"ZEROLLAMA_ROUTER_REWRITE":                 {"ZEROLLAMA_ROUTER_REWRITE", RouterRewrite(), "Rewrite chat/generate model when the name is a router (default on)"},
+		"ZEROLLAMA_AUTO_ROUTER":                    {"ZEROLLAMA_AUTO_ROUTER", AutoRouter(), "Implicit deterministic router for model \"auto\" when router.yaml has none (default on)"},
 		"ZEROLLAMA_ALIASES_CONFIG":                 {"ZEROLLAMA_ALIASES_CONFIG", AliasesConfigPath(), "LA17 aliases YAML (default ~/.ollama/aliases.yaml; 0=off)"},
 		"ZEROLLAMA_CHAT_COMPRESSION":               {"ZEROLLAMA_CHAT_COMPRESSION", ChatCompression(), "Opt-in summary compress for non-agent chat (1/on). Tool/think threads auto-elide without this."},
 		"ZEROLLAMA_TOOL_AUTOCORRECT":               {"ZEROLLAMA_TOOL_AUTOCORRECT", ToolAutocorrect(), "Coerce tool args to the tool schema and hoist buried required keys (default on; 0=off)"},

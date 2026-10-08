@@ -11,6 +11,7 @@ import (
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/llm"
+	"github.com/ollama/ollama/server/autoroute"
 	"github.com/ollama/ollama/types/model"
 )
 
@@ -69,22 +70,35 @@ func (s *Server) RouterDecideHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, dec)
 }
 
-func (s *Server) applyRouterRewrite(ctx context.Context, modelName, prompt string) (string, *RouterDecision, error) {
+// applyRouterRewrite resolves a router name to a concrete model in-band. router.yaml
+// routers (LA11) run their classifier and are then checked against the request's surface
+// and capabilities; the reserved name "auto" without a router.yaml entry uses the built-in
+// deterministic router (docs/auto-router.md AR1). Other names pass through unchanged.
+func (s *Server) applyRouterRewrite(ctx context.Context, modelName string, sig autoroute.Signals) (string, *RouterDecision, error) {
 	if !envconfig.RouterRewrite() {
 		return modelName, nil, nil
 	}
-	spec, ok := lookupRouter(modelName)
-	if !ok {
-		return modelName, nil, nil
+	if spec, ok := lookupRouter(modelName); ok {
+		dec, err := decideRouter(ctx, modelName, spec, sig.Text, s.scoreRouterPolicies, s.embedRouterText, s.rerankRouterDocs)
+		if err != nil {
+			return "", nil, err
+		}
+		if dec.Candidate == "" {
+			return "", nil, fmt.Errorf("router %q produced empty candidate", modelName)
+		}
+		if err := enforceRouterSurface(&dec, spec, sig); err != nil {
+			return "", nil, err
+		}
+		return dec.Candidate, &dec, nil
 	}
-	dec, err := decideRouter(ctx, modelName, spec, prompt, s.scoreRouterPolicies, s.embedRouterText, s.rerankRouterDocs)
-	if err != nil {
-		return "", nil, err
+	if isImplicitAutoName(modelName) {
+		dec, err := s.decideAuto(ctx, modelName, sig)
+		if err != nil {
+			return "", nil, err
+		}
+		return dec.Candidate, dec, nil
 	}
-	if dec.Candidate == "" {
-		return "", nil, fmt.Errorf("router %q produced empty candidate", modelName)
-	}
-	return dec.Candidate, &dec, nil
+	return modelName, nil, nil
 }
 
 func stampRouterHeaders(c *gin.Context, dec *RouterDecision) {
@@ -95,6 +109,9 @@ func stampRouterHeaders(c *gin.Context, dec *RouterDecision) {
 	c.Header("X-Zerollama-Router-Chosen", dec.Candidate)
 	if dec.Fallback {
 		c.Header("X-Zerollama-Router-Fallback", "true")
+	}
+	if dec.Reason != "" {
+		c.Header("X-Zerollama-Router-Reason", dec.Reason)
 	}
 }
 

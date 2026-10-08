@@ -28,6 +28,11 @@ type Candidate struct {
 	Family        string
 	ContextLength int // trained / manifest limit; 0 = unknown (never filters)
 	SizeBytes     int64
+
+	// Server-supplied facts the availability probe needs without re-opening the model.
+	ID               string // fully qualified name (GetModel key)
+	SchedKey         string // scheduler loaded-map / cooldown key
+	RuntimeInference bool   // model is configured for the Python runtime sidecar
 }
 
 // Has reports whether c has every capability in want.
@@ -129,7 +134,7 @@ func (inv *Inventory) Refresh(refs []Ref) ([]Candidate, map[string]error) {
 			g.Go(func() error {
 				c, err := inv.load(ref)
 				if err == nil {
-					c.Name, c.Digest = ref.Name, ref.Digest
+					c.Name, c.Digest, c.ID = ref.Name, ref.Digest, ref.ID
 					if c.SizeBytes == 0 {
 						c.SizeBytes = ref.SizeBytes
 					}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/llm"
+	"github.com/ollama/ollama/server/autoroute"
 )
 
 const defaultRouterActivation = 0.15
@@ -55,7 +56,11 @@ type RouterDecision struct {
 	Scores            []RouterLabelScore `json:"scores,omitempty"`
 	Neighbors         []RouterNeighbor   `json:"neighbors,omitempty"`
 	NearestSimilarity float64            `json:"nearest_similarity,omitempty"`
-	LatencyMs         int64              `json:"latency_ms"`
+	// Reason is a short why for the choice (warm, best-fit, only-candidate, surface-fallback).
+	Reason string `json:"reason,omitempty"`
+	// Auto carries the full deterministic decision (filters + ranking) for implicit "auto".
+	Auto      *autoroute.Decision `json:"auto,omitempty"`
+	LatencyMs int64               `json:"latency_ms"`
 }
 
 type RouterLabelScore struct {

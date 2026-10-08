@@ -27,11 +27,13 @@ func loadRouteCandidate(ref autoroute.Ref) (autoroute.Candidate, error) {
 		return autoroute.Candidate{}, autoroute.ErrSkip
 	}
 	return autoroute.Candidate{
-		Capabilities:  m.Capabilities(),
-		Backends:      maps.Clone(m.Config.ModalityBackends),
-		Format:        m.Config.ModelFormat,
-		Family:        m.Config.ModelFamily,
-		ContextLength: modelMaxNumCtx(m),
+		Capabilities:     m.Capabilities(),
+		Backends:         maps.Clone(m.Config.ModalityBackends),
+		Format:           m.Config.ModelFormat,
+		Family:           m.Config.ModelFamily,
+		ContextLength:    modelMaxNumCtx(m),
+		SchedKey:         schedulerModelKey(m),
+		RuntimeInference: modelUsesRuntimeInference(m),
 	}, nil
 }
 
