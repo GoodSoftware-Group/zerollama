@@ -35,6 +35,13 @@ type RouterSpec struct {
 	Policies            []RouterPolicy    `yaml:"policies" json:"policies"`
 	Candidates          []RouterCandidate `yaml:"candidates" json:"candidates"`
 	KNN                 *RouterKNN        `yaml:"knn" json:"knn"`
+
+	// classifier: jev (AR4) — a local /v1/decisions model answers one choice question
+	// over Policies. Decider is the decisions model; DeciderTimeout bounds each call
+	// (default 150ms); OnDeciderError is "fallback" (default) or "fail".
+	Decider        string `yaml:"decider" json:"decider,omitempty"`
+	DeciderTimeout string `yaml:"decider_timeout" json:"decider_timeout,omitempty"`
+	OnDeciderError string `yaml:"on_decider_error" json:"on_decider_error,omitempty"`
 }
 
 type RouterPolicy struct {
@@ -59,8 +66,11 @@ type RouterDecision struct {
 	// Reason is a short why for the choice (warm, best-fit, only-candidate, surface-fallback).
 	Reason string `json:"reason,omitempty"`
 	// Auto carries the full deterministic decision (filters + ranking) for implicit "auto".
-	Auto      *autoroute.Decision `json:"auto,omitempty"`
-	LatencyMs int64               `json:"latency_ms"`
+	Auto *autoroute.Decision `json:"auto,omitempty"`
+	// Decider / Calibrated describe a classifier: jev decision.
+	Decider    string `json:"decider,omitempty"`
+	Calibrated *bool  `json:"calibrated,omitempty"`
+	LatencyMs  int64  `json:"latency_ms"`
 }
 
 type RouterLabelScore struct {
@@ -77,6 +87,19 @@ type routerScoreFn func(ctx context.Context, classifier, prompt string, candidat
 type routerEmbedFn func(ctx context.Context, model, text string) ([]float32, error)
 
 type routerRerankFn func(ctx context.Context, model, query string, docs []string) ([]llm.RerankHit, error)
+
+// routerJevFn asks decider one Jev choice question (body is a complete /v1/decisions
+// request) and returns the chosen label, per-label probabilities, and whether the decider
+// reports them as calibrated.
+type routerJevFn func(ctx context.Context, decider string, body []byte) (choice string, probs map[string]float64, calibrated bool, err error)
+
+// routerBackends bundles the model calls a router tier may make.
+type routerBackends struct {
+	score  routerScoreFn
+	embed  routerEmbedFn
+	rerank routerRerankFn
+	jev    routerJevFn
+}
 
 var (
 	routerFileMu    sync.Mutex
@@ -200,6 +223,11 @@ func buildRouterPrompt(spec RouterSpec, user string) string {
 }
 
 func decideRouter(ctx context.Context, name string, spec RouterSpec, user string, score routerScoreFn, embed routerEmbedFn, rerank routerRerankFn) (RouterDecision, error) {
+	return decideRouterWith(ctx, name, spec, user, routerBackends{score: score, embed: embed, rerank: rerank})
+}
+
+func decideRouterWith(ctx context.Context, name string, spec RouterSpec, user string, be routerBackends) (RouterDecision, error) {
+	score, embed, rerank := be.score, be.embed, be.rerank
 	start := time.Now()
 	dec := RouterDecision{
 		Router:     name,
@@ -238,6 +266,9 @@ func decideRouter(ctx context.Context, name string, spec RouterSpec, user string
 	}
 	if routerIsRerank(spec) {
 		return decideRouterRerank(ctx, name, spec, user, rerank, &dec, fallback, finish)
+	}
+	if routerIsJev(spec) {
+		return decideRouterJev(ctx, spec, user, be.jev, &dec, fallback, finish)
 	}
 
 	thresh := spec.ActivationThreshold

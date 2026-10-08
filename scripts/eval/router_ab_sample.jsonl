@@ -1,0 +1,9 @@
+# Tiny smoke set for router_ab.py — replace "expected" with tags on your node. AR7 grows this.
+{"prompt": "Fix the borrow checker error in this Rust function: fn f(v: &Vec<i32>) -> &i32 { &v[0] }", "expected": "qwen3-coder:30b"}
+{"prompt": "Write a Go function that reverses a linked list in place.", "expected": "qwen3-coder:30b"}
+{"prompt": "Why does my Python asyncio loop hang when I call time.sleep inside a coroutine?", "expected": "qwen3-coder:30b"}
+{"prompt": "hey! how's it going?", "expected": "llama3.2:3b"}
+{"prompt": "Suggest a name for my new cat, she is grey and very lazy.", "expected": "llama3.2:3b"}
+{"prompt": "What is the integral of x^2 * e^x dx? Show the steps.", "expected": "qwen3:8b"}
+{"prompt": "Prove that the square root of 2 is irrational.", "expected": "qwen3:8b"}
+{"prompt": "Extract every date and amount from: Paid $420 on 3 March, refunded $20 on 9 March.", "expected": "llama3.2:3b"}

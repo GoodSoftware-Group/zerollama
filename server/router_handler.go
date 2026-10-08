@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -85,7 +86,18 @@ func (s *Server) resolveRouter(ctx context.Context, name string, sig autoroute.S
 			d, err := s.decideRouterNonText(ctx, name, spec, sig)
 			return d, true, err
 		}
-		d, err := decideRouter(ctx, name, spec, sig.Text, s.scoreRouterPolicies, s.embedRouterText, s.rerankRouterDocs)
+		d, err := decideRouterWith(ctx, name, spec, sig.Text, routerBackends{
+			score: s.scoreRouterPolicies, embed: s.embedRouterText, rerank: s.rerankRouterDocs, jev: s.askJevDecider,
+		})
+		if errors.Is(err, errDeciderUnavailable) && !deciderFailsClosed(spec) {
+			// Fail open (AR4): no router fallback configured, so pick deterministically
+			// among the router's own candidates rather than 503 because the decider is cold.
+			fd, ferr := s.decideRouterNonText(ctx, name, spec, sig)
+			if fd != nil && ferr == nil {
+				fd.Reason, fd.Decider = "decider-fallback", d.Decider
+			}
+			return fd, true, ferr
+		}
 		if err != nil {
 			return nil, true, err
 		}

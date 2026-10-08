@@ -3181,6 +3181,9 @@ func Serve(listeners ...net.Listener) error {
 	}()
 
 	s.sched.Run(schedCtx)
+	// classifier: jev routers: load their deciders now so the first routed request does
+	// not spend its decider_timeout on a cold load (docs/auto-router.md AR4).
+	go s.prewarmJevDeciders()
 
 	// register the experimental webp decoder
 	// so webp images can be used in multimodal inputs
