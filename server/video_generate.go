@@ -148,14 +148,8 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 	}
 
 	backend := modality.BackendFor(m.Config, model.ModalityVideoGeneration)
-	switch backend {
-	case model.BackendWan, model.BackendLTX, model.BackendH3:
-		// ok
-	case model.BackendRIFE:
-		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "video_generation backend \"rife\" is reserved but not implemented yet"))
-		return
-	default:
-		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, fmt.Sprintf("video_generation backend must be %q, %q, or %q (got %q)", model.BackendWan, model.BackendLTX, model.BackendH3, backend)))
+	if err := videoBackendErr(backend); err != nil {
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 		return
 	}
 
@@ -170,30 +164,8 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 		return
 	}
-	if backend == model.BackendWan {
-		if err := validateWanKeyframes(cfg.Profile, keyframeLabels); err != nil {
-			c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
-	}
-	// Darwin ltx-mlx I2V: first still is --image. LTX-2.5 Wan2GP: start/end stills (image_start/image_end).
-	// LTXV 0.9.8 Wan2GP distilled remains T2V-only.
-	if backend == model.BackendLTX && len(keyframeLabels) > 0 && !isLtxMLXJob(cfg) && !isLtx25Profile(cfg.Profile) {
-		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "ltx Wan2GP LTXV distilled T2V does not support keyframes; use ltx2.5-22b-distilled for start/end control"))
-		return
-	}
-	if backend == model.BackendLTX && isLtxMLXJob(cfg) {
-		if err := errLtxMLXUnsupportedPlatform(); err != nil {
-			c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
-		if err := validateLtxMLXLastFrame(req.Options, keyframeLabels); err != nil {
-			c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
-			return
-		}
-	}
-	if backend == model.BackendH3 && len(keyframeLabels) > 0 {
-		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "h3 T2VA does not support keyframes yet"))
+	if err := validateVideoPlan(backend, cfg, req.Options, keyframeLabels); err != nil {
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 		return
 	}
 
@@ -269,34 +241,12 @@ func (s *Server) VideoCreateHandler(c *gin.Context) {
 
 	// WHY before payload/submit: refuse plans that will thrash host RAM into killing serve.
 	// Exclusive GPU only coordinates VRAM/chat — host admission is the missing half.
-	if backend == model.BackendLTX && !isLtxMLXJob(cfg) {
-		if err := admitLtxHostRAM(cfg); err != nil {
-			if keyframeDir != "" {
-				_ = os.RemoveAll(keyframeDir)
-			}
-			c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, err.Error()))
-			return
+	if err := admitVideoHostRAM(backend, cfg); err != nil {
+		if keyframeDir != "" {
+			_ = os.RemoveAll(keyframeDir)
 		}
-	} else if backend == model.BackendH3 {
-		if isH3Wan2GPJob(cfg) {
-			if err := admitH3HostRAM(cfg); err != nil {
-				if keyframeDir != "" {
-					_ = os.RemoveAll(keyframeDir)
-				}
-				c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, err.Error()))
-				return
-			}
-		}
-		// Darwin video-cli H3: host DiT+VAE — no Wan 16g GPU/RAM admit.
-	} else {
-		hostPlan := planWanHost(cfg)
-		if err := admitWanHostRAM(cfg, hostPlan); err != nil {
-			if keyframeDir != "" {
-				_ = os.RemoveAll(keyframeDir)
-			}
-			c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, err.Error()))
-			return
-		}
+		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, err.Error()))
+		return
 	}
 
 	createdAt := time.Now().UTC()

@@ -483,7 +483,7 @@ func runBench(cmd *cobra.Command, args []string) error {
 			BenchedAt: time.Now().UTC(),
 		}
 		cache[m.Digest] = entry
-		if err := cache.Save(); err != nil {
+		if err := benchcache.Save(cache); err != nil {
 			return fmt.Errorf("save bench cache: %w", err)
 		}
 

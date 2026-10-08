@@ -1,14 +1,13 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
-
-	"github.com/gin-gonic/gin"
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/decision"
@@ -118,12 +117,11 @@ func decisionScoreEncoding(m *Model) string {
 	return ""
 }
 
-func (s *Server) serveDecisionsSystemOneScore(c *gin.Context, m *Model, name string, dreq decision.Request, requestOpts map[string]any, keepAlive *api.Duration) {
+func (s *Server) decisionsSystemOneScore(ctx context.Context, m *Model, name string, dreq decision.Request, requestOpts map[string]any, keepAlive *api.Duration) (api.DecisionsResponse, error) {
 	encoding := decisionScoreEncoding(m)
 	compiled, err := decision.Compile(dreq, encoding)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+		return api.DecisionsResponse{}, decisionsErr(http.StatusBadRequest, err)
 	}
 
 	caps := []model.Capability{model.CapabilityDecision}
@@ -131,17 +129,15 @@ func (s *Server) serveDecisionsSystemOneScore(c *gin.Context, m *Model, name str
 		caps = append(caps, model.CapabilityVision)
 	}
 
-	r, _, _, _, releaseQoS, err := s.scheduleRunner(c.Request.Context(), name, caps, requestOpts, keepAlive, nil, nil, nil)
+	r, _, _, _, releaseQoS, err := s.scheduleRunner(ctx, name, caps, requestOpts, keepAlive, nil, nil, nil)
 	if err != nil {
-		handleScheduleError(c, dreq.Model, err)
-		return
+		return api.DecisionsResponse{}, decisionsScheduleErr(dreq.Model, err)
 	}
 	defer releaseQoS()
 
 	scorer, ok := r.(llm.Scorer)
 	if !ok {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("model %q does not support System One scoring; use a decision-capable runner (tev1/clef/nimble) or Laya GGUF", dreq.Model)})
-		return
+		return api.DecisionsResponse{}, decisionsErr(http.StatusBadRequest, fmt.Errorf("model %q does not support System One scoring; use a decision-capable runner (tev1/clef/nimble) or Laya GGUF", dreq.Model))
 	}
 
 	if err := compiled.Render(func(messages []api.Message) (string, error) {
@@ -150,41 +146,37 @@ func (s *Server) serveDecisionsSystemOneScore(c *gin.Context, m *Model, name str
 		}
 		think := &api.ThinkValue{Value: false}
 		if m.HasChatTemplate && chatModeForModel(m) == chatExecutionModeNative {
-			return r.ApplyChatTemplate(c.Request.Context(), llm.ChatRequest{Messages: messages, Think: think})
+			return r.ApplyChatTemplate(ctx, llm.ChatRequest{Messages: messages, Think: think})
 		}
 		return renderPrompt(m, messages, nil, think)
 	}); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return api.DecisionsResponse{}, decisionsErr(http.StatusInternalServerError, err)
 	}
 
 	compiled.Request.MaxTokens = r.ContextLength()
-	result, err := scorer.Score(c.Request.Context(), compiled.Request)
+	result, err := scorer.Score(ctx, compiled.Request)
 	if err != nil {
 		status := http.StatusInternalServerError
 		var statusErr api.StatusError
 		if errors.As(err, &statusErr) {
 			status = statusErr.StatusCode
 		}
-		c.AbortWithStatusJSON(status, gin.H{"error": err.Error()})
-		return
+		return api.DecisionsResponse{}, decisionsErr(status, err)
 	}
 
 	response, err := compiled.Answer(dreq.Model, result)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return api.DecisionsResponse{}, decisionsErr(http.StatusInternalServerError, err)
 	}
 
 	out, err := decisionResponseToAPI(response)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return api.DecisionsResponse{}, decisionsErr(http.StatusInternalServerError, err)
 	}
 	if out.Model == "" {
 		out.Model = name
 	}
-	c.JSON(http.StatusOK, out)
+	return out, nil
 }
 
 func decisionResponseToAPI(resp decision.Response) (api.DecisionsResponse, error) {

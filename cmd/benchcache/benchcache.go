@@ -3,102 +3,36 @@
 // WHY a separate package: bench and list both read/write ~/.ollama/bench.json without
 // importing the full cmd tree (Cobra, TUI, server hooks). Digest keys keep cache valid
 // across tag renames and invalidate automatically when weights change.
+//
+// WHY aliases: types and Load live in internal/benchcache so the server (auto-router)
+// can read perf without importing cmd; this package keeps the writer because it needs
+// cmd/internal/fileutil.
 package benchcache
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/ollama/ollama/cmd/internal/fileutil"
+	shared "github.com/ollama/ollama/internal/benchcache"
 )
 
 // Entry is one benchmark result keyed by model digest.
-type Entry struct {
-	Model     string    `json:"model"`                 // display name at bench time; not used for lookup
-	Kind      string    `json:"kind,omitempty"`        // completion | image | video_gen
-	TokPerSec float64   `json:"tok_per_sec,omitempty"` // completion decode only (EvalCount/EvalDuration)
-	GenSec    float64   `json:"gen_sec,omitempty"`     // image/video wall seconds per generation
-	BenchedAt time.Time `json:"benched_at"`            // audit; future TTL could use this
-}
-
-// PerfString formats the ls/bench summary metric for this entry.
-// WHY one formatter: ListHandler uses a single PERF column; kind selects tok/s vs seconds.
-func (e Entry) PerfString() string {
-	switch e.Kind {
-	case "image", "video_gen":
-		if e.GenSec > 0 {
-			return fmt.Sprintf("%.0fs", e.GenSec)
-		}
-	default:
-		if e.TokPerSec > 0 {
-			return fmt.Sprintf("%.1f", e.TokPerSec)
-		}
-	}
-	// Legacy entries without kind
-	if e.GenSec > 0 {
-		return fmt.Sprintf("%.0fs", e.GenSec)
-	}
-	if e.TokPerSec > 0 {
-		return fmt.Sprintf("%.1f", e.TokPerSec)
-	}
-	return "--"
-}
-
-// Cached returns true when this entry has a usable benchmark for its kind.
-func (e Entry) Cached() bool {
-	switch e.Kind {
-	case "image", "video_gen":
-		return e.GenSec > 0
-	default:
-		return e.TokPerSec > 0 || e.GenSec > 0
-	}
-}
+type Entry = shared.Entry
 
 // Cache maps model digest to benchmark entry.
-// WHY digest not name: cp/rename keeps one weights blob; re-pull changes digest → stale entry ignored in ls.
-type Cache map[string]Entry
+type Cache = shared.Cache
 
 // CachePath returns ~/.ollama/bench.json.
-func CachePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".ollama", "bench.json"), nil
-}
+func CachePath() (string, error) { return shared.CachePath() }
 
 // Load reads the bench cache. Missing file returns an empty cache.
-// WHY empty not error on ENOENT: ls must work before the operator ever runs bench.
-func Load() (Cache, error) {
-	path, err := CachePath()
-	if err != nil {
-		return nil, err
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return make(Cache), nil
-		}
-		return nil, err
-	}
-
-	var cache Cache
-	if err := json.Unmarshal(data, &cache); err != nil {
-		return nil, fmt.Errorf("parse bench cache: %w", err)
-	}
-	if cache == nil {
-		cache = make(Cache)
-	}
-	return cache, nil
-}
+func Load() (Cache, error) { return shared.Load() }
 
 // Save writes the cache atomically via temp file + rename.
 // WHY WriteWithBackup: same durability pattern as ~/.ollama/config.json; partial bench runs must not corrupt JSON.
-func (c Cache) Save() error {
+func Save(c Cache) error {
 	if c == nil {
 		c = make(Cache) // WHY: nil map marshals to JSON null; ls expects object {}
 	}
