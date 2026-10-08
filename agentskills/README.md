@@ -1,6 +1,6 @@
 # zerollama Agent Skills
 
-30 `SKILL.md` packages describing how to use [zerollama](https://github.com/GoodSoftware-Group/zerollama) — generated from the server's own OpenAPI spec, CLI, and source, intended for distribution to any agent/tool that can consume the `SKILL.md` (frontmatter + markdown) format.
+32 `SKILL.md` packages describing how to use [zerollama](https://github.com/GoodSoftware-Group/zerollama) — generated from the server's own OpenAPI spec, CLI, and source, intended for distribution to any agent/tool that can consume the `SKILL.md` (frontmatter + markdown) format. Includes MultiDecode, entity-extract, and typed-decisions alongside image/video/speech and harness skills.
 
 See [skills.json](skills.json) for the machine-readable manifest (name, description, version, category, tags, related_skills) used to generate this table.
 
