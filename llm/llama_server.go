@@ -882,6 +882,10 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 	if launch.embedding && ggufIsRerank(launch.ggufKV) {
 		params = append(params, "--reranking")
 	}
+	if launch.embedding && ggufIsClef(launch.ggufKV) {
+		// Per-token states for clef_head (LAST pooling collapses score_fields).
+		params = append(params, "--pooling", "none")
+	}
 	if ggufIsLaya(launch.ggufKV) {
 		params = append(params, "--decisions")
 	}
@@ -1524,6 +1528,12 @@ func NewLlamaServerRunner(
 	// Check if this is an embedding model
 	arch := f.KV().Architecture()
 	_, isEmbedding := f.KV()[fmt.Sprintf("%s.pooling_type", arch)]
+	// Clef joint-head score posts to llama-server /embedding with score_fields and
+	// needs per-token hidden states (--embedding --pooling none). Decision-type
+	// GGUFs often omit pooling_type; still force embedding mode.
+	if !isEmbedding && ggufIsClef(f.KV()) {
+		isEmbedding = true
+	}
 
 	// Older Ollama-format GGUFs store vision tensors (v.*, mm.*) inline in
 	// the main model file rather than in a separate projector layer. When
@@ -1662,6 +1672,20 @@ func ggufIsRerank(kv ggml.KV) bool {
 // ggufIsLaya is true when the GGUF architecture is Laya typed-decisions.
 func ggufIsLaya(kv ggml.KV) bool {
 	return kv.Architecture() == "laya"
+}
+
+// ggufIsClef is true when GGUF metadata marks a Clef joint-head decision model
+// ({arch}.decision.type == "clef"), including synth lab grafts.
+func ggufIsClef(kv ggml.KV) bool {
+	if kv == nil {
+		return false
+	}
+	arch := kv.Architecture()
+	if arch == "" || arch == "unknown" {
+		return false
+	}
+	// KV.String prefixes arch for bare keys — do not pass "{arch}.decision.type".
+	return strings.EqualFold(kv.String("decision.type", ""), "clef")
 }
 
 func legacyEmbeddingsWereRaw(kv ggml.KV) bool {

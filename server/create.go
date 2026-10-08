@@ -632,6 +632,12 @@ func createModel(r api.CreateRequest, name model.Name, baseLayers []*layerGGML, 
 					}
 				}
 			}
+			// Clef joint-head GGUFs set {arch}.decision.type=clef (incl. synth grafts).
+			// Route create → System One score without requiring Modelfile RENDERER/CAPABILITY.
+			if dtype := strings.ToLower(strings.TrimSpace(layer.GGML.KV().String("decision.type", ""))); dtype == "clef" {
+				config.Renderer = cmp.Or(config.Renderer, "clef")
+				config.AddCapabilities(string(model.CapabilityDecision))
+			}
 		}
 		layers = append(layers, layer.Layer)
 	}

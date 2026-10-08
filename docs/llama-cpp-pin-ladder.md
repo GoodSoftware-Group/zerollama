@@ -146,13 +146,42 @@ stop, format-patch, smoke, then continue — do not stack unresolved `git am` ga
 |--------|---------|
 | `./scripts/phase/l6_pin_ladder_status.sh` | Current pin vs ladder; Clef apply check; deferred staging presence |
 | `./scripts/phase/l6_clef_compile_check.sh` | Object-compile `llama/clef/clef.cpp` against vendor includes |
+| `./scripts/phase/l6_clef_live_smoke.sh` | Tip llama-server synth score (`:18086`) |
+| `./scripts/phase/l6_clef_decisions_e2e.sh` | Lab Go `:11435` + tip `LLAMA_SERVER_BIN` → `POST /v1/decisions` (synth or `CLEF_E2E_PRODUCT_GGUF`) |
+| `./scripts/phase/l6_clef_product_convert.sh` | Cloudflare HF → Ollama-wire Q8_0 GGUF (`clef.*` head) |
+| `./scripts/phase/l6_promote_tip_env.sh` | Prep tip/rollback `LLAMA_SERVER_BIN` env (no serve restart) |
 | `./scripts/phase/stage_clef_for_pin.sh` | Refresh staging; `--wire` only when pin ≥ b11232 |
 
 ---
 
 ## Remaining gaps after tip
 
-1. **Live Clef GGUF score** still needs an imported Clef GGUF + `--embeddings` (head is linked).
+1. **Production Clef GGUF** — **done (lab):** Cloudflare HF → Ollama-wire GGUF via `./scripts/phase/l6_clef_product_convert.sh`; `/v1/decisions` e2e PASS with `CLEF_E2E_PRODUCT_GGUF=…/clef-flash-ollama-q8_0.gguf`. Note: `ggml-org/Clef-Flash-GGUF` (native `clef` + `decision.*`) is **not** interchangeable with `llama/clef/clef.cpp` (`clef.*` F32 + `{backbone}.decision.*`).
 2. **Strands PointerRows** on CUDA llama-server still deferred (use MLX on Mac).
-3. **Operator rebuild:** on this 5080 CT use `CUDA_HOME=/usr/local/cuda-12.8` (default CUDA 13.3 aborts at device init).
+3. **Operator rebuild:** on this 5080 CT use `CUDA_HOME=/usr/local/cuda-12.8` (default CUDA 13.3 aborts at device init). Tip Go binary for lab: rebuild after tiled/parsers CGO packages land (`/tmp/zerollama-lab`).
 4. Rollback stays at `vendor/llama-cpp-b11232/` + `LLAMA_CPP_*.prev` if tip misbehaves in production.
+5. **Production CT serve** still runs `LLAMA_SERVER_BIN=vendor/llama-cpp-b10615` (process env). Tip promote is operator-owned — prep only:
+   ```bash
+   ./scripts/phase/l6_promote_tip_env.sh --write   # → run/l6_tip_llama_server.env + run/zerollama-lab
+   # then YOU restart ~/bin/serve.sh with that env sourced (agent will not)
+   ./scripts/phase/l6_promote_tip_env.sh --rollback # print b10615 block if tip misbehaves
+   ```
+
+### Lab: synthetic Clef score smoke
+
+```bash
+CUDA_HOME=/usr/local/cuda-12.8 CMAKE_CUDA_ARCHITECTURES=120-real \
+  ./scripts/build/build_llama_server.sh
+./scripts/phase/l6_clef_live_smoke.sh   # :18086 — curl + Go segment tokenize/score
+# Product path (lab ports only; hides CUDA when production holds VRAM):
+hf download Cloudflare/clef-flash --local-dir /root/models/clef-flash-hf
+./scripts/phase/l6_clef_product_convert.sh
+CLEF_E2E_ZEROLLAMA=/tmp/zerollama-lab \
+  CLEF_E2E_PRODUCT_GGUF=/root/models/clef-flash-gguf/clef-flash-ollama-q8_0.gguf \
+  CLEF_E2E_MODEL=clef-flash-lab \
+  ./scripts/phase/l6_clef_decisions_e2e.sh
+```
+
+Requires `llama/compat` skip of `clef.*` in `translate_metadata` (upstream parity) so the backbone loader ignores the joint head tensors.
+
+For local `go test ./decision` / CGO after a clean tree: `./scripts/phase/ensure_ggml_version_h.sh` (writes `ml/backend/ggml/ggml/src/ggml-version.h`, gitignored).

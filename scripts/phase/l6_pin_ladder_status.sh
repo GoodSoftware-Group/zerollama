@@ -39,10 +39,18 @@ esac
 
 clef_head=0
 [[ -f "${CLEF_DIR}/clef.cpp" && -f "${CLEF_DIR}/clef.h" ]] && clef_head=1
+clef_convert=0
+[[ -f "${CLEF_DIR}/convert.py" ]] && clef_convert=1
 clef_deferred=0
 [[ -f "${CLEF_PATCH}" ]] && clef_deferred=1
 compat_clef_present=0
 [[ -f "${ROOT}/llama/compat/002-clef.patch" ]] && compat_clef_present=1
+clef_loader_skip=0
+if grep -q 'add_skip_prefix(ml, "clef.")' "${ROOT}/llama/compat/llama-ollama-compat.cpp" 2>/dev/null; then
+  clef_loader_skip=1
+fi
+clef_live_smoke=0
+[[ -x "${ROOT}/scripts/phase/l6_clef_live_smoke.sh" || -f "${ROOT}/scripts/phase/l6_clef_live_smoke.sh" ]] && clef_live_smoke=1
 
 clef_apply="skipped_no_vendor"
 clef_wired_in_tree=0
@@ -88,11 +96,14 @@ done
 echo ""
 echo "Clef staging:"
 echo "  llama/clef head sources:     $([[ ${clef_head} -eq 1 ]] && echo yes || echo NO)"
+echo "  llama/clef/convert.py:       $([[ ${clef_convert} -eq 1 ]] && echo yes || echo NO)"
 echo "  deferred upstream patch:     $([[ ${clef_deferred} -eq 1 ]] && echo yes || echo NO) (${CLEF_PATCH})"
 echo "  llama/compat/002-clef.patch: $([[ ${compat_clef_present} -eq 1 ]] && echo 'PRESENT (wire only at b11232+)' || echo 'absent (correct until b11232+)')"
+echo "  loader skip clef.*:          $([[ ${clef_loader_skip} -eq 1 ]] && echo yes || echo NO)"
 echo "  git apply --check (vendor):  ${clef_apply}"
 echo "  server-context Clef wire:    $([[ ${clef_wired_in_tree} -eq 1 ]] && echo yes || echo no)"
 echo "  pin ≥ b11232 (wire OK?):     $([[ ${pin_ge_b11232} -eq 1 ]] && echo yes || echo no)"
+echo "  lab live smoke script:       $([[ ${clef_live_smoke} -eq 1 ]] && echo yes || echo NO)"
 if [[ -f "${UPSTREAM_CLEF}" ]]; then
   echo "  ../ollama-upstream Clef:     present"
 else
@@ -100,18 +111,24 @@ else
 fi
 echo ""
 echo "Doc: docs/llama-cpp-pin-ladder.md · runtime/LLAMA_CPP_PIN.md · llama/clef/README.md"
-echo "Next: bump one rung via docs/llama-cpp-pin-ladder.md#operator-runbook-one-rung"
+if [[ "${VERSION}" == "b11351" ]]; then
+  echo "Next: ./scripts/phase/l6_promote_tip_env.sh --write then operator restart serve · Strands CUDA deferred"
+else
+  echo "Next: bump one rung via docs/llama-cpp-pin-ladder.md#operator-runbook-one-rung"
+fi
 
 if [[ -n "${L6_PIN_OUT}" ]]; then
   VERSION="${VERSION}" COMMIT="${COMMIT}" FETCH_HEAD="${FETCH_HEAD}" \
     VENDOR_DIR="${VENDOR_DIR}" PATCH_COUNT="${PATCH_COUNT}" \
-    clef_head="${clef_head}" clef_deferred="${clef_deferred}" \
+    clef_head="${clef_head}" clef_convert="${clef_convert}" \
+    clef_loader_skip="${clef_loader_skip}" clef_live_smoke="${clef_live_smoke}" \
+    clef_deferred="${clef_deferred}" \
     compat_clef_present="${compat_clef_present}" clef_apply="${clef_apply}" \
     pin_ge_b11232="${pin_ge_b11232}" L6_PIN_OUT="${L6_PIN_OUT}" python3 <<'PY'
 import json, os, pathlib
 report = {
     "ladder": "L6",
-    "status": "enabler_on_b10615",
+    "status": "tip_b11351" if os.environ.get("VERSION") == "b11351" else "enabler",
     "llama_cpp_version": os.environ.get("VERSION", ""),
     "llama_cpp_commit": os.environ.get("COMMIT", ""),
     "fetch_head": os.environ.get("FETCH_HEAD", ""),
@@ -119,6 +136,9 @@ report = {
     "vendor_present": pathlib.Path(os.environ.get("VENDOR_DIR", "")).is_dir(),
     "patch_count": int(os.environ.get("PATCH_COUNT") or 0),
     "clef_head_staged": os.environ.get("clef_head") == "1",
+    "clef_convert_py": os.environ.get("clef_convert") == "1",
+    "clef_loader_skip": os.environ.get("clef_loader_skip") == "1",
+    "clef_live_smoke": os.environ.get("clef_live_smoke") == "1",
     "clef_deferred_patch": os.environ.get("clef_deferred") == "1",
     "compat_clef_auto_apply_present": os.environ.get("compat_clef_present") == "1",
     "clef_patch_apply_check": os.environ.get("clef_apply", ""),

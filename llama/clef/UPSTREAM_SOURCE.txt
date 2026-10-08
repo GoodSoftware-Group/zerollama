@@ -3,7 +3,15 @@ Provenance (refreshed by scripts/phase/stage_clef_for_pin.sh):
   source tree: /root/zerollama/../ollama-upstream
   HEAD:        e3cddc3e
   files:       llama/clef/clef.{h,cpp}
+               llama/clef/convert.py
                llama/compat/002-clef.patch → llama/clef/upstream-002-clef.patch
 
 WHY not under llama/compat/*.patch until pin ≥ b11232:
   apply-patch.cmake would auto-apply and fail on b10615 server-context hunks.
+
+Product convert (Cloudflare HF → GGUF with joint head):
+  python3 llama/clef/convert.py --llama-cpp vendor/llama-cpp-b11351 \
+    /path/to/Cloudflare/clef-flash --outtype q8_0 --outfile clef-flash.gguf
+
+Lab wire (no HF download): ./scripts/phase/l6_clef_live_smoke.sh
+

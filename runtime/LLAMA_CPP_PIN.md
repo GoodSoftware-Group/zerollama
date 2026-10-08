@@ -11,7 +11,7 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` |
 | **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `631109b34da437a3c4a5ebd75091d677671392e3` (ggml-org tag **b11351**; L6 tip / Ollama v0.40.x) |
 | **Binary** | `build/bin/llama-server` — `./scripts/build/build_llama_server.sh` |
-| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (through **0134**; MultiDecode **0126–0128** `POST /v1/multidecode` + Laya **0124–0125** `--decisions` / `POST /v1/decisions`; pretok/BPE/unicode mid-series; FP8 / Kokoro / Bee / DCA / UMA earlier). Apply by filename — numbers shift on ladder rungs. Container: `./scripts/vendor/build_llama_server_container.sh`. BPE: [docs/faster-bpe-tokenize.md](../docs/faster-bpe-tokenize.md). MultiDecode: [docs/multidecode-llama-cpp.md](../docs/multidecode-llama-cpp.md). |
+| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (**137** on **b11351**, through **0137**; MultiDecode **0126–0128**; Laya **0124–0125**; Clef **0135** + ANE **0136** + Laya tip **0137**; pretok/BPE/unicode mid-series; FP8 / Kokoro / Bee / DCA / UMA earlier). Apply by filename — numbers shift on ladder rungs. Container: `./scripts/vendor/build_llama_server_container.sh`. BPE: [docs/faster-bpe-tokenize.md](../docs/faster-bpe-tokenize.md). MultiDecode: [docs/multidecode-llama-cpp.md](../docs/multidecode-llama-cpp.md). |
 | **Why ggml-org master** | Track upstream llama.cpp tip. Eliza QJL/Polar/TBQ applied as patches **0026–0030**; CUDA L2 completeness and Metal TBQ SET_ROWS follow in the mid series; native FP8 weights **0076–0079** (types 51/52 — see [native-fp8-gguf.md](../docs/native-fp8-gguf.md)); hardware PR ports **0080–0086**; Bee reasoning-loop guard **0087**; TBQ vec_dot dedupe **0088**; L3-R6b cell+tensor+pages COW **0089**; media-aware `/kv/seq-copy` **0090**; llama-bench Eliza L2 KV type names **0093**; native DCA **0094–0098**; Metal recoverable nil pipeline + bf16 library gate + Polar/QJL SET_ROWS + fused QJL+Polar attn **0096–0098** (Lab D — `speed` runs on Mac, tok/s FAIL merge); Kokoro **0100–0101**; Bee B1 adaptive draft-max **0102**. **Hedge:** do not assume [elizaOS/llama.cpp](https://github.com/elizaOS/llama.cpp) keeps rebasing onto latest ggml-org — this pin remains source of truth. Sibling scout: `../eliza-llama.cpp` @ `ad56033` (OmniVoice/FFI stay out of our binary; Kokoro optional via `LLAMA_BUILD_KOKORO=ON`). |
 
 ## In-process ggml (Go CGO) — unified with runtime
@@ -20,7 +20,7 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 |-------|--------|
 | **Vendor pin** | **`b11351`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-b11351/` (rollback: `vendor/llama-cpp-b11232/`, also b11081/b10969/…) |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` (same as runtime sibling) |
-| **Ollama patches** | Same series as runtime table (**137** format-patches on **b11351**; tip `common_batch` / `llama_process`; **0135** Clef + `ZEROLLAMA_CLEF_DIR`; **0136** ANE shim; **0137** Laya). Eliza QJL/Polar/TBQ shaders stay in `eliza-shipped/`. Pretok lives in **`src/unicode.*`**. Mac CGO: `llama/cgo_vendor_hash.cpp` + `llama_print_build_info(const char *)`. |
+| **Ollama patches** | Same series as runtime table (**137** format-patches on **b11351**; tip `common_batch` / `llama_process`; **0135** Clef + `ZEROLLAMA_CLEF_DIR`; **0136** ANE shim; **0137** Laya). Eliza QJL/Polar/TBQ shaders stay in `eliza-shipped/`. Pretok lives in **`src/unicode.*`**. Mac CGO: `llama/cgo_vendor_hash.cpp` + `llama_print_build_info(const char *, FILE *)`. Tip CGO also needs `ml/.../tiled/tiled.go` + `llama/.../parsers/parsers.go`. |
 | **In-tree Metal dig** | Upstream split Metal kernels (`kernels/*.metal`). Eliza SET_ROWS + fused QJL+Polar attn remain as extra AIR objects. Native FP8 weight types **51/52**. FA-vec per-device tables are upstream. |
 | **Rebase helper** | `./scripts/vendor/rebase_vendor_unified.sh --sync` |
 
@@ -76,7 +76,7 @@ Rebuild llama.cpp when bumping `LLAMA_CPP_COMMIT`; run runtime integration tests
 | **Clef staging** | `llama/clef/` — wire with `./scripts/phase/stage_clef_for_pin.sh --wire` |
 | **Clef compile check** | `./scripts/phase/l6_clef_compile_check.sh` |
 
-Clef/Strands **runtime wire** is unblocked on this pin — see [docs/system-one-score.md](../docs/system-one-score.md). Product ladder row: [docs/upstream-ollama-diff.md](../docs/upstream-ollama-diff.md) **L6**.
+Clef **runtime wire + Cloudflare Flash product convert** are green on tip lab (`l6_clef_product_convert.sh`, `l6_clef_decisions_e2e.sh`). **Production CT** still uses `LLAMA_SERVER_BIN=…/llama-cpp-b10615` until operator runs `./scripts/phase/l6_promote_tip_env.sh --write` and restarts serve. Strands PointerRows on CUDA remain deferred (MLX on Mac). See [docs/system-one-score.md](../docs/system-one-score.md) · [docs/llama-cpp-pin-ladder.md](../docs/llama-cpp-pin-ladder.md).
 
 ## Bump checklist (runtime sibling)
 

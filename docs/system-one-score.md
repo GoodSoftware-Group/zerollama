@@ -21,7 +21,7 @@
 
 | Item | WHY blocked on **b10615** |
 |------|---------------------------|
-| Clef **runtime** joint head on GGUF / llama-server | **Wired on tip b11351** (`0135` + `ZEROLLAMA_CLEF_DIR`; tip `common_batch`); live score needs a Clef GGUF + `--embeddings` ([pin ladder](./llama-cpp-pin-ladder.md)) |
+| Clef **runtime** joint head on GGUF / llama-server | **Wired on tip b11351**; synth + **Cloudflare Clef-Flash product** `/v1/decisions` e2e PASS (`l6_clef_product_convert.sh` → Ollama-wire Q8_0). Do not use `ggml-org/Clef-Flash-GGUF` with `llama/clef` ([pin ladder](./llama-cpp-pin-ladder.md)) |
 | Strands **PointerRows** on CUDA llama-server | No pointer-head wire on llama-server; use **MLX** Strands (below) or wait for a CUDA head |)
 
 ### MLX path (L2, Mac)
@@ -41,7 +41,7 @@
 | Item | Gap |
 |------|-----|
 | Clef **images** | Qwen3.5 MLX `vision.go` not merged; text-only Clef scores; images return clear error until vision tower lands |
-| Clef **GGUF** / llama-server | Wire landed on tip **b11351**; import a Clef GGUF and start with `--embeddings` |
+| Clef **GGUF** / llama-server | Tip wire + synth + Cloudflare Flash product e2e landed; promote tip `LLAMA_SERVER_BIN` on CT when ready |
 | Upstream MLX score integration tests | Port `score_test.go` / `score_hidden_test.go` on Mac lab |
 
 **L6 enabler (rung 5 / b11351 tip):** `llama/clef/` linked into `llama-server` via `ZEROLLAMA_CLEF_DIR`; server wire is patch **0135** (tip `common_batch` / `batch.view`). Follow-ups **0136** (ANE shim) + **0137** (Laya `llama_process`).

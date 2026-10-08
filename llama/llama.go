@@ -597,7 +597,7 @@ func (c *MtmdContext) MultimodalTokenize(llamaContext *Context, data []byte, gri
 	defer C.mtmd_input_text_free(it)
 
 	// Initialize a bitmap with the image data (post-8f helper returns a wrapper + placeholder flag).
-	wrap := C.mtmd_helper_bitmap_init_from_buf(c.c, (*C.uchar)(unsafe.Pointer(&data[0])), C.size_t(len(data)), false)
+	wrap := C.mtmd_helper_bitmap_init_from_buf(c.c, (*C.uchar)(unsafe.Pointer(&data[0])), C.size_t(len(data)), false, C.mtmd_helper_init_opt_default())
 	bitmap := wrap.bitmap
 	if bitmap == nil {
 		return nil, errors.New("unable to load mtmd bitmap from image data")

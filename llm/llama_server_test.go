@@ -1904,6 +1904,21 @@ func TestGgufIsLaya(t *testing.T) {
 	}
 }
 
+func TestGgufIsClef(t *testing.T) {
+	if !ggufIsClef(ggml.KV{
+		"general.architecture": "qwen2",
+		"qwen2.decision.type":  "clef",
+	}) {
+		t.Fatal("qwen2.decision.type=clef should be detected")
+	}
+	if ggufIsClef(ggml.KV{"general.architecture": "qwen2"}) {
+		t.Fatal("plain qwen2 should not be clef")
+	}
+	if ggufIsClef(nil) {
+		t.Fatal("nil KV should not be clef")
+	}
+}
+
 func TestLlamaServerEmbeddingFallbackFormat(t *testing.T) {
 	// Fallback: non-OAI array format (from "content" field)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

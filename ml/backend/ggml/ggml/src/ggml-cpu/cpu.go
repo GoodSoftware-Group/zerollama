@@ -12,4 +12,5 @@ import (
 	_ "github.com/ollama/ollama/ml/backend/ggml/ggml/src/ggml-cpu/llamafile"
 	_ "github.com/ollama/ollama/ml/backend/ggml/ggml/src/ggml-cpu/polarquant"
 	_ "github.com/ollama/ollama/ml/backend/ggml/ggml/src/ggml-cpu/qjl"
+	_ "github.com/ollama/ollama/ml/backend/ggml/ggml/src/ggml-cpu/tiled"
 )

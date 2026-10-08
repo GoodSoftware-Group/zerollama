@@ -12,12 +12,26 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/decision"
+	"github.com/ollama/ollama/fs/gguf"
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/types/model"
 )
 
 func modelUsesSystemOneScore(m *Model) bool {
-	if m == nil || !capabilityContains(m.Config.Capabilities, model.CapabilityDecision) {
+	if m == nil {
+		return false
+	}
+	hasDecision := capabilityContains(m.Config.Capabilities, model.CapabilityDecision)
+	if !hasDecision {
+		// Inferred from GGUF {arch}.decision.type (see Model.Capabilities).
+		for _, c := range m.Capabilities() {
+			if c == model.CapabilityDecision {
+				hasDecision = true
+				break
+			}
+		}
+	}
+	if !hasDecision {
 		return false
 	}
 	if isLayaDecisionModel(m) {
@@ -40,9 +54,25 @@ func modelUsesSystemOneScore(m *Model) bool {
 			return true
 		}
 	}
+	// Synth / convert grafts may omit RENDERER while still setting decision.type.
+	if dtype := ggufDecisionType(m); dtype == "clef" || dtype == "tev1" || dtype == "strands" {
+		return true
+	}
 	// Bare CAPABILITY decision without a score-capable renderer/family must not
 	// steal the Laya Decider path — schedule Decider (or 501) instead.
 	return false
+}
+
+func ggufDecisionType(m *Model) string {
+	if m == nil || m.ModelPath == "" {
+		return ""
+	}
+	f, err := gguf.Open(m.ModelPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	return strings.ToLower(strings.TrimSpace(f.KeyValue("decision.type").String()))
 }
 
 func isLayaDecisionModel(m *Model) bool {
@@ -81,6 +111,9 @@ func decisionScoreEncoding(m *Model) string {
 	}
 	if strings.Contains(fam, "tev1") || strings.Contains(fam, "nimble") {
 		return "tev1"
+	}
+	if dtype := ggufDecisionType(m); dtype == "clef" || dtype == "tev1" || dtype == "strands" {
+		return dtype
 	}
 	return ""
 }

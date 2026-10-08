@@ -4,3 +4,8 @@ package common
 // #cgo CPPFLAGS: -I${SRCDIR}/../include -I${SRCDIR}/../vendor
 // #cgo CPPFLAGS: -I${SRCDIR}/../../../ml/backend/ggml/ggml/include
 import "C"
+
+import (
+	// Tip chat.cpp specialized parsers live under common/parsers/ (not this dir).
+	_ "github.com/ollama/ollama/llama/llama.cpp/common/parsers"
+)

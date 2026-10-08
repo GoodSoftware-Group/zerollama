@@ -244,6 +244,10 @@ func (m *Model) Capabilities() []model.Capability {
 				// If no embedding is specified, we assume the model supports completion
 				capabilities = append(capabilities, model.CapabilityCompletion)
 			}
+			// Clef (and other joint-head) GGUFs advertise {arch}.decision.type.
+			if dt := f.KeyValue("decision.type"); dt.Valid() && strings.TrimSpace(dt.String()) != "" {
+				capabilities = append(capabilities, model.CapabilityDecision)
+			}
 			if f.KeyValue("vision.block_count").Valid() {
 				capabilities = append(capabilities, model.CapabilityVision)
 				capabilities = append(capabilities, model.CapabilityVideo)
