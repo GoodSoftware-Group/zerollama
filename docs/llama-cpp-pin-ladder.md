@@ -160,11 +160,10 @@ stop, format-patch, smoke, then continue — do not stack unresolved `git am` ga
 2. **Strands PointerRows** on CUDA llama-server still deferred (use MLX on Mac).
 3. **Operator rebuild:** on this 5080 CT use `CUDA_HOME=/usr/local/cuda-12.8` (default CUDA 13.3 aborts at device init). Tip Go binary for lab: rebuild after tiled/parsers CGO packages land (`/tmp/zerollama-lab`).
 4. Rollback stays at `vendor/llama-cpp-b11232/` + `LLAMA_CPP_*.prev` if tip misbehaves in production.
-5. **Production CT serve** still runs `LLAMA_SERVER_BIN=vendor/llama-cpp-b10615` (process env). Tip promote is operator-owned — prep only:
+5. **Production CT serve (cudallama)** — **promoted to tip b11351** (Oct 2026): `run/zerollama-lab` + `LLAMA_SERVER_BIN=…/llama-cpp-b11351`; `clef-flash` tag live; `/v1/decisions` smoke PASS. Rollback:
    ```bash
-   ./scripts/phase/l6_promote_tip_env.sh --write   # → run/l6_tip_llama_server.env + run/zerollama-lab
-   # then YOU restart ~/bin/serve.sh with that env sourced (agent will not)
-   ./scripts/phase/l6_promote_tip_env.sh --rollback # print b10615 block if tip misbehaves
+   ./scripts/phase/l6_promote_tip_env.sh --rollback --write
+   # restart ~/bin/serve.sh with that env
    ```
 
 ### Lab: synthetic Clef score smoke

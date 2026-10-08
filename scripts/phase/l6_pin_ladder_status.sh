@@ -112,7 +112,7 @@ fi
 echo ""
 echo "Doc: docs/llama-cpp-pin-ladder.md · runtime/LLAMA_CPP_PIN.md · llama/clef/README.md"
 if [[ "${VERSION}" == "b11351" ]]; then
-  echo "Next: ./scripts/phase/l6_promote_tip_env.sh --write then operator restart serve · Strands CUDA deferred"
+  echo "Next: Strands CUDA PointerRows (deferred) · tip prod live — rollback: l6_promote_tip_env.sh --rollback"
 else
   echo "Next: bump one rung via docs/llama-cpp-pin-ladder.md#operator-runbook-one-rung"
 fi

@@ -415,7 +415,7 @@ Path-filtered **+73** commits on sibling. Do **not** rebase. Prior **v0.32.15 �
 | **L3** | Mac MLX UX: pin `a59cc231`; idle residency; tokenizer; xgrammar 0.2.7 + spec-under-grammar; opinionated MLX-preferred for clear safetensors families | **Partial (Oct 2026)** — pin + client residency env + routing notes landed; **Mac dylib rebuild / Metal sign-off still required** on operator hosts; tokenizer rewrite needs Mac soak |
 | **L4** | Multimodal embed (embeddinggemma / gemma4embedding) + honest `/api/embed` errors | **Partial (Oct 2026)** — create + `/api/embed` map inputs + 413/400 wiring landed; **full MLX multimodal embed is Darwin-path**; Linux returns honest 501 without `EmbedWithMedia` |
 | **L5** | Thinking levels `#18473`; GGUF metadata `#17858`; Laya create ↔ convert | **Partial (Oct 2026)** — thinking on show + middleware; legacy `xhigh` kept (Qwen 3.8); GGUF metadata persist/load (tags list still inference cache); Laya create metadata aligned |
-| **L6** | llama.cpp pin debt toward **b11351** (enabler; parallel, not gate for L1–L2) | **Done tip (Oct 2026)** — pin **b11351** + **137** patches; Clef wire + Cloudflare Flash product `/v1/decisions` e2e (Ollama-wire GGUF); CT prod still on b10615 until `l6_promote_tip_env.sh` ([ladder](./llama-cpp-pin-ladder.md)) |
+| **L6** | llama.cpp pin debt toward **b11351** (enabler; parallel, not gate for L1–L2) | **Done tip (Oct 2026)** — pin **b11351** + **137** patches; Clef wire + Cloudflare Flash product `/v1/decisions` e2e; **CT prod on tip** (`clef-flash` smoke PASS) ([ladder](./llama-cpp-pin-ladder.md)) |
 
 ### Skip (not our product)
 

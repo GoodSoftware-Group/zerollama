@@ -76,7 +76,7 @@ Rebuild llama.cpp when bumping `LLAMA_CPP_COMMIT`; run runtime integration tests
 | **Clef staging** | `llama/clef/` — wire with `./scripts/phase/stage_clef_for_pin.sh --wire` |
 | **Clef compile check** | `./scripts/phase/l6_clef_compile_check.sh` |
 
-Clef **runtime wire + Cloudflare Flash product convert** are green on tip lab (`l6_clef_product_convert.sh`, `l6_clef_decisions_e2e.sh`). **Production CT** still uses `LLAMA_SERVER_BIN=…/llama-cpp-b10615` until operator runs `./scripts/phase/l6_promote_tip_env.sh --write` and restarts serve. Strands PointerRows on CUDA remain deferred (MLX on Mac). See [docs/system-one-score.md](../docs/system-one-score.md) · [docs/llama-cpp-pin-ladder.md](../docs/llama-cpp-pin-ladder.md).
+Clef **runtime wire + Cloudflare Flash product convert** are green; **production CT** runs tip `LLAMA_SERVER_BIN=…/llama-cpp-b11351` + `run/zerollama-lab` with `clef-flash` `/v1/decisions` smoke PASS. Rollback via `./scripts/phase/l6_promote_tip_env.sh --rollback`. Strands PointerRows on CUDA remain deferred (MLX on Mac). See [docs/system-one-score.md](../docs/system-one-score.md) · [docs/llama-cpp-pin-ladder.md](../docs/llama-cpp-pin-ladder.md).
 
 ## Bump checklist (runtime sibling)
 
