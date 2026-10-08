@@ -27,6 +27,8 @@ const routePlainTemplate = `{{- range .Messages }}{{ .Role }}: {{ .Content }}{{ 
 func newRouteTestServer(t *testing.T) *Server {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
+	resetRouteMemory()
+	t.Cleanup(resetRouteMemory)
 	t.Setenv("OLLAMA_CONTEXT_LENGTH", "4096")
 	mock := &mockRunner{CompletionResponse: llm.CompletionResponse{
 		Done: true, DoneReason: llm.DoneReasonStop, PromptEvalCount: 1, PromptEvalDuration: 1, EvalCount: 1, EvalDuration: 1,

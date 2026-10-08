@@ -57,6 +57,10 @@ components:
       description: '`true` when the router used its fallback candidate.'
       schema:
         type: string
+    ZerollamaRouterStickyBreak:
+      description: 'Set when the conversation''s remembered model failed a hard filter this turn and the request re-routed ("<model>: <reason>").'
+      schema:
+        type: string
     ZerollamaRouterReason:
       description: >
         Short reason for the router's choice — `warm`, `best-fit`, `only-candidate`
@@ -1914,7 +1918,7 @@ components:
           type: number
         reason:
           type: string
-          description: warm | best-fit | only-candidate | pinned | escalated | surface-fallback | decider-fallback (empty for plain LA11 picks)
+          description: warm | best-fit | only-candidate | pinned | escalated | sticky | cached | surface-fallback | decider-fallback (empty for plain LA11 picks)
         auto:
           $ref: "#/components/schemas/AutoRouteDecision"
         decider:
@@ -1930,6 +1934,15 @@ components:
           type: object
           additionalProperties: true
           description: Multi-question jev answers summarised per question id, plus `calibrated`, `escalate_reasons`, `escalation_unavailable`.
+        sticky:
+          type: boolean
+          description: Reused the conversation's remembered model (AR6; text surfaces).
+        cached:
+          type: boolean
+          description: Reused the pick for an identical recent request (60s decision cache).
+        sticky_break:
+          type: string
+          description: 'Why the conversation''s remembered model could not be kept this turn ("<model>: <reason>").'
         latency_ms:
           type: integer
     AutoRouteDecision:
@@ -3338,6 +3351,8 @@ paths:
               $ref: "#/components/headers/ZerollamaRouterFallback"
             X-Zerollama-Router-Reason:
               $ref: "#/components/headers/ZerollamaRouterReason"
+            X-Zerollama-Router-Sticky-Break:
+              $ref: "#/components/headers/ZerollamaRouterStickyBreak"
           content:
             application/json:
               schema:
@@ -3559,6 +3574,8 @@ paths:
               $ref: "#/components/headers/ZerollamaRouterFallback"
             X-Zerollama-Router-Reason:
               $ref: "#/components/headers/ZerollamaRouterReason"
+            X-Zerollama-Router-Sticky-Break:
+              $ref: "#/components/headers/ZerollamaRouterStickyBreak"
           content:
             application/json:
               schema:

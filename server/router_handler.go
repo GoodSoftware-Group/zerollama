@@ -81,6 +81,11 @@ func (s *Server) RouterDecideHandler(c *gin.Context) {
 // WHY one function: the in-band rewrite, /v1/route and /api/router/decide must agree —
 // a dry run that differs from what chat actually does is worse than none.
 func (s *Server) resolveRouter(ctx context.Context, name string, sig autoroute.Signals) (dec *RouterDecision, isRouter bool, err error) {
+	return s.resolveRouterMem(ctx, name, sig, false)
+}
+
+// resolveRouterUncached is the routing decision itself, without sticky / cache memory.
+func (s *Server) resolveRouterUncached(ctx context.Context, name string, sig autoroute.Signals) (dec *RouterDecision, isRouter bool, err error) {
 	if spec, ok := lookupRouter(name); ok {
 		if !sig.Surface.IsText() && sig.Surface != autoroute.SurfaceImage && sig.Surface != autoroute.SurfaceImageEdit {
 			d, err := s.decideRouterNonText(ctx, name, spec, sig)
@@ -172,7 +177,7 @@ func (s *Server) applyRouterRewrite(ctx context.Context, modelName string, sig a
 	if !envconfig.RouterRewrite() {
 		return modelName, nil, nil
 	}
-	dec, isRouter, err := s.resolveRouter(ctx, modelName, sig)
+	dec, isRouter, err := s.resolveRouterMem(ctx, modelName, sig, true)
 	if !isRouter {
 		return modelName, nil, nil
 	}
@@ -200,6 +205,9 @@ func stampRouterHeaders(c *gin.Context, dec *RouterDecision) {
 	}
 	c.Header("X-Zerollama-Router", dec.Router)
 	c.Header("X-Zerollama-Router-Chosen", dec.Candidate)
+	if dec.StickyBreak != "" {
+		c.Header("X-Zerollama-Router-Sticky-Break", dec.StickyBreak)
+	}
 	if dec.Fallback {
 		c.Header("X-Zerollama-Router-Fallback", "true")
 	}

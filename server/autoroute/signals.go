@@ -71,6 +71,14 @@ type Signals struct {
 
 	// Weights overrides DefaultWeights (router.yaml weights for classifier: jev routers).
 	Weights *Weights `json:"-"`
+
+	// SessionKey identifies the conversation for sticky routing (AR6): the client's
+	// prompt_cache_key / session id, else a hash of system + first user message. Empty ⇒
+	// no stickiness (single-shot surfaces).
+	SessionKey string
+	// Fresh (options.zerollama.route: "fresh") skips remembered picks for this request;
+	// the new decision is still remembered.
+	Fresh bool
 }
 
 // Required returns the capabilities a candidate must have to serve the request. The set

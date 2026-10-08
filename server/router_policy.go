@@ -89,7 +89,12 @@ type RouterDecision struct {
 	// was restricted to tier: high, and the summarised answers.
 	Escalated bool           `json:"escalated,omitempty"`
 	Signals   map[string]any `json:"signals,omitempty"`
-	LatencyMs int64          `json:"latency_ms"`
+	// Sticky / Cached mark a reused pick (AR6); StickyBreak says why a conversation's
+	// remembered model could not be kept this turn.
+	Sticky      bool   `json:"sticky,omitempty"`
+	Cached      bool   `json:"cached,omitempty"`
+	StickyBreak string `json:"sticky_break,omitempty"`
+	LatencyMs   int64  `json:"latency_ms"`
 }
 
 type RouterLabelScore struct {

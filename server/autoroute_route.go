@@ -219,6 +219,8 @@ func chatRouteSignals(c *gin.Context, req *api.ChatRequest) autoroute.Signals {
 	// non-thinking models, so they must not exclude them.
 	_, relax := c.Get("relax_thinking")
 	sig.WantsThink = req.Think != nil && req.Think.Bool() && !req.ThinkFromAlias && !relax
+	sig.SessionKey = routeSessionKey(req.Options, req.Messages)
+	sig.Fresh = routeFresh(req.Options)
 	return sig
 }
 
@@ -241,5 +243,10 @@ func generateRouteSignals(c *gin.Context, req *api.GenerateRequest) autoroute.Si
 		sig.ReplyTokens = np
 	}
 	sig.WantsThink = req.Think != nil && req.Think.Bool()
+	// Generate has no conversation: sticky only with an explicit cache / session key.
+	if k := modality.ExtractPromptCacheKey(req.Options); k != "" {
+		sig.SessionKey = "key:" + k
+	}
+	sig.Fresh = routeFresh(req.Options)
 	return sig
 }

@@ -59,7 +59,7 @@ func (s *Server) routeAheadMiddleware(surface autoroute.Surface) gin.HandlerFunc
 			return
 		}
 		sig.BeforeRuntimeProxy = true
-		dec, _, err := s.resolveRouter(c.Request.Context(), served, sig)
+		dec, _, err := s.resolveRouterMem(c.Request.Context(), served, sig, true)
 		if err != nil {
 			metricsRouteError(served, sig.Surface)
 			writeRouterError(c, dec, err)
@@ -98,7 +98,7 @@ func (s *Server) routeForSurface(c *gin.Context, name string, sig autoroute.Sign
 	if !envconfig.RouterRewrite() {
 		return name, nil
 	}
-	dec, isRouter, err := s.resolveRouter(c.Request.Context(), name, sig)
+	dec, isRouter, err := s.resolveRouterMem(c.Request.Context(), name, sig, true)
 	if !isRouter {
 		return name, nil
 	}
