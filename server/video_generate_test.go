@@ -551,8 +551,10 @@ func TestErrLtxMLXUnsupportedPlatform(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected non-darwin rejection")
 	}
-	if !strings.Contains(err.Error(), "Apple Silicon") || !strings.Contains(err.Error(), "ltxv-2b-distilled") {
-		t.Fatalf("message should point at Apple Silicon + CUDA tags: %v", err)
+	if !strings.Contains(err.Error(), "not supported on this platform") ||
+		!strings.Contains(err.Error(), "ltxv-2b-distilled") ||
+		strings.Contains(err.Error(), "install_ltx_mlx.sh —") {
+		t.Fatalf("message should say unsupported platform + CUDA tags (not install weights): %v", err)
 	}
 }
 

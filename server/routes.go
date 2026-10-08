@@ -2835,6 +2835,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/v1/videos", middleware.VideoCreateMiddleware(), s.VideoCreateHandler)
 	r.GET("/v1/videos/:id", s.VideoGetHandler)
 	r.GET("/v1/videos/:id/content", s.VideoContentHandler)
+	r.DELETE("/v1/videos/:id", s.VideoDeleteHandler)
 
 	// Agent media index: session/label uploads with internal CAS dedupe (keyframes / future clips).
 	r.PUT("/v1/media/:session/:label", s.MediaPutHandler)
@@ -3004,6 +3005,9 @@ func Serve(listeners ...net.Listener) error {
 	} else {
 		slog.Info("GPU job worker disabled", "env", "ZEROLLAMA_GPU_JOBS=false")
 	}
+
+	// Prune unclaimed /v1/videos artifacts under $OLLAMA_MODELS/generated (TTL).
+	go s.runVideoArtifactPruner(ctx)
 
 	if strings.TrimSpace(effectiveRuntimeURL()) != "" {
 		startCoordPusher := s.training == nil || !envconfig.BlockInferenceDuringTraining()

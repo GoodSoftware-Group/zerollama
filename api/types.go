@@ -1608,7 +1608,11 @@ type InferenceStatus struct {
 	HostMemory *HostMemoryStatus     `json:"host_memory,omitempty"`
 }
 
-// HostMemoryStatus is cgroup RAM/swap pressure for GET /api/status (not host MemAvailable).
+// HostMemoryStatus is RAM pressure for GET /api/status.
+//
+// limit_bytes / current_bytes are the cgroup view (jail capacity). available_bytes
+// is host MemAvailable (same signal Wan/LTX video admission uses) so clients can
+// predict whether POST /v1/videos will 503 before submitting.
 type HostMemoryStatus struct {
 	Pressure         bool   `json:"pressure"`
 	Guard            bool   `json:"guard"`
@@ -1617,7 +1621,20 @@ type HostMemoryStatus struct {
 	AnonBytes        uint64 `json:"anon_bytes,omitempty"`
 	SwapCurrentBytes uint64 `json:"swap_current_bytes,omitempty"`
 	SwapMaxBytes     uint64 `json:"swap_max_bytes,omitempty"`
-	Reason           string `json:"reason,omitempty"`
+	// AvailableBytes is MemAvailable (or cgroup remain when jailed below host free).
+	AvailableBytes uint64 `json:"available_bytes,omitempty"`
+	TotalBytes     uint64 `json:"total_bytes,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	// VideoAdmit mirrors LTX/Wan host floors so clients can compare available_bytes.
+	VideoAdmit *VideoHostAdmitStatus `json:"video_admit,omitempty"`
+}
+
+// VideoHostAdmitStatus is the MemAvailable floors used by POST /v1/videos.
+type VideoHostAdmitStatus struct {
+	Ltx2BMinBytes  uint64 `json:"ltx_2b_min_bytes"`
+	Ltx13BMinBytes uint64 `json:"ltx_13b_min_bytes"`
+	Ltx25MinBytes  uint64 `json:"ltx_2_5_min_bytes"`
+	Unit           string `json:"unit,omitempty"` // "MemAvailable"
 }
 
 // CanLoadRequest is the body for POST /api/can-load (capacity dry-run).

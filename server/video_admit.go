@@ -153,19 +153,37 @@ func admitH3HostRAM(cfg model.VideoGenerationConfig) error {
 }
 
 // admitLtxHostRAM rejects LTX jobs that cannot start without thrashing the CT.
-// Floor defaults to Wan mmgp+GPU-VAE class (12 GiB); raise via ZEROLLAMA_LTX_MIN_HOST_RAM_GIB.
+// Floors: 13B=12 GiB, 2B=8 GiB, LTX-2.5=72 GiB. Profile-specific env wins:
+// ZEROLLAMA_LTX13B_MIN_HOST_RAM_GIB / ZEROLLAMA_LTX2B_MIN_HOST_RAM_GIB /
+// ZEROLLAMA_LTX25_MIN_HOST_RAM_GIB. Legacy ZEROLLAMA_LTX_MIN_HOST_RAM_GIB applies
+// only to the 13B class (not 2.5) so a 72 raise for 22B does not falsely gate 13B.
 func admitLtxHostRAM(cfg model.VideoGenerationConfig) error {
 	minGiB := ltxDefaultMinHostGiB
+	profileEnv := "ZEROLLAMA_LTX13B_MIN_HOST_RAM_GIB"
 	switch {
 	case isLtx25Profile(cfg.Profile):
 		minGiB = ltx25MinHostGiB
+		profileEnv = "ZEROLLAMA_LTX25_MIN_HOST_RAM_GIB"
 	case isLtx2BProfile(cfg.Profile):
 		minGiB = ltx2bMinHostGiB
+		profileEnv = "ZEROLLAMA_LTX2B_MIN_HOST_RAM_GIB"
 	}
-	if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_MIN_HOST_RAM_GIB")); v != "" {
+	force := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_MIN_HOST_RAM_FORCE"))
+	forceOn := force == "1" || strings.EqualFold(force, "true")
+	if v := strings.TrimSpace(envconfig.Var(profileEnv)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			force := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_MIN_HOST_RAM_FORCE"))
-			if force == "1" || strings.EqualFold(force, "true") || n > minGiB {
+			if forceOn || n > minGiB {
+				minGiB = n
+			}
+		}
+	} else if v := strings.TrimSpace(envconfig.Var("ZEROLLAMA_LTX_MIN_HOST_RAM_GIB")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			// Shared legacy knob: 13B class only (unless FORCE applies to all).
+			if isLtx25Profile(cfg.Profile) || isLtx2BProfile(cfg.Profile) {
+				if forceOn {
+					minGiB = n
+				}
+			} else if forceOn || n > minGiB {
 				minGiB = n
 			}
 		}

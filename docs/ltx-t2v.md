@@ -75,7 +75,11 @@ The install script reuses `~/.zerollama/third_party/wan/venv` when present (syml
 | `LTX_*` / `WAN2GP_*` | Wrapper env (see `ltx_video_generate.py`) |
 | `LTX_IMAGE_START` / `LTX_IMAGE_END` | LTX-2.5 keyframe control (from `options.keyframes`) |
 | `LTX_DRY_RUN=1` | Validate settings/weights; no DiT allocate |
-| `ZEROLLAMA_LTX_MIN_HOST_RAM_GIB` | Raise-only host floor (default **12** / **8** / **72** GiB for 13B / 2B / LTX-2.5) |
+| `ZEROLLAMA_LTX13B_MIN_HOST_RAM_GIB` / `…_LTX2B_…` / `…_LTX25_…` | Per-profile MemAvailable floor (defaults **12** / **8** / **72** GiB) |
+| `ZEROLLAMA_LTX_MIN_HOST_RAM_GIB` | Legacy: raises **13B class only** (not 2B/2.5) unless `…_FORCE=1` |
+| `ZEROLLAMA_VIDEO_ARTIFACT_TTL` | Keep completed `{id}.mp4`+`.json` servable after job wipe (default **24h**); prune deletes after expiry |
+| `ZEROLLAMA_VIDEO_ARTIFACT_PRUNE_INTERVAL` | Background prune tick (default **15m**; `0`/`off` disables) |
+| `DELETE /v1/videos/{id}` | Client ack after download — deletes mp4+json immediately (204) |
 
 ## Admission / QoS
 
@@ -95,6 +99,16 @@ The install script reuses `~/.zerollama/third_party/wan/venv` when present (syml
 
 **Fix:** refuse submit below **72 GiB MemAvailable** with a 503 that names CUDA alternatives (`ltxv-13b-distilled:16g` / `ltxv-2b-distilled:lab`). Override only via `ZEROLLAMA_LTX_MIN_HOST_RAM_GIB` (+ `…_FORCE=1` to lower). Progress updates are **monotonic** in `training.py` / load-phase floors in `ltx_video_generate.py` so mmgp sub-step % cannot bounce the OpenAI job bar.
 
+### WHY post-generate `os._exit` + early-complete
+
+**Incident (astra, 2026-10-02):** `ltxv-2b-distilled:lab` wrote a valid H.264 mp4, then Wan2GP/mmgp/torch **atexit/`__del__` re-hooked** and spiked host RSS. `GET /v1/videos/:id` stalled ~1–2 min (embedded `job_status` waiting on the GIL behind SCRIPT stdout floods), then the kernel **OOM-killed `zerollama.service`** before clients saw `status=completed` / could `GET …/content`. `/tmp` tmpfs full of smoke logs (~32 GiB `h3_smoke_gen.log`) made swap pressure worse — keep `/tmp` clear on tmpfs hosts.
+
+| Layer | Fix |
+|-------|-----|
+| `ltx_video_generate.py` | After copy + `TRAINING_COMPLETE`, **`os._exit(0)`** — skip destructor cascade |
+| `training.py` `run_script` | On `TRAINING_COMPLETE` + artifact → **`complete_job` immediately**, then **SIGKILL** after `ZEROLLAMA_RUN_SCRIPT_TEARDOWN_GRACE_SEC` (default 2 s); ignore fail after COMPLETED |
+| `training.py` stdout | **Ring-buffer** last 200 lines + **rate-limit** `SCRIPT:` journal prints — one LTX job previously produced ~11M journal lines and pinned multi‑GiB `stdout` strings inside embed `JOB_QUEUE` |
+
 ### WHY dual-GPU best-fit (+ migrate only on solvable contention)
 
 Astra has **two 24 GiB GPUs**. Always picking “freest” empties one card but packs poorly; always pinning sticky TTS to GPU0 ignores cases where DiT must reclaim that card.
@@ -108,6 +122,16 @@ Astra has **two 24 GiB GPUs**. Always picking “freest” empties one card bu
 
 Code: [`scripts/video/cuda_device.py`](../scripts/video/cuda_device.py) (LTX / Wan / H3 wrappers). Irodori default pack: `CUDA_VISIBLE_DEVICES=0` + optional `/mnt/ollama_img/speech/irodori-cuda.env` ([`irodori-tts.service`](../scripts/systemd/irodori-tts.service)).
 
+### WHY jobs die at ~27% (`loading_model`)
+
+**27% is not diffusion** — the wrapper pins Wan2GP's `loading_model` phase to a ~27% floor. Failures there are load-time, before steps run.
+
+| Failure | Why | Fix |
+|---------|-----|-----|
+| `[Errno 13] Permission denied: 'loras/ltxv'` | Wan2GP creates `loras/<family>` under the repo; tree was root-owned while serve runs as `ollama` | `ensure_wan2gp_writable_dirs` + `chown` `repo/loras` (and HF `ckpts/.cache`) to `ollama`; LTX `WorkingDir` = Wan2GP repo |
+| `'str' object has no attribute 'update'` (2B FP8) | Official Lightricks FP8 embeds `metadata['config']` as a JSON **string**; mmgp calls `.update` expecting a dict. 13B quanto packs use `config_base64` and are fine | `patch_mmgp_lightricks_string_config()` in [`ltx_video_generate.py`](../scripts/video/ltx_video_generate.py) forces a parsed transformer `forcedConfigPath` |
+| Not 512×512 | Manifest default size for the lab tag; unrelated to the mmgp/config crash | Raise size via request/options when you want 768² |
+
 ## API
 
 Same as Wan: `POST /v1/videos` → poll `GET /v1/videos/:id` → `GET …/content`.
@@ -115,7 +139,7 @@ Same as Wan: `POST /v1/videos` → poll `GET /v1/videos/:id` → `GET …/conten
 | Tag | Use |
 |-----|-----|
 | `ltxv-13b-distilled:16g` | Quality 768×512, 6 steps, Linux 16g CUDA (Wan2GP) |
-| `ltxv-2b-distilled:lab` | Wan2GP 2B FP8 (CUDA/PyTorch) |
+| `ltxv-2b-distilled:lab` | Wan2GP 2B FP8 (CUDA/PyTorch); default **512×512** (lab iteration size — not the failure mode) |
 | `ltx2.5-22b-distilled:48g` | **Control:** 1280×704, 8 steps, A/V + start/end keyframes (`options.keyframes`) |
 | `ltxv-2b-mlx:lab` | **Fast Darwin prototype:** 768×480, 17 frames, **4 steps**. Expects cartoon drift. |
 | `ltxv-13b-mlx:lab` | **Darwin anime:** 1280×720, 41 frames, **8 steps**, first-frame I2V. `./scripts/video/install_ltx_mlx.sh --13b-only` |

@@ -53,10 +53,17 @@ func (s *Server) acquireVideoExclusiveGPU(ctx context.Context, jobID string) {
 	s.videoExclusiveJobs[jobID] = struct{}{}
 	s.videoExclusiveMu.Unlock()
 
-	if first {
-		s.beginVideoExclusiveHold(ctx, jobID)
-	}
-	go s.watchVideoExclusiveJob(jobID)
+	// WHY async: beginVideoExclusiveHold waits up to 2m for fulfillment + PrepareForTraining
+	// (unload chat). Doing that on the POST goroutine held the client connection through
+	// model load — ReadTimeout / RemoteDisconnected lost the job id while the server kept
+	// working. Return 202 immediately; exclusive + watch run in the background.
+	go func() {
+		if first {
+			s.beginVideoExclusiveHold(context.Background(), jobID)
+		}
+		s.watchVideoExclusiveJob(jobID)
+	}()
+	_ = ctx
 }
 
 func (s *Server) beginVideoExclusiveHold(ctx context.Context, jobID string) {

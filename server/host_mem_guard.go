@@ -7,6 +7,7 @@ import (
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/discover"
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/format"
 )
 
 func currentHostMemPressure() discover.HostMemPressure {
@@ -48,9 +49,19 @@ func hostMemoryStatusAPI() *api.HostMemoryStatus {
 		AnonBytes:        p.Cgroup.Anon,
 		SwapCurrentBytes: p.Cgroup.SwapCurrent,
 		Reason:           p.Reason,
+		VideoAdmit: &api.VideoHostAdmitStatus{
+			Ltx2BMinBytes:  uint64(ltx2bMinHostGiB) * format.GibiByte,
+			Ltx13BMinBytes: uint64(ltxDefaultMinHostGiB) * format.GibiByte,
+			Ltx25MinBytes:  uint64(ltx25MinHostGiB) * format.GibiByte,
+			Unit:           "MemAvailable",
+		},
 	}
 	if p.Cgroup.HasSwapMax {
 		st.SwapMaxBytes = p.Cgroup.SwapMax
+	}
+	if mem, err := wanReadHostMem(); err == nil {
+		st.AvailableBytes = mem.FreeMemory
+		st.TotalBytes = mem.TotalMemory
 	}
 	return st
 }

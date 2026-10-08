@@ -202,7 +202,87 @@ def dry_run(repo: Path, ckpt: Path, settings: dict) -> int:
     print(json.dumps(out, indent=2), flush=True)
     progress(100.0, "dry-run complete")
     print("TRAINING_COMPLETE", flush=True)
-    return 0
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
+
+
+def ensure_wan2gp_writable_dirs(repo: Path) -> None:
+    """Wan2GP mkdir's loras/<family> at load; root-owned repo trees fail at loading_model (~27%)."""
+    for sub in ("loras/ltxv", "loras/ltx2", "loras/ltx", "outputs", "tmp"):
+        d = repo / sub
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            eprint(
+                f"warning: cannot create {d}: {exc} — "
+                "chown the Wan2GP repo/loras tree to the serve user (ollama)"
+            )
+
+
+def patch_mmgp_lightricks_string_config() -> None:
+    """Lightricks FP8 safetensors store metadata['config'] as a JSON *string*.
+
+    mmgp.fast_load_transformers_model treats that value as a dict and calls
+    ``.update()`` → AttributeError at loading_model (~27% on /v1/videos).
+    DeepBeepMeep quanto packs use config_base64 instead and work. Force a
+    parsed transformer config via temporary forcedConfigPath.
+    """
+    try:
+        import mmgp.offload as offload  # type: ignore
+    except Exception as exc:
+        eprint(f"warning: mmgp not importable for config patch ({exc})")
+        return
+    if getattr(offload.fast_load_transformers_model, "_zerollama_str_config", False):
+        return
+
+    import json
+    import tempfile
+
+    from safetensors import safe_open  # type: ignore
+
+    orig = offload.fast_load_transformers_model
+
+    def wrapped(model_path, *args, **kwargs):  # noqa: ANN001
+        if kwargs.get("forcedConfigPath"):
+            return orig(model_path, *args, **kwargs)
+        paths = model_path if isinstance(model_path, (list, tuple)) else [model_path]
+        last = str(paths[-1]) if paths else ""
+        if not last.endswith(".safetensors"):
+            return orig(model_path, *args, **kwargs)
+        tmp: str | None = None
+        try:
+            with safe_open(last, framework="pt", device="cpu") as fh:
+                meta = fh.metadata() or {}
+            raw = meta.get("config")
+            if not isinstance(raw, str):
+                return orig(model_path, *args, **kwargs)
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict) and isinstance(parsed.get("transformer"), dict):
+                parsed = parsed["transformer"]
+            if not isinstance(parsed, dict):
+                return orig(model_path, *args, **kwargs)
+            fd, tmp = tempfile.mkstemp(prefix="zl-ltx-cfg-", suffix=".json")
+            with os.fdopen(fd, "w", encoding="utf-8") as wf:
+                json.dump(parsed, wf)
+            kwargs = dict(kwargs)
+            kwargs["forcedConfigPath"] = tmp
+            if not getattr(wrapped, "_zl_logged", False):
+                eprint(f"mmgp: Lightricks string config → forcedConfigPath for {Path(last).name}")
+                wrapped._zl_logged = True  # type: ignore[attr-defined]
+            return orig(model_path, *args, **kwargs)
+        except Exception as exc:
+            eprint(f"warning: mmgp string-config patch skipped ({exc})")
+            return orig(model_path, *args, **kwargs)
+        finally:
+            if tmp:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+
+    wrapped._zerollama_str_config = True  # type: ignore[attr-defined]
+    offload.fast_load_transformers_model = wrapped  # type: ignore[assignment]
 
 
 def run_generate(repo: Path, ckpt: Path, settings: dict, output: Path) -> int:
@@ -218,6 +298,9 @@ def run_generate(repo: Path, ckpt: Path, settings: dict, output: Path) -> int:
             link.symlink_to(ckpt)
         except OSError:
             eprint(f"warning: could not link {link} -> {ckpt}")
+
+    ensure_wan2gp_writable_dirs(repo)
+    patch_mmgp_lightricks_string_config()
 
     # Best-fit (+ migrate irodori only under solvable contention). See cuda_device.py.
     apply_cuda_device(override_env="LTX_CUDA_DEVICE", label="LTX")
@@ -292,10 +375,43 @@ def run_generate(repo: Path, ckpt: Path, settings: dict, output: Path) -> int:
     if not output.is_file() or output.stat().st_size < 1:
         eprint(f"failed to write {output}")
         return 1
+    # Durable sidecar before TRAINING_COMPLETE so GET /content survives job wipe / OOM.
+    try:
+        job_id = env("TRAINING_JOB_ID") or env("JOB_ID") or output.stem
+        ttl = 24 * 3600
+        raw_ttl = env("ZEROLLAMA_VIDEO_ARTIFACT_TTL")
+        if raw_ttl.isdigit():
+            ttl = max(60, int(raw_ttl))
+        import time as _time
+
+        meta = {
+            "id": job_id,
+            "object": "video",
+            "created_at": int(_time.time()),
+            "status": "completed",
+            "model": env("VIDEO_MODEL") or env("LTX_PROFILE"),
+            "progress": 100,
+            "size": env("LTX_SIZE") or env("VIDEO_SIZE"),
+            "output_path": str(output),
+            "expires_at": int(_time.time()) + ttl,
+        }
+        side = output.with_suffix(".json")
+        tmp = Path(str(side) + ".tmp")
+        tmp.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(side)
+    except Exception as exc:
+        eprint(f"warning: video sidecar not written ({exc})")
+
+    # WHY os._exit: normal return runs Wan2GP/mmgp/torch atexit + __del__, which
+    # re-hooks / spikes host RSS and has OOM-killed the zerollama cgroup *after*
+    # a good mp4 (astra 2026-10-02). training.py early-completes on TRAINING_COMPLETE
+    # and SIGKILLs if we somehow linger; hard-exit is the fast path.
     progress(100.0, "done")
     print("TRAINING_COMPLETE", flush=True)
     print(f"artifact={output}", flush=True)
-    return 0
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 def main() -> int:

@@ -168,6 +168,25 @@ func TestAdmitLtx25HostRAMOK(t *testing.T) {
 	}
 }
 
+func TestAdmitLtxLegacyMinEnvDoesNotRaise2B(t *testing.T) {
+	// WHY: operators set ZEROLLAMA_LTX_MIN_HOST_RAM_GIB=72 for LTX-2.5; that must not
+	// make 2B/13B require 72 GiB MemAvailable (cozmic.space false 503s).
+	prev := wanReadHostMem
+	t.Cleanup(func() { wanReadHostMem = prev })
+	t.Setenv("ZEROLLAMA_LTX_MIN_HOST_RAM_GIB", "72")
+	t.Setenv("ZEROLLAMA_LTX_MIN_HOST_RAM_FORCE", "")
+	t.Setenv("ZEROLLAMA_LTX2B_MIN_HOST_RAM_GIB", "")
+	wanReadHostMem = func() (wanHostMem, error) {
+		return wanHostMem{
+			TotalMemory: 125 * format.GibiByte,
+			FreeMemory:  20 * format.GibiByte,
+		}, nil
+	}
+	if err := admitLtxHostRAM(model.VideoGenerationConfig{Profile: ltxProfile2BDistill}); err != nil {
+		t.Fatalf("2B should admit at 20 GiB free despite legacy LTX_MIN=72: %v", err)
+	}
+}
+
 func TestAdmitLtx25HostRAMRejectsTightFree(t *testing.T) {
 	prev := wanReadHostMem
 	t.Cleanup(func() { wanReadHostMem = prev })

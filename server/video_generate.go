@@ -395,83 +395,139 @@ func buildVideoJobPayload(backend string, cfg model.ConfigV2, vcfg model.VideoGe
 
 // VideoGetHandler returns GET /v1/videos/:id job status.
 func (s *Server) VideoGetHandler(c *gin.Context) {
+	id := c.Param("id")
+
+	if s.training != nil {
+		raw, err := s.videoJobStatusJSON(c.Request.Context(), id)
+		if err == nil {
+			var wrap struct {
+				Job json.RawMessage `json:"job"`
+			}
+			if err := json.Unmarshal(raw, &wrap); err != nil || len(wrap.Job) == 0 {
+				c.JSON(http.StatusBadGateway, openai.NewError(http.StatusBadGateway, "invalid job status"))
+				return
+			}
+
+			video, err := openai.VideoFromTrainingJob(wrap.Job)
+			if err != nil {
+				c.JSON(http.StatusBadGateway, openai.NewError(http.StatusBadGateway, err.Error()))
+				return
+			}
+			// Keep defer-* ids stable in responses when the client polled the deferred job id.
+			if isDeferredTrainingJobID(id) {
+				video.ID = id
+			}
+			if video.Status == "completed" {
+				if path, _, err := completedVideoOutputFromJob(wrap.Job); err == nil {
+					persistCompletedVideoArtifact(video, path)
+				}
+			}
+			c.JSON(http.StatusOK, video)
+			return
+		}
+		if !errors.Is(err, trainingworker.ErrJobNotFound) {
+			c.JSON(http.StatusBadGateway, openai.NewError(http.StatusBadGateway, err.Error()))
+			return
+		}
+	}
+
+	// Durable fallback: mp4 + sidecar under generated/ (survives queue eviction / OOM restart).
+	if video, _, ok := videoFromDiskArtifact(id); ok {
+		c.JSON(http.StatusOK, video)
+		return
+	}
 	if s.training == nil {
 		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "video generation requires ZEROLLAMA_GPU_JOBS=true (alias OLLAMA_TRAINING)"))
 		return
 	}
-
-	id := c.Param("id")
-	raw, err := s.videoJobStatusJSON(c.Request.Context(), id)
-	if err != nil {
-		if errors.Is(err, trainingworker.ErrJobNotFound) {
-			c.JSON(http.StatusNotFound, openai.NewError(http.StatusNotFound, "video job not found"))
-		} else {
-			c.JSON(http.StatusBadGateway, openai.NewError(http.StatusBadGateway, err.Error()))
-		}
-		return
-	}
-
-	var wrap struct {
-		Job json.RawMessage `json:"job"`
-	}
-	if err := json.Unmarshal(raw, &wrap); err != nil || len(wrap.Job) == 0 {
-		c.JSON(http.StatusBadGateway, openai.NewError(http.StatusBadGateway, "invalid job status"))
-		return
-	}
-
-	video, err := openai.VideoFromTrainingJob(wrap.Job)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, openai.NewError(http.StatusBadGateway, err.Error()))
-		return
-	}
-	// Keep defer-* ids stable in responses when the client polled the deferred job id.
-	if isDeferredTrainingJobID(id) {
-		video.ID = id
-	}
-	c.JSON(http.StatusOK, video)
+	c.JSON(http.StatusNotFound, openai.NewError(http.StatusNotFound, "video job not found"))
 }
 
 // VideoContentHandler streams GET /v1/videos/:id/content (video/mp4).
 func (s *Server) VideoContentHandler(c *gin.Context) {
+	id := c.Param("id")
+
+	if s.training != nil {
+		raw, err := s.videoJobStatusJSON(c.Request.Context(), id)
+		if err == nil {
+			var wrap struct {
+				Job json.RawMessage `json:"job"`
+			}
+			if err := json.Unmarshal(raw, &wrap); err != nil || len(wrap.Job) == 0 {
+				c.JSON(http.StatusBadGateway, openai.NewError(http.StatusBadGateway, "invalid job status"))
+				return
+			}
+
+			path, statusCode, err := completedVideoOutputFromJob(wrap.Job)
+			if err != nil {
+				c.JSON(statusCode, openai.NewError(statusCode, err.Error()))
+				return
+			}
+
+			safe, err := safeVideoArtifactPath(path)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
+				return
+			}
+			if video, err := openai.VideoFromTrainingJob(wrap.Job); err == nil {
+				persistCompletedVideoArtifact(video, safe)
+			}
+
+			c.Header("Content-Type", "video/mp4")
+			c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.mp4"`, id))
+			c.File(safe)
+			return
+		}
+		if !errors.Is(err, trainingworker.ErrJobNotFound) {
+			c.JSON(http.StatusBadGateway, openai.NewError(http.StatusBadGateway, err.Error()))
+			return
+		}
+	}
+
+	if _, path, ok := videoFromDiskArtifact(id); ok {
+		safe, err := safeVideoArtifactPath(path)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
+			return
+		}
+		c.Header("Content-Type", "video/mp4")
+		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.mp4"`, id))
+		c.File(safe)
+		return
+	}
 	if s.training == nil {
 		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "video generation requires ZEROLLAMA_GPU_JOBS=true (alias OLLAMA_TRAINING)"))
 		return
 	}
+	c.JSON(http.StatusNotFound, openai.NewError(http.StatusNotFound, "video job not found"))
+}
 
-	id := c.Param("id")
-	raw, err := s.videoJobStatusJSON(c.Request.Context(), id)
-	if err != nil {
-		if errors.Is(err, trainingworker.ErrJobNotFound) {
-			c.JSON(http.StatusNotFound, openai.NewError(http.StatusNotFound, "video job not found"))
+// VideoDeleteHandler handles DELETE /v1/videos/:id — client ack after downloading content.
+//
+// Removes the durable mp4+json under generated/. Also best-effort cancels a still-pending
+// training/defer job. Idempotent: already-gone artifacts return 204.
+func (s *Server) VideoDeleteHandler(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	if id == "" || strings.Contains(id, "..") || strings.ContainsAny(id, `/\`) {
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "invalid video id"))
+		return
+	}
+
+	// Best-effort: stop a queued/deferred job (running jobs cannot be cancelled mid-DiT).
+	if s.training != nil {
+		if isDeferredTrainingJobID(id) {
+			_, _ = s.cancelDeferredTrainingJob(id)
 		} else {
-			c.JSON(http.StatusBadGateway, openai.NewError(http.StatusBadGateway, err.Error()))
+			_, _ = s.training.CancelTrainingJob(c.Request.Context(), id)
 		}
-		return
 	}
+	s.releaseVideoExclusiveGPU(id)
 
-	var wrap struct {
-		Job json.RawMessage `json:"job"`
-	}
-	if err := json.Unmarshal(raw, &wrap); err != nil || len(wrap.Job) == 0 {
-		c.JSON(http.StatusBadGateway, openai.NewError(http.StatusBadGateway, "invalid job status"))
-		return
-	}
-
-	path, statusCode, err := completedVideoOutputFromJob(wrap.Job)
-	if err != nil {
-		c.JSON(statusCode, openai.NewError(statusCode, err.Error()))
-		return
-	}
-
-	safe, err := safeVideoArtifactPath(path)
-	if err != nil {
+	if err := deleteVideoArtifact(id); err != nil {
 		c.JSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, err.Error()))
 		return
 	}
-
-	c.Header("Content-Type", "video/mp4")
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.mp4"`, id))
-	c.File(safe)
+	c.Status(http.StatusNoContent)
 }
 
 func (s *Server) videoJobStatusJSON(ctx context.Context, id string) ([]byte, error) {
@@ -734,7 +790,10 @@ func errLtxMLXUnsupportedPlatform() error {
 	if runtime.GOOS == "darwin" {
 		return nil
 	}
-	return fmt.Errorf("ltx-mlx requires Apple Silicon (macOS); this host is %s/%s — use ltxv-2b-distilled:lab or ltxv-13b-distilled:16g (Wan2GP/CUDA) instead", runtime.GOOS, runtime.GOARCH)
+	return fmt.Errorf(
+		"ltx-mlx runner is not supported on this platform (%s/%s); Apple MLX requires macOS — use Wan2GP/CUDA tags ltxv-2b-distilled:lab or ltxv-13b-distilled:16g (do not run install_ltx_mlx.sh here)",
+		runtime.GOOS, runtime.GOARCH,
+	)
 }
 
 func isLtx25Profile(profile string) bool {
@@ -1155,6 +1214,8 @@ func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		"LTX_MODEL_TYPE":         modelType,
 		"LTX_PROMPT":             prompt,
 		"LTX_SIZE":               vcfg.Size,
+		"VIDEO_SIZE":             vcfg.Size,
+		"VIDEO_MODEL":            modelName,
 		"LTX_FRAMES":             strconv.Itoa(vcfg.Frames),
 		"LTX_STEPS":              strconv.Itoa(vcfg.Steps),
 		"LTX_OUTPUT_PATH":        outputPath,
@@ -1166,7 +1227,6 @@ func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 		"WAN_SUBPROCESS_TIMEOUT": strconv.Itoa(timeout),
 		"VIDEO_OUTPUT_PATH":      outputPath,
 		"VIDEO_FRAMES":           strconv.Itoa(vcfg.Frames),
-		"VIDEO_SIZE":             vcfg.Size,
 	}
 	if isLtx25Profile(vcfg.Profile) {
 		env["LTX_FPS"] = "24"
@@ -1200,7 +1260,9 @@ func buildLtxVideoPayload(cfg model.ConfigV2, vcfg model.VideoGenerationConfig, 
 	return wanVideoJobPayload{
 		ScriptPath:  scriptPath,
 		PythonBin:   pythonBin,
-		WorkingDir:  repoRoot,
+		// WHY Wan2GP repo cwd: shared.api creates loras/<family> relative to process root;
+		// /opt/zerollama is wrong and a root-owned wan2gp/loras tree fails at loading_model (~27%).
+		WorkingDir:  wan2gpRepo,
 		Env:         env,
 		Timeout:     timeout,
 		OutputPath:  outputPath,

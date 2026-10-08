@@ -5341,6 +5341,17 @@ paths:
     post:
       tags: [Video]
       summary: Create video generation job
+      description: |
+        Returns **202 Accepted** with `{id,status}` as soon as the job is queued.
+        Exclusive GPU acquire and model load run asynchronously — do not set a
+        short client timeout expecting the POST to wait for diffusion.
+        Poll `GET /v1/videos/{id}` until `status=completed`, then
+        `GET /v1/videos/{id}/content`. After download, `DELETE /v1/videos/{id}`
+        to ack and free disk. Unclaimed mp4s stay under
+        `$OLLAMA_MODELS/generated/` until `ZEROLLAMA_VIDEO_ARTIFACT_TTL`
+        (default 24h), then the prune loop removes them. Host RAM floors:
+        `GET /api/status` → `inference.host_memory.available_bytes` /
+        `.video_admit`.
       operationId: createVideo
       requestBody:
         required: true
@@ -5349,15 +5360,17 @@ paths:
             schema:
               $ref: "#/components/schemas/VideoCreateRequest"
       responses:
-        "200":
-          description: Job accepted
+        "202":
+          description: Job queued (id returned immediately; load/generate is async)
           content:
             application/json:
               schema:
                 type: object
                 additionalProperties: true
         "400":
-          description: Invalid request or media_missing / media_type_mismatch
+          description: Invalid request, unsupported platform (ltx-mlx on non-macOS), or media_missing / media_type_mismatch
+        "503":
+          description: Host MemAvailable below model floor (see host_memory.video_admit)
   /v1/media/{session}:
     get:
       tags: [Video]
@@ -5487,6 +5500,11 @@ paths:
     get:
       tags: [Video]
       summary: Get video job status
+      description: |
+        Poll until `status` is `completed`, `failed`, or `cancelled`.
+        If the in-memory training job is gone but `{id}.mp4` still exists under
+        `$OLLAMA_MODELS/generated/` within TTL, returns `completed` from the
+        durable sidecar (same id).
       operationId: getVideo
       parameters:
         - name: id
@@ -5496,11 +5514,36 @@ paths:
             type: string
       responses:
         "200":
-          description: Job status
+          description: Job status (live queue or durable artifact)
+        "404":
+          description: Unknown id and no durable artifact
+    delete:
+      tags: [Video]
+      summary: Acknowledge / delete a video artifact
+      description: |
+        Client confirms it has downloaded the mp4 (or no longer needs it).
+        Deletes `$OLLAMA_MODELS/generated/{id}.mp4` and `{id}.json` immediately.
+        Idempotent (204 if already gone). Unclaimed files are also removed by the
+        server prune loop after `ZEROLLAMA_VIDEO_ARTIFACT_TTL` (default 24h;
+        prune interval `ZEROLLAMA_VIDEO_ARTIFACT_PRUNE_INTERVAL`, default 15m).
+      operationId: deleteVideo
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted (or already absent)
   /v1/videos/{id}/content:
     get:
       tags: [Video]
       summary: Download video content
+      description: |
+        Streams `video/mp4` when the job is completed. Prefers the live job
+        `output_path`; falls back to `$OLLAMA_MODELS/generated/{id}.mp4` when
+        the job record was evicted after a successful render.
       operationId: getVideoContent
       parameters:
         - name: id
@@ -5516,6 +5559,10 @@ paths:
               schema:
                 type: string
                 format: binary
+        "404":
+          description: Job not found and no durable mp4
+        "202":
+          description: Job still running (not ready)
   /openapi.yaml:
     get:
       tags: [Meta]

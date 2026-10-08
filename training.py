@@ -251,10 +251,17 @@ class JobQueue:
         return None
     
     def complete_job(self, job_id: str, result: Dict[str, Any]):
-        """Mark job as completed with result"""
+        """Mark job as completed with result.
+
+        Idempotent: once COMPLETED (including early complete on TRAINING_COMPLETE),
+        later complete_job calls from run_local_script return are no-ops so we keep
+        the first result that already has output_path.
+        """
         with self._lock:
             if job_id in self._jobs:
                 job = self._jobs[job_id]
+                if job.status == JobStatus.COMPLETED:
+                    return
                 job.status = JobStatus.COMPLETED
                 job.result = result
                 job.progress = 100.0
@@ -264,10 +271,21 @@ class JobQueue:
                 print(f"WORKER: Job {job_id} completed", flush=True)
     
     def fail_job(self, job_id: str, error: str):
-        """Mark job as failed with error"""
+        """Mark job as failed with error.
+
+        WHY ignore after COMPLETED: run_script may early-complete on TRAINING_COMPLETE
+        then SIGKILL the child to skip mmgp teardown; a non-zero exit must not flip
+        a successful video job to failed (clients already polling /content).
+        """
         with self._lock:
             if job_id in self._jobs:
                 job = self._jobs[job_id]
+                if job.status == JobStatus.COMPLETED:
+                    print(
+                        f"WORKER: ignoring fail for already-completed job {job_id}: {error}",
+                        flush=True,
+                    )
+                    return
                 job.status = JobStatus.FAILED
                 job.error = error
                 job.completed_at = datetime.utcnow().isoformat()
@@ -1065,6 +1083,46 @@ def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
         STATE.schedule_idle_unload()
 
 
+def _write_video_artifact_sidecar(job: Job, output_path: str) -> None:
+    """Durable {id}.json next to the mp4 so GET /v1/videos survives queue wipe / OOM restart."""
+    try:
+        out = Path(output_path)
+        if not out.is_file() or out.stat().st_size < 1:
+            return
+        ttl_raw = os.environ.get("ZEROLLAMA_VIDEO_ARTIFACT_TTL", "").strip()
+        ttl_sec = 24 * 3600
+        if ttl_raw:
+            try:
+                ttl_sec = int(ttl_raw)
+            except ValueError:
+                pass
+        created = int(datetime.utcnow().timestamp())
+        try:
+            # Prefer Go-stamped submitted_at when present.
+            if job.submitted_at:
+                created = int(datetime.fromisoformat(job.submitted_at.replace("Z", "+00:00")).timestamp())
+        except Exception:
+            pass
+        meta = {
+            "id": job.id,
+            "object": "video",
+            "created_at": created,
+            "status": "completed",
+            "model": (job.data or {}).get("video_model") or "",
+            "progress": 100,
+            "size": (job.data or {}).get("video_size") or "",
+            "output_path": str(out),
+            "expires_at": created + max(60, ttl_sec),
+        }
+        side = out.with_suffix(".json")
+        tmp = Path(str(side) + ".tmp")
+        tmp.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(side)
+        print(f"WORKER: wrote video artifact sidecar {side}", flush=True)
+    except Exception as exc:
+        print(f"WORKER: WARN video sidecar not written: {exc}", flush=True)
+
+
 def _expand_run_script_job_id(data: Dict[str, Any], job_id: str) -> Dict[str, Any]:
     """Replace {job_id} in output_path and every string env value; set TRAINING_JOB_ID.
 
@@ -1235,13 +1293,136 @@ def run_local_script(request: Dict[str, Any]) -> Dict[str, Any]:
             preexec_fn=preexec,
         )
 
-        stdout_lines = []
+        stdout_lines: List[str] = []
+        stdout_keep = 200  # ring buffer — Wan2GP tqdm+PROGRESS can be millions of lines
         last_progress = 0.0
         training_complete = False
+        early_completed = False
+        last_script_log = 0.0
+        last_logged_progress = -1.0
+        # After TRAINING_COMPLETE + artifact on disk, kill the child if it does not
+        # exit quickly. Wan2GP/mmgp/torch atexit can re-hook and spike RSS until the
+        # kernel OOM-kills the whole zerollama cgroup — after a successful mp4.
+        teardown_grace_sec = float(os.environ.get("ZEROLLAMA_RUN_SCRIPT_TEARDOWN_GRACE_SEC", "2") or "2")
 
         # Monitor stdout for progress updates
         # Format expected: "PROGRESS:XX:message" where XX is 0-100
         progress_pattern = re.compile(r"PROGRESS:(\d+(?:\.\d+)?):?(.*)")
+        # tqdm / mmgp reload spam — keep journal + embed heap usable
+        tqdm_noise = re.compile(
+            r"(\|\s*\d+%\|)|(\dit/s)|(\d+%\s*\|)|(Hooked to model)|(Async loading plan)|"
+            r"(Loading Model ')|(Encoding Text Prompt)|(VAE Decoding:)|(Padded dimensions)"
+        )
+
+        def _artifact_ready() -> Optional[str]:
+            output_path = request.get("output_path")
+            if not output_path:
+                return None
+            try:
+                if os.path.isfile(output_path) and os.path.getsize(output_path) >= 1:
+                    return str(output_path)
+            except OSError:
+                return None
+            return None
+
+        def _keep_stdout(line: str) -> None:
+            stdout_lines.append(line)
+            if len(stdout_lines) > stdout_keep:
+                del stdout_lines[: len(stdout_lines) - stdout_keep]
+
+        def _should_print_script(line: str, is_progress: bool, progress_val: float) -> bool:
+            """Rate-limit SCRIPT journal lines.
+
+            WHY: astra 2026-10-02 — journald suppressed ~11M lines from one LTX job;
+            embed also kept every line in stdout_lines → ~10–34 GiB RSS in zerollama
+            and OOM after a good mp4.
+            """
+            nonlocal last_script_log, last_logged_progress
+            lower = line.lower()
+            if "training_complete" in lower or "traceback" in lower or lower.startswith("error"):
+                return True
+            if is_progress:
+                if progress_val + 0.05 < last_logged_progress:
+                    return False
+                if progress_val - last_logged_progress < 1.0 and progress_val < 99.5:
+                    return False
+                last_logged_progress = progress_val
+                return True
+            if tqdm_noise.search(line):
+                now = time.time()
+                if now - last_script_log < 5.0:
+                    return False
+                last_script_log = now
+                return True
+            now = time.time()
+            if now - last_script_log < 0.5:
+                return False
+            last_script_log = now
+            return True
+
+        def _early_complete_from_artifact() -> None:
+            """Flip job → completed as soon as TRAINING_COMPLETE + mp4 exist.
+
+            WHY before process.wait: OpenAI GET /v1/videos and /content must succeed
+            while the child is still in destructor hell (or about to be SIGKILL'd).
+            Embedded job_status takes the GIL; a multi-minute teardown flood blocked
+            polls for ~2 min then OOM'd serve before clients ever saw completed.
+            """
+            nonlocal early_completed
+            if early_completed or not training_complete:
+                return
+            output_path = _artifact_ready()
+            if not output_path:
+                return
+            early_completed = True
+            jid = STATE.current_job_id
+            early_result = {
+                "status": "ok",
+                "return_code": 0,
+                "training_complete": True,
+                "early_complete": True,
+                "final_progress": max(last_progress, 100.0),
+                "output_path": output_path,
+            }
+            if jid:
+                JOB_QUEUE.complete_job(jid, early_result)
+                job = JOB_QUEUE.get_job(jid)
+                if job is not None:
+                    STATE.broadcast_to_job_owner(
+                        job,
+                        {
+                            "type": "job_completed",
+                            "job_id": jid,
+                            "result": early_result,
+                        },
+                    )
+                    _write_video_artifact_sidecar(job, output_path)
+            STATE.send_progress(100.0, "artifact ready (early complete)")
+            print(
+                f"WORKER: early-complete run_script job={jid} output={output_path} "
+                f"(teardown grace {teardown_grace_sec}s then SIGKILL if still alive)",
+                flush=True,
+            )
+
+            def _kill_teardown():
+                if process.poll() is not None:
+                    return
+                print(
+                    "WORKER: SIGKILL run_script child after TRAINING_COMPLETE "
+                    "(skip mmgp/torch teardown OOM)",
+                    flush=True,
+                )
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+
+            if teardown_grace_sec <= 0:
+                _kill_teardown()
+            else:
+                t = threading.Timer(teardown_grace_sec, _kill_teardown)
+                t.daemon = True
+                t.start()
 
         def read_output():
             nonlocal last_progress, training_complete
@@ -1252,16 +1433,22 @@ def run_local_script(request: Dict[str, Any]) -> Dict[str, Any]:
                     break
 
                 line = line.rstrip()
-                stdout_lines.append(line)
+                _keep_stdout(line)
                 lower = line.lower()
-                if "error" in lower or "warning" in lower or "traceback" in lower:
+                match = progress_pattern.match(line)
+                is_progress = match is not None
+                progress_val = float(match.group(1)) if match else 0.0
+
+                if "traceback" in lower or (lower.startswith("error") and not is_progress):
                     print(f"SCRIPT ERROR: {line}", flush=True)
-                else:
+                elif "error" in lower or "warning" in lower:
+                    if _should_print_script(line, False, 0.0):
+                        print(f"SCRIPT ERROR: {line}", flush=True)
+                elif _should_print_script(line, is_progress, progress_val):
                     print(f"SCRIPT: {line}", flush=True)
 
-                match = progress_pattern.match(line)
                 if match:
-                    progress = float(match.group(1))
+                    progress = progress_val
                     message = match.group(2).strip() if match.group(2) else ""
                     # WHY monotonic: Wan2GP/mmgp load phases emit oscillating sub-step %;
                     # never move the OpenAI job progress bar backwards.
@@ -1272,6 +1459,7 @@ def run_local_script(request: Dict[str, Any]) -> Dict[str, Any]:
 
                 if "TRAINING_COMPLETE" in line:
                     training_complete = True
+                    _early_complete_from_artifact()
 
         stdout_thread = threading.Thread(target=read_output, daemon=True)
         stdout_thread.start()
@@ -1292,27 +1480,43 @@ def run_local_script(request: Dict[str, Any]) -> Dict[str, Any]:
         if stdout_thread.is_alive():
             print("WORKER: script stdout reader still running after process exit", flush=True)
 
-        # Check result
+        output_path = _artifact_ready() or (
+            request.get("output_path")
+            if request.get("output_path") and os.path.exists(request.get("output_path"))
+            else None
+        )
+
+        # Success if clean exit, or early-complete + artifact (SIGKILL/-9 is expected).
         if return_code != 0:
-            return {
-                "status": "error",
-                "error": f"Script exited with code {return_code}",
-                "return_code": return_code,
-                "stdout": "\n".join(stdout_lines),
-            }
+            if early_completed or (training_complete and output_path):
+                print(
+                    f"WORKER: run_script exit={return_code} after TRAINING_COMPLETE; "
+                    f"treating as success (artifact={output_path})",
+                    flush=True,
+                )
+            else:
+                return {
+                    "status": "error",
+                    "error": f"Script exited with code {return_code}",
+                    "return_code": return_code,
+                    "stdout": "\n".join(stdout_lines),
+                }
 
         STATE.send_progress(100.0, "Script completed successfully")
 
         result = {
             "status": "ok",
-            "return_code": 0,
+            "return_code": 0 if return_code == 0 else return_code,
             "training_complete": training_complete,
+            "early_complete": early_completed,
             "final_progress": last_progress,
+            # Cap retained stdout — full Wan2GP logs are multi-GB and live in JOB_QUEUE.
             "stdout": "\n".join(stdout_lines),
         }
-        output_path = request.get("output_path")
-        if output_path and os.path.exists(output_path):
+        if output_path:
             result["output_path"] = output_path
+        elif request.get("output_path") and os.path.exists(request.get("output_path")):
+            result["output_path"] = request.get("output_path")
         return result
         
     except Exception as e:
