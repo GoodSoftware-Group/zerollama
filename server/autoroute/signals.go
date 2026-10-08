@@ -68,6 +68,9 @@ type Signals struct {
 
 	// Bonus optionally adds a score and a reason (e.g. calibrated deciders first).
 	Bonus func(Candidate) (float64, string) `json:"-"`
+
+	// Weights overrides DefaultWeights (router.yaml weights for classifier: jev routers).
+	Weights *Weights `json:"-"`
 }
 
 // Required returns the capabilities a candidate must have to serve the request. The set

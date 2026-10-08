@@ -42,6 +42,15 @@ type RouterSpec struct {
 	Decider        string `yaml:"decider" json:"decider,omitempty"`
 	DeciderTimeout string `yaml:"decider_timeout" json:"decider_timeout,omitempty"`
 	OnDeciderError string `yaml:"on_decider_error" json:"on_decider_error,omitempty"`
+
+	// Multi-question jev (AR5, opt-in: only when Questions is non-empty). Answers drive a
+	// fit score over Candidates (strengths, difficulty bands, tiers) on top of the
+	// deterministic engine; see router_jev_multi.go and docs/auto-router.md §7.
+	Questions        []RouterQuestion `yaml:"questions" json:"questions,omitempty"`
+	Weights          *RouterWeights   `yaml:"weights" json:"weights,omitempty"`
+	EscalateBelow    float64          `yaml:"escalate_below" json:"escalate_below,omitempty"`         // default 0.55
+	EscalateAt       float64          `yaml:"escalate_at" json:"escalate_at,omitempty"`               // difficulty level (1-based); 0 = off
+	ActEscalateBelow float64          `yaml:"act_escalate_below" json:"act_escalate_below,omitempty"` // Laya act head; default 0.5
 }
 
 type RouterPolicy struct {
@@ -52,6 +61,12 @@ type RouterPolicy struct {
 type RouterCandidate struct {
 	Model  string   `yaml:"model" json:"model"`
 	Labels []string `yaml:"labels" json:"labels"`
+
+	// AR5 multi-question jev policy.
+	Tier          string              `yaml:"tier" json:"tier,omitempty"`                     // low | mid | high — escalation restricts to high
+	Strengths     map[string][]string `yaml:"strengths" json:"strengths,omitempty"`           // question id → choice labels this model is good at
+	MinDifficulty float64             `yaml:"min_difficulty" json:"min_difficulty,omitempty"` // 1-based difficulty level band
+	MaxDifficulty float64             `yaml:"max_difficulty" json:"max_difficulty,omitempty"`
 }
 
 type RouterDecision struct {
@@ -70,7 +85,11 @@ type RouterDecision struct {
 	// Decider / Calibrated describe a classifier: jev decision.
 	Decider    string `json:"decider,omitempty"`
 	Calibrated *bool  `json:"calibrated,omitempty"`
-	LatencyMs  int64  `json:"latency_ms"`
+	// Escalated / Signals describe a multi-question jev decision (AR5): whether the pick
+	// was restricted to tier: high, and the summarised answers.
+	Escalated bool           `json:"escalated,omitempty"`
+	Signals   map[string]any `json:"signals,omitempty"`
+	LatencyMs int64          `json:"latency_ms"`
 }
 
 type RouterLabelScore struct {

@@ -1914,7 +1914,7 @@ components:
           type: number
         reason:
           type: string
-          description: warm | best-fit | only-candidate | pinned | surface-fallback | decider-fallback (empty for plain LA11 picks)
+          description: warm | best-fit | only-candidate | pinned | escalated | surface-fallback | decider-fallback (empty for plain LA11 picks)
         auto:
           $ref: "#/components/schemas/AutoRouteDecision"
         decider:
@@ -1923,6 +1923,13 @@ components:
         calibrated:
           type: boolean
           description: '`classifier: jev` — whether the decider reported calibrated probabilities (uncalibrated ⇒ argmax only).'
+        escalated:
+          type: boolean
+          description: 'Multi-question jev (AR5) — pick restricted to `tier: high` (unsure, hard, reasoning, or Laya act head).'
+        signals:
+          type: object
+          additionalProperties: true
+          description: Multi-question jev answers summarised per question id, plus `calibrated`, `escalate_reasons`, `escalation_unavailable`.
         latency_ms:
           type: integer
     AutoRouteDecision:

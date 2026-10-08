@@ -216,29 +216,12 @@ func parseJevChoice(raw json.RawMessage) (string, map[string]float64, bool, erro
 }
 
 // askJevDecider runs one routing question through runDecisions in-process (no HTTP hop).
-// On a deadline it starts a background warm-up so the next request finds the decider
-// resident — the per-call timeout would otherwise cancel every cold load.
 func (s *Server) askJevDecider(ctx context.Context, decider string, body []byte) (string, map[string]float64, bool, error) {
-	if isRouterName(decider) {
-		return "", nil, false, fmt.Errorf("decider %q is itself a router", decider)
-	}
-	call, err := parseDecisionsCall(body)
+	answers, err := s.askJevAnswers(ctx, decider, body)
 	if err != nil {
 		return "", nil, false, err
 	}
-	if served, aliased, err := resolveAlias(decider); err != nil {
-		return "", nil, false, err
-	} else if aliased {
-		call.Req.Model, call.LLM.Model = served, served
-	}
-	resp, err := s.runDecisions(ctx, call)
-	if err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			s.prewarmDecider(decider, body)
-		}
-		return "", nil, false, err
-	}
-	return parseJevChoice(resp.Answers[jevRouteQuestionID])
+	return parseJevChoice(answers[jevRouteQuestionID])
 }
 
 var deciderWarming sync.Map // decider name → struct{} while a warm-up runs

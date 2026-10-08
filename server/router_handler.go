@@ -86,6 +86,20 @@ func (s *Server) resolveRouter(ctx context.Context, name string, sig autoroute.S
 			d, err := s.decideRouterNonText(ctx, name, spec, sig)
 			return d, true, err
 		}
+		if routerIsJev(spec) && len(spec.Questions) > 0 && sig.Surface.IsText() {
+			d, err := s.decideRouterJevMulti(ctx, name, spec, sig)
+			if errors.Is(err, errDeciderUnavailable) && !deciderFailsClosed(spec) {
+				fd, ferr := s.decideRouterNonText(ctx, name, spec, sig)
+				if fd != nil && ferr == nil {
+					fd.Reason, fd.Classifier = "decider-fallback", "jev"
+					if d != nil {
+						fd.Decider = d.Decider
+					}
+				}
+				return fd, true, ferr
+			}
+			return d, true, err
+		}
 		d, err := decideRouterWith(ctx, name, spec, sig.Text, routerBackends{
 			score: s.scoreRouterPolicies, embed: s.embedRouterText, rerank: s.rerankRouterDocs, jev: s.askJevDecider,
 		})

@@ -57,19 +57,24 @@ var ErrNoCandidate = errors.New("no local model can serve this request")
 // the pick and break vector comparability.
 var ErrAmbiguousPinned = errors.New("more than one model qualifies for a pinned surface")
 
-// Deterministic weights (AR1). WHY these orders of magnitude: residency dominates on
-// single-GPU hosts where a load costs seconds to minutes; eviction is the next worst
-// outcome; size (a crude quality proxy for text) and bench speed only break ties among
-// equally available models. router.yaml weights replace these in AR5.
-const (
-	weightWarm  = 4.0
-	weightEvict = 2.0
-	weightSize  = 1.0
-	weightSpeed = 0.5
-	// neutralSpeed is used when a candidate has no bench entry, so un-benched models are
-	// neither preferred nor penalised against benched ones.
-	neutralSpeed = 0.5
-)
+// Weights scale the deterministic score components. Fit (from Jev answers) is applied by
+// the caller through Signals.Bonus, so it is not part of this struct.
+type Weights struct {
+	Warm  float64 `json:"warm"`
+	Evict float64 `json:"evict"`
+	Size  float64 `json:"size"`
+	Speed float64 `json:"speed"`
+}
+
+// DefaultWeights are the AR1 deterministic weights. WHY these orders of magnitude:
+// residency dominates on single-GPU hosts where a load costs seconds to minutes; eviction
+// is the next worst outcome; size (a crude quality proxy for text) and bench speed only
+// break ties among equally available models.
+var DefaultWeights = Weights{Warm: 4.0, Evict: 2.0, Size: 1.0, Speed: 0.5}
+
+// neutralSpeed is used when a candidate has no bench entry, so un-benched models are
+// neither preferred nor penalised against benched ones.
+const neutralSpeed = 0.5
 
 // Decide filters cands for sig, scores the survivors and picks one. It is pure apart from
 // avail and bench.json reads, and safe for concurrent use.
@@ -114,6 +119,10 @@ func Decide(cands []Candidate, sig Signals, avail AvailabilityFunc) (Decision, e
 			ErrAmbiguousPinned, sig.Surface, strings.Join(names, ", "))
 	}
 
+	w := DefaultWeights
+	if sig.Weights != nil {
+		w = *sig.Weights
+	}
 	var maxSize int64
 	for _, e := range live {
 		maxSize = max(maxSize, e.c.SizeBytes)
@@ -125,10 +134,10 @@ func Decide(cands []Candidate, sig Signals, avail AvailabilityFunc) (Decision, e
 	for i, e := range live {
 		r := Ranked{Model: e.c.Name, Warm: e.a.Warm, NeedsEviction: e.a.NeedsEviction}
 		if e.a.Warm {
-			r.Score += weightWarm
+			r.Score += w.Warm
 			r.Reasons = append(r.Reasons, "warm")
 		} else if e.a.NeedsEviction {
-			r.Score -= weightEvict
+			r.Score -= w.Evict
 			reason := "needs eviction"
 			if e.a.Detail != "" {
 				reason += ": " + e.a.Detail
@@ -136,9 +145,9 @@ func Decide(cands []Candidate, sig Signals, avail AvailabilityFunc) (Decision, e
 			r.Reasons = append(r.Reasons, reason)
 		}
 		if preferSize && maxSize > 0 {
-			r.Score += weightSize * float64(e.c.SizeBytes) / float64(maxSize)
+			r.Score += w.Size * float64(e.c.SizeBytes) / float64(maxSize)
 		}
-		r.Score += weightSpeed * speeds[i]
+		r.Score += w.Speed * speeds[i]
 		if sig.Bonus != nil {
 			if b, why := sig.Bonus(e.c); b != 0 {
 				r.Score += b
