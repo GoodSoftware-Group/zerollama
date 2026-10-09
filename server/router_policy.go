@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"slices"
@@ -130,6 +131,9 @@ var (
 	routerFilePath  string
 	routerFileMod   time.Time
 	routerFileCache *RouterFile
+
+	routerFileErrPath string // last invalid router.yaml logged (path + mtime)
+	routerFileErrMod  time.Time
 )
 
 func loadRouterFile() (*RouterFile, error) {
@@ -155,7 +159,14 @@ func loadRouterFile() (*RouterFile, error) {
 	}
 	var file RouterFile
 	if err := yaml.Unmarshal(raw, &file); err != nil {
-		return nil, fmt.Errorf("router config: %w", err)
+		err = fmt.Errorf("router config %s: %w", path, err)
+		// WHY log once per file version: a syntax error makes every router vanish (lookups
+		// treat the name as a plain model), and this runs on every routed request.
+		if routerFileErrPath != path || !st.ModTime().Equal(routerFileErrMod) {
+			slog.Warn("router.yaml invalid; routers disabled until fixed", "error", err)
+			routerFileErrPath, routerFileErrMod = path, st.ModTime()
+		}
+		return nil, err
 	}
 	if file.Routers == nil {
 		file.Routers = map[string]RouterSpec{}

@@ -180,11 +180,44 @@ func (s *Server) RouterInventoryHandler(c *gin.Context) {
 	for name, ferr := range failed {
 		failedOut[name] = ferr.Error()
 	}
-	c.JSON(http.StatusOK, gin.H{
+	body := gin.H{
 		"auto_router": envconfig.AutoRouter(),
 		"candidates":  rows,
 		"failed":      failedOut,
-	})
+		"routers":     routerSummaries(),
+	}
+	if _, err := loadRouterFile(); err != nil {
+		body["router_config_error"] = err.Error()
+	}
+	c.JSON(http.StatusOK, body)
+}
+
+// routerSummary is the policy view of one router.yaml router: enough for eval tooling
+// (scripts/eval/router_eval.py) to score tier / strength accuracy without a YAML parser.
+type routerSummary struct {
+	Classifier string            `json:"classifier"`
+	Decider    string            `json:"decider,omitempty"`
+	Fallback   string            `json:"fallback,omitempty"`
+	Questions  int               `json:"questions,omitempty"`
+	Candidates []RouterCandidate `json:"candidates"`
+}
+
+func routerSummaries() map[string]routerSummary {
+	out := map[string]routerSummary{}
+	file, err := loadRouterFile()
+	if err != nil || file == nil {
+		return out
+	}
+	for name, spec := range file.Routers {
+		out[name] = routerSummary{
+			Classifier: spec.Classifier,
+			Decider:    spec.Decider,
+			Fallback:   spec.Fallback,
+			Questions:  len(spec.Questions),
+			Candidates: spec.Candidates,
+		}
+	}
+	return out
 }
 
 // autoRouterVersionCapability is advertised under zerollama.capabilities.auto_router on

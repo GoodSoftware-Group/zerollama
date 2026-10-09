@@ -2076,6 +2076,15 @@ components:
           type: object
           additionalProperties:
             type: string
+        router_config_error:
+          type: string
+          description: Set when router.yaml fails to parse — every router.yaml router is disabled until it is fixed.
+        routers:
+          type: object
+          description: router.yaml routers by name — classifier, decider, fallback, question count and candidates (tier, strengths, difficulty bands, labels).
+          additionalProperties:
+            type: object
+            additionalProperties: true
     RouterCorpusEntry:
       type: object
       required: [text, labels]

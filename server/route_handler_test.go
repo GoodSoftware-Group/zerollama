@@ -240,3 +240,53 @@ func TestVersionAdvertisesAutoRouter(t *testing.T) {
 		t.Fatalf("expected enabled by default: %s", b)
 	}
 }
+
+func TestRouterInventoryIncludesRouterPolicies(t *testing.T) {
+	s := newRouteTestServer(t)
+	createRouteTestModel(t, s, "plain", routePlainTemplate)
+	resetRouterFile(t, `
+routers:
+  smart:
+    classifier: jev
+    decider: laya
+    fallback: plain
+    questions:
+      - {id: task, type: choice, instructions: "what kind?", criteria: {code: code}}
+    candidates:
+      - {model: plain, tier: low, strengths: {task: [chat]}, max_difficulty: 2}
+`)
+	w := NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest(http.MethodGet, "/api/router/inventory", nil)
+	s.RouterInventoryHandler(c)
+	var out struct {
+		Routers map[string]struct {
+			Classifier string            `json:"classifier"`
+			Decider    string            `json:"decider"`
+			Questions  int               `json:"questions"`
+			Candidates []RouterCandidate `json:"candidates"`
+		} `json:"routers"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	r, ok := out.Routers["smart"]
+	if !ok || r.Classifier != "jev" || r.Decider != "laya" || r.Questions != 1 || len(r.Candidates) != 1 {
+		t.Fatalf("routers = %+v", out.Routers)
+	}
+	if c := r.Candidates[0]; c.Tier != "low" || c.MaxDifficulty != 2 || c.Strengths["task"][0] != "chat" {
+		t.Fatalf("candidate policy = %+v", c)
+	}
+}
+
+func TestRouterInventoryReportsConfigError(t *testing.T) {
+	s := newRouteTestServer(t)
+	resetRouterFile(t, "routers:\n  bad: [unclosed\n")
+	w := NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest(http.MethodGet, "/api/router/inventory", nil)
+	s.RouterInventoryHandler(c)
+	if !strings.Contains(w.Body.String(), `"router_config_error"`) {
+		t.Fatalf("invalid router.yaml must be visible in the inventory: %s", w.Body.String())
+	}
+}
