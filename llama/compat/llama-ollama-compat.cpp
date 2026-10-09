@@ -3214,9 +3214,16 @@ bool translate_metadata(const llama_model_loader * ml,
     // Keep clef.* out of weights_map so done_getting_tensors matches the
     // backbone tensor count (upstream ollama-compat; required for live score).
     const int decision_key = gguf_find_key(meta, (arch_name + ".decision.type").c_str());
-    if (decision_key >= 0 && gguf_get_kv_type(meta, decision_key) == GGUF_TYPE_STRING &&
-            std::strcmp(gguf_get_val_str(meta, decision_key), "clef") == 0) {
-        add_skip_prefix(ml, "clef.");
+    if (decision_key >= 0 && gguf_get_kv_type(meta, decision_key) == GGUF_TYPE_STRING) {
+        const char * dtype = gguf_get_val_str(meta, decision_key);
+        if (std::strcmp(dtype, "clef") == 0) {
+            add_skip_prefix(ml, "clef.");
+        } else if (std::strcmp(dtype, "strands") == 0) {
+            // Pointer head is consumed by llama-server after backbone eval.
+            add_skip_prefix(ml, "strands.");
+            // Published Strands GGUFs may also carry an unused bert-style cls.* head.
+            add_skip_prefix(ml, "cls.");
+        }
     }
     // embeddinggemma must run before gemma3: it switches arch_name to
     // "gemma-embedding", which is what later checks (and the loader's KV

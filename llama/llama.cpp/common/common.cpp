@@ -1201,7 +1201,13 @@ common_decision_type common_get_decision_type(const llama_model * model) {
     if (llama_model_meta_val_str(model, key.c_str(), value, sizeof(value)) < 0) {
         return COMMON_DECISION_TYPE_NONE;
     }
-    return std::strcmp(value, "clef") == 0 ? COMMON_DECISION_TYPE_CLEF : COMMON_DECISION_TYPE_UNKNOWN;
+    if (std::strcmp(value, "clef") == 0) {
+        return COMMON_DECISION_TYPE_CLEF;
+    }
+    if (std::strcmp(value, "strands") == 0) {
+        return COMMON_DECISION_TYPE_STRANDS;
+    }
+    return COMMON_DECISION_TYPE_UNKNOWN;
 }
 
 common_init_result::common_init_result(common_params & params, bool model_only) :
@@ -1256,11 +1262,12 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
 
-    if (common_get_decision_type(model) == COMMON_DECISION_TYPE_CLEF) {
+    const auto decision_type = common_get_decision_type(model);
+    if (decision_type == COMMON_DECISION_TYPE_CLEF || decision_type == COMMON_DECISION_TYPE_STRANDS) {
         params.embedding = cparams.embeddings = true;
         cparams.ctx_type = LLAMA_CONTEXT_TYPE_DECISION;
         params.pooling_type = cparams.pooling_type = LLAMA_POOLING_TYPE_NONE;
-        // The joint head consumes every hidden state; retain the whole input.
+        // Decision heads consume every hidden state; retain the whole input.
         const auto n_ctx = cparams.n_ctx ? cparams.n_ctx : llama_model_n_ctx_train(model);
         params.n_batch = cparams.n_batch = n_ctx;
         params.n_ubatch = cparams.n_ubatch = n_ctx;

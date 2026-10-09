@@ -157,7 +157,8 @@ struct server_task {
     // used by SERVER_TASK_TYPE_INFERENCE
     task_params   params;
     server_tokens tokens;
-    common_json score_fields; // optional decision question and option spans
+    common_json score_fields; // optional decision question and option spans (Clef)
+    common_json pointer_rows; // optional Strands pointer-head rows
 
     // only used by CLI, this allow tokenizing CLI inputs on server side
     // we need this because mtmd_context and vocab are not accessible outside of server_context

@@ -1,0 +1,165 @@
+From: zerollama <zerollama@local>
+Date: Thu, 9 Oct 2026 00:00:00 +0000
+Subject: [PATCH] server: wire Strands pointer_rows + link llama/strands via
+ ZEROLLAMA_STRANDS_DIR
+
+Tip follow-up to 0135 Clef wire. Adds COMMON_DECISION_TYPE_STRANDS, forces
+embedding/pooling-none for strands GGUFs, accepts pointer_rows on /embedding,
+and CMake-links repo-root llama/strands/strands.cpp when
+-DZEROLLAMA_STRANDS_DIR is set.
+
+diff --git a/common/common.cpp b/common/common.cpp
+index 3170f42f7..1338f5289 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -1201,7 +1201,13 @@ common_decision_type common_get_decision_type(const llama_model * model) {
+     if (llama_model_meta_val_str(model, key.c_str(), value, sizeof(value)) < 0) {
+         return COMMON_DECISION_TYPE_NONE;
+     }
+-    return std::strcmp(value, "clef") == 0 ? COMMON_DECISION_TYPE_CLEF : COMMON_DECISION_TYPE_UNKNOWN;
++    if (std::strcmp(value, "clef") == 0) {
++        return COMMON_DECISION_TYPE_CLEF;
++    }
++    if (std::strcmp(value, "strands") == 0) {
++        return COMMON_DECISION_TYPE_STRANDS;
++    }
++    return COMMON_DECISION_TYPE_UNKNOWN;
+ }
+ 
+ common_init_result::common_init_result(common_params & params, bool model_only) :
+@@ -1256,11 +1262,12 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+ 
+     const llama_vocab * vocab = llama_model_get_vocab(model);
+ 
+-    if (common_get_decision_type(model) == COMMON_DECISION_TYPE_CLEF) {
++    const auto decision_type = common_get_decision_type(model);
++    if (decision_type == COMMON_DECISION_TYPE_CLEF || decision_type == COMMON_DECISION_TYPE_STRANDS) {
+         params.embedding = cparams.embeddings = true;
+         cparams.ctx_type = LLAMA_CONTEXT_TYPE_DECISION;
+         params.pooling_type = cparams.pooling_type = LLAMA_POOLING_TYPE_NONE;
+-        // The joint head consumes every hidden state; retain the whole input.
++        // Decision heads consume every hidden state; retain the whole input.
+         const auto n_ctx = cparams.n_ctx ? cparams.n_ctx : llama_model_n_ctx_train(model);
+         params.n_batch = cparams.n_batch = n_ctx;
+         params.n_ubatch = cparams.n_ubatch = n_ctx;
+diff --git a/common/common.h b/common/common.h
+index 1c1fef9d4..5d1478bd2 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -997,6 +997,7 @@ struct common_sampler;
+ enum common_decision_type {
+     COMMON_DECISION_TYPE_NONE,
+     COMMON_DECISION_TYPE_CLEF,
++    COMMON_DECISION_TYPE_STRANDS,
+     COMMON_DECISION_TYPE_UNKNOWN,
+ };
+ 
+diff --git a/tools/server/CMakeLists.txt b/tools/server/CMakeLists.txt
+index ffff3d04b..ea33a4a9c 100644
+--- a/tools/server/CMakeLists.txt
++++ b/tools/server/CMakeLists.txt
+@@ -45,6 +45,14 @@ if (DEFINED ZEROLLAMA_CLEF_DIR AND EXISTS "${ZEROLLAMA_CLEF_DIR}/clef.cpp")
+     message(STATUS "server-context: linking Clef head from ${ZEROLLAMA_CLEF_DIR}")
+ endif()
+ 
++# Pass -DZEROLLAMA_STRANDS_DIR=/path/to/llama/strands from build_llama_server.sh.
++if (DEFINED ZEROLLAMA_STRANDS_DIR AND EXISTS "${ZEROLLAMA_STRANDS_DIR}/strands.cpp")
++    target_sources(${TARGET} PRIVATE ${ZEROLLAMA_STRANDS_DIR}/strands.cpp)
++    target_include_directories(${TARGET} PRIVATE ${ZEROLLAMA_STRANDS_DIR})
++    message(STATUS "server-context: linking Strands head from ${ZEROLLAMA_STRANDS_DIR}")
++endif()
++
++
+ # llama-server-impl: server logic, reusable by app
+ 
+ set(TARGET llama-server-impl)
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index fd7fcbfca..7a8ec6adf 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1,5 +1,6 @@
+ #include "server-context.h"
+ #include "clef.h"
++#include "strands.h"
+ #include "server-chat.h"
+ #include "server-common.h"
+ #include "server-http.h"
+@@ -459,7 +460,7 @@ struct server_slot {
+     }
+ 
+     void collect_score_embeddings(const common_batch & batch) {
+-        if (!task || task->score_fields.is_null()) return;
++        if (!task || (task->score_fields.is_null() && task->pointer_rows.is_null())) return;
+         // Embedding mode returns every token, including image tokens with logits disabled.
+         const int width = llama_model_n_embd_out(llama_get_model(ctx_tgt));
+         for (int32_t i = 0; i < batch.size(); ++i) {
+@@ -917,6 +918,7 @@ public:
+     //  - and, with thread-safe APIs (e.g., tokenizer calls)
+     llama_model * model_tgt = nullptr;
+     std::unique_ptr<clef_head> clef;
++    std::unique_ptr<strands_head> strands;
+ 
+     // Laya /v1/decisions: sync encode+CPU head (serialized; dedicated --decisions servers)
+     std::mutex mutex_laya;
+@@ -2416,12 +2418,17 @@ private:
+         res->n_tokens  = slot.task->n_tokens();
+         res->res_type  = slot.task->params.res_type;
+ 
+-        if (!slot.task->score_fields.is_null()) {
++        if (!slot.task->score_fields.is_null() || !slot.task->pointer_rows.is_null()) {
+             try {
+-                if (!clef) clef.reset(new clef_head(params_base.model.path));
+                 llama_tokens tokens;
+                 for (size_t i = 0; i < slot.task->tokens.size(); ++i) tokens.push_back(slot.task->tokens[i]);
+-                res->score_logits = clef->score(slot.score_embeddings, tokens, slot.task->score_fields);
++                if (!slot.task->pointer_rows.is_null()) {
++                    if (!strands) strands.reset(new strands_head(params_base.model.path));
++                    res->score_logits = strands->score(slot.score_embeddings, tokens, slot.task->pointer_rows);
++                } else {
++                    if (!clef) clef.reset(new clef_head(params_base.model.path));
++                    res->score_logits = clef->score(slot.score_embeddings, tokens, slot.task->score_fields);
++                }
+             } catch (const std::exception & e) {
+                 send_error(slot, e.what(), ERROR_TYPE_SERVER);
+                 return;
+@@ -4745,9 +4752,12 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
+     GGML_ASSERT(type == SERVER_TASK_TYPE_COMPLETION || type == SERVER_TASK_TYPE_INFILL);
+ 
+     auto res = create_response();
+-    if (common_get_decision_type(ctx_server.model_tgt) == COMMON_DECISION_TYPE_CLEF) {
+-        res->error(format_error_response("This model requires a decision request", ERROR_TYPE_INVALID_REQUEST));
+-        return res;
++    {
++        const auto dt = common_get_decision_type(ctx_server.model_tgt);
++        if (dt == COMMON_DECISION_TYPE_CLEF || dt == COMMON_DECISION_TYPE_STRANDS) {
++            res->error(format_error_response("This model requires a decision request", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
+     }
+     auto completion_id = gen_chatcmplid();
+     auto & rd = res->rd;
+@@ -6394,6 +6404,10 @@ std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(cons
+             // OAI-compat
+             task.params.res_type = res_type;
+             task.params.embd_normalize = embd_normalize;
++            if (body.contains("pointer_rows")) {
++                task.pointer_rows = body.at("pointer_rows");
++                task.params.cache_prompt = false; // the head needs every hidden state
++            }
+             if (body.contains("score_fields")) {
+                 task.score_fields = body.at("score_fields");
+                 task.params.cache_prompt = false; // the head needs every hidden state
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index 22dfaf068..7efcc03ca 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -157,7 +157,8 @@ struct server_task {
+     // used by SERVER_TASK_TYPE_INFERENCE
+     task_params   params;
+     server_tokens tokens;
+-    common_json score_fields; // optional decision question and option spans
++    common_json score_fields; // optional decision question and option spans (Clef)
++    common_json pointer_rows; // optional Strands pointer-head rows
+ 
+     // only used by CLI, this allow tokenizing CLI inputs on server side
+     // we need this because mtmd_context and vocab are not accessible outside of server_context

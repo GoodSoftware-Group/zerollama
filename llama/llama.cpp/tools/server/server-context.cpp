@@ -1,5 +1,6 @@
 #include "server-context.h"
 #include "clef.h"
+#include "strands.h"
 #include "server-chat.h"
 #include "server-common.h"
 #include "server-http.h"
@@ -459,7 +460,7 @@ struct server_slot {
     }
 
     void collect_score_embeddings(const common_batch & batch) {
-        if (!task || task->score_fields.is_null()) return;
+        if (!task || (task->score_fields.is_null() && task->pointer_rows.is_null())) return;
         // Embedding mode returns every token, including image tokens with logits disabled.
         const int width = llama_model_n_embd_out(llama_get_model(ctx_tgt));
         for (int32_t i = 0; i < batch.size(); ++i) {
@@ -917,6 +918,7 @@ public:
     //  - and, with thread-safe APIs (e.g., tokenizer calls)
     llama_model * model_tgt = nullptr;
     std::unique_ptr<clef_head> clef;
+    std::unique_ptr<strands_head> strands;
 
     // Laya /v1/decisions: sync encode+CPU head (serialized; dedicated --decisions servers)
     std::mutex mutex_laya;
@@ -2416,12 +2418,17 @@ private:
         res->n_tokens  = slot.task->n_tokens();
         res->res_type  = slot.task->params.res_type;
 
-        if (!slot.task->score_fields.is_null()) {
+        if (!slot.task->score_fields.is_null() || !slot.task->pointer_rows.is_null()) {
             try {
-                if (!clef) clef.reset(new clef_head(params_base.model.path));
                 llama_tokens tokens;
                 for (size_t i = 0; i < slot.task->tokens.size(); ++i) tokens.push_back(slot.task->tokens[i]);
-                res->score_logits = clef->score(slot.score_embeddings, tokens, slot.task->score_fields);
+                if (!slot.task->pointer_rows.is_null()) {
+                    if (!strands) strands.reset(new strands_head(params_base.model.path));
+                    res->score_logits = strands->score(slot.score_embeddings, tokens, slot.task->pointer_rows);
+                } else {
+                    if (!clef) clef.reset(new clef_head(params_base.model.path));
+                    res->score_logits = clef->score(slot.score_embeddings, tokens, slot.task->score_fields);
+                }
             } catch (const std::exception & e) {
                 send_error(slot, e.what(), ERROR_TYPE_SERVER);
                 return;
@@ -4745,9 +4752,12 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
     GGML_ASSERT(type == SERVER_TASK_TYPE_COMPLETION || type == SERVER_TASK_TYPE_INFILL);
 
     auto res = create_response();
-    if (common_get_decision_type(ctx_server.model_tgt) == COMMON_DECISION_TYPE_CLEF) {
-        res->error(format_error_response("This model requires a decision request", ERROR_TYPE_INVALID_REQUEST));
-        return res;
+    {
+        const auto dt = common_get_decision_type(ctx_server.model_tgt);
+        if (dt == COMMON_DECISION_TYPE_CLEF || dt == COMMON_DECISION_TYPE_STRANDS) {
+            res->error(format_error_response("This model requires a decision request", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
     }
     auto completion_id = gen_chatcmplid();
     auto & rd = res->rd;
@@ -6394,6 +6404,10 @@ std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(cons
             // OAI-compat
             task.params.res_type = res_type;
             task.params.embd_normalize = embd_normalize;
+            if (body.contains("pointer_rows")) {
+                task.pointer_rows = body.at("pointer_rows");
+                task.params.cache_prompt = false; // the head needs every hidden state
+            }
             if (body.contains("score_fields")) {
                 task.score_fields = body.at("score_fields");
                 task.params.cache_prompt = false; // the head needs every hidden state

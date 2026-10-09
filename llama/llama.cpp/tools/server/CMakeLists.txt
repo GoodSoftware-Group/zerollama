@@ -45,6 +45,14 @@ if (DEFINED ZEROLLAMA_CLEF_DIR AND EXISTS "${ZEROLLAMA_CLEF_DIR}/clef.cpp")
     message(STATUS "server-context: linking Clef head from ${ZEROLLAMA_CLEF_DIR}")
 endif()
 
+# Pass -DZEROLLAMA_STRANDS_DIR=/path/to/llama/strands from build_llama_server.sh.
+if (DEFINED ZEROLLAMA_STRANDS_DIR AND EXISTS "${ZEROLLAMA_STRANDS_DIR}/strands.cpp")
+    target_sources(${TARGET} PRIVATE ${ZEROLLAMA_STRANDS_DIR}/strands.cpp)
+    target_include_directories(${TARGET} PRIVATE ${ZEROLLAMA_STRANDS_DIR})
+    message(STATUS "server-context: linking Strands head from ${ZEROLLAMA_STRANDS_DIR}")
+endif()
+
+
 # llama-server-impl: server logic, reusable by app
 
 set(TARGET llama-server-impl)

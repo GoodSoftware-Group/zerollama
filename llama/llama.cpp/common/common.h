@@ -997,6 +997,7 @@ struct common_sampler;
 enum common_decision_type {
     COMMON_DECISION_TYPE_NONE,
     COMMON_DECISION_TYPE_CLEF,
+    COMMON_DECISION_TYPE_STRANDS,
     COMMON_DECISION_TYPE_UNKNOWN,
 };
 

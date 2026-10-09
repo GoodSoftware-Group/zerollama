@@ -34,9 +34,8 @@ func (s *llamaServerRunner) scoreSystemOne(ctx context.Context, input ScoreReque
 	badRequest := func(format string, args ...any) (ScoreResponse, error) {
 		return ScoreResponse{}, api.StatusError{StatusCode: http.StatusBadRequest, ErrorMessage: fmt.Sprintf(format, args...)}
 	}
-	// Strands PointerRows are MLX-only upstream; llama-server has no pointer-head wire.
 	if len(input.PointerRows) > 0 {
-		return badRequest("strands pointer_rows require an MLX decision runner; CUDA/llama-server does not score Strands")
+		return s.scorePointerRows(ctx, input)
 	}
 	if len(input.Segments) == 0 && len(input.Fields) == 0 && (len(input.Rows) < 1 || len(input.Rows) > 64) {
 		return badRequest("scoring requires 1–64 prompts")
@@ -369,4 +368,109 @@ func (s *llamaServerRunner) scoreFields(ctx context.Context, input ScoreRequest)
 		return ScoreResponse{}, fmt.Errorf("decision runner did not score the complete request")
 	}
 	return ScoreResponse{Logits: result[0].Logits, InputTokens: result[0].Tokens}, nil
+}
+
+func (s *llamaServerRunner) scorePointerRows(ctx context.Context, input ScoreRequest) (ScoreResponse, error) {
+	bad := func(message string) (ScoreResponse, error) {
+		return ScoreResponse{}, api.StatusError{StatusCode: http.StatusBadRequest, ErrorMessage: message}
+	}
+	if len(input.PointerRows) < 1 || len(input.PointerRows) > 64 || len(input.Images) != 0 {
+		return bad("invalid Strands pointer_rows, images, or count")
+	}
+	if input.MaxTokens < 1 {
+		return bad("max_tokens must be at least 1")
+	}
+	for i, row := range input.PointerRows {
+		if row.Type < 0 || row.Type > 2 || len(row.Options) < 2 || len(row.Options) > 255 ||
+			(row.Type == 0 && len(row.Options) != 2) || (row.Type == 2 && len(row.Options) > 10) {
+			return bad(fmt.Sprintf("pointer row %d: invalid type or option count", i))
+		}
+	}
+	if err := s.sem.Acquire(ctx, 1); err != nil {
+		return ScoreResponse{}, err
+	}
+	defer s.sem.Release(1)
+	status, err := s.getServerStatusRetry(ctx)
+	if err != nil {
+		return ScoreResponse{}, err
+	} else if status != ServerStatusReady {
+		return ScoreResponse{}, fmt.Errorf("unexpected server status: %s", status)
+	}
+
+	var result ScoreResponse
+	result.Logits = make([][]float32, 0, len(input.PointerRows))
+	special := true
+	for i, row := range input.PointerRows {
+		prefix, err := s.tokenize(ctx, row.Prefix, true, &special)
+		if err != nil {
+			return ScoreResponse{}, err
+		}
+		suffix, err := s.tokenize(ctx, row.Prompt, false, &special)
+		if err != nil {
+			return ScoreResponse{}, err
+		}
+		if len(suffix) == 0 || len(prefix)+len(suffix) > input.MaxTokens {
+			return bad(fmt.Sprintf("pointer row %d exceeds context or has no question", i))
+		}
+		// Map option byte spans → last full token wholly inside each option (MLX parity).
+		ends := make([]int, len(suffix))
+		var decoded strings.Builder
+		for j, id := range suffix {
+			piece, err := s.Detokenize(ctx, []int{id})
+			if err != nil {
+				return ScoreResponse{}, err
+			}
+			decoded.WriteString(piece)
+			ends[j] = decoded.Len()
+		}
+		if decoded.String() != row.Prompt {
+			return bad(fmt.Sprintf("pointer row %d: cannot map option spans to tokenizer bytes", i))
+		}
+		pointers := make([]int, 0, len(row.Options))
+		previous := 0
+		for _, span := range row.Options {
+			if span[0] < previous || span[0] >= span[1] || span[1] > len(row.Prompt) {
+				return bad(fmt.Sprintf("pointer row %d: invalid option span", i))
+			}
+			pointer, start := -1, 0
+			for j, end := range ends {
+				if start >= span[0] && end <= span[1] && end > start {
+					pointer = j
+				}
+				start = end
+			}
+			if pointer < 0 {
+				return bad(fmt.Sprintf("pointer row %d: option contains no complete token", i))
+			}
+			pointers = append(pointers, len(prefix)+pointer)
+			previous = span[1]
+		}
+		tokens := append(append([]int{}, prefix...), suffix...)
+		request := struct {
+			Input       []int `json:"input"`
+			PointerRows []struct {
+				Type     int   `json:"type"`
+				Pointers []int `json:"pointers"`
+			} `json:"pointer_rows"`
+		}{
+			Input: tokens,
+			PointerRows: []struct {
+				Type     int   `json:"type"`
+				Pointers []int `json:"pointers"`
+			}{{Type: row.Type, Pointers: pointers}},
+		}
+		var embd []struct {
+			Logits [][]float32 `json:"logits"`
+			Tokens int         `json:"tokens_evaluated"`
+		}
+		if err := s.scoreRequest(ctx, "/embedding", request, &embd); err != nil {
+			return ScoreResponse{}, err
+		}
+		if len(embd) != 1 || embd[0].Tokens != len(tokens) || len(embd[0].Logits) != 1 || len(embd[0].Logits[0]) != len(pointers) {
+			return ScoreResponse{}, fmt.Errorf("strands runner did not score pointer row %d completely", i)
+		}
+		result.Logits = append(result.Logits, embd[0].Logits[0])
+		result.InputTokens += embd[0].Tokens
+	}
+	return result, nil
 }

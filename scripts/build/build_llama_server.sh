@@ -64,6 +64,13 @@ _clef_cmake_args() {
     printf '%s\n' "-DZEROLLAMA_CLEF_DIR=${_ZEROLLAMA_CLEF_DIR}"
   fi
 }
+_ZEROLLAMA_STRANDS_DIR="${ZEROLLAMA_STRANDS_DIR:-${_ZEROLLAMA_ROOT}/llama/strands}"
+_strands_cmake_args() {
+  if [[ -f "${_ZEROLLAMA_STRANDS_DIR}/strands.cpp" && -f "${_ZEROLLAMA_STRANDS_DIR}/strands.h" ]]; then
+    printf '%s\n' "-DZEROLLAMA_STRANDS_DIR=${_ZEROLLAMA_STRANDS_DIR}"
+  fi
+}
+
 if [[ "${BUILD}" != "${ROOT}/build" ]]; then
   BUILD_LOCK="${ROOT}/.zerollama_llama_server_build.lock.d"
 fi
@@ -377,7 +384,8 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     -DLLAMA_BUILD_KOKORO="$(_zerollama_kokoro_cmake)" \
     -DLLAMA_BUILD_OMNIVOICE=OFF \
     ${_UMA_CMAKE[@]+"${_UMA_CMAKE[@]}"} \
-    $(_clef_cmake_args)
+    $(_clef_cmake_args) \
+    $(_strands_cmake_args)
   cmake --build "${BUILD}" --target llama-server -j"$(_build_jobs)" || {
     echo "error: llama-server build failed; cleaning ${BUILD}" >&2
     rm -rf "${BUILD}"
@@ -437,7 +445,8 @@ if [[ "${GGML_VULKAN:-}" == "ON" || "${GGML_VULKAN:-}" == "1" ]]; then
     -DLLAMA_BUILD_WEBUI="${LLAMA_BUILD_WEBUI}" \
     -DLLAMA_BUILD_KOKORO="$(_zerollama_kokoro_cmake)" \
     -DLLAMA_BUILD_OMNIVOICE=OFF \
-    $(_clef_cmake_args)
+    $(_clef_cmake_args) \
+    $(_strands_cmake_args)
   cmake --build "${BUILD}" --target llama-server -j"$(nproc)"
   BIN="${BUILD}/bin/llama-server"
   if [[ -x "${BIN}" ]]; then
@@ -567,6 +576,7 @@ cmake -S "${ROOT}" -B "${BUILD}" \
   -DLLAMA_BUILD_KOKORO="$(_zerollama_kokoro_cmake)" \
   -DLLAMA_BUILD_OMNIVOICE=OFF \
   $(_clef_cmake_args) \
+    $(_strands_cmake_args) \
   "${CMAKE_EXTRA[@]}"
 
 cmake --build "${BUILD}" --target llama-server -j"$(_build_jobs)" || {

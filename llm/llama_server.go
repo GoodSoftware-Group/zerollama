@@ -882,7 +882,7 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 	if launch.embedding && ggufIsRerank(launch.ggufKV) {
 		params = append(params, "--reranking")
 	}
-	if launch.embedding && ggufIsClef(launch.ggufKV) {
+	if launch.embedding && ggufNeedsDecisionPoolingNone(launch.ggufKV) {
 		// Per-token states for clef_head (LAST pooling collapses score_fields).
 		params = append(params, "--pooling", "none")
 	}
@@ -1528,10 +1528,10 @@ func NewLlamaServerRunner(
 	// Check if this is an embedding model
 	arch := f.KV().Architecture()
 	_, isEmbedding := f.KV()[fmt.Sprintf("%s.pooling_type", arch)]
-	// Clef joint-head score posts to llama-server /embedding with score_fields and
-	// needs per-token hidden states (--embedding --pooling none). Decision-type
-	// GGUFs often omit pooling_type; still force embedding mode.
-	if !isEmbedding && ggufIsClef(f.KV()) {
+	// Clef/Strands decision heads post to llama-server /embedding (score_fields or
+	// pointer_rows) and need per-token hidden states (--embedding --pooling none).
+	// Decision-type GGUFs often omit pooling_type; still force embedding mode.
+	if !isEmbedding && ggufNeedsDecisionPoolingNone(f.KV()) {
 		isEmbedding = true
 	}
 
@@ -1677,15 +1677,30 @@ func ggufIsLaya(kv ggml.KV) bool {
 // ggufIsClef is true when GGUF metadata marks a Clef joint-head decision model
 // ({arch}.decision.type == "clef"), including synth lab grafts.
 func ggufIsClef(kv ggml.KV) bool {
-	if kv == nil {
+	return ggufDecisionType(kv) == "clef"
+}
+
+// ggufNeedsDecisionPoolingNone is true for Clef/Strands heads that need
+// per-token hidden states (--embedding --pooling none).
+func ggufNeedsDecisionPoolingNone(kv ggml.KV) bool {
+	switch ggufDecisionType(kv) {
+	case "clef", "strands":
+		return true
+	default:
 		return false
+	}
+}
+
+func ggufDecisionType(kv ggml.KV) string {
+	if kv == nil {
+		return ""
 	}
 	arch := kv.Architecture()
 	if arch == "" || arch == "unknown" {
-		return false
+		return ""
 	}
 	// KV.String prefixes arch for bare keys — do not pass "{arch}.decision.type".
-	return strings.EqualFold(kv.String("decision.type", ""), "clef")
+	return strings.ToLower(strings.TrimSpace(kv.String("decision.type", "")))
 }
 
 func legacyEmbeddingsWereRaw(kv ggml.KV) bool {

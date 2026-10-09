@@ -22,7 +22,7 @@
 | Item | WHY blocked on **b10615** |
 |------|---------------------------|
 | Clef **runtime** joint head on GGUF / llama-server | **Wired on tip b11351**; synth + **Cloudflare Clef-Flash product** text + **mmproj image** `/v1/decisions` PASS (`l6_clef_product_convert.sh` → Q8_0 + `mmproj-*-f16.gguf`; tag `clef-flash-vl`). Do not use `ggml-org/Clef-Flash-GGUF` with `llama/clef` ([pin ladder](./llama-cpp-pin-ladder.md)) |
-| Strands **PointerRows** on CUDA llama-server | **Deferred:** `llm/llama_server_score_systemone.go` rejects `pointer_rows` (no head in tip llama-server). MLX Strands on Mac works via `x/models/strands/`. CUDA needs a new llama-server score wire (not a pin-ladder patch). |)
+| Strands **PointerRows** on CUDA llama-server | **Wired on tip b11351** (patch **0138** + `llama/strands/`); product graft + `l6_strands_decisions_e2e.sh` PASS. MLX path remains `x/models/strands/`. |)
 
 ### MLX path (L2, Mac)
 
