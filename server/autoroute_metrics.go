@@ -74,6 +74,18 @@ func writeRouterMetrics(b *strings.Builder) {
 	fmt.Fprintf(b, "# HELP zerollama_router_fallback_total In-band router rewrites that used the router fallback\n")
 	fmt.Fprintf(b, "# TYPE zerollama_router_fallback_total counter\n")
 	fmt.Fprintf(b, "zerollama_router_fallback_total %d\n", routeFallbackDecision)
+	fmt.Fprintf(b, "# HELP zerollama_router_suggest_total Cross-modal suggestions on chat turns by modality and source\n")
+	fmt.Fprintf(b, "# TYPE zerollama_router_suggest_total counter\n")
+	suggestMetricsMu.Lock()
+	skeys := make([][2]string, 0, len(suggestCounts))
+	for k := range suggestCounts {
+		skeys = append(skeys, k)
+	}
+	sort.Slice(skeys, func(i, j int) bool { return skeys[i][0]+skeys[i][1] < skeys[j][0]+skeys[j][1] })
+	for _, k := range skeys {
+		fmt.Fprintf(b, "zerollama_router_suggest_total{modality=%q,source=%q} %d\n", k[0], k[1], suggestCounts[k])
+	}
+	suggestMetricsMu.Unlock()
 	fmt.Fprintf(b, "# HELP zerollama_router_decision_latency_ms Router decision latency (sum/count)\n")
 	fmt.Fprintf(b, "# TYPE zerollama_router_decision_latency_ms summary\n")
 	fmt.Fprintf(b, "zerollama_router_decision_latency_ms_sum %d\n", routeLatencyMsSum)

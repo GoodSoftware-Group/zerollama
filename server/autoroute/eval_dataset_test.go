@@ -111,3 +111,79 @@ func contains(xs []string, want string) bool {
 	}
 	return false
 }
+
+func loadEvalRows(t *testing.T) []evalRow {
+	t.Helper()
+	f, err := os.Open(filepath.Join("..", "..", "testdata", "router_eval", "prompts.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var rows []evalRow
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	for sc.Scan() {
+		var r evalRow
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+			t.Fatal(err)
+		}
+		rows = append(rows, r)
+	}
+	return rows
+}
+
+// TestGuessOutputModalityOnEvalSet scores the AR8 keyword fallback on the AR7 dataset's
+// chat rows. Bars: every cross-modal row detected with the right modality, and no more than
+// 2% of text rows flagged (a false positive is only an extra advisory header, but noise
+// teaches clients to ignore it).
+func TestGuessOutputModalityOnEvalSet(t *testing.T) {
+	var cross, crossHit, text, falsePos int
+	for _, r := range loadEvalRows(t) {
+		if r.Surface != "chat" {
+			continue
+		}
+		got, ok := GuessOutputModality(r.Prompt)
+		if r.Output == ModalityText {
+			text++
+			if ok {
+				falsePos++
+				t.Logf("false positive %s (%s): %q", r.ID, got, r.Prompt)
+			}
+			continue
+		}
+		cross++
+		if ok && got == r.Output {
+			crossHit++
+		} else {
+			t.Logf("miss %s: want %s got %q: %q", r.ID, r.Output, got, r.Prompt)
+		}
+	}
+	t.Logf("cross-modal recall %d/%d, text false positives %d/%d", crossHit, cross, falsePos, text)
+	if crossHit != cross {
+		t.Errorf("recall %d/%d, want all cross-modal rows", crossHit, cross)
+	}
+	if float64(falsePos) > 0.02*float64(text) {
+		t.Errorf("false positives %d/%d exceed 2%%", falsePos, text)
+	}
+}
+
+func TestGuessOutputModalityEdgeCases(t *testing.T) {
+	for text, want := range map[string]string{
+		"Can you draw me a cat wearing a hat?":         ModalityImage,
+		"please sketch the architecture":               ModalityImage,
+		"You may draw one card from the deck.":         "",
+		"What's in this photo?":                        "",
+		"Summarise this clip.":                         "",
+		"Transcribe this voice note.":                  "",
+		"Animate this logo.":                           ModalityVideo,
+		"Write and perform a jingle for a bakery.":     ModalityMusic,
+		"Read it back to me, slowly.":                  ModalitySpeech,
+		"Answer in a cheerful voice: what time is it?": ModalitySpeech,
+		"Write a poem about the sea.":                  "",
+	} {
+		got, _ := GuessOutputModality(text)
+		if got != want {
+			t.Errorf("GuessOutputModality(%q) = %q, want %q", text, got, want)
+		}
+	}
+}

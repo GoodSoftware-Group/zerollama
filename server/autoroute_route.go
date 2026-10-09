@@ -220,6 +220,12 @@ func chatRouteSignals(c *gin.Context, req *api.ChatRequest) autoroute.Signals {
 	_, relax := c.Get("relax_thinking")
 	sig.WantsThink = req.Think != nil && req.Think.Bool() && !req.ThinkFromAlias && !relax
 	sig.SessionKey = routeSessionKey(req.Options, req.Messages)
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if strings.EqualFold(req.Messages[i].Role, "assistant") && strings.TrimSpace(req.Messages[i].Content) != "" {
+			sig.LastAssistant = req.Messages[i].Content
+			break
+		}
+	}
 	sig.Fresh = routeFresh(req.Options)
 	return sig
 }

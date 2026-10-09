@@ -55,7 +55,7 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"OpenAIResponsesRequest", "OpenAIResponsesResponse",
 		"ProposeLoadRequest", "ProposeLoadResponse", "ZerollamaQoS", "ZerollamaVersionQoS",
 		"AliasInfo", "ScoreRequest", "ScoreResponse", "RouterDecision",
-		"AutoRouteDecision", "RouteRequest", "RouteResponse", "RouteErrorResponse", "RouterInventoryResponse",
+		"AutoRouteDecision", "RouteRequest", "RouteResponse", "RouteErrorResponse", "RouterInventoryResponse", "ModalitySuggestion",
 		"DecisionsRequest", "DecisionQuestion", "DecisionsResponse",
 		"DecisionAction", "ChoiceAnswer", "ScoreAnswer", "NoulAnswer",
 		"MultiDecodeRequest", "MultiDecodeResponse", "MultiDecodeLeafResult",

@@ -72,6 +72,9 @@ type Signals struct {
 	// Weights overrides DefaultWeights (router.yaml weights for classifier: jev routers).
 	Weights *Weights `json:"-"`
 
+	// LastAssistant is the previous assistant reply (AR8: "read that out loud" speaks it).
+	LastAssistant string `json:"-"`
+
 	// SessionKey identifies the conversation for sticky routing (AR6): the client's
 	// prompt_cache_key / session id, else a hash of system + first user message. Empty ⇒
 	// no stickiness (single-shot surfaces).

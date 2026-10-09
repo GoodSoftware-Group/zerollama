@@ -61,6 +61,18 @@ components:
       description: 'Set when the conversation''s remembered model failed a hard filter this turn and the request re-routed ("<model>: <reason>").'
       schema:
         type: string
+    ZerollamaRouteSuggest:
+      description: AR8 — this chat turn looks like it wants another modality (image | speech | video | music). Advisory only.
+      schema:
+        type: string
+    ZerollamaRouteSuggestEndpoint:
+      description: Endpoint for the suggested modality.
+      schema:
+        type: string
+    ZerollamaRouteSuggestModel:
+      description: Local model that endpoint would route to, when one can serve it.
+      schema:
+        type: string
     ZerollamaRouterReason:
       description: >
         Short reason for the router's choice — `warm`, `best-fit`, `only-candidate`
@@ -1934,6 +1946,8 @@ components:
           type: object
           additionalProperties: true
           description: Multi-question jev answers summarised per question id, plus `calibrated`, `escalate_reasons`, `escalation_unavailable`.
+        suggestion:
+          $ref: "#/components/schemas/ModalitySuggestion"
         sticky:
           type: boolean
           description: Reused the conversation's remembered model (AR6; text surfaces).
@@ -1945,6 +1959,34 @@ components:
           description: 'Why the conversation''s remembered model could not be kept this turn ("<model>: <reason>").'
         latency_ms:
           type: integer
+    ModalitySuggestion:
+      type: object
+      description: >
+        AR8 cross-modal advisory on chat turns that ask for an image, speech, video or music.
+        The chat request is still served as text; clients may send `body` to `endpoint`.
+      properties:
+        modality:
+          type: string
+          enum: [image, speech, video, music]
+        source:
+          type: string
+          enum: [jev, heuristic]
+        probability:
+          type: number
+          description: Decider probability (jev source only).
+        endpoint:
+          type: string
+          description: e.g. /v1/images/generations, /v1/audio/speech, /v1/videos, /v1/audio/generations
+        model:
+          type: string
+          description: Local model the target surface would route to (omitted when none can serve it).
+        unavailable:
+          type: string
+          description: Why no local model can serve the suggested surface.
+        body:
+          type: object
+          additionalProperties: true
+          description: Ready request for `endpoint` (speech reads back the previous assistant reply).
     AutoRouteDecision:
       type: object
       description: Deterministic auto-router detail (implicit `auto`) — filters and ranking.
@@ -3362,6 +3404,12 @@ paths:
               $ref: "#/components/headers/ZerollamaRouterReason"
             X-Zerollama-Router-Sticky-Break:
               $ref: "#/components/headers/ZerollamaRouterStickyBreak"
+            X-Zerollama-Route-Suggest:
+              $ref: "#/components/headers/ZerollamaRouteSuggest"
+            X-Zerollama-Route-Suggest-Endpoint:
+              $ref: "#/components/headers/ZerollamaRouteSuggestEndpoint"
+            X-Zerollama-Route-Suggest-Model:
+              $ref: "#/components/headers/ZerollamaRouteSuggestModel"
           content:
             application/json:
               schema:
@@ -3585,6 +3633,12 @@ paths:
               $ref: "#/components/headers/ZerollamaRouterReason"
             X-Zerollama-Router-Sticky-Break:
               $ref: "#/components/headers/ZerollamaRouterStickyBreak"
+            X-Zerollama-Route-Suggest:
+              $ref: "#/components/headers/ZerollamaRouteSuggest"
+            X-Zerollama-Route-Suggest-Endpoint:
+              $ref: "#/components/headers/ZerollamaRouteSuggestEndpoint"
+            X-Zerollama-Route-Suggest-Model:
+              $ref: "#/components/headers/ZerollamaRouteSuggestModel"
           content:
             application/json:
               schema:

@@ -208,6 +208,13 @@ func stampRouterHeaders(c *gin.Context, dec *RouterDecision) {
 	if dec.StickyBreak != "" {
 		c.Header("X-Zerollama-Router-Sticky-Break", dec.StickyBreak)
 	}
+	if sug := dec.Suggestion; sug != nil {
+		c.Header("X-Zerollama-Route-Suggest", sug.Modality)
+		c.Header("X-Zerollama-Route-Suggest-Endpoint", sug.Endpoint)
+		if sug.Model != "" {
+			c.Header("X-Zerollama-Route-Suggest-Model", sug.Model)
+		}
+	}
 	if dec.Fallback {
 		c.Header("X-Zerollama-Router-Fallback", "true")
 	}

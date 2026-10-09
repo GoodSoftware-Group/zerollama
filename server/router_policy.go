@@ -52,6 +52,11 @@ type RouterSpec struct {
 	EscalateBelow    float64          `yaml:"escalate_below" json:"escalate_below,omitempty"`         // default 0.55
 	EscalateAt       float64          `yaml:"escalate_at" json:"escalate_at,omitempty"`               // difficulty level (1-based); 0 = off
 	ActEscalateBelow float64          `yaml:"act_escalate_below" json:"act_escalate_below,omitempty"` // Laya act head; default 0.5
+
+	// AR8 cross-modal advisory: the choice question whose answer names the output modality
+	// (default "output_modality") and the calibrated probability needed to suggest (0.5).
+	ModalityQuestion string  `yaml:"modality_question" json:"modality_question,omitempty"`
+	SuggestThreshold float64 `yaml:"suggest_threshold" json:"suggest_threshold,omitempty"`
 }
 
 type RouterPolicy struct {
@@ -95,7 +100,10 @@ type RouterDecision struct {
 	Sticky      bool   `json:"sticky,omitempty"`
 	Cached      bool   `json:"cached,omitempty"`
 	StickyBreak string `json:"sticky_break,omitempty"`
-	LatencyMs   int64  `json:"latency_ms"`
+	// Suggestion is the AR8 cross-modal advisory (chat turns that want image / speech /
+	// video / music). Advisory only — the chat request is still served as text.
+	Suggestion *ModalitySuggestion `json:"suggestion,omitempty"`
+	LatencyMs  int64               `json:"latency_ms"`
 }
 
 type RouterLabelScore struct {

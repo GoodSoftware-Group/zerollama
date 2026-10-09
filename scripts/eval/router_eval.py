@@ -175,13 +175,15 @@ def evaluate(args, rows, router, inv):
 
     m = {"router": router, "n": 0, "errors": 0, "unservable": 0, "cap_ok": 0, "cap_rows": 0,
          "cap_failures": [], "tier": {"exact": 0, "under": 0, "over": 0, "scored": 0},
-         "strength": {"hit": 0, "scored": 0}, "escalated": 0, "latency_ms": [], "rows": []}
+         "strength": {"hit": 0, "scored": 0}, "escalated": 0, "latency_ms": [], "rows": [],
+         "suggest": {"cross": 0, "hit": 0, "text": 0, "false_pos": 0}}
     for row in rows:
         status, out, wall = http_json(args.host, "POST", "/v1/route", route_body(router, row), args.timeout)
         m["n"] += 1
         need = required_caps(row)
         servable = any(need <= caps for caps in caps_by_model.values())
-        rec = {"id": row["id"], "status": status, "candidate": out.get("candidate"),
+        sug = (out.get("suggestion") or {}).get("modality")
+        rec = {"id": row["id"], "status": status, "candidate": out.get("candidate"), "suggest": sug,
                "reason": out.get("reason"), "escalated": bool(out.get("escalated")), "wall_ms": round(wall, 1)}
         m["rows"].append(rec)
         if status != 200:
@@ -200,6 +202,14 @@ def evaluate(args, rows, router, inv):
             else:
                 m["cap_failures"].append(f"{row['id']}: {chosen} lacks {sorted(need - caps_by_model.get(chosen, set()))}")
         m["escalated"] += rec["escalated"]
+        if row["surface"] == "chat":  # AR8 cross-modal advisory: recall + false positives
+            sg = m["suggest"]
+            if row["output"] == "text":
+                sg["text"] += 1
+                sg["false_pos"] += bool(sug)
+            else:
+                sg["cross"] += 1
+                sg["hit"] += sug == row["output"]
         pol = cand_policy.get(chosen)
         text_row = row["output"] == "text" and row["surface"] in ("chat", "generate")
         if has_tiers and text_row and pol and pol.get("tier") in TIER_ORDER:
@@ -305,6 +315,10 @@ def main():
             q = m["quality"]
             print(f"{'':<16}quality vs {args.baseline} (judge {args.judge}): "
                   f"W/T/L {q['win']}/{q['tie']}/{q['loss']} (same model {q['same_model']}, failed {q['failed']})")
+        sg = m["suggest"]
+        if sg["cross"] or sg["text"]:
+            print(f"{'':<16}cross-modal suggest: recall {sg['hit']}/{sg['cross']}, "
+                  f"false positives {sg['false_pos']}/{sg['text']}")
         for why in reasons:
             print(f"{'':<16}- {why}")
         for f in m["cap_failures"][:5]:

@@ -53,6 +53,14 @@ func stickyMemory() *autoroute.Memory {
 // for real traffic; dry runs (/v1/route, /api/router/decide) read memory so they report
 // what the next request would do, but never change it.
 func (s *Server) resolveRouterMem(ctx context.Context, name string, sig autoroute.Signals, write bool) (*RouterDecision, bool, error) {
+	dec, isRouter, err := s.resolveRouterRemembered(ctx, name, sig, write)
+	if err == nil && isRouter {
+		s.attachSuggestion(ctx, name, sig, dec, write)
+	}
+	return dec, isRouter, err
+}
+
+func (s *Server) resolveRouterRemembered(ctx context.Context, name string, sig autoroute.Signals, write bool) (*RouterDecision, bool, error) {
 	if !isRouterName(name) {
 		return nil, false, nil
 	}
