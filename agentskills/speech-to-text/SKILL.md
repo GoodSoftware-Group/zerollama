@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [zerollama, stt, audio, transcription, whisper, multimodal]
     category: mlops
-    related_skills: [zerollama-integration, text-to-speech, download-model]
+    related_skills: [zerollama-integration, text-to-speech, download-model, install-multimedia-model]
 ---
 
 # Speech-to-Text Skill

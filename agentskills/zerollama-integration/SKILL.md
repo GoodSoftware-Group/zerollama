@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [zerollama, ollama, local, inference, qos, kv-cache, batch, prompt-cache, cache-warm]
     category: mlops
-    related_skills: [install-zerollama, configure-zerollama-env, hermes-provider, generate-image, generate-video, download-model, text-to-speech, speech-to-text, generate-embeddings, rerank-candidates, batch-inference, fleet-vram-admission, model-authoring, agent-web-tools, anthropic-messages-compat, openai-responses-compat, account-auth, distill-and-train, video-understanding-chat, cloud-model-routing, diagnose-server-health, benchmark-model-speed, launch-agent-integration, fleet-management, gpu-capability-discovery, lmstudio-cache-import, doctor-model, model-suggester]
+    related_skills: [install-zerollama, configure-zerollama-env, hermes-provider, generate-image, generate-video, download-model, text-to-speech, speech-to-text, generate-embeddings, rerank-candidates, batch-inference, fleet-vram-admission, model-authoring, agent-web-tools, anthropic-messages-compat, openai-responses-compat, account-auth, distill-and-train, video-understanding-chat, cloud-model-routing, diagnose-server-health, benchmark-model-speed, launch-agent-integration, fleet-management, gpu-capability-discovery, lmstudio-cache-import, doctor-model, model-suggester, install-multimedia-model]
 ---
 
 # Zerollama Integration Skill
@@ -253,6 +253,7 @@ curl -s http://localhost:11434/api/metrics
 - `install-zerollama` — bootstrap/build a fresh checkout before any of this API is reachable
 - `doctor-model` — diagnose a specific model's manifest/blob health and config traps
 - `model-suggester` — pick the right model for a task by capability/context/VRAM fit
+- `install-multimedia-model` — guided pick+install for music/TTS/STT/image/video (one at a time)
 - `configure-zerollama-env` — navigating the ~1000-flag env/YAML configuration surface
 - `hermes-provider` — Hermes-specific config wiring for this integration
 - `generate-image` — image generation/editing (MLX + ComfyUI)

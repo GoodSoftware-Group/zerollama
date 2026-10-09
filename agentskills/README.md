@@ -1,6 +1,6 @@
 # zerollama Agent Skills
 
-32 `SKILL.md` packages describing how to use [zerollama](https://github.com/GoodSoftware-Group/zerollama) — generated from the server's own OpenAPI spec, CLI, and source, intended for distribution to any agent/tool that can consume the `SKILL.md` (frontmatter + markdown) format. Includes MultiDecode, entity-extract, and typed-decisions alongside image/video/speech and harness skills.
+33 `SKILL.md` packages describing how to use [zerollama](https://github.com/GoodSoftware-Group/zerollama) — generated from the server's own OpenAPI spec, CLI, and source, intended for distribution to any agent/tool that can consume the `SKILL.md` (frontmatter + markdown) format.
 
 See [skills.json](skills.json) for the machine-readable manifest (name, description, version, category, tags, related_skills) used to generate this table.
 
@@ -37,6 +37,7 @@ python3 .tools/add_compat_checks.py   # idempotent; re-scrapes endpoints per ski
 | [`distill-and-train`](distill-and-train/SKILL.md) | Fine-tune (LoRA/QLoRA) a local model on a zerollama server, including distilling a larger model into a smaller one via synthetic SFT data, plus the ternary QAT path for extreme quantization. |
 | [`doctor-model`](doctor-model/SKILL.md) | Diagnose a specific local model's manifest/blob health (ok/repairable/orphaned/broken), config-level footguns, live minefield traps, and Modelfile repair for empty-response / slash-collapse (zerollama doctor --models / --repair-models). |
 | [`download-model`](download-model/SKILL.md) | Pull, register, list, and remove models on a zerollama server (GGUF chat models, image/video/audio backends). |
+| [`entity-extract`](entity-extract/SKILL.md) | Zero-shot span NER via zerollama POST /v1/extract (portable) or POST /v1/gliner (GLiNER.cpp knobs) — C++/ONNX sibling; not decisions, not chat. |
 | [`fleet-management`](fleet-management/SKILL.md) | Run a zerollama fleet management node that routes agent requests to the best of several zerollama peers by warm-model status, via zerollama fleet serve. |
 | [`fleet-vram-admission`](fleet-vram-admission/SKILL.md) | Inspect and dry-run zerollama's model admission/scheduling: capacity checks, co-residency planning, pins, and live fleet status before loading a model. |
 | [`generate-embeddings`](generate-embeddings/SKILL.md) | Generate vector embeddings for text via a zerollama server, for RAG, semantic search, or clustering. |
@@ -44,15 +45,17 @@ python3 .tools/add_compat_checks.py   # idempotent; re-scrapes endpoints per ski
 | [`generate-video`](generate-video/SKILL.md) | Generate text-to-video clips via a zerollama server's async OpenAI-compatible Videos API (Wan). |
 | [`gpu-capability-discovery`](gpu-capability-discovery/SKILL.md) | Determine which GPU backend, autoconfig profile, and inference path a zerollama server picked (Metal/CUDA/MLX/inprocess llama-server) before choosing models or debugging performance. |
 | [`hermes-provider`](hermes-provider/SKILL.md) | Wire Hermes to a zerollama server. |
+| [`install-multimedia-model`](install-multimedia-model/SKILL.md) | Help a user pick and install one multimedia model into zerollama (music gen, TTS, STT, image gen, video gen, or media understanding) — present modality options with disk/platform notes, install only the chosen one, never bulk-download everything. |
 | [`install-zerollama`](install-zerollama/SKILL.md) | Bootstrap and build zerollama from a fresh clone on macOS or Linux — prerequisites, tiered onboarding scripts, and daily-use verification. |
 | [`launch-agent-integration`](launch-agent-integration/SKILL.md) | Wire up a coding agent CLI (Cline, OpenCode, Droid, Pi, Hermes, etc.) to a local zerollama server via zerollama launch, using one shared model inventory instead of per-integration config hacks. |
 | [`lmstudio-cache-import`](lmstudio-cache-import/SKILL.md) | Import models already downloaded by LM Studio into zerollama without re-downloading, via zerollama list/pull cache discovery. |
 | [`model-authoring`](model-authoring/SKILL.md) | Create custom model variants, quantize, copy, and repair manifests on a zerollama server (Modelfile-style /api/create, /api/copy, /api/repair). |
 | [`model-suggester`](model-suggester/SKILL.md) | Pick the right zerollama model for a task: match required capabilities (tools/vision/embedding/thinking), context length, and available VRAM against local inventory, LM Studio cache, and cloud fallback before recommending a pull or a :cloud route. |
+| [`multidecode`](multidecode/SKILL.md) | Shared-prefix forest decode via zerollama POST /v1/multidecode — custom harness packs tokens/pos/parent (or sticky parent_node_ids); not chat, not Hermes batch (that path may accelerate silently). |
 | [`openai-responses-compat`](openai-responses-compat/SKILL.md) | Talk to a zerollama server using OpenAI's Responses API wire format (/v1/responses) instead of Chat Completions. |
 | [`rerank-candidates`](rerank-candidates/SKILL.md) | Score fixed candidate continuations against a shared prompt via a zerollama server, for classification, routing, or reranking without full generation. |
 | [`speech-to-text`](speech-to-text/SKILL.md) | Transcribe audio to text via a zerollama server's OpenAI-compatible transcription API (Whisper or multimodal chat models). |
-| [`text-to-speech`](text-to-speech/SKILL.md) | Synthesize speech audio from text via a zerollama server's OpenAI-compatible speech API (Piper, Chatterbox, Orpheus, Kokoro). |
-| [`typed-decisions`](typed-decisions/SKILL.md) | Answer typed System-1 questions (choice / score / noul) via zerollama POST /v1/decisions — Laya GGUF or CLM (`ZEROLLAMA_CLM_URL`); calibrated probs — not chat, not score, not rerank. |
+| [`text-to-speech`](text-to-speech/SKILL.md) | Synthesize speech audio from text via a zerollama server's OpenAI-compatible speech API (Piper, Chatterbox, Orpheus, Kokoro, Irodori). |
+| [`typed-decisions`](typed-decisions/SKILL.md) | Answer typed System-1 questions (choice / score / noul) via zerollama POST /v1/decisions — Laya GGUF (calibrated), Contrastive-LM (calibrated), DiffusionGemma/OpenJev (DG8/DG9 opt-in), or GLiNER2.5-Decide (uncalibrated self-host); not chat, not score endpoint, not rerank, not NER extract. |
 | [`video-understanding-chat`](video-understanding-chat/SKILL.md) | Send video clips into a zerollama chat request for vision-language understanding (video_url/videos in /v1/chat/completions), distinct from generating video. |
 | [`zerollama-integration`](zerollama-integration/SKILL.md) | Connect any agent harness to a zerollama server. |

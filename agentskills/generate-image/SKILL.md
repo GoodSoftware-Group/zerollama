@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [zerollama, image, imagegen, comfyui, mlx, text-to-image, img2img]
     category: mlops
-    related_skills: [zerollama-integration, download-model]
+    related_skills: [zerollama-integration, download-model, install-multimedia-model]
 ---
 
 # Generate Image Skill
@@ -125,3 +125,4 @@ MLX doesn't support.
 
 - `zerollama-integration` — generic API contract, sizing, pitfalls
 - `download-model` — pulling/registering an image model before use
+- `install-multimedia-model` — pick MLX vs Comfy image option and install it

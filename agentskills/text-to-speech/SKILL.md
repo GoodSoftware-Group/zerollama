@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [zerollama, tts, audio, speech, piper, chatterbox, orpheus, kokoro, irodori]
     category: mlops
-    related_skills: [zerollama-integration, speech-to-text, download-model]
+    related_skills: [zerollama-integration, speech-to-text, download-model, install-multimedia-model]
 ---
 
 # Text-to-Speech Skill
@@ -120,3 +120,4 @@ curl -s http://localhost:2083/v1/audio/speech \
 - `zerollama-integration` — generic API contract, sizing, pitfalls
 - `speech-to-text` — the inverse operation (audio → text)
 - `download-model` — pulling a speech model before use
+- `install-multimedia-model` — pick Piper/Kokoro/Chatterbox/… and install it

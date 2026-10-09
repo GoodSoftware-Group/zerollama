@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [zerollama, model-selection, recommendation, capabilities, vram, catalog]
     category: mlops
-    related_skills: [zerollama-integration, gpu-capability-discovery, fleet-vram-admission, download-model, cloud-model-routing, doctor-model, lmstudio-cache-import]
+    related_skills: [zerollama-integration, gpu-capability-discovery, fleet-vram-admission, download-model, cloud-model-routing, doctor-model, lmstudio-cache-import, install-multimedia-model]
 ---
 
 # Model Suggester Skill

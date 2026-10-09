@@ -32,6 +32,7 @@ zerollama --version                      # binary build
 curl -s http://localhost:11434/api/version | jq   # server build (if reachable)
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/v1/messages -d '{}'   # 400/422 = route exists; 404 = missing on this build
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/v1/chat/completions   # 200/400 = route exists; 404 = missing on this build
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/chat   # 200/400 = route exists; 404 = missing on this build
 ```
 
 A **404** on an endpoint above (or an unrecognized flag/subcommand) means this build predates the feature this skill

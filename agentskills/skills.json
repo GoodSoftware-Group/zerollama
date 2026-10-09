@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "skill_count": 32,
+  "skill_count": 33,
   "skills": [
     {
       "name": "account-auth",
@@ -292,7 +292,8 @@
         "generate-image",
         "generate-video",
         "doctor-model",
-        "model-suggester"
+        "model-suggester",
+        "install-multimedia-model"
       ],
       "path": "download-model/SKILL.md"
     },
@@ -423,7 +424,8 @@
       ],
       "related_skills": [
         "zerollama-integration",
-        "download-model"
+        "download-model",
+        "install-multimedia-model"
       ],
       "path": "generate-image/SKILL.md"
     },
@@ -447,7 +449,8 @@
       ],
       "related_skills": [
         "zerollama-integration",
-        "download-model"
+        "download-model",
+        "install-multimedia-model"
       ],
       "path": "generate-video/SKILL.md"
     },
@@ -504,10 +507,45 @@
       ],
       "related_skills": [
         "zerollama-integration",
-        "batch",
-        "serving-llms-vllm"
+        "batch-inference",
+        "install-multimedia-model"
       ],
       "path": "hermes-provider/SKILL.md"
+    },
+    {
+      "name": "install-multimedia-model",
+      "description": "Help a user pick and install one multimedia model into zerollama (music gen, TTS, STT, image gen, video gen, or media understanding) \u2014 present modality options with disk/platform notes, install only the chosen one, never bulk-download everything.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "multimedia",
+        "install",
+        "music",
+        "tts",
+        "stt",
+        "image",
+        "video",
+        "whisper",
+        "wan",
+        "comfyui"
+      ],
+      "related_skills": [
+        "download-model",
+        "generate-image",
+        "generate-video",
+        "text-to-speech",
+        "speech-to-text",
+        "video-understanding-chat",
+        "model-suggester"
+      ],
+      "path": "install-multimedia-model/SKILL.md"
     },
     {
       "name": "install-zerollama",
@@ -644,7 +682,8 @@
         "download-model",
         "cloud-model-routing",
         "doctor-model",
-        "lmstudio-cache-import"
+        "lmstudio-cache-import",
+        "install-multimedia-model"
       ],
       "path": "model-suggester/SKILL.md"
     },
@@ -745,13 +784,14 @@
       "related_skills": [
         "zerollama-integration",
         "text-to-speech",
-        "download-model"
+        "download-model",
+        "install-multimedia-model"
       ],
       "path": "speech-to-text/SKILL.md"
     },
     {
       "name": "text-to-speech",
-      "description": "Synthesize speech audio from text via a zerollama server's OpenAI-compatible speech API (Piper, Chatterbox, Orpheus, Kokoro).",
+      "description": "Synthesize speech audio from text via a zerollama server's OpenAI-compatible speech API (Piper, Chatterbox, Orpheus, Kokoro, Irodori).",
       "version": "1.0.0",
       "author": "Hermes Agent",
       "license": "MIT",
@@ -768,18 +808,20 @@
         "piper",
         "chatterbox",
         "orpheus",
-        "kokoro"
+        "kokoro",
+        "irodori"
       ],
       "related_skills": [
         "zerollama-integration",
         "speech-to-text",
-        "download-model"
+        "download-model",
+        "install-multimedia-model"
       ],
       "path": "text-to-speech/SKILL.md"
     },
     {
       "name": "typed-decisions",
-      "description": "Answer typed System-1 questions (choice / score / noul) via zerollama POST /v1/decisions \u2014 Laya GGUF (calibrated), Score System One (tev1/nimble/Clef text + MLX Strands), Contrastive-LM (calibrated), DiffusionGemma/OpenJev (DG8/DG9 opt-in), or GLiNER2.5-Decide (uncalibrated self-host); not chat, not score endpoint, not rerank, not NER extract.",
+      "description": "Answer typed System-1 questions (choice / score / noul) via zerollama POST /v1/decisions \u2014 Laya GGUF (calibrated), Contrastive-LM (calibrated), DiffusionGemma/OpenJev (DG8/DG9 opt-in), or GLiNER2.5-Decide (uncalibrated self-host); not chat, not score endpoint, not rerank, not NER extract.",
       "version": "1.3.1",
       "author": "Hermes Agent",
       "license": "MIT",
@@ -830,7 +872,8 @@
       ],
       "related_skills": [
         "zerollama-integration",
-        "generate-video"
+        "generate-video",
+        "install-multimedia-model"
       ],
       "path": "video-understanding-chat/SKILL.md"
     },
@@ -884,7 +927,8 @@
         "gpu-capability-discovery",
         "lmstudio-cache-import",
         "doctor-model",
-        "model-suggester"
+        "model-suggester",
+        "install-multimedia-model"
       ],
       "path": "zerollama-integration/SKILL.md"
     }

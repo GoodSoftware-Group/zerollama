@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [zerollama, ollama, pull, model-management, registry, comfyui, wan]
     category: mlops
-    related_skills: [zerollama-integration, generate-image, generate-video, doctor-model, model-suggester]
+    related_skills: [zerollama-integration, generate-image, generate-video, doctor-model, model-suggester, install-multimedia-model]
 ---
 
 # Download Model Skill
@@ -144,3 +144,4 @@ registers `wan2.1-t2v-1.3b` / `wan2.2-ti2v-5b` manifests. Confirm with
 - `doctor-model` — verify a model's manifest/blob health after pulling
 - `generate-video` — using a Wan video model once it's registered
 - `model-suggester` — deciding which model to pull in the first place
+- `install-multimedia-model` — pick one music/TTS/STT/image/video option and install only that

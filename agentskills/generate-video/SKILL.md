@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [zerollama, video, text-to-video, wan, async-job]
     category: mlops
-    related_skills: [zerollama-integration, download-model]
+    related_skills: [zerollama-integration, download-model, install-multimedia-model]
 ---
 
 # Generate Video Skill
@@ -31,8 +31,9 @@ against a host you don't control:
 zerollama --version                      # binary build
 curl -s http://localhost:11434/api/version | jq   # server build (if reachable)
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/v1/videos -d '{}'   # 400/422 = route exists; 404 = missing on this build
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/v1/media/{session}/{label}   # 200/400 = route exists; 404 = missing on this build
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/v1/media/{session}   # 200/400 = route exists; 404 = missing on this build
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/v1/videos/:id   # 200/400 = route exists; 404 = missing on this build
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/v1/videos/:id/content   # 200/400 = route exists; 404 = missing on this build
 ```
 
 A **404** on an endpoint above (or an unrecognized flag/subcommand) means this build predates the feature this skill
@@ -158,3 +159,4 @@ manifests, not Ollama blobs.
 
 - `zerollama-integration` — generic API contract, sizing, pitfalls
 - `download-model` — installing/registering Wan video models
+- `install-multimedia-model` — pick Wan/LTX/H3 option and install it

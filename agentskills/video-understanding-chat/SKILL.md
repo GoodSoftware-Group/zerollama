@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [zerollama, video, vlm, vision, multimodal, ffmpeg]
     category: mlops
-    related_skills: [zerollama-integration, generate-video]
+    related_skills: [zerollama-integration, generate-video, install-multimedia-model]
 ---
 
 # Video Understanding (Chat) Skill

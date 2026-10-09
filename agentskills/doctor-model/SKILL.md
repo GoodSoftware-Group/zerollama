@@ -33,9 +33,11 @@ against a host you don't control:
 zerollama --version                      # binary build
 curl -s http://localhost:11434/api/version | jq   # server build (if reachable)
 zerollama <subcommand> --help            # confirm the flag/subcommand exists before scripting it
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/generate   # 200/400 = route exists; 404 = missing on this build
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/ps   # 200/400 = route exists; 404 = missing on this build
 ```
 
-An unrecognized flag/subcommand, or `--help` not mentioning an option this skill relies on, means this build predates the feature this skill
+A **404** on an endpoint above (or an unrecognized flag/subcommand) means this build predates the feature this skill
 describes — check [`CHANGELOG.md`](../CHANGELOG.md) for when it
 landed, or upgrade (`git pull && ./scripts/build/build_zerollama_mac.sh`)
 rather than assuming the request shape is wrong.
