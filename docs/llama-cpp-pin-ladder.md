@@ -160,10 +160,10 @@ stop, format-patch, smoke, then continue — do not stack unresolved `git am` ga
 ## Remaining gaps after tip
 
 1. **Production Clef GGUF** — **done:** Cloudflare HF → Ollama-wire via `l6_clef_product_convert.sh` (text Q8_0 + mmproj F16). Tags: `clef-flash` (text), `clef-flash-vl` (text+mmproj). Note: `ggml-org/Clef-Flash-GGUF` (native `clef` + `decision.*`) is **not** interchangeable with `llama/clef/clef.cpp`.
-2. **Strands PointerRows** on CUDA llama-server — **done (lab):** tip wire **0138** + `llama/strands/` pointer head; graft `l6_strands_graft_head.py` → product Q8; e2e `l6_strands_decisions_e2e.sh` PASS. MLX path unchanged.
-3. **Operator rebuild:** on this 5080 CT use `CUDA_HOME=/usr/local/cuda-12.8` (default CUDA 13.3 aborts at device init). Tip Go binary for lab: rebuild after tiled/parsers CGO packages land (`/tmp/zerollama-lab`).
+2. **Strands PointerRows** on CUDA llama-server — **done:** tip wire **0138** + `llama/strands/` pointer head; graft `l6_strands_graft_head.py` → product Q8; lab e2e `l6_strands_decisions_e2e.sh` PASS; **prod tag `strands-hobson`** `/v1/decisions` smoke PASS (`noul≈0.31`). MLX path unchanged.
+3. **Operator rebuild:** on this 5080 CT use `CUDA_HOME=/usr/local/cuda-12.8` (default CUDA 13.3 aborts at device init). Tip Go binary: `run/zerollama-lab` (rebuild after tiled/parsers CGO packages land).
 4. Rollback stays at `vendor/llama-cpp-b11232/` + `LLAMA_CPP_*.prev` if tip misbehaves in production.
-5. **Production CT serve (cudallama)** — **promoted to tip b11351** (Oct 2026): `run/zerollama-lab` + `LLAMA_SERVER_BIN=…/llama-cpp-b11351`; `clef-flash` + `clef-flash-vl` live; text + image `/v1/decisions` smoke PASS. Rollback:
+5. **Production CT serve (cudallama)** — **promoted to tip b11351** (Oct 2026): `run/zerollama-lab` + `LLAMA_SERVER_BIN=…/llama-cpp-b11351`; `clef-flash` + `clef-flash-vl` + `strands-hobson` live; text + image + Strands `/v1/decisions` smoke PASS. Rollback:
    ```bash
    ./scripts/phase/l6_promote_tip_env.sh --rollback --write
    # restart ~/bin/serve.sh with that env
