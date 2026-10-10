@@ -141,9 +141,11 @@ func (r *Runner) Load(modelName string) error {
 		// Assign weights to model (model-specific logic). Target and draft weights
 		// must be loaded before sweeping so tensors from a combined manifest are
 		// not discarded before the draft model can retain them.
+		slog.Info("mlx LoadWeights starting", "peak", mlx.PrettyBytes(mlx.PeakMemory()))
 		if err := m.LoadWeights(tensors); err != nil {
 			return err
 		}
+		slog.Info("mlx LoadWeights done", "peak", mlx.PrettyBytes(mlx.PeakMemory()))
 
 		draft, err := loadDraftCompanion(root, m, tensors)
 		if err != nil {
@@ -151,6 +153,7 @@ func (r *Runner) Load(modelName string) error {
 		}
 		draftModel = draft
 
+		slog.Info("mlx collect/pin starting")
 		collected := mlx.Collect(m)
 		if draft != nil {
 			draftArrays := mlx.Collect(draft)
@@ -164,7 +167,9 @@ func (r *Runner) Load(modelName string) error {
 		for _, arr := range collected {
 			mlx.Pin(arr)
 		}
+		slog.Info("mlx sweep starting", "pinned", len(collected), "peak", mlx.PrettyBytes(mlx.PeakMemory()))
 		mlx.Sweep()
+		slog.Info("mlx sweep done", "peak", mlx.PrettyBytes(mlx.PeakMemory()))
 		// One giant Eval of a 60GiB MoE is a Metal command-buffer / jetsam
 		// on 128GiB UMA; materialize in slices.
 		const evalChunk = 32

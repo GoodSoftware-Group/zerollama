@@ -168,16 +168,20 @@ func Unpin(s ...*Array) {
 
 // Sweep releases all unpinned arrays, primarily intermediate tensors. MLX will truly
 // free them when there are no other references, including dependencies in the graph.
+//
+// Must not call free(): free() also takes arraysMu, and the mutex is not reentrant.
+// Compacting the live slice here already drops freed entries from the registry.
 func Sweep() {
 	arraysMu.Lock()
 	defer arraysMu.Unlock()
 	n := 0
 	for _, t := range arrays {
-		if t.pinned.Load() > 0 && t.Valid() {
+		if t.pinned.Load() > 0 && t.valid() {
 			arrays[n] = t
 			n++
-		} else if t.Valid() {
-			t.free()
+		} else if t.valid() {
+			mlxCheck(C.mlx_array_free(t.ctx))
+			t.ctx.ctx = nil
 		}
 	}
 	arrays = arrays[:n]
