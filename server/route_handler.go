@@ -232,6 +232,38 @@ func autoRouterVersionCapability() map[string]any {
 	}
 }
 
+// virtualRouterModelGet answers GET /v1/models/{router} for router names listed on
+// /v1/models. WHY: OpenAI clients often validate a model id with a retrieve call before
+// using it; ShowHandler 404s on a router name, so "auto" appeared in the list but was
+// rejected on retrieve. Real models fall through to the normal retrieve path.
+func (s *Server) virtualRouterModelGet() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		name := strings.TrimSpace(c.Param("model"))
+		if c.Request.Method != http.MethodGet || name == "" || !isRouterName(name) {
+			c.Next()
+			return
+		}
+		want := model.ParseName(name).DisplayShortest()
+		for _, m := range virtualRouterModels(nil) {
+			if model.ParseName(m.Name).DisplayShortest() != want {
+				continue
+			}
+			caps := make([]string, len(m.Capabilities))
+			for i, cp := range m.Capabilities {
+				caps[i] = string(cp)
+			}
+			c.AbortWithStatusJSON(http.StatusOK, openai.Model{
+				Id:           name,
+				Object:       "model",
+				OwnedBy:      model.ParseName(name).Namespace,
+				Capabilities: caps,
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
 // virtualRouterModels lists router names as /v1/models entries so OpenAI-style pickers can
 // select "auto". Capabilities are the union over local candidates (implicit "auto") or the
 // router's candidate models (router.yaml).

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -288,5 +289,37 @@ func TestRouterInventoryReportsConfigError(t *testing.T) {
 	s.RouterInventoryHandler(c)
 	if !strings.Contains(w.Body.String(), `"router_config_error"`) {
 		t.Fatalf("invalid router.yaml must be visible in the inventory: %s", w.Body.String())
+	}
+}
+
+func TestV1ModelRetrieveVirtualRouter(t *testing.T) {
+	s := newRouteTestServer(t)
+	createRouteTestModel(t, s, "tooly", routeToolsTemplate)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/v1/models/:model", s.virtualRouterModelGet(), func(c *gin.Context) {
+		c.JSON(http.StatusTeapot, gin.H{"fell_through": c.Param("model")})
+	})
+	get := func(name string) (int, map[string]any) {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/models/"+name, nil))
+		var out map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+
+	code, out := get("auto")
+	if code != http.StatusOK || out["id"] != "auto" || out["object"] != "model" || out["owned_by"] != "library" {
+		t.Fatalf("auto: %d %v", code, out)
+	}
+	if caps, _ := out["capabilities"].([]any); len(caps) == 0 {
+		t.Fatalf("auto should advertise candidate capabilities: %v", out)
+	}
+	if code, _ := get("tooly"); code != http.StatusTeapot {
+		t.Fatalf("real models must fall through to the normal retrieve, got %d", code)
+	}
+	t.Setenv("ZEROLLAMA_AUTO_ROUTER", "0")
+	if code, _ := get("auto"); code != http.StatusTeapot {
+		t.Fatalf("disabled router must fall through, got %d", code)
 	}
 }
