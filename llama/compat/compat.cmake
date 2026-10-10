@@ -46,7 +46,7 @@ set(OLLAMA_LLAMA_CPP_COMPAT_DIR
 # Also export the individual paths in case callers want to do something
 # custom (e.g. emit a dependency on the patch so reconfigures re-apply).
 set(OLLAMA_LLAMA_CPP_COMPAT_PATCH_FILE
-    "${_compat_dir}/llama-cpp-hooks.patch"
+    "${_compat_dir}/001-llama-cpp-hooks.patch"
     CACHE INTERNAL "Path to the llama.cpp compat patch")
 
 set(OLLAMA_LLAMA_CPP_COMPAT_SOURCES

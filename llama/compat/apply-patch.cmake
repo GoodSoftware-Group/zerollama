@@ -18,7 +18,11 @@ get_filename_component(_patch_workdir "." ABSOLUTE)
 get_filename_component(_git_ceiling "${_patch_workdir}" DIRECTORY)
 set(_git_apply_env GIT_CEILING_DIRECTORIES=${_git_ceiling})
 
-file(GLOB_RECURSE _patches "${PATCH_DIR}/*.patch")
+# Only 001-llama-cpp-hooks (loader/clip call sites). Do not GLOB 002-clef —
+# that patch is llama/clef/upstream-002-clef.patch and is applied via
+# llama/patches/0135 on the vendor quilt. FetchContent of vanilla b11351
+# used to die here because 002 hunks target a pre-common_batch server-context.
+file(GLOB _patches "${PATCH_DIR}/001-*.patch")
 list(SORT _patches)
 foreach(PATCH_FILE IN LISTS _patches)
     # If the patch can be REVERSED cleanly, it's already applied. Skip.

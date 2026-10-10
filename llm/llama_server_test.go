@@ -2062,6 +2062,13 @@ func TestEmbeddingBatchSize(t *testing.T) {
 			numCtx:      40960,
 			numBatch:    2048,
 			numParallel: 1,
+			want:        40960,
+		},
+		{
+			name:        "raises chat default 512 to context",
+			numCtx:      2048,
+			numBatch:    512,
+			numParallel: 1,
 			want:        2048,
 		},
 		{

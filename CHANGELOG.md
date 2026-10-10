@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Embed llama-server `-ub` matches `num_ctx`
+
+Chat default `NumBatch=512` was passed as `-b/-ub` on embeddings, so BERT/nomic/gemma 400’d past ~512 tokens while `-c` was already 2k–8k. Raise embed ubatch to the parallel context window (same as ggml).
+
+### llama/compat FetchContent applies on b11351
+
+`apply-patch.cmake` only GLOBs `001-*.patch`. Clef stays in `llama/clef/upstream-002-clef.patch` + vendor quilt **0135** (not FetchContent). Hooks patch is the b11351 `0018` call sites so vanilla llama.cpp + Ollama GGUF translation does not 412-style fail cmake.
+
 ### Registry User-Agent is semver, not git describe
 
 `registry.ollama.ai` 412s `ollama/<git-hash>` (and ancient `0.0.x`). Default `version.Version` is **0.40.2**. Build scripts ldflag **`version.Commit`** from `git describe` and leave **Version** as semver. Runtime `Semver()` still falls back if an old `-X Version=cdf3c93` binary is used. `GET /api/version` exposes `"git"`. Hugging Face GGUFs stay `zerollama pull huggingface://…` (LA8).

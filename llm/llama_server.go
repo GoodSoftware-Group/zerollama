@@ -1061,10 +1061,18 @@ func embeddingBatchSize(opts api.Options, numParallel int) int {
 	if batchSize <= 0 {
 		return 0
 	}
-	if opts.NumCtx > 0 {
-		batchSize = min(batchSize, opts.NumCtx*max(numParallel, 1))
+	if opts.NumCtx <= 0 {
+		return batchSize
 	}
-	return batchSize
+	// llama-server embeddings need n_ubatch >= the tokenized sequence.
+	// Chat default NumBatch is 512; that 400s BERT/nomic/gemma past ~512
+	// tokens even when -c is the GGUF window (2k–8k). Match ggml: raise
+	// batch to the parallel context window, never above it.
+	ctxWindow := opts.NumCtx * max(numParallel, 1)
+	if batchSize < ctxWindow {
+		batchSize = ctxWindow
+	}
+	return min(batchSize, ctxWindow)
 }
 
 func appendLlamaServerLogArgs(params []string) []string {
