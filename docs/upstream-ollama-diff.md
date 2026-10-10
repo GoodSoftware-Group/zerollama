@@ -295,6 +295,7 @@ Additive ports that **do not** change zerollama architecture (Mac ggml default, 
 | **llama.cpp pin `b9672`** | Superseded | Replaced by **`b9781`** (v0.30.11) — see row above |
 | **Native `gpu-discover` probe** | Done | Hidden subcommand + Linux/Windows CGO probes; enriches llama-server discovery with PCI/CC/gfx |
 | **Integrated GPU policy + gfx1151** | Done | Strix Halo 8060S allowlist; `OLLAMA_IGPU_ENABLE`; **keep iGPU when it is the only accelerator**; Metal tensor retry on discovery |
+| **Registry User-Agent semver** | Done | `version.Version` stays **0.40.2**; git describe → `version.Commit` / `/api/version` `git`. **Why:** registry 412s `ollama/<sha>` (embeddinggemma, Qwen3-Embedding 4B/8B). HF GGUF already `huggingface://` |
 | **llama-server unit tests** | Done | Upstream `llama_server_test.go` (minus MTP dupes); SSE ping, load stall, context shift |
 | **OpenAI models list tags** | Done | `ToListCompletion` uses `model` field when set (#16556) |
 | **CUDA FA + env log redaction** | Done | `cudaFlashAttentionSupported`; `filteredEnv` secret redaction |

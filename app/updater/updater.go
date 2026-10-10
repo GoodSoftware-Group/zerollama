@@ -96,7 +96,7 @@ func (u *Updater) checkForUpdate(ctx context.Context) (bool, UpdateResponse) {
 	if signature != "" {
 		req.Header.Set("Authorization", signature)
 	}
-	ua := fmt.Sprintf("ollama/%s %s Go/%s %s", version.Version, runtime.GOARCH, runtime.Version(), UserAgentOS)
+	ua := fmt.Sprintf("ollama/%s %s Go/%s %s", version.Semver(), runtime.GOARCH, runtime.Version(), UserAgentOS)
 	req.Header.Set("User-Agent", ua)
 
 	slog.Debug("checking for available update", "requestURL", requestURL, "User-Agent", ua)

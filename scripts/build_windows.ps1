@@ -68,13 +68,19 @@ function checkEnv {
     }
     Write-Output "Checking version"
     if (!$env:VERSION) {
-        $data=(git describe --tags --first-parent --abbrev=7 --long --dirty --always)
-        $pattern="v(.+)"
-        if ($data -match $pattern) {
-            $script:VERSION=$matches[1]
+        $verLine = Select-String -Path (Join-Path $script:SRC_DIR "version\version.go") -Pattern 'var Version string = "([^"]+)"' | Select-Object -First 1
+        if ($verLine -and $verLine.Matches[0].Groups[1].Value) {
+            $script:VERSION = $verLine.Matches[0].Groups[1].Value
+        } else {
+            $script:VERSION = "0.40.2"
         }
     } else {
         $script:VERSION=$env:VERSION
+    }
+    if ($env:COMMIT) {
+        $script:COMMIT=$env:COMMIT
+    } else {
+        $script:COMMIT=(git describe --tags --first-parent --abbrev=7 --long --dirty --always)
     }
     $pattern = "(\d+[.]\d+[.]\d+).*"
     if ($script:VERSION -match $pattern) {
@@ -82,7 +88,7 @@ function checkEnv {
     } else {
         $script:PKG_VERSION="0.0.0"
     }
-    Write-Output "Building Ollama $script:VERSION with package version $script:PKG_VERSION"
+    Write-Output "Building Ollama $script:VERSION (git $script:COMMIT) with package version $script:PKG_VERSION"
 
     # Note: Windows Kits 10 signtool crashes with GCP's plugin
     if ($null -eq $env:SIGN_TOOL) {
@@ -317,7 +323,7 @@ function mlxCuda13 {
 function ollama {
     mkdir -Force -path "${script:DIST_DIR}\" | Out-Null
     Write-Output "Building zerollama CLI"
-    & go build -trimpath -o zerollama.exe -ldflags "-s -w -X=github.com/ollama/ollama/version.Version=$script:VERSION -X=github.com/ollama/ollama/server.mode=release" .
+    & go build -trimpath -o zerollama.exe -ldflags "-s -w -X=github.com/ollama/ollama/version.Version=$script:VERSION -X=github.com/ollama/ollama/version.Commit=$script:COMMIT -X=github.com/ollama/ollama/server.mode=release" .
     if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
     cp .\zerollama.exe "${script:DIST_DIR}\"
 }

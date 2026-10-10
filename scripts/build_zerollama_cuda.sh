@@ -36,10 +36,13 @@ INSTALL="${INSTALL:-0}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 8)}"
 
 if [[ -z "${VERSION:-}" ]]; then
+	VERSION="$(grep 'var Version string' "${ROOT}/version/version.go" 2>/dev/null | sed -n 's/.*"\(.*\)".*/\1/p' || echo 0.40.2)"
+fi
+if [[ -z "${COMMIT:-}" ]]; then
 	if git -C "${ROOT}" describe --tags --first-parent --abbrev=7 --long --dirty --always &>/dev/null; then
-		VERSION="$(git -C "${ROOT}" describe --tags --first-parent --abbrev=7 --long --dirty --always | sed -e 's/^v//')"
+		COMMIT="$(git -C "${ROOT}" describe --tags --first-parent --abbrev=7 --long --dirty --always | sed -e 's/^v//')"
 	else
-		VERSION="$(grep 'var Version string' "${ROOT}/version/version.go" 2>/dev/null | sed -n 's/.*"\(.*\)".*/\1/p' || echo 0.0.0)"
+		COMMIT=""
 	fi
 fi
 
@@ -290,8 +293,8 @@ _build_go() {
 	_ensure_httplib
 	_setup_cgo
 	cd "${ROOT}"
-	echo ">>> go build → ${OUT} (version ${VERSION})" >&2
-	GOFLAGS=-mod=mod go build -ldflags="-s -w -X=github.com/ollama/ollama/version.Version=${VERSION}" -o "${OUT}" .
+	echo ">>> go build → ${OUT} (version ${VERSION} commit ${COMMIT})" >&2
+	GOFLAGS=-mod=mod go build -ldflags="-s -w -X=github.com/ollama/ollama/version.Version=${VERSION} -X=github.com/ollama/ollama/version.Commit=${COMMIT}" -o "${OUT}" .
 	echo ">>> wrote ${OUT}" >&2
 }
 

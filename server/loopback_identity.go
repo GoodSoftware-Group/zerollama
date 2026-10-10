@@ -33,7 +33,7 @@ func watchLoopbackServeIdentity(ctx context.Context) {
 	if port == "" {
 		port = "11434"
 	}
-	expectVersion := version.Version
+	expectVersion := version.Semver()
 	client := &http.Client{Timeout: 2 * time.Second}
 
 	check := func() {

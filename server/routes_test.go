@@ -157,8 +157,8 @@ func TestRoutes(t *testing.T) {
 				if err := json.Unmarshal(body, &payload); err != nil {
 					t.Fatalf("version body: %v raw=%s", err, body)
 				}
-				if payload["version"] != version.Version {
-					t.Errorf("expected version %q, got %v body=%s", version.Version, payload["version"], body)
+				if payload["version"] != version.Semver() {
+					t.Errorf("expected version %q, got %v body=%s", version.Semver(), payload["version"], body)
 				}
 				if payload["distribution"] != "zerollama" {
 					t.Errorf("expected distribution zerollama, got %v", payload["distribution"])

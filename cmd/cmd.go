@@ -2190,7 +2190,10 @@ func checkServerHeartbeat(cmd *cobra.Command, _ []string) error {
 
 func versionHandler(cmd *cobra.Command, _ []string) {
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "zerollama version is %s\n", version.Version)
+	fmt.Fprintf(out, "zerollama version is %s\n", version.Semver())
+	if version.Commit != "" {
+		fmt.Fprintf(out, "git: %s\n", version.Commit)
+	}
 	if version.IsEdgeBuild() {
 		fmt.Fprintln(out, "edge build: true")
 	}
@@ -2206,7 +2209,7 @@ func versionHandler(cmd *cobra.Command, _ []string) {
 		return
 	}
 
-	if serverVersion != version.Version {
+	if serverVersion != version.Semver() {
 		fmt.Fprintf(out, "Warning: server version is %s\n", serverVersion)
 	}
 }

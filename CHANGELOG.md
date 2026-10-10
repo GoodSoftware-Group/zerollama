@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Registry User-Agent is semver, not git describe
+
+`registry.ollama.ai` 412s `ollama/<git-hash>` (and ancient `0.0.x`). Default `version.Version` is **0.40.2**. Build scripts ldflag **`version.Commit`** from `git describe` and leave **Version** as semver. Runtime `Semver()` still falls back if an old `-X Version=cdf3c93` binary is used. `GET /api/version` exposes `"git"`. Hugging Face GGUFs stay `zerollama pull huggingface://…` (LA8).
+
 ### Keep sole integrated GPU (Vulkan/ROCm APU)
 
 Unset `OLLAMA_IGPU_ENABLE` still drops iGPUs when a **discrete** GPU is present (CUDA iGPU and ROCm `gfx1151` stay allowlisted). If filtering would leave **no GPU**, keep the iGPU instead of CPU-only — RADV Phoenix / ROCm gfx1103 / Intel iGPU Vulkan. `OLLAMA_IGPU_ENABLE=0` still forces CPU.

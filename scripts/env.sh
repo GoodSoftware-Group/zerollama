@@ -1,7 +1,11 @@
 # Common environment setup across build*.sh scripts
 
-export VERSION=${VERSION:-$(git describe --tags --first-parent --abbrev=7 --long --dirty --always | sed -e "s/^v//g")}
-export GOFLAGS="'-ldflags=-w -s \"-X=github.com/ollama/ollama/version.Version=$VERSION\" \"-X=github.com/ollama/ollama/server.mode=release\"'"
+# VERSION is gallery User-Agent semver. Never default this to git describe —
+# registry.ollama.ai 412s ollama/<sha>. Git identity is version.Commit.
+_src_semver=$(grep 'var Version string' "$(dirname "$0")/../version/version.go" 2>/dev/null | sed -n 's/.*"\(.*\)".*/\1/p')
+export VERSION=${VERSION:-${_src_semver:-0.40.2}}
+export COMMIT=${COMMIT:-$(git describe --tags --first-parent --abbrev=7 --long --dirty --always | sed -e "s/^v//g")}
+export GOFLAGS="'-ldflags=-w -s \"-X=github.com/ollama/ollama/version.Version=$VERSION\" \"-X=github.com/ollama/ollama/version.Commit=$COMMIT\" \"-X=github.com/ollama/ollama/server.mode=release\"'"
 # TODO - consider `docker buildx ls --format=json` to autodiscover platform capability
 PLATFORM=${PLATFORM:-"linux/arm64,linux/amd64"}
 DOCKER_ORG=${DOCKER_ORG:-"ollama"}
@@ -28,4 +32,5 @@ fi
 
 echo "Building Ollama"
 echo "VERSION=$VERSION"
+echo "COMMIT=$COMMIT"
 echo "PLATFORM=$PLATFORM"

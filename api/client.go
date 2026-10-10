@@ -23,7 +23,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"runtime"
 	"strconv"
 	"time"
 
@@ -136,7 +135,7 @@ func (c *Client) do(ctx context.Context, method, path string, reqData, respData 
 
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", fmt.Sprintf("ollama/%s (%s %s) Go/%s", version.Version, runtime.GOARCH, runtime.GOOS, runtime.Version()))
+	request.Header.Set("User-Agent", version.HTTPUserAgent())
 
 	if token != "" {
 		request.Header.Set("Authorization", token)
@@ -202,7 +201,7 @@ func (c *Client) stream(ctx context.Context, method, path string, data any, fn f
 
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/x-ndjson")
-	request.Header.Set("User-Agent", fmt.Sprintf("ollama/%s (%s %s) Go/%s", version.Version, runtime.GOARCH, runtime.GOOS, runtime.Version()))
+	request.Header.Set("User-Agent", version.HTTPUserAgent())
 
 	if token != "" {
 		request.Header.Set("Authorization", token)
