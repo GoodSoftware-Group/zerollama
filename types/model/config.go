@@ -114,6 +114,7 @@ type ConfigV2 struct {
 	// BackendPaths passes filesystem paths / URLs to subprocess adapters (e.g. Whisper GGML, Piper ONNX).
 	// Keys include "whisper_model", "piper_model", "piper_config", "piper_voice_<name>",
 	// "tts_url", "tts_upstream_model", "tts_default_voice", "tts_voices_file", "tts_ref_audio",
+	// "openai_url" / "openai_model" (openai-remote inference sidecar — docs/glm-flash-lite-ladder.md),
 	// "wan_repo", "wan_ckpt_dir", "wan_venv", "wan_gguf_path",
 	// "video_cli" / "wan_cli" (optional Pure-C video-c binary — docs/video-c.md),
 	// "h3_ckpt_dir" (MiniMax-H3 tree for Darwin video-cli h3),

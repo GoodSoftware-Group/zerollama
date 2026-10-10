@@ -64,5 +64,8 @@ def test_session_close_bumps_global_epoch():
     session._model = None
     session._seq_last_owner = {}
     session._infer_lock = __import__("threading").RLock()
+    # close() reads instance attrs MagicMock(spec=) does not invent.
+    session._overlay_donor = None
+    session.overlay_donor_id = None
     LlamaLoadedSession.close(session)
     assert decode_graph_epoch(-1) >= 1

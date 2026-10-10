@@ -74,3 +74,4 @@ Canonical guide: **[docs/mac-dev-setup.md](./docs/mac-dev-setup.md)**.
 - GLiNER2.5-Decide (triage): `POST /v1/decisions` + `POST /v1/gliner-decide` — Python `gliner2` sibling; **not** NER; `ZEROLLAMA_GLINER_DECIDE_URL` — [docs/gliner-decide.md](./docs/gliner-decide.md) · [findings](./docs/gliner-decide-findings.md)
 - Product diffs vs Ollama (README hero): **megaprompts** (Gigatoken-inspired tokenize + L3) + visuals + harness — [README.md § Why](./README.md#2-why-zerollama) · [Tour](./README.md#4-tour--what-makes-us-different)
 - MiniMax Music 3 (mlx hear → C later): [docs/music-c.md](./docs/music-c.md) — **why** not Comfy / not H3 VAE / not blocking TTS
+- GLM Flash Lite (EXL3 sidecar): **GF0–GF7** — astra `127.0.0.1:30000` + tag `glm-5.3-flash` (`openai-remote` `/v1`+`/api/chat`); GF6 parked; rematch [freetoken-moe-lab.md](./docs/freetoken-moe-lab.md); **do not** vendor EXL3 — [docs/glm-flash-lite-ladder.md](./docs/glm-flash-lite-ladder.md) · ROADMAP **M28**

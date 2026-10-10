@@ -370,6 +370,8 @@ def engine(cfg_root, tmp_path: Path):
 
 def test_admit_one_pins_cache_key_from_options(engine, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(engine, "_vram_precheck_enqueue", lambda *a, **k: None)
+    # Unit test: do not probe live GPU (sidecar / other loads can starve min_free).
+    monkeypatch.setattr(engine, "_loop_vram_check", lambda req: None)
     monkeypatch.setattr(
         engine,
         "_check_admit_policy",

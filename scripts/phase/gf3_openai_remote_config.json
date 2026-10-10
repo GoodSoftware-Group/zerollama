@@ -1,0 +1,18 @@
+{
+  "model_format": "",
+  "model_family": "glm",
+  "model_families": ["glm"],
+  "model_type": "5.3-flash",
+  "file_type": "exl3",
+  "architecture": "amd64",
+  "os": "linux",
+  "capabilities": ["completion"],
+  "context_length": 131072,
+  "modality_backends": {
+    "inference": "openai-remote"
+  },
+  "backend_paths": {
+    "openai_url": "http://127.0.0.1:30000",
+    "openai_model": "glm-5.3-flash"
+  }
+}

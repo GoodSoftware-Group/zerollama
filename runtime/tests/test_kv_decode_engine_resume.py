@@ -111,6 +111,10 @@ def _make_session_stub() -> MagicMock:
     session._infer_lock = threading.RLock()
     session.slot_cache_model_hash = None
     session.kv_cache_spec = None
+    # Instance attrs only set in __init__; MagicMock(spec=) rejects getattr otherwise.
+    session._overlay_donor = None
+    session.overlay_donor_id = None
+    session.kv_unified = False
     session._resolve_decode_current_pos = (
         LlamaLoadedSession._resolve_decode_current_pos.__get__(session)
     )
@@ -466,6 +470,7 @@ def test_generate_subprocess_l3_turn2_disables_swa_cache_prompt(engine, monkeypa
     from runtime.prefix_cache_policy import PrefixCachePolicy
 
     monkeypatch.setattr(engine, "_vram_precheck_enqueue", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "_loop_vram_check", lambda req: None)
     monkeypatch.setattr(
         engine, "_check_admit_policy", lambda opts, **k: InferencePriority.NORMAL
     )
@@ -545,6 +550,7 @@ def test_generate_inprocess_l3_turn2_disables_swa_resume_pos(engine, monkeypatch
     from runtime.prefix_cache_policy import PrefixCachePolicy
 
     monkeypatch.setattr(engine, "_vram_precheck_enqueue", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "_loop_vram_check", lambda req: None)
     monkeypatch.setattr(
         engine, "_check_admit_policy", lambda opts, **k: InferencePriority.NORMAL
     )
@@ -597,10 +603,12 @@ def test_generate_inprocess_l3_turn2_disables_swa_resume_pos(engine, monkeypatch
         engine, "resolve_num_ctx_for_request", return_value=(512, {})
     ):
         with patch.object(engine, "_ensure_gguf_loaded_unlocked", return_value=mock_srv):
+            # Per turn: _prefix_cache_request + _prefix_cache_admission each probe pos.
+            # Turn 1: None (no resume). Turn 2: deep pos so SWA guard drops resume.
             with patch.object(
                 engine,
                 "_decode_current_pos_for_request",
-                side_effect=[None, 900, 900],
+                side_effect=[None, None, 900, 900],
             ):
                 engine.generate(
                     "turn one",
@@ -626,6 +634,7 @@ def test_generate_l3_second_turn_passes_current_pos(engine, monkeypatch):
     from runtime.gpu.inference_policy import InferencePriority
 
     monkeypatch.setattr(engine, "_vram_precheck_enqueue", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "_loop_vram_check", lambda req: None)
     monkeypatch.setattr(
         engine, "_check_admit_policy", lambda opts, **k: InferencePriority.NORMAL
     )

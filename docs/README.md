@@ -55,6 +55,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Phase 17 — Go → llama-server](./phase17-llama-server.md) — **why** upstream GGUF path is cherry-picked for mergeability; Mac keeps ggml default (M7 bench).
 * [Flash-MoE (anemll)](./flash-moe.md) — **why** slot-bank + SSD sidecar for MoE models larger than unified RAM; Phase 17 llama-server passthrough (not ggml Metal default).
 * [FreeToken MoE lab](./freetoken-moe-lab.md) — offline sim of edge MoE policies (LRU cache, \(q^\star\) CPU/PCIe split, prefill overlap, semantic checkpoints); [arXiv:2608.16157](https://arxiv.org/abs/2608.16157).
+* [GLM Flash Lite ladder (GF0–GF7)](./glm-flash-lite-ladder.md) — **why** EXL3 GLM-5.3-Flash stays a native/venv sidecar (astra `:30000`); FreeToken/Flash-MoE rematch only; do not vendor `nv2`.
 * [ANE probe (maderix)](./ane-probe.md) — **why** subprocess smoke for private ANE APIs before hybrid inference; not on hot path.
 * [ANE dflash in-process (B1–B6)](./ane-draft-inprocess.md) — **why** same-PID IOSurface handoff on llama-server dflash draft decode; lab port 11435; draft tokens still Metal until B7.
 * [ANE hybrid path (lab)](./ane-hybrid-path.md) — crossover sweeps, prefill proxy, operator tooling index.

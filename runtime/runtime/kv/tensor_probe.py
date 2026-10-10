@@ -28,14 +28,22 @@ def writable_bind_probe() -> dict[str, Any]:
     llama.cpp pin; operators watch ``writable_bind_available`` on /health.
     """
     try:
-        from runtime.kv._kv_native import page_bind_writable_probe
+        from runtime.kv import _kv_native
     except Exception:
         return {
             "writable_bind_available": False,
             "writable_bind_api": "none",
             "writable_bind_blocker": "native_ext_not_built",
         }
-    return dict(page_bind_writable_probe())
+    probe = getattr(_kv_native, "page_bind_writable_probe", None)
+    if probe is None:
+        # Ext built without LLAMA_KV_EXT_WRITABLE_PAGE_MAP (CI default DECODE_LOOP=0).
+        return {
+            "writable_bind_available": False,
+            "writable_bind_api": "none",
+            "writable_bind_blocker": "writable_bind_api_not_linked",
+        }
+    return dict(probe())
 
 
 def external_alias_probe() -> dict[str, Any]:
@@ -46,7 +54,7 @@ def external_alias_probe() -> dict[str, Any]:
     ``external_alias_available`` on /health before wiring migration bind (v48+).
     """
     try:
-        from runtime.kv._kv_native import page_bind_external_alias_probe
+        from runtime.kv import _kv_native
     except Exception:
         return {
             "external_alias_available": False,
@@ -54,7 +62,16 @@ def external_alias_probe() -> dict[str, Any]:
             "external_alias_api": "none",
             "external_alias_blocker": "native_ext_not_built",
         }
-    out = dict(page_bind_external_alias_probe())
+    probe = getattr(_kv_native, "page_bind_external_alias_probe", None)
+    if probe is None:
+        # Ext present but compiled without LLAMA_KV_EXT_EXTERNAL_ALIAS — not "not built".
+        return {
+            "external_alias_available": False,
+            "external_alias_validate_api": False,
+            "external_alias_api": "none",
+            "external_alias_blocker": "external_alias_api_not_linked",
+        }
+    out = dict(probe())
     out["external_alias_blocker"] = (
         "" if out.get("external_alias_available") else "external_alias_api_not_linked"
     )

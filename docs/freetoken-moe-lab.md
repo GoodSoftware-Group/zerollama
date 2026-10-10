@@ -115,3 +115,17 @@ When full expert banks exceed that budget, `--moe-cpu-layers auto` locks just en
 5. Native `zerollama run` / `--experimental` / Go `api.ChatThread` echo `elide_from`. HTTP agents with a stable `prompt_cache_key` (including `/v1/responses` and `/v1/messages` extra_body) get the same cut server-side (per model, 256-key LRU, 30m; `cache_reset` clears). Explicit `compression.elide_from` still wins.
 
 See [flash-moe.md](./flash-moe.md).
+
+## glm-flash-lite rematch (GF4/GF5, astra Oct 2026)
+
+External EXL3 sidecar ([glm-flash-lite-ladder.md](./glm-flash-lite-ladder.md)) — **not** GGUF/Flash-MoE. Measured `GET http://127.0.0.1:30000/stats` on astra (`nvme`, GPU0 Gen4×16, `GLM53_NV_RAM_GB=55` → ~55 GiB exclusive RAM):
+
+| | astra | FreeToken lab `4090` | Watch for Flash-MoE / anemll |
+|--|-------|----------------------|------------------------------|
+| Miss placement | VRAM 43 % / RAM 51 % / NVMe 6 %; **~150 CPU experts/tok** | \(q^\star\) **2 PCIe fill + 2 CPU** of 4 | **CPU miss-split** still the right discrete-GPU idea; anemll has **no** flag |
+| Locality / prefetch | Layer-ahead used ~99 % of steps | `--moe-prefetch-temporal` cousin | Keep Flash-MoE temporal prefetch; do not invent EXL3 LA |
+| Exclusive RAM | VRAM∩RAM empty by design (`exclusive=true`) | slot-bank is single-tier | **Watch only** — ggml pin budget ≠ their exclusive tier |
+| Victim ring | 24-slot VRAM park → RAM drain | — | **Watch only** |
+| Speed | ~7.3 tok/s wall @ 55 GiB RAM (CPU-bound) | Table-1 latency model | Do **not** claim 19 tok/s 3090 parity on this box |
+
+**Non-goal:** vendor `nv2` / EXL3. Rematch = policy validation for doctor/`freetoken` notes, not a second engine.

@@ -668,6 +668,7 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_REMOTES":                           {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
 		"ELIZACLOUD_API_KEY":                       {"ELIZACLOUD_API_KEY", ElizaCloudAPIKey(), "API key for Eliza Cloud (X-API-Key); required for remote inference when using Eliza"},
 		"OLLAMA_SGLANG_URL":                        {"OLLAMA_SGLANG_URL", SGLangURL(), "Base URL for SGLang when modality_backends.video_understanding=sglang"},
+		"ZEROLLAMA_OPENAI_REMOTE_URL":              {"ZEROLLAMA_OPENAI_REMOTE_URL", OpenAIRemoteURL(), "Fleet default base URL for modality_backends.inference=openai-remote (overridden by backend_paths.openai_url)"},
 		"ZEROLLAMA_CLM_URL":                        {"ZEROLLAMA_CLM_URL", CLMURL(), "Optional clm-serve base URL (fallback when native heads/emb unset)"},
 		"ZEROLLAMA_CLM_HEADS":                      {"ZEROLLAMA_CLM_HEADS", CLMHeads(), "Path to CLM heads GGUF (convert_clm_heads_to_gguf.py); native Go Decider"},
 		"ZEROLLAMA_CLM_EMB_URL":                    {"ZEROLLAMA_CLM_EMB_URL", CLMEmbURL(), "Embeddings URL for native CLM (llama-server --embeddings Qwen3-8B)"},
@@ -893,6 +894,12 @@ func modalityTimeout(envKey string, defaultDur time.Duration) time.Duration {
 // Used when modality_backends.video_understanding=sglang.
 func SGLangURL() string {
 	return strings.TrimSuffix(strings.TrimSpace(Var("OLLAMA_SGLANG_URL")), "/")
+}
+
+// OpenAIRemoteURL is the fleet-wide base URL for modality_backends.inference=openai-remote
+// (e.g. http://127.0.0.1:30000 for glm-flash-lite). Per-model backend_paths.openai_url wins.
+func OpenAIRemoteURL() string {
+	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_OPENAI_REMOTE_URL")), "/")
 }
 
 // CLMURL is an optional base URL for operator-run clm-serve (fallback when

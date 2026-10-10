@@ -31,6 +31,10 @@ const (
 	BackendOpenVINOImage    = "openvino-image"    // OpenVINO GenAI Text2ImagePipeline (see docs/sd-openvino-a380.md)
 	BackendVideoNative      = "native"            // ffmpeg frame sampling inside Ollama (default when unset)
 	BackendSGLang           = "sglang"            // forward OpenAI chat to SGLang HTTP API
+	// BackendOpenAIRemote forwards OpenAI /v1/chat/completions to an external
+	// OpenAI-compatible server (e.g. glm-flash-lite EXL3 sidecar). Config-only
+	// tag — no GGUF load. See docs/glm-flash-lite-ladder.md GF3.
+	BackendOpenAIRemote     = "openai-remote"
 	BackendZerollamaRuntime = "zerollama-runtime" // Python GGUF runtime sidecar (see runtime/)
 	// BackendCLM routes POST /v1/decisions|/v1/systemone through native Go heads
 	// (ZEROLLAMA_CLM_HEADS + ZEROLLAMA_CLM_EMB_URL) or optional ZEROLLAMA_CLM_URL.

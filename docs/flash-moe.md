@@ -2,7 +2,7 @@
 
 **Audience:** Mac operators running **MoE models larger than unified RAM** via [Anemll/anemll-flash-llama.cpp](https://github.com/Anemll/anemll-flash-llama.cpp) slot-bank + sidecar streaming.
 
-**Related:** [phase17-llama-server.md](./phase17-llama-server.md), [apple-silicon-metal.md](./apple-silicon-metal.md), [ane-probe.md](./ane-probe.md), [deepgemm-borrowings.md](./deepgemm-borrowings.md) (fused MoE GEMM ideas — orthogonal to SSD slot-bank).
+**Related:** [phase17-llama-server.md](./phase17-llama-server.md), [apple-silicon-metal.md](./apple-silicon-metal.md), [ane-probe.md](./ane-probe.md), [deepgemm-borrowings.md](./deepgemm-borrowings.md) (fused MoE GEMM ideas — orthogonal to SSD slot-bank), [glm-flash-lite-ladder.md](./glm-flash-lite-ladder.md) (EXL3 GLM-5.3-Flash Docker sidecar — FreeToken cousin, **not** this GGUF path).
 
 ---
 
@@ -223,6 +223,10 @@ See also [testing-smoke.md](./testing-smoke.md).
 - CUDA Flash-MoE build script (upstream fork supports it; zerollama script is Darwin-only for now)
 
 ---
+
+## Watch: glm-flash-lite rematch (EXL3 sidecar, not this path)
+
+Measured on astra (GF4): exclusive RAM + CPU expert lane + layer-ahead prefetch deliver a FreeToken-shaped hit mix on discrete PCIe. **Do not** vendor EXL3/`nv2`. If anemll grows a CPU-miss or pin-budget knob, wire via `appendFlashMoEArgs()` (GF6). Details: [freetoken-moe-lab.md § rematch](./freetoken-moe-lab.md#glm-flash-lite-rematch-gf4gf5-astra-oct-2026), [glm-flash-lite-ladder.md](./glm-flash-lite-ladder.md).
 
 ## See also
 
