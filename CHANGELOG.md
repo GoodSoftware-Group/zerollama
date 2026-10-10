@@ -8,6 +8,10 @@ All notable changes to this project are documented in this file. The format is b
 
 Unset `OLLAMA_IGPU_ENABLE` still drops iGPUs when a **discrete** GPU is present (CUDA iGPU and ROCm `gfx1151` stay allowlisted). If filtering would leave **no GPU**, keep the iGPU instead of CPU-only — RADV Phoenix / ROCm gfx1103 / Intel iGPU Vulkan. `OLLAMA_IGPU_ENABLE=0` still forces CPU.
 
+### `GET /slots` llama-server discovery shim
+
+Odysseus/Hermes probe `GET /slots` for serving `n_ctx`. Zerollama now returns a llama-server-shaped array from the primary loaded runner (empty when idle). No slot restore/`action=` APIs.
+
 ### MLX cold-load SSE keepalives + stall wait
 
 Streaming chat/generate start SSE keepalives **before** `scheduleRunner`, so Odysseus/Mercury do not hit empty-stream read timeouts during multi-minute MLX weight materialize. `WaitUntilRunning` resets `OLLAMA_LOAD_TIMEOUT` on runner log activity; Metal materialize emits progress **before** each Eval chunk plus a 15s `mlx load in progress` heartbeat (first gemma4 Eval can exceed 5m with no post-Eval log). When `keep_alive > 0`, client disconnect no longer aborts a healthy MLX load — the runner finishes and stays warm for the next request; cancel mid-load no longer emits an empty OpenAI completion.

@@ -2807,6 +2807,8 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 
 	// Inference
 	r.GET("/api/ps", s.PsHandler)
+	// llama-server discovery shim for Odysseus/Hermes (n_ctx / parallel); not slot restore.
+	r.GET("/slots", s.SlotsHandler)
 	r.GET("/api/image/workflows", s.ImageWorkflowsHandler)
 	r.POST("/api/generate", s.withInferenceRequestLogging("/api/generate", s.hostMemGuard(), s.assignmentTokenMiddleware(), s.runtimeGenerateProxy(), s.GenerateHandler)...)
 	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.hostMemGuard(), s.assignmentTokenMiddleware(), s.openaiRemoteChatProxy(), s.runtimeChatProxy(), s.ChatHandler)...)

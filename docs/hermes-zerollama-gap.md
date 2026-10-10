@@ -36,6 +36,7 @@ A Hermes wishlist compared zerollama’s advertised APIs to what the harness act
 | Per-call server timeout | **Shipped** — `timeout` field | Prefer over client-only deadlines |
 | Structured JSON / grammar | **Shipped** `response_format` + runtime forward (M15f); GBNF via `format.type=gbnf` | Prefer `json_schema`; tools+grammar → 400 |
 | Multi-GPU in can-load | **Shipped** (topology report) | Host topology fields; not a TP planner |
+| `GET /slots` (llama.cpp) | **Shipped** thin shim — `n_ctx` / parallel from loaded runner | Use for context discovery; not slot restore |
 
 ---
 

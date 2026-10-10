@@ -3786,6 +3786,43 @@ paths:
                         - "gemma"
                       parameter_size: "4.3B"
                       quantization_level: "Q4_K_M"
+  /slots:
+    get:
+      summary: llama-server slots discovery shim
+      description: |
+        Odysseus/Hermes-compatible `GET /slots` (llama.cpp shape). Returns
+        `[{id,n_ctx,is_processing,speculative}]` from the primary loaded runner
+        so agents can read serving context. Empty array when nothing is loaded.
+        Does not implement slot restore (`?action=`).
+      operationId: slots
+      x-codeSamples:
+        - lang: bash
+          label: Probe serving context
+          source: |
+            curl http://localhost:11434/slots
+      responses:
+        "200":
+          description: Slot snapshot (llama-server shaped)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    n_ctx:
+                      type: integer
+                    is_processing:
+                      type: boolean
+                    speculative:
+                      type: boolean
+              example:
+                - id: 0
+                  n_ctx: 32768
+                  is_processing: false
+                  speculative: false
   /api/ps:
     get:
       summary: List running models
