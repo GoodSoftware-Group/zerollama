@@ -115,6 +115,27 @@ func appendNoSpecDraftBackendSamplingArg(params []string, serverBin string) []st
 	return append(params, noSpecDraftBackendSamplingFlag)
 }
 
+const multidecodeFlag = "--multidecode"
+
+// appendMultidecodeArg enables the MultiDecode forest endpoint when the binary
+// advertises --multidecode. WHY probe: prod pins (e.g. 5f55650a) predate MD1;
+// unconditionally passing the flag aborts llama-server before model load
+// (qwen3.6-64k on astra, 2026-10-09).
+func appendMultidecodeArg(params []string, serverBin string, embedding bool) []string {
+	if embedding {
+		return params
+	}
+	if !llamaServerSupportsFlag(serverBin, multidecodeFlag) {
+		slog.Debug(
+			"llama-server lacks MultiDecode flag; skipping",
+			"binary", serverBin,
+			"flag", multidecodeFlag,
+		)
+		return params
+	}
+	return append(params, multidecodeFlag)
+}
+
 const specDmAdaptiveFlag = "--spec-dm-adaptive"
 
 // appendSpecDmAdaptiveArg passes Bee B1 profit controller when ZEROLLAMA_SPEC_DM_ADAPTIVE

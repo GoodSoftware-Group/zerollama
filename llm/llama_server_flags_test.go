@@ -55,6 +55,23 @@ func TestAppendSpecDraftBackendSamplingArgSkipsElizaFork(t *testing.T) {
 	}
 }
 
+func TestAppendMultidecodeArgProbesBinary(t *testing.T) {
+	t.Cleanup(resetLlamaServerHelpCache)
+	const oldBin = "/tmp/llama-server-no-md"
+	llamaServerHelpCache.Store(oldBin, "--spec-type draft-mtp\n")
+	if got := appendMultidecodeArg([]string{"base"}, oldBin, false); !slices.Equal(got, []string{"base"}) {
+		t.Fatalf("old binary: got %v", got)
+	}
+	const newBin = "/tmp/llama-server-md"
+	llamaServerHelpCache.Store(newBin, "--multidecode\n--spec-type draft-mtp\n")
+	if got := appendMultidecodeArg([]string{"base"}, newBin, false); !slices.Equal(got, []string{"base", "--multidecode"}) {
+		t.Fatalf("new binary: got %v", got)
+	}
+	if got := appendMultidecodeArg([]string{"base"}, newBin, true); !slices.Equal(got, []string{"base"}) {
+		t.Fatalf("embedding must skip: got %v", got)
+	}
+}
+
 func TestAppendSpecDmAdaptiveArgOptIn(t *testing.T) {
 	t.Cleanup(resetLlamaServerHelpCache)
 	t.Setenv("ZEROLLAMA_SPEC_DM_ADAPTIVE", "profit")
