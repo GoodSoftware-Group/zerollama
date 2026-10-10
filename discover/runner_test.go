@@ -191,12 +191,42 @@ func TestFilterIntegratedGPUs(t *testing.T) {
 		want := []ml.DeviceID{{Library: "Vulkan", ID: "1"}}
 		assertDeviceIDs(t, got, want)
 	})
+
+	t.Run("auto keeps Vulkan iGPU when it is the only accelerator", func(t *testing.T) {
+		only := []ml.DeviceInfo{
+			{DeviceID: ml.DeviceID{Library: "Vulkan", ID: "0"}, Description: "AMD Radeon 780M Graphics (RADV PHOENIX)", Integrated: true},
+		}
+		got := filterIntegratedGPUs(only)
+		want := []ml.DeviceID{{Library: "Vulkan", ID: "0"}}
+		assertDeviceIDs(t, got, want)
+	})
+
+	t.Run("auto keeps ROCm Phoenix iGPU when it is the only accelerator", func(t *testing.T) {
+		only := []ml.DeviceInfo{
+			{DeviceID: ml.DeviceID{Library: "ROCm", ID: "0"}, Description: "AMD Radeon 780M", Integrated: true, GFXTarget: "gfx1103"},
+		}
+		got := filterIntegratedGPUs(only)
+		want := []ml.DeviceID{{Library: "ROCm", ID: "0"}}
+		assertDeviceIDs(t, got, want)
+	})
+
+	t.Run("explicit false drops sole integrated GPU", func(t *testing.T) {
+		t.Setenv("OLLAMA_IGPU_ENABLE", "false")
+		only := []ml.DeviceInfo{
+			{DeviceID: ml.DeviceID{Library: "Vulkan", ID: "0"}, Description: "AMD Radeon 780M Graphics (RADV PHOENIX)", Integrated: true},
+		}
+		got := filterIntegratedGPUs(only)
+		assertDeviceIDs(t, got, nil)
+	})
 }
 
 func assertDeviceIDs(t *testing.T, got []ml.DeviceInfo, want []ml.DeviceID) {
 	t.Helper()
 	if len(got) != len(want) {
 		t.Fatalf("got %d devices, want %d: %#v", len(got), len(want), got)
+	}
+	if len(want) == 0 {
+		return
 	}
 	for i := range want {
 		if got[i].DeviceID != want[i] {

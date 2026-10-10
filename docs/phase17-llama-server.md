@@ -37,7 +37,7 @@ Zerollama harness:     Client → Go → Python runtime → llama-server  (--lla
 | Mac default | **Unchanged (ggml)** | M7 bench: ggml ~166 vs llama-server ~155 tok/s @ 4k ctx |
 | `LLAMA_CPP_VERSION=b9781` | **Done** | Vendor + in-tree sync @ b9781 (Jun 2026) |
 | Native `gpu-discover` | **Done** | Enriches llama-server probe with PCI/CC/gfx from crash-isolated subprocess |
-| Integrated GPU (`gfx1151`) | **Done** | Strix Halo 8060S on allowlist; `OLLAMA_IGPU_ENABLE` for others |
+| Integrated GPU (`gfx1151`) | **Done** | Strix Halo 8060S on allowlist; keep any iGPU when it is the only accelerator; `OLLAMA_IGPU_ENABLE=0` forces CPU |
 | Metal discovery retry | **Done** | Retries with `GGML_METAL_TENSOR_DISABLE=1`; persists via `RunnerEnvOverrides` |
 | `/api/status` `inference.backend` | **Done** | Fleet + operator visibility: `llama_server`, `gguf_path`, `edge`, `runtime_chat` |
 | `/api/version` `edge_build` | **Done** | Compile marker for `-tags edge` / `build_zerollama_edge.sh`; CLI `zerollama -v` |

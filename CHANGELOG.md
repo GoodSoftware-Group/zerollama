@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Keep sole integrated GPU (Vulkan/ROCm APU)
+
+Unset `OLLAMA_IGPU_ENABLE` still drops iGPUs when a **discrete** GPU is present (CUDA iGPU and ROCm `gfx1151` stay allowlisted). If filtering would leave **no GPU**, keep the iGPU instead of CPU-only — RADV Phoenix / ROCm gfx1103 / Intel iGPU Vulkan. `OLLAMA_IGPU_ENABLE=0` still forces CPU.
+
 ### GLiNER2.5-Decide Decider (GD0–GD3) — Sep 2026
 
 Self-host Fastino [GLiNER2.5-Decide](https://huggingface.co/fastino/GLiNER2.5-Decide) as System-1 triage (not span NER).

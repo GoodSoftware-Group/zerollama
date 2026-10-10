@@ -268,7 +268,8 @@ var (
 	// EnableVulkan controls experimental Vulkan backend discovery.
 	EnableVulkan = BoolWithDefault("OLLAMA_VULKAN")
 	// EnableIntegratedGPU controls whether integrated GPUs may be selected.
-	// Default false except upstream allowlist (CUDA iGPU, ROCm gfx1151 Strix Halo).
+	// Unset: keep CUDA iGPU, ROCm gfx1151, and any iGPU that is the only
+	// accelerator (Vulkan/ROCm APU boxes). 0 forces CPU when no discrete GPU.
 	EnableIntegratedGPU = BoolWithDefault("OLLAMA_IGPU_ENABLE")
 	// NoCloudEnv checks the OLLAMA_NO_CLOUD environment variable.
 	NoCloudEnv = Bool("OLLAMA_NO_CLOUD")

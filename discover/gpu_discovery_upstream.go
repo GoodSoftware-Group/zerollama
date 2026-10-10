@@ -14,9 +14,9 @@ import (
 	"github.com/ollama/ollama/ml"
 )
 
-// defaultIntegratedROCmGFXTargets lists integrated AMD GPUs upstream allowlists
-// by default (without OLLAMA_IGPU_ENABLE=1). Strix Halo 8060S needs gfx1151 or
-// scheduling drops the only usable iGPU on Ryzen AI Max+ 395 boxes.
+// defaultIntegratedROCmGFXTargets lists integrated AMD GPUs always kept even
+// when a discrete GPU is also present (without OLLAMA_IGPU_ENABLE=1). Strix
+// Halo 8060S needs gfx1151 or mixed-GPU laptops drop the 8060S.
 var defaultIntegratedROCmGFXTargets = map[string]struct{}{
 	"gfx1151": {},
 }
@@ -27,25 +27,29 @@ func filterIntegratedGPUs(devices []ml.DeviceInfo) []ml.DeviceInfo {
 	}
 
 	allow, explicit := integratedGPUAdmission()
-	filtered := devices[:0]
+	kept := make([]ml.DeviceInfo, 0, len(devices))
+	var igpus []ml.DeviceInfo
 	for _, device := range devices {
+		if device.Integrated {
+			igpus = append(igpus, device)
+		}
 		if !device.Integrated {
-			filtered = append(filtered, device)
+			kept = append(kept, device)
 			continue
 		}
 
 		if explicit {
 			if allow {
-				filtered = append(filtered, device)
+				kept = append(kept, device)
 			}
 			continue
 		}
 		if integratedGPUAllowedByDefault(device) {
-			filtered = append(filtered, device)
+			kept = append(kept, device)
 			continue
 		}
 
-		slog.Info("dropping integrated GPU; to enable, set OLLAMA_IGPU_ENABLE=1",
+		slog.Info("dropping integrated GPU; kept when it is the only accelerator, or set OLLAMA_IGPU_ENABLE=1",
 			"id", device.ID,
 			"library", device.Library,
 			"compute", device.Compute(),
@@ -54,7 +58,23 @@ func filterIntegratedGPUs(devices []ml.DeviceInfo) []ml.DeviceInfo {
 			"pci_id", device.PCIID)
 	}
 
-	return filtered
+	// APU / iGPU-only boxes (RADV Phoenix, ROCm gfx1103, Intel iGPU Vulkan):
+	// dropping every iGPU left scheduling on CPU. Keep them unless the
+	// operator set OLLAMA_IGPU_ENABLE=0. Discrete GPUs still win when present.
+	if !explicit && len(kept) == 0 && len(igpus) > 0 {
+		for _, device := range igpus {
+			slog.Info("keeping integrated GPU; it is the only accelerator (OLLAMA_IGPU_ENABLE=0 forces CPU)",
+				"id", device.ID,
+				"library", device.Library,
+				"compute", device.Compute(),
+				"name", device.Name,
+				"description", device.Description,
+				"pci_id", device.PCIID)
+		}
+		return igpus
+	}
+
+	return kept
 }
 
 func integratedGPUAdmission() (allow, explicit bool) {
