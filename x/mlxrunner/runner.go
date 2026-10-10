@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -23,6 +24,28 @@ import (
 	"github.com/ollama/ollama/x/tokenizer"
 	"github.com/ollama/ollama/x/uma"
 )
+
+// startLoadHeartbeat emits stderr lines while Load blocks inside mlx.Eval so the
+// parent StatusWriter resets OLLAMA_LOAD_TIMEOUT. Gemma4-class first chunks can
+// run >5m before the post-Eval progress log would fire.
+func startLoadHeartbeat(modelName string) (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		n := 0
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				n++
+				slog.Info("mlx load in progress", "model", modelName, "heartbeat", n)
+			}
+		}
+	}()
+	return func() { close(done) }
+}
 
 // Request is a short-lived struct that carries a completion request through
 // a channel from the HTTP handler to the runner goroutine. The ctx field
@@ -61,6 +84,9 @@ type Runner struct {
 
 func (r *Runner) Load(modelName string) error {
 	r.modelName = modelName
+	stopHB := startLoadHeartbeat(modelName)
+	defer stopHB()
+
 	root, err := model.Open(modelName)
 	if err != nil {
 		return err
@@ -98,16 +124,18 @@ func (r *Runner) Load(modelName string) error {
 					vals = append(vals, t)
 				}
 			}
-			// WHY log: gemma4-class packs spend minutes here with no other output;
-			// progress lines feed StatusWriter so WaitUntilRunning stall timeout resets.
+			// Log *before* Eval: first gemma4 chunk can exceed OLLAMA_LOAD_TIMEOUT
+			// (default 5m); post-Eval-only logs never reset the parent stall timer.
 			const evalChunk = 32
+			slog.Info("mlx materialize eval starting", "total", len(vals))
 			for i := 0; i < len(vals); i += evalChunk {
 				end := min(i+evalChunk, len(vals))
-				mlx.Eval(vals[i:end]...)
-				if i == 0 || end == len(vals) || i%256 == 0 {
-					slog.Info("mlx materialize eval", "done", end, "total", len(vals), "peak", mlx.PrettyBytes(mlx.PeakMemory()))
+				if i == 0 || i%256 == 0 {
+					slog.Info("mlx materialize eval", "done", i, "next", end, "total", len(vals), "peak", mlx.PrettyBytes(mlx.PeakMemory()))
 				}
+				mlx.Eval(vals[i:end]...)
 			}
+			slog.Info("mlx materialize eval done", "total", len(vals), "peak", mlx.PrettyBytes(mlx.PeakMemory()))
 		}
 
 		// Assign weights to model (model-specific logic). Target and draft weights
@@ -140,16 +168,18 @@ func (r *Runner) Load(modelName string) error {
 		// One giant Eval of a 60GiB MoE is a Metal command-buffer / jetsam
 		// on 128GiB UMA; materialize in slices.
 		const evalChunk = 32
+		slog.Info("mlx load eval starting", "total", len(collected))
 		for i := 0; i < len(collected); i += evalChunk {
 			end := i + evalChunk
 			if end > len(collected) {
 				end = len(collected)
 			}
-			mlx.Eval(collected[i:end]...)
-			if i == 0 || end == len(collected) || i%256 == 0 {
-				slog.Info("mlx load eval", "done", end, "total", len(collected), "peak", mlx.PrettyBytes(mlx.PeakMemory()))
+			if i == 0 || i%256 == 0 {
+				slog.Info("mlx load eval", "done", i, "next", end, "total", len(collected), "peak", mlx.PrettyBytes(mlx.PeakMemory()))
 			}
+			mlx.Eval(collected[i:end]...)
 		}
+		slog.Info("mlx load eval done", "total", len(collected), "peak", mlx.PrettyBytes(mlx.PeakMemory()))
 		// LoadWeights / MoE fuse / linear-attn pack leave transform buffers
 		// in MLX's allocator pool until something clears it. Drop them now so
 		// idle post-load memory matches the pinned weights (upstream b68b112b).
@@ -248,19 +278,25 @@ func loadTensorsFromManifest(root *model.Root) (map[string]*mlx.Array, error) {
 	// Phase 1: Load all tensors raw from all blobs
 	rawTensors := make(map[string]*mlx.Array)
 	seen := make(map[string]bool)
-	for _, layer := range root.Manifest.GetTensorLayers("") {
+	layers := root.Manifest.GetTensorLayers("")
+	var digests int
+	for _, layer := range layers {
 		if seen[layer.Digest] {
 			continue
 		}
 		seen[layer.Digest] = true
+		digests++
 		blobPath := root.Manifest.BlobPath(layer.Digest)
+		if digests == 1 || digests%8 == 0 {
+			slog.Info("mlx loading safetensors blob", "n", digests, "path", blobPath)
+		}
 		for name, arr := range mlx.Load(blobPath) {
 			rawTensors[name] = arr
 		}
 	}
 
 	allTensors := remapLoadedTensors(rawTensors)
-	slog.Info("Loaded tensors from manifest", "count", len(allTensors), "source_dir", root.Manifest.SourceDir)
+	slog.Info("Loaded tensors from manifest", "count", len(allTensors), "blobs", digests, "source_dir", root.Manifest.SourceDir)
 	return allTensors, nil
 }
 
