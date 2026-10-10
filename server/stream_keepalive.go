@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -187,7 +188,12 @@ func abortChatStreamExtra(sess *chatStreamSession, ch chan any, model, errMsg st
 	}
 	sess.StopKeepalive()
 	if ch != nil && errMsg != "" {
-		emitSyntheticChatFinish(ch, model)
+		// WHY skip empty Done for cancel/timeout during load: OpenAI middleware already
+		// flushed keepalive SSE (HTTP 200). A synthetic empty finish+[DONE] looks like
+		// success ("") to Odysseus; send the error object only.
+		if !isBenignStreamAbort(errMsg) {
+			emitSyntheticChatFinish(ch, model)
+		}
 		if extra.Cause == "" && isHostUnstableError(errMsg) {
 			extra.Cause = causeHostUnstable
 			metricsIncRunnerCrash()
@@ -199,6 +205,13 @@ func abortChatStreamExtra(sess *chatStreamSession, ch chan any, model, errMsg st
 	}
 	close(ch)
 	sess.Wait()
+}
+
+func isBenignStreamAbort(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	return strings.Contains(lower, "context canceled") ||
+		strings.Contains(lower, "request canceled") ||
+		strings.Contains(lower, "client disconnected")
 }
 
 // abortStreamingJSON ends a streaming response with an error, or writes JSON when not streaming.

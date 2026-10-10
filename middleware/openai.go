@@ -143,6 +143,31 @@ func (w *BaseWriter) writeError(data []byte) (int, error) {
 }
 
 func (w *ChatWriter) writeResponse(data []byte) (int, error) {
+	// NDJSON {"error":"..."} after keepalives (HTTP 200 already written): surface as
+	// OpenAI error SSE instead of failing unmarshal / empty completion.
+	var errBody struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(data, &errBody); err == nil && strings.TrimSpace(errBody.Error) != "" {
+		if w.stream {
+			w.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+			payload := map[string]any{
+				"error": map[string]any{
+					"message": errBody.Error,
+					"type":    "server_error",
+				},
+			}
+			if err := writeSSEData(w.ResponseWriter, payload); err != nil {
+				return 0, err
+			}
+			if _, err := w.ResponseWriter.Write([]byte("data: [DONE]\n\n")); err != nil {
+				return 0, err
+			}
+			return len(data), nil
+		}
+		return w.writeError(data)
+	}
+
 	var chatResponse api.ChatResponse
 	err := json.Unmarshal(data, &chatResponse)
 	if err != nil {

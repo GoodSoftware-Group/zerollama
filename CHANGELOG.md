@@ -10,7 +10,7 @@ Unset `OLLAMA_IGPU_ENABLE` still drops iGPUs when a **discrete** GPU is present 
 
 ### MLX cold-load SSE keepalives + stall wait
 
-Streaming chat/generate start SSE keepalives **before** `scheduleRunner`, so Odysseus/Mercury do not hit empty-stream read timeouts during multi-minute MLX weight materialize. `WaitUntilRunning` resets `OLLAMA_LOAD_TIMEOUT` on runner log activity; Metal materialize emits progress **before** each Eval chunk plus a 15s `mlx load in progress` heartbeat (first gemma4 Eval can exceed 5m with no post-Eval log).
+Streaming chat/generate start SSE keepalives **before** `scheduleRunner`, so Odysseus/Mercury do not hit empty-stream read timeouts during multi-minute MLX weight materialize. `WaitUntilRunning` resets `OLLAMA_LOAD_TIMEOUT` on runner log activity; Metal materialize emits progress **before** each Eval chunk plus a 15s `mlx load in progress` heartbeat (first gemma4 Eval can exceed 5m with no post-Eval log). When `keep_alive > 0`, client disconnect no longer aborts a healthy MLX load — the runner finishes and stays warm for the next request; cancel mid-load no longer emits an empty OpenAI completion.
 
 ### Eliza catalog — no cloud advertising without a working key
 

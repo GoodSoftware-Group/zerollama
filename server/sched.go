@@ -995,7 +995,32 @@ iGPUScan:
 			readyName = req.model.ShortName
 		}
 		readyPath := runner.modelPath
-		if err = llama.WaitUntilRunning(req.ctx); err != nil {
+		// WHY WithoutCancel when keep_alive > 0: Odysseus/Mercury often drop the
+		// HTTP request around 5–6m while gemma4-class MLX materialize is still
+		// healthy (heartbeats prove progress). Killing the runner wastes the load;
+		// finishing it parks the model for the next request under keep_alive.
+		waitCtx := req.ctx
+		keepAliveLoad := req.sessionDuration != nil && req.sessionDuration.Duration > 0
+		loadWatchDone := make(chan struct{})
+		if keepAliveLoad {
+			waitCtx = context.WithoutCancel(req.ctx)
+			go func() {
+				select {
+				case <-req.ctx.Done():
+					select {
+					case <-loadWatchDone:
+						// Load finished before/with request end — not a mid-load drop.
+					default:
+						schedLogInfo("client disconnected during load; continuing for keep_alive", req,
+							"keep_alive", req.sessionDuration.Duration.String())
+					}
+				case <-loadWatchDone:
+				}
+			}()
+		}
+		err = llama.WaitUntilRunning(waitCtx)
+		close(loadWatchDone)
+		if err != nil {
 			err = classifyTransientMLXError(err)
 			schedLogWarn("WaitUntilRunning failed", req, "error", err, "wait_elapsed", time.Since(waitStart), "total_elapsed", time.Since(loadStart))
 			runner.refMu.Lock()
@@ -1018,6 +1043,13 @@ iGPUScan:
 			req.errCh <- fmt.Errorf("runner unloaded during load")
 			s.scheduleExpiredRunner(runner)
 			return
+		}
+		if keepAliveLoad && req.ctx.Err() != nil {
+			schedLogInfo("model ready after client disconnect (kept for keep_alive)", req,
+				"pid", runner.pid,
+				"wait_elapsed", time.Since(waitStart),
+				"total_elapsed", time.Since(loadStart),
+			)
 		}
 		schedLogInfo("model ready", req,
 			"pid", runner.pid,
