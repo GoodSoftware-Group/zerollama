@@ -143,7 +143,7 @@ Same as above, minus step 1 — supply your own `training_data` directly
 | `padding_free` | `true` | Flatten mini-batch (no pad tokens); set `false` for longest-pad collator |
 | `padding_free_flash_attn` | auto if flash-attn installed | FA2 + `cu_seq_lens_*`; set `false` to force SDPA flattening |
 | `packing` | `false` | `true` — concat short samples into `max_length` blocks before collate |
-| `completion_only_loss` | `true` | Train on assistant tokens only (`-100` on prompt); skipped when packing |
+| `completion_only_loss` | `true` | Train on assistant tokens only (`-100` on prompt); works with packing (T9) |
 | `gradient_checkpointing` | on (CUDA) | Set `false` to disable |
 | `use_rslora` | `true` | Rank-stabilized LoRA |
 | `gradient_accumulation_steps` | `4` | |
@@ -170,7 +170,8 @@ Wrap the payload in `{"kind": "train", "payload": {...}, "priority": "normal"|"l
 |---|---|---|
 | `/api/train/jobs` | `POST` | Submit `{kind, payload, priority?, queue_on_busy?}` |
 | `/api/train/jobs` | `GET` | List recent jobs |
-| `/api/train/jobs/:id` | `GET` | Poll status/progress (embedded mode has **no push events** — poll this) |
+| `/api/train/jobs/:id` | `GET` | Poll status/progress (`progressMetrics`: loss, tok/s, VRAM) |
+| `/api/train/jobs/:id/events` | `GET` | SSE stream (`event: progress` / `done` / `error`) |
 | `/api/train/jobs/:id` | `DELETE` | Cancel a running Python job or a waiting `defer-*` job |
 | `/api/train/unload` | `POST` | Unload the cached training model from GPU |
 | `/api/train/status` | `GET` | Health + queue extras |
@@ -209,8 +210,9 @@ quantization issue.
   the GPU; expect ggml/runtime models to be evicted while a job runs
   (`ZEROLLAMA_BLOCK_INFERENCE_DURING_TRAINING`, on by default). Check
   `fleet-vram-admission` before submitting a big job on a busy host.
-- **No push progress events** — embedded mode only supports polling
-  `GET /api/train/jobs/:id`; don't wait for a webhook or SSE stream.
+- **Prefer SSE for live metrics** — `GET /api/train/jobs/:id/events`
+  streams `progressMetrics` (loss / tok/s / VRAM); polling
+  `GET /api/train/jobs/:id` still works.
 - **Mid-training OOM fails the job, no checkpoint resume** — the VRAM
   bridge frees memory for the *next* job but does not resume the failed
   one; reduce `batch_size`/`lora_rank` or retry rather than expecting

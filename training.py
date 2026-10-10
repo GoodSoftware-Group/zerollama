@@ -174,6 +174,8 @@ class Job:
     status: JobStatus = JobStatus.PENDING
     progress: float = 0.0
     progress_message: str = ""
+    # T3: structured loss / tok/s / VRAM (also mirrored into progress_message).
+    progress_metrics: Optional[Dict[str, Any]] = None
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     submitted_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
@@ -194,6 +196,8 @@ class Job:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
         }
+        if self.progress_metrics:
+            d["metrics"] = self.progress_metrics
         # Surface model/size on run_script jobs so bootstrap → OpenAI GET /v1/videos can echo
         # the client's model name without parsing env blobs in Go.
         if self.cmd == "run_script":
@@ -293,13 +297,21 @@ class JobQueue:
                     self._current_job = None
                 print(f"WORKER: Job {job_id} failed: {error}", flush=True)
     
-    def update_progress(self, job_id: str, progress: float, message: str = ""):
-        """Update job progress"""
+    def update_progress(
+        self,
+        job_id: str,
+        progress: float,
+        message: str = "",
+        metrics: Optional[Dict[str, Any]] = None,
+    ):
+        """Update job progress (optional T3 metrics blob)."""
         with self._lock:
             if job_id in self._jobs:
                 job = self._jobs[job_id]
                 job.progress = progress
                 job.progress_message = message
+                if metrics is not None:
+                    job.progress_metrics = dict(metrics)
     
     def cancel_job(self, job_id: str) -> bool:
         """Cancel a pending job (cannot cancel running jobs)"""
@@ -613,31 +625,46 @@ class WorkerState:
                 )
             return False
             
-    def send_progress(self, progress: float, message: str = ""):
-        """Send progress update to client (legacy) and update job queue"""
+    def send_progress(
+        self,
+        progress: float,
+        message: str = "",
+        metrics: Optional[Dict[str, Any]] = None,
+    ):
+        """Send progress update to client (legacy) and update job queue.
+
+        ``metrics`` (T3): optional ``loss``, ``tokens_per_sec``, ``vram``, …
+        """
         # Update job queue progress
         if self.current_job_id:
-            JOB_QUEUE.update_progress(self.current_job_id, progress, message)
+            JOB_QUEUE.update_progress(
+                self.current_job_id, progress, message, metrics=metrics
+            )
             # Send to job owner
             job = JOB_QUEUE.get_job(self.current_job_id)
             if job:
-                self.broadcast_to_job_owner(job, {
+                payload: Dict[str, Any] = {
                     "type": "progress",
                     "job_id": self.current_job_id,
                     "progress": progress,
-                    "message": message
-                })
+                    "message": message,
+                }
+                if metrics:
+                    payload["metrics"] = metrics
+                self.broadcast_to_job_owner(job, payload)
         
         # Legacy: direct socket (for backward compatibility)
         if self.client_socket:
             try:
-                response = {
+                response: Dict[str, Any] = {
                     "type": "progress",
                     "progress": progress,
-                    "message": message
+                    "message": message,
                 }
+                if metrics:
+                    response["metrics"] = metrics
                 self.client_socket.sendall((json.dumps(response) + "\n").encode())
-            except:
+            except Exception:
                 pass  # Client may have disconnected
 
 STATE = WorkerState()
@@ -811,7 +838,10 @@ def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 resolve_seed,
                 resolve_torch_compile,
             )
-            from training_labels import tokenize_completion_only_corpus
+            from training_labels import (
+                tokenize_and_pack_completion_only,
+                tokenize_completion_only_corpus,
+            )
 
             fmt_mode = resolve_format_mode(request, STATE.tokenizer)
             completion_only = resolve_completion_only_loss(request)
@@ -837,26 +867,46 @@ def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
             if packing:
                 from datasets import Dataset as HFDataset
 
-                # Packing concatenates full rows; completion-only mask is skipped
-                # (document in job result). Prefer packing=false for response-only loss.
-                texts = format_sft_corpus(
-                    training_data, tokenizer=STATE.tokenizer, request=request
-                )
-                packed = tokenize_and_pack(texts, STATE.tokenizer, max_length)
-                stats = packing_stats(len(texts), packed)
-                tokenized = HFDataset.from_dict(packed)
-                if completion_only:
-                    STATE.send_progress(
-                        24.0,
-                        "Note: packing=on skips completion_only_loss masking",
+                # T9: when completion_only, pack labeled rows so prompt -100 survives
+                # concat. modelfile cannot split prompt/response → fall back to
+                # full-token labels (same as unpacked modelfile path).
+                if completion_only and fmt_mode != "modelfile":
+                    packed = tokenize_and_pack_completion_only(
+                        training_data,
+                        STATE.tokenizer,
+                        max_length=max_length,
+                        mode=fmt_mode,
+                        request=request,
                     )
-                STATE.send_progress(
-                    25.0,
-                    f"Dataset ready (format={fmt_mode}, packing=on, "
-                    f"padding_free={str(padding_free).lower()}, "
-                    f"max_length={max_length}, samples={stats['samples_in']}→"
-                    f"{stats['blocks_out']} blocks, ~{stats['pack_ratio']:.1f}x)",
-                )
+                    stats = packing_stats(len(training_data), packed)
+                    tokenized = HFDataset.from_dict(packed)
+                    STATE.send_progress(
+                        25.0,
+                        f"Dataset ready (format={fmt_mode}, packing=on, "
+                        f"completion_only=true, padding_free={str(padding_free).lower()}, "
+                        f"max_length={max_length}, samples={stats['samples_in']}→"
+                        f"{stats['blocks_out']} blocks, ~{stats['pack_ratio']:.1f}x)",
+                    )
+                else:
+                    texts = format_sft_corpus(
+                        training_data, tokenizer=STATE.tokenizer, request=request
+                    )
+                    packed = tokenize_and_pack(texts, STATE.tokenizer, max_length)
+                    stats = packing_stats(len(texts), packed)
+                    tokenized = HFDataset.from_dict(packed)
+                    if completion_only and fmt_mode == "modelfile":
+                        STATE.send_progress(
+                            24.0,
+                            "Note: packing=on + format=modelfile skips "
+                            "completion_only_loss (no prompt/response split)",
+                        )
+                    STATE.send_progress(
+                        25.0,
+                        f"Dataset ready (format={fmt_mode}, packing=on, "
+                        f"padding_free={str(padding_free).lower()}, "
+                        f"max_length={max_length}, samples={stats['samples_in']}→"
+                        f"{stats['blocks_out']} blocks, ~{stats['pack_ratio']:.1f}x)",
+                    )
             elif completion_only and fmt_mode != "modelfile":
                 from datasets import Dataset as HFDataset
 
@@ -960,18 +1010,81 @@ def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
                     pass
             training_args = TrainingArguments(**ta_kwargs)
 
-            # Custom callback for progress
-            class ProgressCallback:
-                def __init__(self, total_steps):
-                    self.total_steps = total_steps
+            # Steps ≈ optimizer updates (batch × grad accumulation).
+            import math
 
-                def on_step_end(self, args, state, control, **kwargs):
-                    if self.total_steps > 0:
-                        progress = 30.0 + (state.global_step / self.total_steps) * 60.0
-                        STATE.send_progress(progress, f"Training step {state.global_step}/{self.total_steps}")
+            from transformers import TrainerCallback
 
-            # Calculate total steps
-            total_steps = (len(tokenized) // batch_size) * num_epochs
+            from training_progress import (
+                StepMetricsTracker,
+                format_metrics_message,
+                mean_tokens_per_sample,
+            )
+
+            steps_per_epoch = max(
+                1, math.ceil(len(tokenized) / max(1, batch_size * gas))
+            )
+            total_steps = steps_per_epoch * max(1, int(num_epochs))
+            if request.get("max_steps") is not None:
+                try:
+                    ms = int(request.get("max_steps"))
+                    if ms > 0:
+                        total_steps = min(total_steps, ms)
+                except (TypeError, ValueError):
+                    pass
+
+            mean_tok = mean_tokens_per_sample(tokenized, fallback=float(max_length))
+            samples_per_step = float(batch_size * gas)
+
+            class MetricsProgressCallback(TrainerCallback):
+                """T3: emit loss / tok/s / VRAM on Trainer log events."""
+
+                def __init__(self) -> None:
+                    self.tracker = StepMetricsTracker(
+                        total_steps=total_steps,
+                        samples_per_step=samples_per_step,
+                        mean_tokens_per_sample=mean_tok,
+                    )
+
+                def on_log(self, args, state, control, logs=None, **kwargs):
+                    logs = logs or {}
+                    step = int(getattr(state, "global_step", 0) or 0)
+                    if step <= 0:
+                        return
+                    loss = logs.get("loss")
+                    lr = logs.get("learning_rate")
+                    epoch = logs.get("epoch")
+                    try:
+                        loss_f = float(loss) if loss is not None else None
+                    except (TypeError, ValueError):
+                        loss_f = None
+                    try:
+                        lr_f = float(lr) if lr is not None else None
+                    except (TypeError, ValueError):
+                        lr_f = None
+                    try:
+                        epoch_f = float(epoch) if epoch is not None else None
+                    except (TypeError, ValueError):
+                        epoch_f = None
+                    metrics = self.tracker.on_step(
+                        step=step,
+                        loss=loss_f,
+                        learning_rate=lr_f,
+                        epoch=epoch_f,
+                        torch_mod=torch,
+                    )
+                    progress = 30.0
+                    if self.tracker.total_steps > 0:
+                        progress = 30.0 + (
+                            metrics["step"] / self.tracker.total_steps
+                        ) * 60.0
+                        if progress > 90.0:
+                            progress = 90.0
+                    STATE.send_progress(
+                        progress,
+                        format_metrics_message(metrics),
+                        metrics=metrics,
+                    )
 
             data_collator, collate_mode = build_sft_collator(
                 STATE.tokenizer,
@@ -983,31 +1096,13 @@ def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 f"Collator={collate_mode} (padding_free={str(padding_free).lower()})",
             )
 
-            # Trainer
             trainer = Trainer(
                 model=STATE.model,
                 args=training_args,
                 train_dataset=tokenized,
                 data_collator=data_collator,
+                callbacks=[MetricsProgressCallback()],
             )
-
-            # Add progress callback
-            progress_cb = ProgressCallback(total_steps)
-
-            # Override step callback
-            original_training_step = trainer.training_step
-            step_count = [0]
-
-            def training_step_with_progress(*args, **kwargs):
-                result = original_training_step(*args, **kwargs)
-                step_count[0] += 1
-                if total_steps > 0:
-                    progress = 30.0 + (step_count[0] / total_steps) * 60.0
-                    if step_count[0] % 5 == 0:  # Update every 5 steps
-                        STATE.send_progress(progress, f"Training step {step_count[0]}/{total_steps}")
-                return result
-
-            trainer.training_step = training_step_with_progress
 
             # Train
             train_result = trainer.train()
@@ -1032,7 +1127,10 @@ def process_training_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 "padding_free_flash_attn": flash_kw,
                 "attn_implementation": attn_impl or "default",
                 "collate": collate_mode,
-                "completion_only_loss": bool(completion_only and not packing),
+                # Applied whenever we can split prompt/response (not modelfile).
+                "completion_only_loss": bool(
+                    completion_only and fmt_mode != "modelfile"
+                ),
                 "gradient_checkpointing": grad_ckpt,
                 "optim": optim_name,
                 "gradient_accumulation_steps": gas,

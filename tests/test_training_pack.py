@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import unittest
 
-from training_pack import pack_token_id_lists, packing_stats
+from training_pack import (
+    pack_labeled_token_id_lists,
+    pack_token_id_lists,
+    packing_stats,
+)
 
 
 class TestTrainingPack(unittest.TestCase):
@@ -15,6 +19,7 @@ class TestTrainingPack(unittest.TestCase):
         # [1,2,9] + [3,4,9] would be 6 > 5 → first block [1,2,9], then [3,4,9], then [5,9]
         self.assertEqual(out["input_ids"][0], [1, 2, 9])
         self.assertEqual(len(out["input_ids"][0]), len(out["attention_mask"][0]))
+        # Unlabeled pack mirrors ids (incl. appended EOS) — T8 semantics.
         self.assertEqual(out["labels"][0], out["input_ids"][0])
 
     def test_single_long_sequence(self):
@@ -37,6 +42,24 @@ class TestTrainingPack(unittest.TestCase):
     def test_empty_skipped(self):
         out = pack_token_id_lists([[], [1]], max_length=8, eos_token_id=2)
         self.assertEqual(out["input_ids"], [[1, 2]])
+        self.assertEqual(out["labels"], [[1, 2]])
+
+    def test_labeled_pack_preserves_prompt_masks(self):
+        # Two short SFT rows: prompt masked, response live; pack into one block.
+        pairs = [
+            ([10, 11, 12, 13], [-100, -100, 12, 13]),
+            ([20, 21, 22], [-100, 21, 22]),
+        ]
+        out = pack_labeled_token_id_lists(pairs, max_length=16, eos_token_id=99)
+        self.assertEqual(len(out["input_ids"]), 1)
+        self.assertEqual(
+            out["input_ids"][0],
+            [10, 11, 12, 13, 99, 20, 21, 22, 99],
+        )
+        self.assertEqual(
+            out["labels"][0],
+            [-100, -100, 12, 13, -100, -100, 21, 22, -100],
+        )
 
 
 if __name__ == "__main__":

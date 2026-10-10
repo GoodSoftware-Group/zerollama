@@ -429,7 +429,7 @@ Details / operator escapes: [ltx-t2v.md — Admission / QoS](./ltx-t2v.md#admiss
 | Item | Why not done |
 |------|----------------|
 | Single FIFO across inference + training | **Partial** — global tickets + cross-queue ordering; richer latency classes still roadmap |
-| Training progress SSE ([T3](./ROADMAP.md)) | Bridge is JSON poll today |
+| Training progress SSE ([T3](./ROADMAP.md)) | **Done** — `GET /api/train/jobs/:id/events` + `progressMetrics` (poll still works) |
 | Family tool output parsers ([Phase 12](./ROADMAP.md)) | **Done** — runtime streams via Go `parse-tool-output/session` + `chunk` (same parsers as ggml) |
 | Exact KV from tensor metadata ([Phase 13](./ROADMAP.md)) | **Partial** — `attn_k`/`attn_v` shapes infer head dims when metadata sparse; `/health` `vram_estimate` + `vram_budget`; clamp + `resolve_num_ctx_for_request` shipped — doc [phase13-runtime-vram.md](./phase13-runtime-vram.md) |
 | Auth on `/api/train` ([T2](./ROADMAP.md)) | Same threat model as main API pending |

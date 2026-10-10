@@ -7,8 +7,10 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -22,6 +24,7 @@ func (s *Server) registerTrainingRoutes(r *gin.Engine) {
 	g := r.Group("/api/train")
 	g.POST("/jobs", s.trainHTTPSubmitJob)
 	g.GET("/jobs", s.trainHTTPListJobs)
+	g.GET("/jobs/:id/events", s.trainHTTPJobEvents)
 	g.GET("/jobs/:id", s.trainHTTPJobStatus)
 	g.DELETE("/jobs/:id", s.trainHTTPCancelJob)
 	g.POST("/unload", s.trainHTTPUnload)
@@ -93,20 +96,7 @@ func (s *Server) trainHTTPListJobs(c *gin.Context) {
 
 func (s *Server) trainHTTPJobStatus(c *gin.Context) {
 	id := c.Param("id")
-	if isDeferredTrainingJobID(id) {
-		b, err := s.deferredTrainingJobStatusJSON(c.Request.Context(), id)
-		if err != nil {
-			if errors.Is(err, trainingworker.ErrJobNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-			} else {
-				c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-			}
-			return
-		}
-		c.Data(http.StatusOK, "application/json", b)
-		return
-	}
-	b, err := s.training.JobTrainingStatusJSON(c.Request.Context(), id)
+	b, err := s.trainingJobStatusJSON(c, id)
 	if err != nil {
 		if errors.Is(err, trainingworker.ErrJobNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
@@ -116,6 +106,95 @@ func (s *Server) trainHTTPJobStatus(c *gin.Context) {
 		return
 	}
 	c.Data(http.StatusOK, "application/json", b)
+}
+
+func (s *Server) trainingJobStatusJSON(c *gin.Context, id string) ([]byte, error) {
+	if isDeferredTrainingJobID(id) {
+		return s.deferredTrainingJobStatusJSON(c.Request.Context(), id)
+	}
+	return s.training.JobTrainingStatusJSON(c.Request.Context(), id)
+}
+
+// trainHTTPJobEvents is T3 SSE: poll job status and push progress/metrics until terminal.
+func (s *Server) trainHTTPJobEvents(c *gin.Context) {
+	id := c.Param("id")
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming unsupported"})
+		return
+	}
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	poll := time.NewTicker(500 * time.Millisecond)
+	defer poll.Stop()
+	keepalive := time.NewTicker(15 * time.Second)
+	defer keepalive.Stop()
+
+	var lastSig string
+	writeSSE := func(event string, payload any) error {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, raw); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
+
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case <-keepalive.C:
+			if _, err := c.Writer.Write([]byte(": keepalive\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-poll.C:
+			b, err := s.trainingJobStatusJSON(c, id)
+			if err != nil {
+				_ = writeSSE("error", gin.H{"error": err.Error()})
+				return
+			}
+			var wrap struct {
+				Job map[string]any `json:"job"`
+			}
+			if err := json.Unmarshal(b, &wrap); err != nil || wrap.Job == nil {
+				_ = writeSSE("error", gin.H{"error": "invalid job status"})
+				return
+			}
+			job := wrap.Job
+			sig := fmt.Sprintf("%v|%v|%v|%v",
+				job["status"], job["progress"], job["progressMessage"], job["progressMetrics"])
+			if sig != lastSig {
+				lastSig = sig
+				if err := writeSSE("progress", job); err != nil {
+					return
+				}
+			}
+			st, _ := job["status"].(string)
+			if trainingJobTerminal(st) {
+				_ = writeSSE("done", job)
+				return
+			}
+		}
+	}
+}
+
+func trainingJobTerminal(status string) bool {
+	switch strings.ToLower(status) {
+	case "completed", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) trainHTTPCancelJob(c *gin.Context) {

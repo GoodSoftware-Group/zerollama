@@ -8,6 +8,7 @@ import unittest
 from training_labels import (
     format_sft_prompt_and_full,
     mask_labels_completion_only,
+    tokenize_and_pack_completion_only,
 )
 from training_optim import (
     build_lora_kwargs,
@@ -68,6 +69,29 @@ class TestTrainingLabels(unittest.TestCase):
         ids = [1, 2, 3, 4, 5]
         labels = mask_labels_completion_only(ids, [1, 2, 3])
         self.assertEqual(labels, [-100, -100, -100, 4, 5])
+
+    def test_tokenize_and_pack_completion_only(self):
+        class FakeTok:
+            eos_token_id = 9
+
+            def __call__(self, text, truncation=True, max_length=64, padding=False):
+                # Deterministic char→id map for unit test (space=0).
+                ids = [ord(c) % 50 + 1 for c in text]
+                return {"input_ids": ids[:max_length]}
+
+        data = [
+            {"prompt": "Hi", "response": "Yo"},
+            {"prompt": "Q", "response": "A"},
+        ]
+        out = tokenize_and_pack_completion_only(
+            data, FakeTok(), max_length=256, mode="chatml"
+        )
+        self.assertIn("labels", out)
+        self.assertTrue(out["input_ids"])
+        # At least one -100 (prompt) and one live label across packed blocks.
+        flat_labels = [x for row in out["labels"] for x in row]
+        self.assertIn(-100, flat_labels)
+        self.assertTrue(any(x != -100 for x in flat_labels))
 
 
 if __name__ == "__main__":

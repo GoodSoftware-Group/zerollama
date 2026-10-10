@@ -162,3 +162,32 @@ def tokenize_completion_only_corpus(
         "attention_mask": attn_out,
         "labels": labels_out,
     }
+
+
+def tokenize_and_pack_completion_only(
+    training_data: Sequence[Mapping[str, Any]],
+    tokenizer: Any,
+    *,
+    max_length: int,
+    mode: str,
+    request: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, List[List[int]]]:
+    """Tokenize with completion-only labels, then greedy-pack into blocks (T9).
+
+    WHY: ``packing=true`` used to skip prompt masking. Pack labeled rows so
+    response-only loss survives concat (prompt ``-100`` kept per segment).
+    """
+    from training_pack import pack_labeled_token_id_lists
+
+    # Per-row tokenize at max_length; pack then may re-truncate a single row
+    # that already fills a block (same as tokenize_and_pack).
+    labeled = tokenize_completion_only_corpus(
+        training_data,
+        tokenizer,
+        max_length=max_length,
+        mode=mode,
+        request=request,
+    )
+    pairs = list(zip(labeled["input_ids"], labeled["labels"]))
+    eos_id = getattr(tokenizer, "eos_token_id", None)
+    return pack_labeled_token_id_lists(pairs, max_length, eos_token_id=eos_id)

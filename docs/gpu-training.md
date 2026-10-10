@@ -18,7 +18,7 @@ This document describes how **Ollama’s Go daemon** and **embedded CPython** ru
 
 **Roadmap (directional):** train→GGUF + efficient SFT (**T7/T8 Done**); stock Trainer polish (**T9**, no second backend); GRPO; lite recipes — [ROADMAP § GPU training](./ROADMAP.md#gpu-training-fine-tuning) (**T7–T11**). This doc remains the operator/API reference for what is shipped.
 
-**T8 SFT formatting (Done):** train payloads accept `format` (`auto` \| `chatml` \| `llama3` \| `hf` \| `alpaca` \| `modelfile`) and `max_length` (default 2048). `auto` uses the HF tokenizer `chat_template` when present, else ChatML. **`padding_free` defaults on** (Transformers `DataCollatorWithFlattening`). Opt-in `packing: true` concatenates short rows into `max_length` blocks. **`format=modelfile`** renders the serve Go TEMPLATE via `zerollama template render --train` (pass `template` / `template_file` / `template_name`). Opt-in **`padding_free_flash_attn`** requires `flash-attn` + FA2 load and emits `cu_seq_lens_*`. Loss-curve fixture: `tests/test_training_loss_fixture.py`. Smoke: `./scripts/training/t8_flash_attn_5080_smoke.sh`.
+**T8 SFT formatting (Done):** train payloads accept `format` (`auto` \| `chatml` \| `llama3` \| `hf` \| `alpaca` \| `modelfile`) and `max_length` (default 2048). `auto` uses the HF tokenizer `chat_template` when present, else ChatML. **`padding_free` defaults on** (Transformers `DataCollatorWithFlattening`). Opt-in `packing: true` concatenates short rows into `max_length` blocks (T9 keeps completion-only masks when packing). **`format=modelfile`** renders the serve Go TEMPLATE via `zerollama template render --train` (pass `template` / `template_file` / `template_name`). Opt-in **`padding_free_flash_attn`** requires `flash-attn` + FA2 load and emits `cu_seq_lens_*`. Loss-curve fixture: `tests/test_training_loss_fixture.py`. Smoke: `./scripts/training/t8_flash_attn_5080_smoke.sh`.
 
 **T7 export / register (Done):** after `lora_adapter/` is saved:
 
@@ -38,7 +38,7 @@ Set `LLAMA_CPP_DIR` (or sibling `../llama.cpp`) so convert/quantize are found. J
 
 | Field | Default | Effect |
 |-------|---------|--------|
-| `completion_only_loss` | `true` | Mask prompt tokens (`-100`); skipped when `packing=true` |
+| `completion_only_loss` | `true` | Mask prompt tokens (`-100`); **works with `packing=true`** (T9 labeled pack) |
 | `gradient_checkpointing` | on (CUDA) | VRAM savings |
 | `use_rslora` | `true` | Rank-stabilized LoRA |
 | `optim` | fused / 8-bit | `adamw_torch_fused` (CUDA) or `adamw_bnb_8bit` (QLoRA) |
@@ -47,7 +47,7 @@ Set `LLAMA_CPP_DIR` (or sibling `../llama.cpp`) so convert/quantize are found. J
 | `torch_compile` | `false` | Opt-in |
 | `padding_free_flash_attn` | auto if flash-attn installed | FA2 + `cu_seq_lens_*` |
 
-See [`training_optim.py`](../training_optim.py), [`training_labels.py`](../training_labels.py).
+See [`training_optim.py`](../training_optim.py), [`training_labels.py`](../training_labels.py), [`training_pack.py`](../training_pack.py) (`pack_labeled_token_id_lists`). Smoke: `./scripts/training/t9_qlora_ckpt_smoke.sh` (`RUN_E2E_T9=1` for QLoRA+ckpt on a free GPU).
 
 ---
 
@@ -95,7 +95,8 @@ Base path: **`/api/train`** (only registered if the training client started succ
 |--------|------|------|
 | `POST` | `/api/train/jobs` | Async job; body `{"kind":"train"|"run_script","payload":{...},"priority":"normal"|"low"|"high","queue_on_busy":true}` |
 | `GET` | `/api/train/jobs` | List recent jobs (JSON, same field names as historical protobuf JSON) |
-| `GET` | `/api/train/jobs/:id` | Job status |
+| `GET` | `/api/train/jobs/:id` | Job status (includes `progressMetrics` when training emits them) |
+| `GET` | `/api/train/jobs/:id/events` | **T3 SSE** — `event: progress` / `done` / `error`; `data` is the job object (loss, tok/s, VRAM in `progressMetrics`) |
 | `DELETE` | `/api/train/jobs/:id` | Cancel Python jobs or **waiting** `defer-*` jobs |
 | `POST` | `/api/train/unload` | Unload training model on Python side |
 | `GET` | `/api/train/status` | Health + queue extras |
@@ -119,7 +120,7 @@ Not a public API. Go calls C (`training_shim.c`), which uses the Python C API an
 - Install a `BridgeState` subclass (OOM hooks, same behavior as the former `gpu_session.py`).
 - Expose JSON-shaped responses compatible with the old HTTP/proto JSON clients.
 
-**Progress (polling, not push):** embedded mode does not stream fine-grained events to Go over a second channel. Clients observe training via **`GET /api/train/jobs/:id`** (or legacy TCP `job_status`). **Why:** the old gRPC daemon could push progress; the in-process bridge optimizes for a small surface (JSON in/out) and keeps long-running TCP `train` commands workable without a parallel event bus.
+**Progress:** Python updates job `progress` / `progressMessage` / `progressMetrics` (loss, `tokens_per_sec`, VRAM) on Trainer log steps ([`training_progress.py`](../training_progress.py)). Clients can **poll** **`GET /api/train/jobs/:id`** (or TCP `job_status`) or **subscribe** to **`GET /api/train/jobs/:id/events`** (SSE). The embed bridge itself stays JSON poll under the hood — Go’s SSE handler re-polls Python and pushes diffs. **Why:** keep the CGO surface small while giving Studio-style live metrics over HTTP.
 
 **OOM path:** `training.py` → `ollama_training_native.fire_oom` (C extension registered before `Py_Initialize`) → Go callback → scheduler eviction → `training_ack_vram_headroom` → Python `threading.Event`.
 

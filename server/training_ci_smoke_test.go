@@ -30,9 +30,27 @@ func TestTrainingRoutesRegisteredOnlyWithWorker(t *testing.T) {
 	for _, rt := range r2.Routes() {
 		paths[rt.Path] = true
 	}
-	for _, want := range []string{"/api/train/jobs", "/api/train/status"} {
+	for _, want := range []string{
+		"/api/train/jobs",
+		"/api/train/jobs/:id",
+		"/api/train/jobs/:id/events",
+		"/api/train/status",
+	} {
 		if !paths[want] {
 			t.Fatalf("missing route %q in %v", want, paths)
+		}
+	}
+}
+
+func TestTrainingJobTerminal(t *testing.T) {
+	for _, st := range []string{"completed", "FAILED", "Cancelled"} {
+		if !trainingJobTerminal(st) {
+			t.Fatalf("expected terminal %q", st)
+		}
+	}
+	for _, st := range []string{"pending", "running", "promoted", ""} {
+		if trainingJobTerminal(st) {
+			t.Fatalf("expected non-terminal %q", st)
 		}
 	}
 }

@@ -101,6 +101,7 @@ def shutdown_ollama_training() -> None:
 
 def _job_to_dict(job) -> dict:
     """Convert a Job object or a Job.to_dict() plain dict to the Go-facing wire shape."""
+    metrics = None
     if isinstance(job, dict):
         g = job.get
         st = g("status") or ""
@@ -115,6 +116,8 @@ def _job_to_dict(job) -> dict:
         done = g("completed_at") or ""
         video_model = g("video_model") or ""
         video_size = g("video_size") or ""
+        # Job.to_dict() exposes metrics; raw field is progress_metrics.
+        metrics = g("metrics") or g("progress_metrics")
     else:
         st = job.status.value if hasattr(job.status, "value") else str(job.status)
         cmd = job.cmd
@@ -128,6 +131,7 @@ def _job_to_dict(job) -> dict:
         done = job.completed_at or ""
         video_model = job.data.get("video_model", "") if cmd == "run_script" else ""
         video_size = job.data.get("video_size", "") if cmd == "run_script" else ""
+        metrics = getattr(job, "progress_metrics", None)
     out = {
         "jobId": jid,
         "kind": "JOB_KIND_TRAIN" if cmd == "train" else "JOB_KIND_RUN_SCRIPT",
@@ -140,6 +144,8 @@ def _job_to_dict(job) -> dict:
         "startedAt": start,
         "completedAt": done,
     }
+    if metrics:
+        out["progressMetrics"] = metrics
     if video_model:
         out["videoModel"] = video_model
     if video_size:
