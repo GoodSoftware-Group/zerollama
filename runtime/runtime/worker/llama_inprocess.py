@@ -20,6 +20,20 @@ from runtime.worker.sampler_options import SamplerOptions
 logger = get_logger("llama_inprocess")
 
 
+def _ignore_inprocess_format(format_options: dict[str, Any] | None) -> None:
+    """Accept engine ``format_options`` without failing; ctypes has no GBNF yet."""
+    if not format_options:
+        return
+    constrained = any(
+        format_options.get(k)
+        for k in ("grammar", "json_schema", "want_json", "format", "response_format")
+    )
+    if constrained:
+        logger.warning(
+            "inprocess ignores format_options constraints (use subprocess llama-server for GBNF/json_schema)"
+        )
+
+
 def _tensor_split_buffer(
     splits: tuple[float, ...] | None,
 ) -> ctypes.Array[ctypes.c_float] | None:
@@ -178,8 +192,12 @@ class LlamaInprocessWorker:
         cache_prompt: bool | None = None,
         current_pos: int | None = None,
         prefill_cancel: Any | None = None,
+        format_options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         # cache_prompt: RAM resume via pinned slot (v17); disk save when enabled (L3).
+        # format_options: accepted for engine parity with subprocess; GBNF/json_schema
+        # on inprocess ctypes is not wired yet (soft-ignore unless constrained).
+        _ignore_inprocess_format(format_options)
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
         with self._lock:
             text = self._require_session().complete(
@@ -211,8 +229,10 @@ class LlamaInprocessWorker:
         cache_prompt: bool | None = None,
         current_pos: int | None = None,
         prefill_cancel: Any | None = None,
+        format_options: dict[str, Any] | None = None,
     ) -> Iterator[dict[str, Any]]:
         # cache_prompt: RAM resume via pinned slot (v17); disk save when enabled (L3).
+        _ignore_inprocess_format(format_options)
         n_gen = 64 if n_predict is None or n_predict <= 0 else n_predict
 
         def _gen() -> Iterator[dict[str, Any]]:

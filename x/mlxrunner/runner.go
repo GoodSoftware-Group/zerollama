@@ -98,10 +98,15 @@ func (r *Runner) Load(modelName string) error {
 					vals = append(vals, t)
 				}
 			}
+			// WHY log: gemma4-class packs spend minutes here with no other output;
+			// progress lines feed StatusWriter so WaitUntilRunning stall timeout resets.
 			const evalChunk = 32
 			for i := 0; i < len(vals); i += evalChunk {
 				end := min(i+evalChunk, len(vals))
 				mlx.Eval(vals[i:end]...)
+				if i == 0 || end == len(vals) || i%256 == 0 {
+					slog.Info("mlx materialize eval", "done", end, "total", len(vals), "peak", mlx.PrettyBytes(mlx.PeakMemory()))
+				}
 			}
 		}
 

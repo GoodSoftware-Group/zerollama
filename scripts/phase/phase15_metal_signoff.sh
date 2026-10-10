@@ -45,7 +45,9 @@ if [[ ! -f "${LLAMA_CPP_LIB}" ]]; then
 fi
 
 macos_runtime_urls
-RUNTIME_URL="${ZEROLLAMA_RUNTIME_URL}"
+# Child smokes default RUNTIME_URL to :8081 — export lab URL so they never hit production.
+export ZEROLLAMA_RUNTIME_URL
+export RUNTIME_URL="${ZEROLLAMA_RUNTIME_URL}"
 
 TMPYAML=""
 _phase15_cleanup() {
@@ -72,38 +74,55 @@ echo "PASS: phase15 metal kv hook"
 
 echo ""
 echo "== [2/5] multi-seq shared context (llama_parallel_slots=2) =="
-TMPYAML="$(mktemp /tmp/zerollama-phase15-metal-multiseq-XXXX.yaml)"
+# BSD mktemp: X's must be at the end (suffix after X's → literal path / File exists).
+TMPYAML="$(mktemp /tmp/zerollama-phase15-metal-multiseq.XXXXXX)"
 sed -e 's/^llama_parallel_slots: 1/llama_parallel_slots: 2/' \
   "${ROOT}/runtime/configs/apple_silicon.yaml" >"$TMPYAML"
+grep -q '^llama_parallel_slots: 2$' "$TMPYAML" || {
+  echo "FAIL: multiseq YAML missing llama_parallel_slots: 2 ($TMPYAML)" >&2
+  exit 1
+}
 
 # Why disable L1 GPU profile here: apple-silicon-128g sets n_parallel=8, overriding yaml:2
 # and breaking kv_inprocess_n_seq_max assertions for this multiseq gate.
 phase15_runtime_auto_batch_env_apply
+# Always tear down step-1 sidecar first — a lingering apple_silicon listener steals :18081
+# while the multiseq child fails to bind, so health never sees slots=2.
+macos_runtime_stop_sidecar_port
 ZEROLLAMA_GPU_PROFILE=0 macos_runtime_start_sidecar "$LLAMA_MODEL" "$TMPYAML" 0
 
 nseq=""
 slots=""
-for _ in $(seq 1 30); do
+cfg_path=""
+for _ in $(seq 1 45); do
   if curl -sf -m 3 "${RUNTIME_URL}/health" -o /tmp/phase15-metal-ms-health.json 2>/dev/null; then
-    read -r nseq slots < <(
+    read -r nseq slots cfg_path < <(
       python3 -c "
 import json
 h = json.load(open('/tmp/phase15-metal-ms-health.json'))
 ks = h.get('kv_scheduler') or {}
-print(h.get('kv_inprocess_n_seq_max') or '', ks.get('llama_parallel_slots') or '')
+ac = h.get('autoconfig') or {}
+print(h.get('kv_inprocess_n_seq_max') or '', ks.get('llama_parallel_slots') or '', ac.get('config_path') or '')
 "
     )
-    if [[ "$nseq" == "2" ]]; then
-      echo "sidecar ready: kv_inprocess_n_seq_max=${nseq} llama_parallel_slots=${slots}"
+    if [[ "$cfg_path" == "$TMPYAML" && "$nseq" == "2" ]]; then
+      echo "sidecar ready: kv_inprocess_n_seq_max=${nseq} llama_parallel_slots=${slots} config=${cfg_path}"
       break
     fi
   fi
   sleep 1
 done
 
-if [[ "${nseq:-}" != "2" ]]; then
-  echo "expected kv_inprocess_n_seq_max=2; health:" >&2
-  cat /tmp/phase15-metal-ms-health.json >&2 || true
+if [[ "${cfg_path:-}" != "$TMPYAML" || "${nseq:-}" != "2" ]]; then
+  echo "expected config=${TMPYAML} kv_inprocess_n_seq_max=2; got config=${cfg_path:-} n_seq=${nseq:-}; health:" >&2
+  python3 -c "
+import json
+h=json.load(open('/tmp/phase15-metal-ms-health.json'))
+ac=h.get('autoconfig') or {}
+ks=h.get('kv_scheduler') or {}
+print('config_path', ac.get('config_path'))
+print('n_seq', h.get('kv_inprocess_n_seq_max'), 'slots', ks.get('llama_parallel_slots'))
+" >&2 || true
   exit 1
 fi
 
@@ -147,7 +166,9 @@ echo "PASS: phase15 metal multiseq"
 
 echo ""
 echo "== [2b/5] migration summary post-decode (v42/v43) =="
-MIGRATION_SMOKE_SKIP_GEN=1 "${ROOT}/scripts/phase/phase15_migration_summary_smoke.sh"
+# WHY not SKIP_GEN: multiseq complete() unregisters page bind; migration fields need a
+# fresh generate while bind is live (SKIP_GEN saw page_bind=not_implemented).
+"${ROOT}/scripts/phase/phase15_migration_summary_smoke.sh"
 
 echo ""
 echo "== [3/5] continuous batch decode (generate_batch + stream) =="

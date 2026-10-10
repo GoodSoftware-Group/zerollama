@@ -265,6 +265,50 @@ func TestChatCompletionRequestHasVideoURL(t *testing.T) {
 	}
 }
 
+func TestBindChatCompletionRequest_CachePromptAccepted(t *testing.T) {
+	req, err := BindChatCompletionRequest([]byte(`{
+		"model": "gemma4:26b-optiq",
+		"messages": [{"role": "user", "content": "hi"}],
+		"cache_prompt": true
+	}`))
+	if err != nil {
+		t.Fatalf("Bind: %v (Odysseus/llama-server clients send cache_prompt)", err)
+	}
+	if req.CachePrompt == nil || !*req.CachePrompt {
+		t.Fatalf("CachePrompt=%v want true", req.CachePrompt)
+	}
+}
+
+func TestFromChatRequest_CachePromptFalseMapsCacheReset(t *testing.T) {
+	off := false
+	out, err := FromChatRequest(ChatCompletionRequest{
+		Model:       "m",
+		Messages:    []Message{{Role: "user", Content: "hi"}},
+		CachePrompt: &off,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Options["cache_reset"] != true {
+		t.Fatalf("cache_reset=%v want true when cache_prompt=false", out.Options["cache_reset"])
+	}
+}
+
+func TestFromChatRequest_CachePromptTrueNoReset(t *testing.T) {
+	on := true
+	out, err := FromChatRequest(ChatCompletionRequest{
+		Model:       "m",
+		Messages:    []Message{{Role: "user", Content: "hi"}},
+		CachePrompt: &on,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := out.Options["cache_reset"]; ok {
+		t.Fatalf("cache_reset set unexpectedly: %v", out.Options["cache_reset"])
+	}
+}
+
 func TestFromChatRequest_PromptCacheKeyAndOptions(t *testing.T) {
 	key := "agent-thread-42"
 	salt := "tenant-9"

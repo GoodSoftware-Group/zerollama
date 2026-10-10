@@ -98,9 +98,9 @@ Flat `scripts/dev_bootstrap.sh`, `scripts/build_zerollama_mac.sh`, `scripts/runt
 | Layout | Go API | Runtime sidecar | When |
 |--------|--------|-----------------|------|
 | **`./zerollama serve`** (default) | **`:11434`** | `:8081` | Daily dev |
-| **Sign-off / e2e smokes** | **`:8080`** | `:8081` | `metal_signoff.sh`, `macos_metal_smoke.sh` |
+| **Sign-off / e2e smokes** | **`:8080`** | **`:18081`** | `metal_signoff.sh`, `macos_metal_smoke.sh` |
 
-**Why two Go ports:** upstream Ollama uses `:11434`; CI scripts historically bound `:8080` to avoid clashing with a system Ollama. Smokes set `OLLAMA_HOST=http://127.0.0.1:8080` internally — do not copy smoke curl examples against a default `:11434` serve without changing the host. Agents must not kill production listeners on **11434** / **8081**.
+**Why two Go ports:** upstream Ollama uses `:11434`; CI/lab scripts bind `:8080` + runtime `:18081` so they never collide with daily serve (`:11434` + `:8081`). Smokes set these via `macos_runtime_urls` — do not point them at production. Agents must not kill listeners on **11434** / **8081**.
 
 ---
 
@@ -196,13 +196,13 @@ See [apple-silicon-metal.md](./apple-silicon-metal.md) for MLX pin bumps and `ze
 
 ## CI / regression only
 
-These use **`OLLAMA_HOST=:8080`** + **`ZEROLLAMA_RUNTIME_URL=:8081`** — not the default `:11434` serve:
+These use **`OLLAMA_HOST=:8080`** + **`ZEROLLAMA_RUNTIME_URL=:18081`** — not the default `:11434`/`:8081` serve:
 
 - `./scripts/serve/serve_mac_runtime.sh`
 - `./scripts/gpu/macos_metal_smoke.sh`
 - `./scripts/gpu/metal_signoff.sh`
 
-Full gate with qwen35 (M4 Max PASS Jun 2026): `RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/gpu/metal_signoff.sh` — **why eliza-1-2b:** ship qwen35 family; qwen35 runs before Phase 15 inside the script (Phase 15 stops `:8081`).
+Full gate with qwen35 (M4 Max PASS Jun 2026): `RUN_E2E_QWEN35=1 RUN_E2E_QWEN35_MODEL=eliza-1-2b:latest ./scripts/gpu/metal_signoff.sh` — **why eliza-1-2b:** ship qwen35 family; qwen35 runs before Phase 15 inside the script (Phase 15 restarts lab `:18081`).
 
 ---
 

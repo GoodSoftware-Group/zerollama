@@ -73,8 +73,18 @@ func NewClient(modelName string, softContextLength int) (*Client, error) {
 }
 
 // WaitUntilRunning waits for the subprocess to be ready.
+// Stall timeout (OLLAMA_LOAD_TIMEOUT) resets on subprocess stdout/stderr activity
+// so cold MLX materialize of large models can exceed the default 5m wall clock
+// without aborting a healthy load.
 func (c *Client) WaitUntilRunning(ctx context.Context) error {
-	timeout := time.After(envconfig.LoadTimeout())
+	stallTimeout := envconfig.LoadTimeout()
+	lastActivity := time.Now()
+	if c.status != nil {
+		if t := c.status.LastWrite(); !t.IsZero() {
+			lastActivity = t
+		}
+	}
+	loadDeadline := lastActivity.Add(stallTimeout)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -92,12 +102,19 @@ func (c *Client) WaitUntilRunning(ctx context.Context) error {
 				return fmt.Errorf("mlx runner exited unexpectedly: %w", c.doneErr)
 			}
 			return errors.New("mlx runner exited unexpectedly")
-		case <-timeout:
-			if msg := c.status.LastError(); msg != "" {
-				return fmt.Errorf("timeout waiting for mlx runner: %s", msg)
-			}
-			return errors.New("timeout waiting for mlx runner to start")
 		case <-ticker.C:
+			if c.status != nil {
+				if t := c.status.LastWrite(); t.After(lastActivity) {
+					lastActivity = t
+					loadDeadline = lastActivity.Add(stallTimeout)
+				}
+			}
+			if time.Now().After(loadDeadline) {
+				if msg := c.status.LastError(); msg != "" {
+					return fmt.Errorf("timeout waiting for mlx runner: %s", msg)
+				}
+				return errors.New("timeout waiting for mlx runner to start")
+			}
 			if err := c.Ping(ctx); err == nil {
 				slog.Info("mlx runner is ready", "port", c.port)
 				return nil

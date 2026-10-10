@@ -38,9 +38,29 @@ var (
 	elizaCatalogCached     []api.ListModelResponse
 	elizaCatalogFetched    time.Time
 	elizaCatalogTTL        = time.Hour // default until a successful response supplies Cache-Control
+	elizaCatalogCachedKey  string      // API key that produced the cache (empty if none)
 	elizaCatalogClient     = &http.Client{Timeout: 30 * time.Second}
 	elizaCatalogFetchGroup singleflight.Group // coalesces concurrent GET /api/v1/models fetches
 )
+
+// elizaCatalogAuthReady is true when we may advertise Eliza cloud models.
+// WHY: listing :cloud tags without a working ELIZACLOUD_API_KEY is false advertising —
+// inference will 401. Legacy ollama.com uses signing, not this key.
+func elizaCatalogAuthReady() bool {
+	if envconfig.NoCloud() {
+		return false
+	}
+	if isOllamaComUpstream() {
+		return true
+	}
+	return strings.TrimSpace(envconfig.ElizaCloudAPIKey()) != ""
+}
+
+func clearElizaCatalogCacheLocked() {
+	elizaCatalogCached = nil
+	elizaCatalogFetched = time.Time{}
+	elizaCatalogCachedKey = ""
+}
 
 func elizaCloudBaseURLParsed() (*url.URL, error) {
 	return url.Parse(cloudProxyBaseURL)
@@ -90,19 +110,26 @@ func isElizaCloudImageGenID(id string) bool {
 	return false
 }
 
-// mergeElizaCloudModels appends remote Eliza models to local listings when cloud is enabled.
+// mergeElizaCloudModels appends remote Eliza models to local listings when cloud is enabled
+// and authenticated. Without a working ELIZACLOUD_API_KEY (Eliza upstream), local-only.
 // Local rows win on duplicate model names (case-insensitive) so a user-defined :cloud tag does not
 // appear twice if Eliza also returns the same id.
 func mergeElizaCloudModels(ctx context.Context, local []api.ListModelResponse) []api.ListModelResponse {
-	if envconfig.NoCloud() {
+	if !elizaCatalogAuthReady() {
+		elizaCatalogMu.Lock()
+		clearElizaCatalogCacheLocked()
+		elizaCatalogMu.Unlock()
 		return local
 	}
+	key := strings.TrimSpace(envconfig.ElizaCloudAPIKey())
 	remote, err := fetchElizaModelList(ctx)
 	if err != nil {
 		elizaCatalogMu.Lock()
 		stale := elizaCatalogCached
+		staleKey := elizaCatalogCachedKey
 		elizaCatalogMu.Unlock()
-		if len(stale) > 0 {
+		// Only reuse stale rows from the same key — never advertise a catalog we cannot call.
+		if len(stale) > 0 && staleKey == key {
 			slog.Warn("eliza catalog fetch failed, using stale cache", "error", err)
 			remote = stale
 		} else {
@@ -133,15 +160,18 @@ func mergeElizaCloudModels(ctx context.Context, local []api.ListModelResponse) [
 }
 
 func fetchElizaModelList(ctx context.Context) ([]api.ListModelResponse, error) {
+	key := strings.TrimSpace(envconfig.ElizaCloudAPIKey())
 	elizaCatalogMu.Lock()
-	if len(elizaCatalogCached) > 0 && time.Since(elizaCatalogFetched) < elizaCatalogTTL {
+	if len(elizaCatalogCached) > 0 &&
+		elizaCatalogCachedKey == key &&
+		time.Since(elizaCatalogFetched) < elizaCatalogTTL {
 		out := elizaCatalogCached
 		elizaCatalogMu.Unlock()
 		return out, nil
 	}
 	elizaCatalogMu.Unlock()
 
-	v, err, _ := elizaCatalogFetchGroup.Do("eliza-models", func() (any, error) {
+	v, err, _ := elizaCatalogFetchGroup.Do("eliza-models:"+key, func() (any, error) {
 		return fetchElizaModelListFromNetwork(ctx)
 	})
 	if err != nil {
@@ -151,8 +181,15 @@ func fetchElizaModelList(ctx context.Context) ([]api.ListModelResponse, error) {
 }
 
 func fetchElizaModelListFromNetwork(ctx context.Context) ([]api.ListModelResponse, error) {
+	key := strings.TrimSpace(envconfig.ElizaCloudAPIKey())
+	if !isOllamaComUpstream() && key == "" {
+		return nil, fmt.Errorf("eliza catalog: ELIZACLOUD_API_KEY not set")
+	}
+
 	elizaCatalogMu.Lock()
-	if len(elizaCatalogCached) > 0 && time.Since(elizaCatalogFetched) < elizaCatalogTTL {
+	if len(elizaCatalogCached) > 0 &&
+		elizaCatalogCachedKey == key &&
+		time.Since(elizaCatalogFetched) < elizaCatalogTTL {
 		out := elizaCatalogCached
 		elizaCatalogMu.Unlock()
 		return out, nil
@@ -178,6 +215,12 @@ func fetchElizaModelListFromNetwork(ctx context.Context) ([]api.ListModelRespons
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		elizaCatalogMu.Lock()
+		clearElizaCatalogCacheLocked()
+		elizaCatalogMu.Unlock()
+		return nil, fmt.Errorf("eliza catalog: %s (ELIZACLOUD_API_KEY rejected)", resp.Status)
 	}
 	if resp.StatusCode != http.StatusOK {
 		snippet := strings.TrimSpace(string(body))
@@ -222,6 +265,7 @@ func fetchElizaModelListFromNetwork(ctx context.Context) ([]api.ListModelRespons
 	elizaCatalogCached = out
 	elizaCatalogFetched = time.Now()
 	elizaCatalogTTL = ttl
+	elizaCatalogCachedKey = key
 	elizaCatalogMu.Unlock()
 
 	return out, nil

@@ -1,9 +1,11 @@
 package server
 
-// SSE keepalive during long MLX prefill.
-// Why: agent HTTP clients (Mercury empty-stream guard) abort when no SSE data:
-// frames arrive for ~60s; MLX prefill on 65k+ tokens can exceed that before first token.
-// mlx-serve beats the socket on 5s byte-silence; we match that default.
+// SSE keepalive during long MLX load + prefill.
+// Why: agent HTTP clients (Mercury / Odysseus empty-stream guards) abort when no
+// SSE data: frames arrive for ~60s–5m. Cold MLX weight materialize and long
+// prefill both exceed that before first token. mlx-serve beats the socket on 5s
+// byte-silence; we match that default. beginChatStream must run before
+// scheduleRunner so keepalives cover WaitUntilRunning, not only decode.
 
 import (
 	"context"

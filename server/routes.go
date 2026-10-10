@@ -860,11 +860,24 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		Stream: streaming,
 	})
 
+	// WHY before scheduleRunner: cold MLX loads can exceed client read timeouts;
+	// keepalives must cover WaitUntilRunning, not only post-ready prefill.
+	var streamKeepalive *chatStreamSession
+	if streaming && !req.DebugRenderOnly {
+		streamKeepalive = beginChatStream(c, streamCh, req.Model)
+		defer streamKeepalive.Wait()
+	}
+
 	r, m, opts, ggmlCtx, releaseQoS, err := s.scheduleRunner(schedCtx, name.String(), caps, req.Options, req.KeepAlive, req.Shift, streamCh, statusWriter)
 	if errors.Is(err, errCapabilityCompletion) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": textSurfaceWrongModalityMessage(m, req.Model, "generate")})
+		msg := textSurfaceWrongModalityMessage(m, req.Model, "generate")
+		abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusBadRequest, msg)
 		return
 	} else if err != nil {
+		if streamKeepalive != nil {
+			abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
+			return
+		}
 		handleScheduleError(c, req.Model, err)
 		return
 	}
@@ -875,6 +888,17 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 
 	// load the model
 	if req.Prompt == "" {
+		if streamKeepalive != nil {
+			streamKeepalive.StopKeepalive()
+			streamCh <- api.GenerateResponse{
+				Model:      req.Model,
+				CreatedAt:  time.Now().UTC(),
+				Done:       true,
+				DoneReason: "load",
+			}
+			close(streamCh)
+			return
+		}
 		c.JSON(http.StatusOK, api.GenerateResponse{
 			Model:      req.Model,
 			CreatedAt:  time.Now().UTC(),
@@ -885,14 +909,8 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 	}
 
 	if slices.Contains(m.Config.ModelFamilies, "mllama") && len(req.Images) > 1 {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "this model only supports one image while more than one image requested"})
+		abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusBadRequest, "this model only supports one image while more than one image requested")
 		return
-	}
-
-	var streamKeepalive *chatStreamSession
-	if streaming && !req.DebugRenderOnly {
-		streamKeepalive = beginChatStream(c, streamCh, req.Model)
-		defer streamKeepalive.Wait()
 	}
 
 	images := make([]llm.ImageData, len(req.Images))
@@ -3790,11 +3808,24 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		return
 	}
 
+	// WHY before scheduleRunner: cold MLX loads can exceed client read timeouts;
+	// keepalives must cover WaitUntilRunning, not only post-ready prefill.
+	var streamKeepalive *chatStreamSession
+	if streaming {
+		streamKeepalive = beginChatStream(c, streamCh, req.Model)
+		defer streamKeepalive.Wait()
+	}
+
 	r, m, opts, ggmlCtx, releaseQoS, err := s.scheduleRunner(schedCtx, name.String(), caps, req.Options, req.KeepAlive, req.Shift, streamCh, statusWriter)
 	if errors.Is(err, errCapabilityCompletion) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": textSurfaceWrongModalityMessage(m, req.Model, "chat")})
+		msg := textSurfaceWrongModalityMessage(m, req.Model, "chat")
+		abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusBadRequest, msg)
 		return
 	} else if err != nil {
+		if streamKeepalive != nil {
+			abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
+			return
+		}
 		handleScheduleError(c, req.Model, err)
 		return
 	}
@@ -3804,6 +3835,18 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	logInferencePhase(c, "runner_ready", req.Model, checkpointStart)
 
 	if len(req.Messages) == 0 {
+		if streamKeepalive != nil {
+			streamKeepalive.StopKeepalive()
+			streamCh <- api.ChatResponse{
+				Model:      req.Model,
+				CreatedAt:  time.Now().UTC(),
+				Message:    api.Message{Role: "assistant"},
+				Done:       true,
+				DoneReason: "load",
+			}
+			close(streamCh)
+			return
+		}
 		c.JSON(http.StatusOK, api.ChatResponse{
 			Model:      req.Model,
 			CreatedAt:  time.Now().UTC(),
@@ -3812,12 +3855,6 @@ func (s *Server) ChatHandler(c *gin.Context) {
 			DoneReason: "load",
 		})
 		return
-	}
-
-	var streamKeepalive *chatStreamSession
-	if streaming && !req.DebugRenderOnly {
-		streamKeepalive = beginChatStream(c, streamCh, req.Model)
-		defer streamKeepalive.Wait()
 	}
 
 	msgs := append(m.Messages, req.Messages...)

@@ -41,7 +41,7 @@ OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:18083}"
 ZEROLLAMA_RUNTIME_EMBED_PORT="${ZEROLLAMA_RUNTIME_EMBED_PORT:-18081}"
 export OLLAMA_HOST ZEROLLAMA_RUNTIME_EMBED_PORT ZEROLLAMA_BIN
 RUNTIME_URL="http://127.0.0.1:${ZEROLLAMA_RUNTIME_EMBED_PORT}"
-TMPYAML="$(mktemp /tmp/zerollama-phase15-multiseq-XXXX.yaml)"
+TMPYAML="$(mktemp /tmp/zerollama-phase15-multiseq.XXXXXX)"
 
 _use_sidecar=0
 _ver_out="$("${ZEROLLAMA_BIN}" -v 2>&1 || true)"

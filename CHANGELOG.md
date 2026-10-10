@@ -8,6 +8,14 @@ All notable changes to this project are documented in this file. The format is b
 
 Unset `OLLAMA_IGPU_ENABLE` still drops iGPUs when a **discrete** GPU is present (CUDA iGPU and ROCm `gfx1151` stay allowlisted). If filtering would leave **no GPU**, keep the iGPU instead of CPU-only — RADV Phoenix / ROCm gfx1103 / Intel iGPU Vulkan. `OLLAMA_IGPU_ENABLE=0` still forces CPU.
 
+### MLX cold-load SSE keepalives + stall wait
+
+Streaming chat/generate start SSE keepalives **before** `scheduleRunner`, so Odysseus/Mercury do not hit empty-stream read timeouts during multi-minute MLX weight materialize. `WaitUntilRunning` resets `OLLAMA_LOAD_TIMEOUT` on runner log activity; Metal materialize emits `mlx materialize eval` progress.
+
+### Eliza catalog — no cloud advertising without a working key
+
+`/api/tags` and `/v1/models` merge Eliza `:cloud` rows only when `ELIZACLOUD_API_KEY` is set and the catalog returns HTTP 200. Missing key or 401/403 clears the cache so unusable remote models are not listed. Docs: [eliza-cloud.md](docs/eliza-cloud.md).
+
 ### GLiNER2.5-Decide Decider (GD0–GD3) — Sep 2026
 
 Self-host Fastino [GLiNER2.5-Decide](https://huggingface.co/fastino/GLiNER2.5-Decide) as System-1 triage (not span NER).

@@ -15,8 +15,7 @@ func resetElizaCatalogAfterTest(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
 		elizaCatalogMu.Lock()
-		elizaCatalogCached = nil
-		elizaCatalogFetched = time.Time{}
+		clearElizaCatalogCacheLocked()
 		elizaCatalogTTL = time.Hour
 		elizaCatalogMu.Unlock()
 	})
@@ -24,6 +23,7 @@ func resetElizaCatalogAfterTest(t *testing.T) {
 
 func TestMergeElizaCloudModels_NoFetchWhenNoCloud(t *testing.T) {
 	t.Setenv("OLLAMA_NO_CLOUD", "1")
+	t.Setenv("ELIZACLOUD_API_KEY", "test-key")
 	local := []api.ListModelResponse{{Model: "local:latest", Name: "local:latest"}}
 	out := mergeElizaCloudModels(context.Background(), local)
 	if len(out) != 1 {
@@ -31,12 +31,71 @@ func TestMergeElizaCloudModels_NoFetchWhenNoCloud(t *testing.T) {
 	}
 }
 
+func TestMergeElizaCloudModels_NoFetchWithoutAPIKey(t *testing.T) {
+	resetElizaCatalogAfterTest(t)
+	t.Setenv("OLLAMA_NO_CLOUD", "0")
+	t.Setenv("ELIZACLOUD_API_KEY", "")
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"acme/foo"}]}`))
+	}))
+	defer srv.Close()
+
+	orig := cloudProxyBaseURL
+	cloudProxyBaseURL = srv.URL
+	t.Cleanup(func() { cloudProxyBaseURL = orig })
+
+	local := []api.ListModelResponse{{Model: "local:latest", Name: "local:latest"}}
+	out := mergeElizaCloudModels(context.Background(), local)
+	if len(out) != 1 {
+		t.Fatalf("len=%d want 1 (no key → no cloud advertising)", len(out))
+	}
+	if hits != 0 {
+		t.Fatalf("upstream hits=%d want 0", hits)
+	}
+}
+
+func TestMergeElizaCloudModels_RejectedKeyDoesNotAdvertise(t *testing.T) {
+	resetElizaCatalogAfterTest(t)
+	t.Setenv("OLLAMA_NO_CLOUD", "0")
+	t.Setenv("ELIZACLOUD_API_KEY", "bad-key")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+	}))
+	defer srv.Close()
+
+	orig := cloudProxyBaseURL
+	cloudProxyBaseURL = srv.URL
+	t.Cleanup(func() { cloudProxyBaseURL = orig })
+
+	// Poison cache as if a previous good key worked — must not advertise after 401.
+	elizaCatalogMu.Lock()
+	elizaCatalogCached = []api.ListModelResponse{{Model: "stale:cloud", Name: "stale:cloud"}}
+	elizaCatalogFetched = time.Now()
+	elizaCatalogCachedKey = "old-good-key"
+	elizaCatalogTTL = time.Hour
+	elizaCatalogMu.Unlock()
+
+	local := []api.ListModelResponse{{Model: "local:latest", Name: "local:latest"}}
+	out := mergeElizaCloudModels(context.Background(), local)
+	if len(out) != 1 || out[0].Model != "local:latest" {
+		t.Fatalf("got %#v want local only", out)
+	}
+}
+
 func TestMergeElizaCloudModels_AppendsFromUpstream(t *testing.T) {
 	resetElizaCatalogAfterTest(t)
 	t.Setenv("OLLAMA_NO_CLOUD", "0")
+	t.Setenv("ELIZACLOUD_API_KEY", "test-key")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/models" {
 			t.Fatalf("path %q", r.URL.Path)
+		}
+		if r.Header.Get("X-API-Key") != "test-key" {
+			t.Fatalf("auth header %q", r.Header.Get("X-API-Key"))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"acme/foo"}]}`))
@@ -48,8 +107,7 @@ func TestMergeElizaCloudModels_AppendsFromUpstream(t *testing.T) {
 	t.Cleanup(func() { cloudProxyBaseURL = orig })
 
 	elizaCatalogMu.Lock()
-	elizaCatalogCached = nil
-	elizaCatalogFetched = time.Time{}
+	clearElizaCatalogCacheLocked()
 	elizaCatalogTTL = time.Hour
 	elizaCatalogMu.Unlock()
 
@@ -72,6 +130,7 @@ func TestMergeElizaCloudModels_AppendsFromUpstream(t *testing.T) {
 func TestMergeElizaCloudModels_DedupesByModelName(t *testing.T) {
 	resetElizaCatalogAfterTest(t)
 	t.Setenv("OLLAMA_NO_CLOUD", "0")
+	t.Setenv("ELIZACLOUD_API_KEY", "test-key")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"dup"}]}`))
@@ -83,8 +142,7 @@ func TestMergeElizaCloudModels_DedupesByModelName(t *testing.T) {
 	t.Cleanup(func() { cloudProxyBaseURL = orig })
 
 	elizaCatalogMu.Lock()
-	elizaCatalogCached = nil
-	elizaCatalogFetched = time.Time{}
+	clearElizaCatalogCacheLocked()
 	elizaCatalogTTL = time.Hour
 	elizaCatalogMu.Unlock()
 
@@ -123,6 +181,7 @@ func TestInferElizaCloudCapabilities(t *testing.T) {
 func TestMergeElizaCloudModels_TaggedUpstreamUsesDashCloud(t *testing.T) {
 	resetElizaCatalogAfterTest(t)
 	t.Setenv("OLLAMA_NO_CLOUD", "0")
+	t.Setenv("ELIZACLOUD_API_KEY", "test-key")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"driaforall/tiny-agent-a:3B"}]}`))
@@ -134,8 +193,7 @@ func TestMergeElizaCloudModels_TaggedUpstreamUsesDashCloud(t *testing.T) {
 	t.Cleanup(func() { cloudProxyBaseURL = orig })
 
 	elizaCatalogMu.Lock()
-	elizaCatalogCached = nil
-	elizaCatalogFetched = time.Time{}
+	clearElizaCatalogCacheLocked()
 	elizaCatalogTTL = time.Hour
 	elizaCatalogMu.Unlock()
 

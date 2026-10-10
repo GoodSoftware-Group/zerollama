@@ -666,7 +666,7 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_EDITOR":                            {"OLLAMA_EDITOR", Editor(), "Path to editor for interactive prompt editing (Ctrl+G)"},
 		"OLLAMA_NEW_ENGINE":                        {"OLLAMA_NEW_ENGINE", NewEngine(), "Deprecated — ignored for routing; use ZEROLLAMA_LLAMA_SERVER / --edge (Phase 16/17)"},
 		"OLLAMA_REMOTES":                           {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
-		"ELIZACLOUD_API_KEY":                       {"ELIZACLOUD_API_KEY", ElizaCloudAPIKey(), "API key for Eliza Cloud (X-API-Key); required for remote inference when using Eliza"},
+		"ELIZACLOUD_API_KEY":                       {"ELIZACLOUD_API_KEY", ElizaCloudAPIKey(), "API key for Eliza Cloud (X-API-Key); required to list and call Eliza :cloud models"},
 		"OLLAMA_SGLANG_URL":                        {"OLLAMA_SGLANG_URL", SGLangURL(), "Base URL for SGLang when modality_backends.video_understanding=sglang"},
 		"ZEROLLAMA_OPENAI_REMOTE_URL":              {"ZEROLLAMA_OPENAI_REMOTE_URL", OpenAIRemoteURL(), "Fleet default base URL for modality_backends.inference=openai-remote (overridden by backend_paths.openai_url)"},
 		"ZEROLLAMA_CLM_URL":                        {"ZEROLLAMA_CLM_URL", CLMURL(), "Optional clm-serve base URL (fallback when native heads/emb unset)"},

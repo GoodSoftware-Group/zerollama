@@ -16,7 +16,7 @@
 #   M3_SKIP_START=1      — assume OLLAMA_HOST / ZEROLLAMA_RUNTIME_URL already up
 #   RUN_E2E_PHASE15=1    — also run ./scripts/phase/phase15_metal_signoff.sh (sidecar path)
 #   RUN_E2E_QWEN35=1     — also run ./scripts/runtime/qwen35_mac_smoke.sh (needs RUN_E2E_QWEN35_MODEL, e.g. eliza-1-2b:latest)
-#                          Why before Phase 15: Phase 15 stops :8081; qwen35 needs handoff/resume.
+#                          Why before Phase 15: Phase 15 restarts lab sidecar (:18081); qwen35 needs handoff/resume.
 #   RUN_E2E_L2=1         — also run ./scripts/phase/l2_full_gate.sh (fork eval + compat + bench)
 #   RUN_E2E_L3=1         — also run ./scripts/phase/l3_cache_smoke.sh + gate report
 #   ZEROLLAMA_BIN        — override zerollama binary (repo ./zerollama, then PATH)
@@ -62,7 +62,7 @@ export LLAMA_MODEL RUN_E2E_GGUF GPU_PHASE13_SNAPSHOT_OUT
 echo "== Phase 14 inprocess Metal (apple_silicon.yaml) =="
 "${ROOT}/scripts/phase/phase14_yaml_config_smoke.sh"
 
-# qwen35 before Phase 15: phase15 restarts/kills the :8081 sidecar on exit; qwen35 needs
+# qwen35 before Phase 15: phase15 restarts/kills the lab sidecar on exit; qwen35 needs
 # runtime handoff + resume while the M3-managed stack is still up.
 if [[ "${RUN_E2E_QWEN35:-0}" == "1" ]]; then
   echo ""

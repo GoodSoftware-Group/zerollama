@@ -64,6 +64,9 @@ func mergeChatExtraBody(req *ChatCompletionRequest, extra json.RawMessage) {
 			req.SessionID = &s
 		}
 	}
+	if req.CachePrompt == nil {
+		overlayBool(&req.CachePrompt, flat["cache_prompt"])
+	}
 	if req.SessionID == nil {
 		if s := rawString(flat["session_id"]); s != "" {
 			req.SessionID = &s

@@ -123,8 +123,10 @@ def test_batch_from_tokens_sets_pos():
 def test_ctypes_struct_sizes():
     import ctypes
 
-    assert ctypes.sizeof(LlamaModelParams) == 72
-    assert ctypes.sizeof(LlamaContextParams) == 144
+    # b11351 llama.h: model_params=80, context_params=160 (load_mode/lazy_mode/load_mtp;
+    # n_outputs_max*; ctx_other). Wrong sizes SIGSEGV in llama_model_loader.
+    assert ctypes.sizeof(LlamaModelParams) == 80
+    assert ctypes.sizeof(LlamaContextParams) == 160
 
 
 def test_resolve_libllama_path_sibling_checkout():

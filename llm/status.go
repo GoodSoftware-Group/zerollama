@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/ollama/ollama/agentstats"
 )
@@ -15,6 +16,9 @@ type StatusWriter struct {
 	// Subprocess wrappers may wire both stdout and stderr to the same
 	// StatusWriter, and os/exec serializes Write calls in that case.
 	lastErrMsg atomic.Value
+	// lastWriteNs is updated on every non-empty Write so load waits can treat
+	// progress logs as stall-timeout activity (MLX materialize can exceed 5m).
+	lastWriteNs atomic.Int64
 	// LastErrMsg is read by the in-process ggml runner in server.go.
 	LastErrMsg string
 }
@@ -35,6 +39,17 @@ func (w *StatusWriter) LastError() string {
 		return v.(string)
 	}
 	return ""
+}
+
+// LastWrite is the time of the most recent non-empty Write, or zero if none.
+func (w *StatusWriter) LastWrite() time.Time {
+	if w == nil {
+		return time.Time{}
+	}
+	if ns := w.lastWriteNs.Load(); ns > 0 {
+		return time.Unix(0, ns)
+	}
+	return time.Time{}
 }
 
 func (w *StatusWriter) SetLastError(msg string) {
@@ -149,17 +164,22 @@ func lastNonEmptyLine(msg string) string {
 }
 
 func (w *StatusWriter) Write(b []byte) (int, error) {
+	wrote := false
 	for _, raw := range bytes.Split(b, []byte{'\n'}) {
 		line := strings.TrimRight(string(raw), " \t\r")
 		if line == "" {
 			continue
 		}
+		wrote = true
 
 		if errMsg := statusErrorLine(line); errMsg != "" {
 			w.AppendError(errMsg)
 		}
 
 		agentstats.MaybeRecordRunnerLine(line)
+	}
+	if wrote {
+		w.lastWriteNs.Store(time.Now().UnixNano())
 	}
 
 	if w.out == nil {
@@ -171,7 +191,36 @@ func (w *StatusWriter) Write(b []byte) (int, error) {
 
 func isInformationalMLXLine(line string) bool {
 	lower := strings.ToLower(line)
-	return strings.Contains(lower, "optional symbol") && strings.Contains(lower, "(no-op)")
+	if strings.Contains(lower, "optional symbol") && strings.Contains(lower, "(no-op)") {
+		return true
+	}
+	// uma_glue auto/degraded logs: "uma_mlx: auto — broker not running, MLX ungated".
+	// Substring "mlx:" must not make these look like runner failures (UMA is optional).
+	if strings.Contains(lower, "uma_mlx:") || strings.Contains(lower, "mlx ungated") {
+		return true
+	}
+	return false
+}
+
+func isIdentByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9') || b == '_'
+}
+
+// indexErrorPrefix finds prefix at a token boundary so "uma_mlx:" does not match "mlx:".
+func indexErrorPrefix(line, prefix string) int {
+	for i := 0; i <= len(line)-len(prefix); {
+		j := strings.Index(line[i:], prefix)
+		if j < 0 {
+			return -1
+		}
+		j += i
+		if j == 0 || !isIdentByte(line[j-1]) {
+			return j
+		}
+		i = j + 1
+	}
+	return -1
 }
 
 func statusErrorLine(line string) string {
@@ -182,7 +231,7 @@ func statusErrorLine(line string) string {
 	errStart := -1
 	errPrefix := ""
 	for _, prefix := range errorPrefixes {
-		if i := strings.Index(line, prefix); i >= 0 && (errStart < 0 || i < errStart) {
+		if i := indexErrorPrefix(line, prefix); i >= 0 && (errStart < 0 || i < errStart) {
 			errStart = i
 			errPrefix = prefix
 		}

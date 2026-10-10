@@ -30,7 +30,7 @@ source "${ROOT}/scripts/phase/phase14_serve_env.sh"
 source "${ROOT}/scripts/runtime/runtime_smoke_lib.sh"
 
 RUNTIME_HEALTH_URL="${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}"
-TMPYAML="$(mktemp /tmp/zerollama-phase14-yaml-XXXX.yaml)"
+TMPYAML="$(mktemp /tmp/zerollama-phase14-yaml.XXXXXX)"
 cleanup() {
   pkill -f "${ROOT}/zerollama serve" 2>/dev/null || pkill -f './zerollama serve' 2>/dev/null || true
   rm -f "$TMPYAML"

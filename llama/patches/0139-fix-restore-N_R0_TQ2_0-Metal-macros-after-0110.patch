@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 9 Oct 2026 13:40:00 -0700
+Subject: [PATCH] fix: restore N_R0_TQ2_0 Metal macros after 0110
+
+Patch 0110 dropped N_R0_TQ2_0 / N_SG_TQ2_0 as "duplicates", but upstream
+b11351 needs them for mul_mv TQ2 kernels. Without them Metal library
+compile fails on M4 (undeclared identifier N_R0_TQ2_0) and inprocess
+segfaults during load.
+
+---
+ ggml/src/ggml-metal/ggml-metal-impl.h | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
+index c033de5a1..38efc73a3 100644
+--- a/ggml/src/ggml-metal/ggml-metal-impl.h
++++ b/ggml/src/ggml-metal/ggml-metal-impl.h
+@@ -96,6 +96,9 @@
+ #define N_R0_IQ4_XS 2
+ #define N_SG_IQ4_XS 2
+ 
++#define N_R0_TQ2_0 4
++#define N_SG_TQ2_0 2
++
+ // function constants offsets
+ #define FC_FLASH_ATTN_EXT_PAD          100
+ #define FC_FLASH_ATTN_EXT_BLK          200

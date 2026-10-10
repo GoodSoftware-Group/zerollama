@@ -65,12 +65,28 @@ EOF
 }
 
 macos_runtime_urls() {
-  # CI/sign-off layout: Go :8080 + sidecar :8081. Daily `zerollama serve` uses :11434 — do not
-  # assume these defaults when curling a default serve; set OLLAMA_HOST explicitly in smokes.
+  # Lab sign-off layout: Go :8080 + sidecar :18081. Daily `zerollama serve` owns :11434 + :8081 —
+  # never default to those; smokes that kill/restart would take down production.
   export OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:8080}"
-  export ZEROLLAMA_RUNTIME_URL="${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}"
+  export ZEROLLAMA_RUNTIME_URL="${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:18081}"
   _MACOS_RT_HOST="$(runtime_url_host "${ZEROLLAMA_RUNTIME_URL}")"
-  _MACOS_RT_PORT="$(runtime_url_port "${ZEROLLAMA_RUNTIME_URL}" 8081)"
+  _MACOS_RT_PORT="$(runtime_url_port "${ZEROLLAMA_RUNTIME_URL}" 18081)"
+  if [[ "${ZEROLLAMA_ALLOW_PROD_PORTS:-0}" != "1" ]]; then
+    case "${_MACOS_RT_PORT}" in
+      8081|11434)
+        echo "refusing ZEROLLAMA_RUNTIME_URL=${ZEROLLAMA_RUNTIME_URL} (production port); use :18081 or ZEROLLAMA_ALLOW_PROD_PORTS=1" >&2
+        return 1
+        ;;
+    esac
+    local go_port
+    go_port="$(runtime_url_port "${OLLAMA_HOST}" 8080)"
+    case "${go_port}" in
+      11434)
+        echo "refusing OLLAMA_HOST=${OLLAMA_HOST} (production port); use :8080/:11435 or ZEROLLAMA_ALLOW_PROD_PORTS=1" >&2
+        return 1
+        ;;
+    esac
+  fi
 }
 
 macos_resolve_llama_cpp_root() {
@@ -158,8 +174,16 @@ macos_runtime_start_sidecar() {
   macos_export_llama_cpp_paths
   [[ -n "${require_model}" ]] && export LLAMA_MODEL="${require_model}"
   macos_runtime_log_paths
-  echo "starting Python runtime sidecar on ${ZEROLLAMA_RUNTIME_URL} (log: ${MACOS_RT_LOG})"
-  "${RUNTIME_UV_PYTHON}" -m runtime serve --host "${_MACOS_RT_HOST}" --port "${_MACOS_RT_PORT}" \
+  local serve_args=(serve --host "${_MACOS_RT_HOST}" --port "${_MACOS_RT_PORT}")
+  # WHY --config CLI: env-only ZEROLLAMA_RUNTIME_CONFIG was dropped under autoconfig
+  # restarts (multiseq metal sign-off stayed on apple_silicon.yaml slots=1).
+  if [[ -n "$config" ]]; then
+    serve_args+=(--config "$config")
+    echo "starting Python runtime sidecar on ${ZEROLLAMA_RUNTIME_URL} config=${config} (log: ${MACOS_RT_LOG})"
+  else
+    echo "starting Python runtime sidecar on ${ZEROLLAMA_RUNTIME_URL} (log: ${MACOS_RT_LOG})"
+  fi
+  "${RUNTIME_UV_PYTHON}" -m runtime "${serve_args[@]}" \
     >"${MACOS_RT_LOG}" 2>&1 &
   _MACOS_RT_PID=$!
 

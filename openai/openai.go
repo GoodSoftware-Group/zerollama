@@ -227,6 +227,10 @@ type ChatCompletionRequest struct {
 	// options.prompt_cache_key). Why on OpenAI surface: repeat video_url agent loops need per-thread
 	// ffmpeg cache without forcing clients to use the native /api/chat JSON shape.
 	PromptCacheKey *string `json:"prompt_cache_key,omitempty"`
+	// CachePrompt is llama-server / Odysseus KV reuse (`cache_prompt` on /completion and
+	// their OpenAI-shaped clients). WHY bound (not passthrough-drop): trap 77 would 400
+	// otherwise. false → options.cache_reset; true is the default (reuse when keyed).
+	CachePrompt *bool `json:"cache_prompt,omitempty"`
 	// SessionID is SGLang's first-class session identity (#29436). When prompt_cache_key is
 	// unset, it aliases into options.prompt_cache_key so OpenAI/SGLang clients share L3 +
 	// session video/ViT caches without a second field name.
@@ -1306,6 +1310,13 @@ func FromChatRequestWithContext(ctx context.Context, r ChatCompletionRequest, th
 		options["prompt_cache_key"] = strings.TrimSpace(*r.PromptCacheKey)
 	} else if r.SessionID != nil && strings.TrimSpace(*r.SessionID) != "" {
 		options["prompt_cache_key"] = strings.TrimSpace(*r.SessionID)
+	}
+	// llama.cpp cache_prompt:false = force miss; cache_prompt:true = reuse (default).
+	// Explicit options.cache_reset / zerollama.cache_reset already in options wins.
+	if r.CachePrompt != nil && !*r.CachePrompt {
+		if _, has := options["cache_reset"]; !has {
+			options["cache_reset"] = true
+		}
 	}
 	if r.EnablePrefixMMCache != nil && *r.EnablePrefixMMCache {
 		options["enable_prefix_mm_cache"] = true

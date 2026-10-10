@@ -8,7 +8,7 @@ Remote inference uses [Eliza Cloud](https://www.elizacloud.ai) by default. This 
 
 | Variable | Purpose |
 |----------|---------|
-| `ELIZACLOUD_API_KEY` | Organization API key; sent as `X-API-Key` on **all** outbound proxied requests to non-`ollama.com` hosts (inference, catalog, experimental routes). If unset, the server logs **once** per process that requests may return 401 until the key is configured. |
+| `ELIZACLOUD_API_KEY` | Organization API key; sent as `X-API-Key` on **all** outbound proxied requests to non-`ollama.com` hosts (inference, catalog, experimental routes). **Required to advertise** Eliza models in `/api/tags` / `/v1/models`. Without a key (or if the catalog returns 401/403), cloud rows are omitted — no false advertising of unusable `:cloud` tags. |
 | `OLLAMA_CLOUD_BASE_URL` | Optional override of the cloud base URL (default `https://www.elizacloud.ai:443`). Set `https://ollama.com:443` only if you rely on the legacy Ollama cloud **signing** flow. |
 | `OLLAMA_NO_CLOUD` | Disables remote cloud features entirely (no catalog merge, no proxy). |
 
@@ -33,9 +33,11 @@ Client-facing routes stay familiar (`/v1/chat/completions`, etc.). For Eliza, th
 
 ## Catalog merge
 
-`GET /api/tags` (and related listing) **merges** local models with models returned from `GET {base}/api/v1/models` when cloud is enabled.
+`GET /api/tags` (and related listing) **merges** local models with models returned from `GET {base}/api/v1/models` only when cloud is enabled **and** `ELIZACLOUD_API_KEY` is set and accepted (catalog HTTP 200). A rejected key clears the catalog cache so stale cloud rows do not linger.
 
 **Why merge:** Users should see **one** list: local GGUFs and remote Eliza ids, distinguished by metadata (`Details.Family: cloud`, `RemoteModel`, etc.).
+
+**Why gate on the key:** Advertising hundreds of `:cloud` names that will 401 on first completion is false advertising. Local-only installs stay local-only until a working key is configured.
 
 **Why singleflight + TTL cache:** Concurrent requests should not stampede the upstream catalog. **`singleflight`** deduplicates in-flight fetches. **`Cache-Control`** (`s-maxage` / `max-age`) sets refresh interval when present, clamped to a sane range; otherwise a default TTL applies so we do not hammer Eliza on every UI poll.
 
