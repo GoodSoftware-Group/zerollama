@@ -89,13 +89,51 @@ type routeResponse struct {
 var routeSurfaces = map[autoroute.Surface]bool{
 	autoroute.SurfaceChat: true, autoroute.SurfaceGenerate: true,
 	autoroute.SurfaceImage: true, autoroute.SurfaceImageEdit: true,
+	autoroute.SurfaceVideoGen: true, autoroute.SurfaceSpeech: true, autoroute.SurfaceMusic: true,
+	autoroute.SurfaceTranscribe: true, autoroute.SurfaceEmbed: true, autoroute.SurfaceRerank: true,
+	autoroute.SurfaceDecisions: true,
 }
 
-// routeSignalsFromBody builds Signals from a chat- or generate-shaped body. Surface is
-// inferred when empty: messages ⇒ chat; width/height ⇒ image; otherwise generate.
+const routeSurfaceList = "chat, generate, image, image_edit, video_gen, speech, music, transcribe, embed, rerank, decisions"
+
+// routeSignalsFromBody builds Signals from the target surface's normal request body, using
+// the same signal builders as the handlers so a dry run cannot disagree with real routing.
+// Surface is inferred when empty (messages ⇒ chat; width/height ⇒ image; otherwise
+// generate); the other surfaces must be named because their bodies are ambiguous.
 func routeSignalsFromBody(c *gin.Context, body []byte, surface autoroute.Surface) (autoroute.Signals, error) {
 	if surface != "" && !routeSurfaces[surface] {
-		return autoroute.Signals{}, fmt.Errorf("unsupported surface %q (chat, generate, image, image_edit)", surface)
+		return autoroute.Signals{}, fmt.Errorf("unsupported surface %q (%s)", surface, routeSurfaceList)
+	}
+	switch surface {
+	case autoroute.SurfaceVideoGen:
+		var req openai.VideoCreateRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			return autoroute.Signals{}, err
+		}
+		return videoRouteSignals(req), nil
+	case autoroute.SurfaceSpeech, autoroute.SurfaceMusic:
+		var req openai.SpeechCreateRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			return autoroute.Signals{}, err
+		}
+		return speechRouteSignals(req, surface), nil
+	case autoroute.SurfaceTranscribe:
+		// Same signals as TranscriptionHandler: the audio itself is never inspected.
+		return autoroute.Signals{Surface: autoroute.SurfaceTranscribe, HasAudio: true}, nil
+	case autoroute.SurfaceEmbed:
+		return autoroute.Signals{Surface: autoroute.SurfaceEmbed}, nil
+	case autoroute.SurfaceRerank:
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.Unmarshal(body, &req)
+		return autoroute.Signals{Surface: autoroute.SurfaceRerank, Text: req.Query}, nil
+	case autoroute.SurfaceDecisions:
+		var req api.DecisionsRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			return autoroute.Signals{}, err
+		}
+		return decisionsRouteSignals(req), nil
 	}
 	var probe struct {
 		Messages json.RawMessage `json:"messages"`

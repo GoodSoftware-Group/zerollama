@@ -1,0 +1,76 @@
+# Lab router.yaml for the AR4 A/B and the AR7 gate (docs/auto-router-findings.md Finding 10).
+#
+#   cp scripts/eval/router_lab.example.yaml ~/.ollama/router.yaml   # or ZEROLLAMA_ROUTER_CONFIG=…
+#   # edit the model tags below to what `zerollama ls` shows on the lab node
+#   ./scripts/eval/router_ab.py --host http://127.0.0.1:11435 \
+#       --routers agent-score agent-jev scripts/eval/router_ab_sample.jsonl
+#   ./scripts/eval/router_eval.py --host http://127.0.0.1:11435 \
+#       --router agent-score --router agent-jev --router smart --router auto \
+#       --judge <judge-model> --baseline <mid-model> --quality-sample 40 \
+#       --json /tmp/router_eval.json testdata/router_eval/prompts.jsonl
+#
+# WHY three routers with identical policies / candidates: the A/B must differ only in the
+# classifier, or it measures the config instead of the classifier. `smart` adds AR5
+# multi-question scoring on the same candidates; implicit `auto` (no entry here) is the
+# deterministic baseline. Lab port only — never point this at production :11434.
+#
+# Models: SMALL / MID / CODER span the tiers; LAYA is the decider (GGUF arch=laya);
+# SCORER is a small chat model that supports /api/score (LA11 score classifier).
+
+routers:
+  agent-score:
+    classifier: llama3.2:1b # SCORER
+    fallback: qwen3:8b # MID
+    policies: &policies
+      - {label: code, description: "write, fix or explain code"}
+      - {label: math, description: "calculation, proof or quantitative reasoning"}
+      - {label: chat, description: "conversation, advice or general knowledge"}
+      - {label: extract, description: "pull structured facts out of the given text"}
+      - {label: creative, description: "stories, poems, marketing copy"}
+    candidates: &candidates
+      - {model: llama3.2:3b, labels: [chat, extract], tier: low, strengths: {task: [chat, extract]}, max_difficulty: 2}
+      - {model: qwen3:8b, labels: [chat, creative, math, extract], tier: mid, strengths: {task: [chat, creative, math]}}
+      - {model: qwen3-coder:30b, labels: [code, math], tier: high, strengths: {task: [code, math]}}
+
+  agent-jev:
+    classifier: jev
+    decider: laya # LAYA
+    decider_timeout: 150ms
+    fallback: qwen3:8b
+    policies: *policies
+    candidates: *candidates
+
+  smart:
+    classifier: jev
+    decider: laya
+    decider_timeout: 250ms
+    fallback: qwen3:8b
+    escalate_below: 0.55
+    escalate_at: 4
+    questions:
+      - id: task
+        type: choice
+        instructions: What kind of work is this?
+        criteria:
+          code: write, fix or explain code
+          math: calculation, proof or quantitative reasoning
+          chat: conversation, advice or general knowledge
+          extract: pull structured facts out of the given text
+          creative: stories, poems, marketing copy
+      - id: difficulty
+        type: score
+        instructions: How hard is this for a small model?
+        labels: ["1", "2", "3", "4", "5"]
+      - id: reasoning
+        type: noul
+        instructions: Does answering need multi-step reasoning?
+      - id: output_modality
+        type: choice
+        instructions: What should the reply be?
+        criteria:
+          text: a written answer
+          image: draw, render, illustrate or edit a picture
+          speech: read aloud or say it
+          video: make a clip or animation
+          music: compose a song or melody
+    candidates: *candidates

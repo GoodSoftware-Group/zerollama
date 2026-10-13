@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -281,5 +282,41 @@ routers:
 	dec, _, err = s.resolveRouter(t.Context(), "smart", sig)
 	if err != nil || dec.Reason != "decider-fallback" || dec.Decider != "clm" {
 		t.Fatalf("fail-open: dec=%+v err=%v", dec, err)
+	}
+}
+
+// TestLabExampleRouterYAML keeps scripts/eval/router_lab.example.yaml loadable and its A/B
+// routers comparable (same policies and candidates, different classifier).
+func TestLabExampleRouterYAML(t *testing.T) {
+	t.Setenv("ZEROLLAMA_ROUTER_CONFIG", filepath.Join("..", "scripts", "eval", "router_lab.example.yaml"))
+	routerFileMu.Lock()
+	routerFileCache = nil
+	routerFileMu.Unlock()
+	t.Cleanup(func() {
+		routerFileMu.Lock()
+		routerFileCache = nil
+		routerFileMu.Unlock()
+	})
+	file, err := loadRouterFile()
+	if err != nil || file == nil {
+		t.Fatalf("load: %v", err)
+	}
+	score, jev, smart := file.Routers["agent-score"], file.Routers["agent-jev"], file.Routers["smart"]
+	if routerIsJev(score) || !routerIsJev(jev) || !routerIsJev(smart) {
+		t.Fatalf("classifiers: score=%q jev=%q smart=%q", score.Classifier, jev.Classifier, smart.Classifier)
+	}
+	a, _ := json.Marshal([]any{score.Policies, score.Candidates})
+	b, _ := json.Marshal([]any{jev.Policies, jev.Candidates})
+	if string(a) != string(b) {
+		t.Fatal("A/B routers must share policies and candidates")
+	}
+	if err := validateJevQuestions(smart.Questions); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := findQuestion(smart.Questions, defaultModalityQuestion); !ok {
+		t.Fatal("smart should exercise the AR8 output_modality question")
+	}
+	if _, err := buildJevMultiBody(smart.Decider, smart.Questions, "x"); err != nil {
+		t.Fatal(err)
 	}
 }

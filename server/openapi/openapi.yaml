@@ -2044,7 +2044,10 @@ components:
           type: string
         surface:
           type: string
-          enum: [chat, generate, image, image_edit]
+          enum: [chat, generate, image, image_edit, video_gen, speech, music, transcribe, embed, rerank, decisions]
+          description: >
+            Inferred for chat / generate / image when omitted; required for the others, whose body
+            is that endpoint's normal request (e.g. speech: input + voice; decisions: state + questions).
     RouteResponse:
       allOf:
         - $ref: "#/components/schemas/RouterDecision"
