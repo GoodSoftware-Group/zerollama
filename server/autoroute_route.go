@@ -75,7 +75,12 @@ func (s *Server) decideAuto(ctx context.Context, router string, sig autoroute.Si
 		}
 		cands = kept
 	}
+	var helperRejections []autoroute.Rejection
+	if allow == nil && sig.Surface.IsText() {
+		cands, helperRejections = withoutRouterHelpers(cands)
+	}
 	d, err := autoroute.Decide(cands, sig, s.routeAvailability(ctx, sig))
+	d.Rejected = append(helperRejections, d.Rejected...)
 	dec := &RouterDecision{
 		Router:     router,
 		Classifier: "deterministic",
@@ -89,6 +94,66 @@ func (s *Server) decideAuto(ctx context.Context, router string, sig autoroute.Si
 		return dec, fmt.Errorf("router %q: %w", router, err)
 	}
 	return dec, nil
+}
+
+// withoutRouterHelpers drops models that router.yaml routers use internally (score
+// classifier, jev decider, embedder, reranker) from implicit "auto" text candidates.
+//
+// WHY: found on real models (docs/auto-router-findings.md Finding 12) — the warm bonus made
+// implicit auto send every prompt to the resident 1B score classifier, because it was the
+// only model loaded. Helpers stay eligible when a router also lists them as a candidate,
+// and the filter is soft: a node whose only models are helpers still gets an answer.
+func withoutRouterHelpers(cands []autoroute.Candidate) ([]autoroute.Candidate, []autoroute.Rejection) {
+	helpers, serving := routerHelperModels()
+	if len(helpers) == 0 {
+		return cands, nil
+	}
+	var kept []autoroute.Candidate
+	var rejected []autoroute.Rejection
+	for _, c := range cands {
+		if role, ok := helpers[c.Name]; ok && !serving[c.Name] {
+			rejected = append(rejected, autoroute.Rejection{Model: c.Name, Reason: "router helper (" + role + "), not an implicit auto pick"})
+			continue
+		}
+		kept = append(kept, c)
+	}
+	if len(kept) == 0 {
+		return cands, nil
+	}
+	return kept, rejected
+}
+
+// routerHelperModels returns models router.yaml uses as helpers (name → role) and the set
+// of models any router lists as a serving candidate or fallback.
+func routerHelperModels() (map[string]string, map[string]bool) {
+	file, err := loadRouterFile()
+	if err != nil || file == nil {
+		return nil, nil
+	}
+	norm := func(n string) string { return model.ParseName(strings.TrimSpace(n)).DisplayShortest() }
+	helpers, serving := map[string]string{}, map[string]bool{}
+	add := func(n, role string) {
+		if strings.TrimSpace(n) != "" {
+			helpers[norm(n)] = role
+		}
+	}
+	for _, spec := range file.Routers {
+		switch strings.ToLower(strings.TrimSpace(spec.Classifier)) {
+		case "", "knn", "rerank", "colbert", "jev":
+		default:
+			add(spec.Classifier, "score classifier")
+		}
+		add(spec.Decider, "jev decider")
+		add(spec.Embedder, "embedder")
+		add(spec.Reranker, "reranker")
+		for _, c := range spec.Candidates {
+			serving[norm(c.Model)] = true
+		}
+		if strings.TrimSpace(spec.Fallback) != "" {
+			serving[norm(spec.Fallback)] = true
+		}
+	}
+	return helpers, serving
 }
 
 // enforceRouterSurface checks the model an LA11 classifier picked against the request's

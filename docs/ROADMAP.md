@@ -530,6 +530,26 @@ Zero-shot span NER (`text` + `labels[]` → spans + probs) — **not** System-1 
 
 ---
 
+### Auto-router (`model: "auto"`)
+
+Pick the best **local** model per request across every surface — deterministic capability + availability dispatch first, Jev decisions only for what the request does not say (difficulty / escalation, cross-modal intent). Extends LA11 rather than replacing it.
+
+**Why a separate track:** Clients hard-code one model name; a router name on `/v1/images/*` could resolve to a chat model; routing ignored residency, so it swapped models on single-GPU hosts. Docs: [auto-router.md](./auto-router.md) · [findings](./auto-router-findings.md).
+
+| Milestone | Goal | Owner | Status |
+|-----------|------|--------|--------|
+| **AR0** | Refactors (`runDecisions`, candidate inventory, pure video admission, shared bench reader) | Go | **Done (Oct 2026)** |
+| **AR1** | Deterministic implicit `auto` — chat / generate / vision / video understanding; LA11 surface gate | Go | **Done (Oct 2026)** |
+| **AR2** | `POST /v1/route` dry run, `/api/router/inventory`, `auto` on `/v1/models` (+ retrieve), version capability, metrics | Go | **Done (Oct 2026)** |
+| **AR3** | All surfaces (video, speech, music, transcription, pinned embed / rerank, decisions); routing ahead of runtime / SGLang proxies | Go | **Done (Oct 2026)** |
+| **AR4** | `classifier: jev` — one choice question via local decider; fail-open; decider prewarm | Go | **Done (Oct 2026)** — score-vs-jev A/B pending lab run |
+| **AR5** | Multi-question jev — strengths, difficulty bands, tier-high escalation (Laya act head), weights | Go | **Done (Oct 2026)** — **opt-in** until AR7 gate |
+| **AR6** | Sticky per-conversation routing + 60 s decision cache | Go | **Done (Oct 2026)** |
+| **AR7** | Eval harness (129 labeled prompts, `router_eval.py`, gate) | Go + scripts | **Harness done** — gate result **pending lab run** |
+| **AR8** | Cross-modal advisory (`X-Zerollama-Route-Suggest`, ready request bodies) | Go | **Done (Oct 2026)** |
+| **AR9** | Server-side modality handoff in chat responses | Go | **Deferred** — advisory until AR7 shows suggestion accuracy on real traffic |
+| **AR10** | Feedback loop → KNN corpus / Laya calibration | Go | **Parked** |
+
 ## Fleet scheduling (multi-node)
 
 **Why a separate track:** Agents and integrations often see **many zerollama hosts**, not one. Per-node schedulers (Go + Python) are correct locally but do not answer “**which box has this model warm?**” or “**may I cancel and try another node without wasting VRAM?**” Scatter-gather and long quote/reservation windows **waste GPU work** on constrained fleets; the target is a **thin management node**, **warm-model routing**, and **honest status** over the wire.

@@ -189,3 +189,18 @@ routers:
 		t.Fatalf("router-as-decider must be refused and fall back: dec=%+v err=%v", dec, err)
 	}
 }
+
+func TestRouterDecisionJSONWithZeroProbabilities(t *testing.T) {
+	probs := map[string]float64{"code": 1, "chat": 0, "math": 0} // Laya rounds tiny probs to 0
+	dec, err := decideRouterWith(t.Context(), "agent", jevSpec(), "fix my loop", routerBackends{jev: fakeJev("code", probs, true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(dec)
+	if err != nil {
+		t.Fatalf("decision with zero probabilities must encode: %v", err)
+	}
+	if !strings.Contains(string(b), `"label":"chat","log_prob":null`) || !strings.Contains(string(b), `"label":"code","log_prob":0`) {
+		t.Fatalf("json = %s", b)
+	}
+}

@@ -289,3 +289,104 @@ func TestRouterDecisionJSONCarriesAuto(t *testing.T) {
 		t.Fatalf("json = %s", b)
 	}
 }
+
+func TestImplicitAutoSkipsRouterHelpers(t *testing.T) {
+	s := newRouteTestServer(t)
+	createRouteTestModel(t, s, "plain", routePlainTemplate)
+	createRouteTestModel(t, s, "tooly", routeToolsTemplate)
+	sig := autoroute.Signals{Surface: autoroute.SurfaceChat, Text: "hi"}
+
+	// plain is only a score classifier ⇒ never an implicit auto pick.
+	resetRouterFile(t, `
+routers:
+  agent:
+    classifier: plain
+    candidates:
+      - {model: tooly, labels: [chat]}
+`)
+	dec, err := s.decideAuto(t.Context(), "auto", sig, nil)
+	if err != nil || !strings.HasPrefix(dec.Candidate, "tooly") {
+		t.Fatalf("helper picked: %+v %v", dec, err)
+	}
+	found := false
+	for _, r := range dec.Auto.Rejected {
+		if strings.HasPrefix(r.Model, "plain") && strings.Contains(r.Reason, "score classifier") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("helper rejection missing: %+v", dec.Auto.Rejected)
+	}
+
+	// A helper that a router also serves from stays eligible.
+	resetRouterFile(t, `
+routers:
+  agent:
+    classifier: plain
+    candidates:
+      - {model: plain, labels: [chat]}
+      - {model: tooly, labels: [code]}
+`)
+	dec, _ = s.decideAuto(t.Context(), "auto", sig, nil)
+	for _, r := range dec.Auto.Rejected {
+		if strings.Contains(r.Reason, "router helper") {
+			t.Fatalf("serving helper rejected: %+v", r)
+		}
+	}
+
+	// Explicit router allow-lists are untouched (only implicit auto filters helpers).
+	resetRouterFile(t, `
+routers:
+  agent:
+    classifier: plain
+    candidates:
+      - {model: tooly, labels: [chat]}
+`)
+	dec, err = s.decideAuto(t.Context(), "agent", sig, map[string]bool{"plain:latest": true})
+	if err != nil || !strings.HasPrefix(dec.Candidate, "plain") {
+		t.Fatalf("allow-list path filtered helpers: %+v %v", dec, err)
+	}
+}
+
+func TestImplicitAutoHelperFilterIsSoft(t *testing.T) {
+	s := newRouteTestServer(t)
+	createRouteTestModel(t, s, "plain", routePlainTemplate)
+	resetRouterFile(t, `
+routers:
+  agent:
+    decider: plain
+    classifier: jev
+    candidates:
+      - {model: gone-model, labels: [chat]}
+`)
+	dec, err := s.decideAuto(t.Context(), "auto", autoroute.Signals{Surface: autoroute.SurfaceChat, Text: "hi"}, nil)
+	if err != nil || !strings.HasPrefix(dec.Candidate, "plain") {
+		t.Fatalf("only-helper node must still answer: %+v %v", dec, err)
+	}
+}
+
+func TestRouteInventoryReportsLayaAsDecisionOnly(t *testing.T) {
+	s := newRouteTestServer(t)
+	createRouteTestModel(t, s, "plain", routePlainTemplate)
+	createRouteTestModelKV(t, s, "laya", routePlainTemplate, ggml.KV{"general.architecture": "laya"})
+
+	cands, _, err := routeCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cands {
+		if strings.HasPrefix(c.Name, "laya") && (len(c.Capabilities) != 1 || c.Capabilities[0] != model.CapabilityDecision) {
+			t.Fatalf("laya caps = %v, want [decision]", c.Capabilities)
+		}
+	}
+	// A chat turn must never land on the decision encoder.
+	dec, err := s.decideAuto(t.Context(), "auto", autoroute.Signals{Surface: autoroute.SurfaceChat, Text: "hi"}, nil)
+	if err != nil || !strings.HasPrefix(dec.Candidate, "plain") {
+		t.Fatalf("chat routed to %+v (%v)", dec, err)
+	}
+	// And decisions route to it.
+	dec, err = s.decideAuto(t.Context(), "auto", autoroute.Signals{Surface: autoroute.SurfaceDecisions}, nil)
+	if err != nil || !strings.HasPrefix(dec.Candidate, "laya") {
+		t.Fatalf("decisions routed to %+v (%v)", dec, err)
+	}
+}

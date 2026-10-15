@@ -30,6 +30,13 @@ func loadRouteCandidate(ref autoroute.Ref) (autoroute.Candidate, error) {
 		return autoroute.Candidate{}, autoroute.ErrSkip
 	}
 	caps := m.Capabilities()
+	// WHY: Laya GGUFs report only "completion" from Model.Capabilities (no pooling_type,
+	// no arch awareness) — the decisions handler detects them by family instead. Found on a
+	// real node (findings Finding 13): the router would treat a decision encoder as a chat
+	// model. In the router's view a Laya model serves decisions and nothing else.
+	if isLayaDecisionModel(m) {
+		caps = []model.Capability{model.CapabilityDecision}
+	}
 	return autoroute.Candidate{
 		Capabilities:     caps,
 		Backends:         maps.Clone(m.Config.ModalityBackends),

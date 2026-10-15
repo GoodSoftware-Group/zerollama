@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -318,5 +319,30 @@ func TestLabExampleRouterYAML(t *testing.T) {
 	}
 	if _, err := buildJevMultiBody(smart.Decider, smart.Questions, "x"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestJevMultiLatencyIncludesDecider(t *testing.T) {
+	s := newRouteTestServer(t)
+	createRouteTestModel(t, s, "plain", routePlainTemplate)
+	srv, _ := fakeCLM(t, func(map[string]any) map[string]any {
+		time.Sleep(40 * time.Millisecond)
+		return map[string]any{"task": map[string]any{"type": "choice", "choice": "chat", "probabilities": map[string]float64{"chat": 1}}}
+	})
+	t.Setenv("ZEROLLAMA_CLM_URL", srv.URL)
+	resetRouterFile(t, `
+routers:
+  smart:
+    classifier: jev
+    decider: clm
+    decider_timeout: 5s
+    questions:
+      - {id: task, type: choice, instructions: "kind?", criteria: {chat: talk}}
+    candidates:
+      - {model: plain, tier: low, strengths: {task: [chat]}}
+`)
+	dec, _, err := s.resolveRouter(t.Context(), "smart", autoroute.Signals{Surface: autoroute.SurfaceChat, Text: "hi"})
+	if err != nil || dec.LatencyMs < 40 {
+		t.Fatalf("latency %dms must include the 40ms decider call (err %v)", dec.LatencyMs, err)
 	}
 }

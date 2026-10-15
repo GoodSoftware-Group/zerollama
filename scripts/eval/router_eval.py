@@ -9,17 +9,24 @@ so sticky / cache memory never skews results) and scores each router:
   strength     row task ∈ chosen candidate strengths (router.yaml strengths)
   latency      server decision latency p50 / p95
   quality      optional: --judge MODEL --baseline MODEL generates real answers from the
-               routed model and a fixed baseline, and a judge model picks A / B / TIE
+               routed model and a fixed baseline; each judge (repeat --judge for a panel)
+               sees every pair in both orders, and only a verdict every judge gives in
+               both orders counts as a win or loss — anything else is a tie
 
 Gate (AR5 leaves opt-in only on PASS): capability 100% of servable rows, decision p50 ≤
---gate-ms (default 50), and with a quality run: routed wins+ties ≥ 50% and wins ≥ losses.
+--gate-ms (default 50) for deterministic routing or --gate-ms-model (default 150) for a
+router.yaml router whose classifier calls a model (jev decider, score, knn, rerank), and
+with a quality run: routed wins+ties ≥ 50% and wins ≥ losses
+over ≥ --min-pairs real (non-same-model) pairs. A sign-test p is printed so a "pass" on a
+handful of pairs is not mistaken for evidence.
 Without --judge the gate is INCOMPLETE — routing accuracy alone cannot show quality.
 
     # dry-run scoring only (safe; nothing generates)
     ./scripts/eval/router_eval.py --router auto --router smart testdata/router_eval/prompts.jsonl
 
     # full gate on a lab node
-    ./scripts/eval/router_eval.py --router smart --judge qwen3:32b --baseline qwen3:8b \\
+    ./scripts/eval/router_eval.py --router smart --judge qwen3:32b --judge mistral-small3.2:24b \\
+        --baseline qwen3:8b \\
         --quality-sample 40 --json /tmp/router_eval.json testdata/router_eval/prompts.jsonl
 
     ./scripts/eval/router_eval.py --check testdata/router_eval/prompts.jsonl   # schema only
@@ -29,7 +36,10 @@ Stdlib only. Default host is the lab port — never point agent work at producti
 
 import argparse
 import base64
+import hashlib
 import json
+import math
+import os
 import random
 import sys
 import time
@@ -69,6 +79,25 @@ def http_json(host, method, path, body=None, timeout=60.0):
         except ValueError:
             payload = {"error": f"HTTP {e.code}"}
         return e.code, payload, (time.monotonic() - start) * 1000
+    except (TimeoutError, urllib.error.URLError, ConnectionError) as e:
+        # One stalled call must not kill a long judged run; callers treat 0 as failed.
+        return 0, {"error": f"{type(e).__name__}: {e}"}, (time.monotonic() - start) * 1000
+
+
+def only_loaded(host, model, timeout):
+    """Unload every other model so `model` gets the whole GPU.
+
+    WHY: with the baseline still resident the scheduler fits a 27B judge half on CPU
+    (lab run 4: 2.9 tok/s prefill, 300 s timeouts) instead of evicting it.
+    """
+    status, ps, _ = http_json(host, "GET", "/api/ps", timeout=timeout)
+    for m in (ps.get("models") or []) if status == 200 else []:
+        if norm(m.get("name")) != norm(model):
+            http_json(host, "POST", "/api/generate", {"model": m["name"], "keep_alive": 0}, timeout)
+
+
+def log(msg):
+    print(msg, file=sys.stderr, flush=True)
 
 
 def norm(name):
@@ -142,28 +171,99 @@ def pct(xs, q):
     return xs[min(len(xs) - 1, int(round(q * (len(xs) - 1))))]
 
 
-def judge_pair(host, judge, question, routed, baseline, rng, timeout):
-    """Returns 'win' | 'loss' | 'tie' for the routed answer (order randomised)."""
-    flip = rng.random() < 0.5
-    a, b = (baseline, routed) if flip else (routed, baseline)
+def judge_once(host, judge, question, a, b, timeout):
+    """Returns 'A' | 'B' | 'TIE' (unparseable or failed calls count as TIE)."""
+    key = hashlib.sha256("\t".join((norm(judge), question, a, b)).encode()).hexdigest()
+    if key not in _VERDICTS:
+        v = _judge_call(host, judge, question, a, b, timeout)
+        if v is None:
+            return "TIE"  # failed call: not cached, a resumed run retries it
+        _VERDICTS[key] = v
+    return _VERDICTS[key]
+
+
+def _judge_call(host, judge, question, a, b, timeout):
     prompt = (f"Question:\n{question}\n\nAnswer A:\n{a}\n\nAnswer B:\n{b}\n\n"
               "Which answer is better (correct, complete, clear)? Reply with exactly one word: A, B or TIE.")
     status, out, _ = http_json(host, "POST", "/api/chat", {
-        "model": judge, "stream": False, "options": {"temperature": 0, "num_predict": 8},
+        "model": judge, "stream": False, "think": False, "options": {"temperature": 0, "num_predict": 8},
         "messages": [{"role": "system", "content": "You are an impartial judge."},
                      {"role": "user", "content": prompt}]}, timeout)
-    verdict = (out.get("message", {}).get("content", "") if status == 200 else "").strip().upper()
+    if status != 200:
+        return None
+    verdict = out.get("message", {}).get("content", "").strip().upper()
     if verdict.startswith("TIE") or verdict[:1] not in ("A", "B"):
-        return "tie"
-    routed_won = (verdict[0] == "B") if flip else (verdict[0] == "A")
-    return "win" if routed_won else "loss"
+        return "TIE"
+    return verdict[0]
+
+
+def judge_pair(host, judge, question, routed, baseline, timeout):
+    """Returns 'win' | 'loss' | 'tie' for the routed answer.
+
+    WHY both orders: LLM judges favour one position; a single randomised order turns that
+    bias into noise (lab run 3 swung 8/2/6 → 5/2/9 on 16 pairs). A preference that does not
+    survive swapping A and B is not a preference, so it scores as a tie.
+    """
+    first = judge_once(host, judge, question, routed, baseline, timeout)
+    second = judge_once(host, judge, question, baseline, routed, timeout)
+    if first == "A" and second == "B":
+        return "win"
+    if first == "B" and second == "A":
+        return "loss"
+    return "tie"
+
+
+def consensus(verdicts):
+    """A panel win/loss needs every judge to agree; any split is a tie."""
+    return verdicts[0] if len(set(verdicts)) == 1 else "tie"
+
+
+def sign_test_p(wins, losses):
+    """Two-sided exact binomial sign test on wins vs losses (ties dropped)."""
+    n = wins + losses
+    if n == 0:
+        return 1.0
+    k = min(wins, losses)
+    tail = sum(math.comb(n, i) for i in range(k + 1)) / 2 ** n
+    return min(1.0, 2 * tail)
 
 
 def answer(host, model, row, timeout):
+    # think: False — compare direct answers; a thinking model could spend the whole
+    # num_predict budget on reasoning and return empty content.
     status, out, ms = http_json(host, "POST", "/api/chat", {
-        "model": model, "stream": False, "messages": messages_for(row),
+        "model": model, "stream": False, "think": False, "messages": messages_for(row),
         "options": {"num_predict": 512, "zerollama": {"route": "fresh"}}}, timeout)
     return (out.get("message", {}).get("content", "") if status == 200 else None), ms
+
+
+_ANSWERS = {}   # "model\trow" → answer text (None = failed)
+_VERDICTS = {}  # "judge\tq\ta\tb" hash → 'A' | 'B' | 'TIE'
+
+
+def load_cache(path):
+    if path and os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            c = json.load(f)
+        _ANSWERS.update(c.get("answers", {}))
+        _VERDICTS.update(c.get("verdicts", {}))
+        log(f"cache: {len(_ANSWERS)} answers, {len(_VERDICTS)} verdicts from {path}")
+
+
+def save_cache(path):
+    if path:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"answers": _ANSWERS, "verdicts": _VERDICTS}, f)
+        os.replace(tmp, path)
+
+
+def cached_answer(args, model, row):
+    # Failed generations are not cached so a resumed run retries them.
+    key = f"{norm(model)}\t{row['id']}"
+    if _ANSWERS.get(key) is None:
+        _ANSWERS[key], _ = answer(args.host, model, row, args.timeout)
+    return _ANSWERS[key]
 
 
 def evaluate(args, rows, router, inv):
@@ -177,11 +277,21 @@ def evaluate(args, rows, router, inv):
          "cap_failures": [], "tier": {"exact": 0, "under": 0, "over": 0, "scored": 0},
          "strength": {"hit": 0, "scored": 0}, "escalated": 0, "latency_ms": [], "rows": [],
          "suggest": {"cross": 0, "hit": 0, "text": 0, "false_pos": 0}}
+    # Warm the decider first: a cold load blows decider_timeout and the first rows would
+    # silently fall back (the judge phases below unload everything else).
+    for _ in range(2):
+        http_json(args.host, "POST", "/v1/route", route_body(router, rows[0]), args.timeout)
     for row in rows:
         status, out, wall = http_json(args.host, "POST", "/v1/route", route_body(router, row), args.timeout)
         m["n"] += 1
         need = required_caps(row)
-        servable = any(need <= caps for caps in caps_by_model.values())
+        # A router.yaml router can only pick from its own candidates (+ fallback): a row that
+        # some other local model could serve is still unservable *for this router*.
+        pool_caps = caps_by_model
+        if cand_policy:
+            allowed = set(cand_policy) | ({norm(summary["fallback"])} if summary.get("fallback") else set())
+            pool_caps = {m: c for m, c in caps_by_model.items() if m in allowed}
+        servable = any(need <= caps for caps in pool_caps.values())
         sug = (out.get("suggestion") or {}).get("modality")
         rec = {"id": row["id"], "status": status, "candidate": out.get("candidate"), "suggest": sug,
                "reason": out.get("reason"), "escalated": bool(out.get("escalated")), "wall_ms": round(wall, 1)}
@@ -227,23 +337,56 @@ def evaluate(args, rows, router, inv):
                 if rec["status"] == 200 and row["surface"] == "chat" and row["output"] == "text"
                 and not row.get("attach")]
         rng.shuffle(pool)
-        q = {"win": 0, "tie": 0, "loss": 0, "same_model": 0, "failed": 0}
-        for row, rec in pool[:args.quality_sample]:
-            if norm(rec["candidate"]) == norm(args.baseline):
-                q["tie"] += 1
-                q["same_model"] += 1
-                continue
-            routed, _ = answer(args.host, rec["candidate"], row, args.timeout)
-            base, _ = answer(args.host, args.baseline, row, args.timeout)
+        sample = pool[:args.quality_sample]
+        q = {"win": 0, "tie": 0, "loss": 0, "same_model": 0, "failed": 0,
+             "judges": {j: {"win": 0, "tie": 0, "loss": 0} for j in args.judge}, "by_model": {}}
+        # WHY batched phases: judging row by row loads routed model → baseline → judge for
+        # every pair, so a big judge thrashes VRAM (found on a 24 GB card with a 27B judge).
+        # Generate grouped by model, then judge everything; answers are cached across
+        # routers because they share the baseline and the sampled prompts.
+        todo = [(row, rec) for row, rec in sample if norm(rec["candidate"]) != norm(args.baseline)]
+        q["same_model"] = len(sample) - len(todo)
+        q["tie"] += q["same_model"]
+        by_model = {}
+        for row, rec in todo:
+            by_model.setdefault(rec["candidate"], []).append(row)
+        by_model.setdefault(args.baseline, []).extend(row for row, _ in todo)
+        for model, model_rows in by_model.items():
+            only_loaded(args.host, model, args.timeout)
+            log(f"[{router}] generating {len(model_rows)} answers with {model}")
+            for row in model_rows:
+                cached_answer(args, model, row)
+            save_cache(args.cache)
+        pairs = []
+        for row, rec in todo:
+            routed = cached_answer(args, rec["candidate"], row)
+            base = cached_answer(args, args.baseline, row)
             if routed is None or base is None:
                 q["failed"] += 1
                 continue
-            q[judge_pair(args.host, args.judge, row["prompt"], routed, base, rng, args.timeout)] += 1
+            pairs.append((row, rec, routed, base))
+        # Judge-major so each judge loads once (same VRAM reason as the generation phase).
+        verdicts = {}
+        for j in args.judge:
+            only_loaded(args.host, j, args.timeout)
+            log(f"[{router}] judging {len(pairs)} pairs × 2 orders with {j}")
+            for row, _, routed, base in pairs:
+                v = judge_pair(args.host, j, row["prompt"], routed, base, args.timeout)
+                verdicts.setdefault(row["id"], []).append(v)
+                q["judges"][j][v] += 1
+            save_cache(args.cache)
+        for row, rec, _, _ in pairs:
+            v = consensus(verdicts[row["id"]])
+            q[v] += 1
+            bm = q["by_model"].setdefault(rec["candidate"], {"win": 0, "tie": 0, "loss": 0})
+            bm[v] += 1
+            rec["judged"] = {"verdict": v, "judges": verdicts[row["id"]]}
+        q["sign_p"] = sign_test_p(q["win"], q["loss"])
         m["quality"] = q
     return m
 
 
-def gate(m, gate_ms):
+def gate(m, gate_ms, min_pairs=10):
     reasons, fail = [], False
     servable_caps = m["cap_rows"]
     if servable_caps and m["cap_ok"] < servable_caps:
@@ -258,12 +401,24 @@ def gate(m, gate_ms):
     q = m.get("quality")
     if not q:
         return ("FAIL" if fail else "INCOMPLETE"), reasons + ["no quality run (--judge/--baseline)"]
+    # Same-model "ties" carry no quality signal and failed pairs were never judged, so the
+    # gate needs enough real routed-vs-baseline comparisons before it can PASS.
     judged = q["win"] + q["tie"] + q["loss"]
-    if judged == 0:
-        return "FAIL" if fail else "INCOMPLETE", reasons + ["quality run judged nothing"]
-    if (q["win"] + q["tie"]) / judged < 0.5 or q["win"] < q["loss"]:
+    real = judged - q["same_model"]
+    sample = judged + q["failed"]
+    # WHY absolute, not a share of the sample: a router that often picks the baseline is
+    # agreeing with it, not dodging the test (lab run 2: 34/50 same-model picks). What the
+    # gate must refuse is too few real judgements or too many failed generations.
+    if q["failed"]:
+        reasons.append(f"{q['failed']} pairs failed to generate")
+    if q["failed"] > sample // 4:
+        return ("FAIL" if fail else "INCOMPLETE"), reasons + [f"{q['failed']}/{sample} pairs failed — fix generation first"]
+    if real < min_pairs:
+        return ("FAIL" if fail else "INCOMPLETE"), reasons + [f"only {real} real judged pairs (need ≥ {min_pairs}; raise --quality-sample)"]
+    real_ties = q["tie"] - q["same_model"]
+    if (q["win"] + real_ties) / real < 0.5 or q["win"] < q["loss"]:
         fail = True
-        reasons.append(f"quality W/T/L {q['win']}/{q['tie']}/{q['loss']}")
+        reasons.append(f"quality W/T/L {q['win']}/{real_ties}/{q['loss']} over {real} real pairs")
     return ("FAIL" if fail else "PASS"), reasons
 
 
@@ -273,12 +428,19 @@ def main():
     ap.add_argument("--router", action="append", default=[], help="router name (repeatable); default auto")
     ap.add_argument("--host", default="http://127.0.0.1:11435")
     ap.add_argument("--timeout", type=float, default=120.0)
-    ap.add_argument("--judge", help="judge model for the quality run")
+    ap.add_argument("--judge", action="append", default=[],
+                    help="judge model for the quality run (repeat for a panel; all must agree)")
     ap.add_argument("--baseline", help="fixed baseline model the routed answers are compared to")
     ap.add_argument("--quality-sample", type=int, default=30)
     ap.add_argument("--seed", type=int, default=7)
-    ap.add_argument("--gate-ms", type=float, default=50.0)
+    ap.add_argument("--gate-ms", type=float, default=50.0, help="p50 budget for deterministic routing")
+    # WHY a second budget: a model-backed classifier pays for a forward pass (Laya: ~30 ms
+    # encode + ~45 ms head on a 7900 XTX), which no amount of Go tuning brings under 50 ms.
+    ap.add_argument("--gate-ms-model", type=float, default=150.0,
+                    help="p50 budget for routers whose classifier calls a model")
+    ap.add_argument("--min-pairs", type=int, default=10, help="real (non-same-model) judged pairs needed")
     ap.add_argument("--json", help="write per-row results and metrics here")
+    ap.add_argument("--cache", help="answers/verdicts cache file; a rerun resumes from it")
     ap.add_argument("--check", action="store_true", help="validate the dataset and exit")
     args = ap.parse_args()
 
@@ -288,7 +450,10 @@ def main():
         return 0
     if bool(args.judge) != bool(args.baseline):
         ap.error("--judge and --baseline go together")
+    if args.baseline and norm(args.baseline) in {norm(j) for j in args.judge}:
+        ap.error("the baseline cannot also judge its own answers")
     routers = args.router or ["auto"]
+    load_cache(args.cache)
 
     status, inv, _ = http_json(args.host, "GET", "/api/router/inventory", timeout=args.timeout)
     if status != 200:
@@ -300,7 +465,8 @@ def main():
           f"{'strength':>10}{'esc':>5}{'p50ms':>7}{'p95ms':>7}  gate")
     for r in routers:
         m = evaluate(args, rows, r, inv)
-        verdict, reasons = gate(m, args.gate_ms)
+        model_backed = bool((inv.get("routers", {}).get(r) or {}).get("classifier"))
+        verdict, reasons = gate(m, args.gate_ms_model if model_backed else args.gate_ms, args.min_pairs)
         m["gate"] = {"verdict": verdict, "reasons": reasons}
         results.append(m)
         worst = max(worst, {"PASS": 0, "INCOMPLETE": 0, "FAIL": 1}[verdict])
@@ -313,8 +479,13 @@ def main():
               f"{pct(m['latency_ms'], .95):>7.0f}  {verdict}")
         if "quality" in m:
             q = m["quality"]
-            print(f"{'':<16}quality vs {args.baseline} (judge {args.judge}): "
-                  f"W/T/L {q['win']}/{q['tie']}/{q['loss']} (same model {q['same_model']}, failed {q['failed']})")
+            print(f"{'':<16}quality vs {args.baseline} (panel {', '.join(args.judge or [])}): "
+                  f"W/T/L {q['win']}/{q['tie']}/{q['loss']} (same model {q['same_model']}, failed {q['failed']}, "
+                  f"sign-test p={q['sign_p']:.2f})")
+            for j, jq in q["judges"].items():
+                print(f"{'':<18}judge {j}: W/T/L {jq['win']}/{jq['tie']}/{jq['loss']}")
+            for model, bq in sorted(q["by_model"].items()):
+                print(f"{'':<18}routed to {model}: W/T/L {bq['win']}/{bq['tie']}/{bq['loss']}")
         sg = m["suggest"]
         if sg["cross"] or sg["text"]:
             print(f"{'':<16}cross-modal suggest: recall {sg['hit']}/{sg['cross']}, "

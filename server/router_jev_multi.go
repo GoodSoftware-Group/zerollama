@@ -9,6 +9,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -356,6 +357,7 @@ func multiWeights(rw *RouterWeights) (float64, autoroute.Weights) {
 // engine pick among the router's candidates with fit as a bonus and escalation as a gate.
 // Decider failures return errDeciderUnavailable so resolveRouter can fail open.
 func (s *Server) decideRouterJevMulti(ctx context.Context, name string, spec RouterSpec, sig autoroute.Signals) (*RouterDecision, error) {
+	start := time.Now()
 	if err := validateJevQuestions(spec.Questions); err != nil {
 		return nil, fmt.Errorf("router %q: %w", name, err)
 	}
@@ -422,6 +424,9 @@ func (s *Server) decideRouterJevMulti(ctx context.Context, name string, spec Rou
 	}
 	dec.Classifier = "jev"
 	dec.Decider = decider
+	// WHY reset: decideAuto times only its own deterministic pick; the decider batch is the
+	// expensive part (found on a real node: smart reported 0 ms for ~4.8 s decisions).
+	dec.LatencyMs = time.Since(start).Milliseconds()
 	dec.Calibrated = &plan.Calibrated
 	dec.Escalated = escalated
 	dec.Signals = plan.Signals

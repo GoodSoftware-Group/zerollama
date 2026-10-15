@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/middleware"
 )
 
@@ -78,7 +79,7 @@ func TestRouteHandlerDryRun(t *testing.T) {
 	})
 
 	t.Run("bad surface", func(t *testing.T) {
-		code, _ := postRoute(t, s, `{"model":"auto","surface":"speech","prompt":"x"}`)
+		code, _ := postRoute(t, s, `{"model":"auto","surface":"teleport","prompt":"x"}`)
 		if code != http.StatusBadRequest {
 			t.Fatalf("status %d", code)
 		}
@@ -321,5 +322,33 @@ func TestV1ModelRetrieveVirtualRouter(t *testing.T) {
 	t.Setenv("ZEROLLAMA_AUTO_ROUTER", "0")
 	if code, _ := get("auto"); code != http.StatusTeapot {
 		t.Fatalf("disabled router must fall through, got %d", code)
+	}
+}
+
+func TestRouteHandlerNonChatSurfaces(t *testing.T) {
+	s := newRouteTestServer(t)
+	resetRouterFile(t, "routers: {}\n")
+	createRouteTestModel(t, s, "plain", routePlainTemplate)
+	createRouteTestModelKV(t, s, "embed-a", routePlainTemplate, ggml.KV{"llama.pooling_type": uint32(1)})
+
+	code, out := postRoute(t, s, `{"model":"auto","surface":"embed","input":"hello"}`)
+	if code != http.StatusOK || !strings.HasPrefix(out["model"].(string), "embed-a") || out["surface"] != "embed" {
+		t.Fatalf("embed: %d %v", code, out)
+	}
+	code, out = postRoute(t, s, `{"model":"auto","surface":"rerank","query":"q","documents":["a"]}`)
+	if code != http.StatusOK || !strings.HasPrefix(out["model"].(string), "embed-a") {
+		t.Fatalf("rerank: %d %v", code, out)
+	}
+	for _, body := range []string{
+		`{"model":"auto","surface":"speech","input":"hi","voice":"amy"}`,
+		`{"model":"auto","surface":"music","instructions":"lo-fi beat"}`,
+		`{"model":"auto","surface":"video_gen","prompt":"waves"}`,
+		`{"model":"auto","surface":"transcribe"}`,
+		`{"model":"auto","surface":"decisions","state":"x","questions":{"q":{"type":"noul","instructions":"y?"}}}`,
+	} {
+		code, out := postRoute(t, s, body)
+		if code != http.StatusServiceUnavailable || out["filtered"] == nil {
+			t.Fatalf("%s: want 503 with filtered (no such local model), got %d %v", body, code, out)
+		}
 	}
 }

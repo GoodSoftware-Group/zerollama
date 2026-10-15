@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -113,6 +114,25 @@ type RouterLabelScore struct {
 	Softmax        float64 `json:"softmax"`
 	NumTokens      int     `json:"num_tokens"`
 	Active         bool    `json:"active"`
+}
+
+// MarshalJSON writes a non-finite log_prob (a label the classifier never scored, or a
+// probability rounded to 0 by a jev decider) as null. WHY: encoding/json rejects ±Inf/NaN,
+// and the failure surfaced as a 200 with an empty body on /v1/route (findings Finding 15).
+func (s RouterLabelScore) MarshalJSON() ([]byte, error) {
+	// Same field order as the struct tags, so finite values encode exactly as before.
+	out := struct {
+		Label          string   `json:"label"`
+		LogProb        *float64 `json:"log_prob"`
+		RelevanceScore float64  `json:"relevance_score,omitempty"`
+		Softmax        float64  `json:"softmax"`
+		NumTokens      int      `json:"num_tokens"`
+		Active         bool     `json:"active"`
+	}{Label: s.Label, RelevanceScore: s.RelevanceScore, Softmax: s.Softmax, NumTokens: s.NumTokens, Active: s.Active}
+	if !math.IsInf(s.LogProb, 0) && !math.IsNaN(s.LogProb) {
+		out.LogProb = &s.LogProb
+	}
+	return json.Marshal(out)
 }
 
 type routerScoreFn func(ctx context.Context, classifier, prompt string, candidates []string, lengthNorm bool) ([]llm.CandidateScore, error)
