@@ -72,6 +72,21 @@ bool laya_encode_embeddings(
         std::string & err);
 
 // Apply decision head on per-token embeddings H[t].
+// Encode several inputs in as few llama_process calls as the seq / ubatch budget allows.
+bool laya_encode_embeddings_batch(
+        llama_context * ctx,
+        const std::vector<laya_decision_input> & inputs,
+        std::vector<std::vector<float>> & embd_out,
+        std::string & err);
+
+// Batched encode + head for every input of one /v1/decisions request.
+bool laya_decide_batch(
+        llama_context * ctx,
+        const laya_head_weights & w,
+        const std::vector<laya_decision_input> & inputs,
+        std::vector<laya_decision_result> & out,
+        std::string & err);
+
 bool laya_head_apply(
         const laya_head_weights & w,
         const float * H,

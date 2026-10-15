@@ -4,10 +4,161 @@
 #include "log.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <mutex>
+#include <thread>
 
 namespace {
+
+// Worker threads for the CPU decision head (LLAMA_LAYA_THREADS overrides).
+// WHY threads + batched linears: the head is a small Transformer run on CPU after the GPU
+// encode; as per-token scalar GEMVs on one core it was 94-97% of /v1/decisions latency
+// (~400 ms for 28 tokens on a Zen 4 box). See zerollama docs/auto-router-findings.md.
+static int laya_threads() {
+    static const int n = [] {
+        if (const char * e = std::getenv("LLAMA_LAYA_THREADS")) {
+            const int v = std::atoi(e);
+            if (v > 0) {
+                return v;
+            }
+        }
+        const unsigned hc = std::thread::hardware_concurrency();
+        return (int) std::max(1u, std::min(16u, hc ? hc / 2 : 4u));
+    }();
+    return n;
+}
+
+// laya_pool is a persistent worker pool for the head. WHY not std::thread per call: the head
+// runs ~10 parallel sections per input, and spawning 16 threads for each cost more than the
+// work (measured: 16 spawned threads 55 ms vs 4 threads 43 ms for a 91-token head).
+class laya_pool {
+public:
+    explicit laya_pool(int n) : n_threads(std::max(1, n)) {
+        for (int i = 1; i < n_threads; ++i) {
+            workers.emplace_back([this, i] { loop(i); });
+        }
+    }
+    ~laya_pool() {
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            stop = true;
+            ++gen;
+        }
+        cv.notify_all();
+        for (auto & t : workers) {
+            t.join();
+        }
+    }
+    int size() const { return n_threads; }
+    // run calls job(worker_index) on every worker (index 0 on the caller) and waits.
+    void run(const std::function<void(int)> & job) {
+        if (n_threads == 1) {
+            job(0);
+            return;
+        }
+        std::lock_guard<std::mutex> run_lk(run_mu); // one section at a time
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            cur     = &job;
+            pending = n_threads - 1;
+            ++gen;
+        }
+        cv.notify_all();
+        job(0);
+        std::unique_lock<std::mutex> lk(mu);
+        done_cv.wait(lk, [this] { return pending == 0; });
+        cur = nullptr;
+    }
+
+private:
+    void loop(int idx) {
+        uint64_t seen = 0;
+        for (;;) {
+            const std::function<void(int)> * job = nullptr;
+            {
+                std::unique_lock<std::mutex> lk(mu);
+                cv.wait(lk, [&] { return gen != seen; });
+                seen = gen;
+                if (stop) {
+                    return;
+                }
+                job = cur;
+            }
+            (*job)(idx);
+            std::lock_guard<std::mutex> lk(mu);
+            if (--pending == 0) {
+                done_cv.notify_one();
+            }
+        }
+    }
+
+    const int                        n_threads;
+    std::vector<std::thread>         workers;
+    std::mutex                       mu, run_mu;
+    std::condition_variable          cv, done_cv;
+    const std::function<void(int)> * cur     = nullptr;
+    int                              pending = 0;
+    uint64_t                         gen     = 0;
+    bool                             stop    = false;
+};
+
+static laya_pool & laya_workers() {
+    static laya_pool pool(laya_threads());
+    return pool;
+}
+
+// parallel_for splits [0, n) into contiguous chunks; fn(begin, end) runs on each worker.
+template <typename F>
+static void parallel_for(int n, F && fn) {
+    laya_pool & pool = laya_workers();
+    const int nt = std::min(pool.size(), n);
+    if (nt <= 1) {
+        fn(0, n);
+        return;
+    }
+    const int chunk = (n + nt - 1) / nt;
+    pool.run([&](int w) {
+        const int b = w * chunk;
+        const int e = std::min(n, b + chunk);
+        if (b < e) {
+            fn(b, e);
+        }
+    });
+}
+
+// dot_f32 keeps 16 independent accumulators so the compiler can vectorize without
+// -ffast-math (each lane is its own sum; only the final reduction order changes).
+static inline float dot_f32(const float * a, const float * b, int64_t n) {
+    constexpr int L = 16;
+    float acc[L] = {};
+    int64_t i = 0;
+    for (; i + L <= n; i += L) {
+        for (int j = 0; j < L; ++j) {
+            acc[j] += a[i + j] * b[i + j];
+        }
+    }
+    float s = 0.0f;
+    for (int j = 0; j < L; ++j) {
+        s += acc[j];
+    }
+    for (; i < n; ++i) {
+        s += a[i] * b[i];
+    }
+    return s;
+}
+
+static bool laya_timing() {
+    static const bool on = [] {
+        const char * e = std::getenv("LLAMA_LAYA_TIMING");
+        return e != nullptr && e[0] != '\0' && e[0] != '0';
+    }();
+    return on;
+}
 
 static bool tensor_to_f32(const ggml_tensor * t, std::vector<float> & out) {
     if (t == nullptr) {
@@ -80,13 +231,24 @@ static bool load_ln(const llama_model * model, const char * wname, const char * 
 
 static void linear_forward(const laya_linear & L, const float * x, float * y) {
     for (int64_t o = 0; o < L.n_out; ++o) {
-        float sum = L.bias.empty() ? 0.0f : L.bias[(size_t) o];
-        const float * col = L.weight.data() + o * L.n_in;
-        for (int64_t i = 0; i < L.n_in; ++i) {
-            sum += col[i] * x[i];
-        }
-        y[o] = sum;
+        const float b = L.bias.empty() ? 0.0f : L.bias[(size_t) o];
+        y[o] = b + dot_f32(L.weight.data() + o * L.n_in, x, L.n_in);
     }
+}
+
+// linear_forward_batch: Y[t] = W·X[t] + b for all tokens. Threads split output rows and each
+// row is reused across every token while it is hot in L1 (W is read once per call, not once
+// per token).
+static void linear_forward_batch(const laya_linear & L, const float * X, int n_tokens, float * Y) {
+    parallel_for((int) L.n_out, [&](int ob, int oe) {
+        for (int o = ob; o < oe; ++o) {
+            const float * w = L.weight.data() + (size_t) o * L.n_in;
+            const float   b = L.bias.empty() ? 0.0f : L.bias[(size_t) o];
+            for (int t = 0; t < n_tokens; ++t) {
+                Y[(size_t) t * L.n_out + o] = b + dot_f32(w, X + (size_t) t * L.n_in, L.n_in);
+            }
+        }
+    });
 }
 
 static void layernorm(const laya_ln & ln, const float * x, float * y, int n, float eps) {
@@ -156,25 +318,20 @@ static void mha_forward(
     GGML_ASSERT(out_proj.n_in == n_embd && out_proj.n_out == n_embd);
 
     std::vector<float> qkv_buf((size_t) n_tokens * (size_t) qkv.n_out);
-    for (int t = 0; t < n_tokens; ++t) {
-        linear_forward(qkv, x + (size_t) t * n_embd, qkv_buf.data() + (size_t) t * qkv.n_out);
-    }
+    linear_forward_batch(qkv, x, n_tokens, qkv_buf.data());
 
     const float scale = 1.0f / std::sqrt((float) head_dim);
     std::vector<float> attn_out((size_t) n_tokens * (size_t) n_embd, 0.0f);
-    std::vector<float> scores((size_t) n_tokens);
 
-    for (int h = 0; h < n_head; ++h) {
+    parallel_for(n_head, [&](int hb, int he) {
+    std::vector<float> scores((size_t) n_tokens);
+    for (int h = hb; h < he; ++h) {
         for (int t = 0; t < n_tokens; ++t) {
             const float * q = qkv_buf.data() + (size_t) t * qkv.n_out + (size_t) h * head_dim;
             float m = -INFINITY;
             for (int s = 0; s < n_tokens; ++s) {
                 const float * k = qkv_buf.data() + (size_t) s * qkv.n_out + n_embd + (size_t) h * head_dim;
-                float dot = 0.0f;
-                for (int d = 0; d < head_dim; ++d) {
-                    dot += q[d] * k[d];
-                }
-                scores[(size_t) s] = dot * scale;
+                scores[(size_t) s] = dot_f32(q, k, head_dim) * scale;
                 m = std::max(m, scores[(size_t) s]);
             }
             float sum = 0.0f;
@@ -196,27 +353,12 @@ static void mha_forward(
             }
         }
     }
+    });
 
     y.resize((size_t) n_tokens * (size_t) n_embd);
-    for (int t = 0; t < n_tokens; ++t) {
-        linear_forward(out_proj, attn_out.data() + (size_t) t * n_embd, y.data() + (size_t) t * n_embd);
-    }
+    linear_forward_batch(out_proj, attn_out.data(), n_tokens, y.data());
 }
 
-static void ffn_relu_forward(
-        const float * x,
-        const laya_linear & up,
-        const laya_linear & down,
-        int n_embd,
-        std::vector<float> & y) {
-    std::vector<float> mid((size_t) up.n_out);
-    linear_forward(up, x, mid.data());
-    for (size_t i = 0; i < mid.size(); ++i) {
-        mid[i] = mid[i] > 0.0f ? mid[i] : 0.0f;
-    }
-    y.resize((size_t) n_embd);
-    linear_forward(down, mid.data(), y.data());
-}
 
 } // namespace
 
@@ -441,13 +583,19 @@ bool laya_head_apply(
             }
         }
 
+        // FFN over all tokens at once (batched up / down projections).
         for (int t = 0; t < n_tokens; ++t) {
-            float * row = H.data() + (size_t) t * n_embd;
-            layernorm(layer.ffn_norm, row, tmp_ln.data(), n_embd, w.eps);
-            ffn_relu_forward(tmp_ln.data(), layer.ffn_up, layer.ffn_down, n_embd, tmp_ffn);
-            for (int i = 0; i < n_embd; ++i) {
-                row[i] += tmp_ffn[(size_t) i];
-            }
+            layernorm(layer.ffn_norm, H.data() + (size_t) t * n_embd, ln_all.data() + (size_t) t * n_embd, n_embd, w.eps);
+        }
+        std::vector<float> mid((size_t) n_tokens * (size_t) layer.ffn_up.n_out);
+        linear_forward_batch(layer.ffn_up, ln_all.data(), n_tokens, mid.data());
+        for (float & v : mid) {
+            v = v > 0.0f ? v : 0.0f;
+        }
+        tmp_ffn.resize((size_t) n_tokens * (size_t) n_embd);
+        linear_forward_batch(layer.ffn_down, mid.data(), n_tokens, tmp_ffn.data());
+        for (size_t i = 0; i < H.size(); ++i) {
+            H[i] += tmp_ffn[i];
         }
     }
 
@@ -517,6 +665,118 @@ bool laya_head_apply(
     linear_forward(w.act_fc2, act_hid.data(), out.act.data());
     softmax_inplace(out.act);
 
+    return true;
+}
+
+// laya_encode_embeddings_batch encodes several inputs with as few llama_process calls as
+// possible: each input is its own sequence (seq_id 0..n-1, positions restart at 0), chunked by
+// llama_n_seq_max and n_ubatch. WHY: per-question encodes paid the encode + memory-clear cost
+// once per question (multi-question decisions, e.g. router jev batches, paid it 3-4x).
+bool laya_encode_embeddings_batch(
+        llama_context * ctx,
+        const std::vector<laya_decision_input> & inputs,
+        std::vector<std::vector<float>> & embd_out,
+        std::string & err) {
+    if (ctx == nullptr) {
+        err = "null context";
+        return false;
+    }
+    const llama_model * model = llama_get_model(ctx);
+    const int n_embd    = llama_model_n_embd(model);
+    const int n_ubatch  = (int) llama_n_ubatch(ctx);
+    const int n_seq_max = std::max(1, (int) llama_n_seq_max(ctx));
+    embd_out.assign(inputs.size(), {});
+
+    size_t next = 0;
+    while (next < inputs.size()) {
+        // greedy chunk: as many whole inputs as fit in one ubatch / seq budget
+        size_t end = next;
+        int tokens = 0;
+        while (end < inputs.size() && (int) (end - next) < n_seq_max &&
+               tokens + (int) inputs[end].tokens.size() <= n_ubatch) {
+            tokens += (int) inputs[end].tokens.size();
+            ++end;
+        }
+        if (end == next) { // single oversize input: let the single-input path report it
+            if (!laya_encode_embeddings(ctx, inputs[next].tokens, embd_out[next], err)) {
+                return false;
+            }
+            ++next;
+            continue;
+        }
+        if (end - next == 1) {
+            if (!laya_encode_embeddings(ctx, inputs[next].tokens, embd_out[next], err)) {
+                return false;
+            }
+            ++next;
+            continue;
+        }
+
+        llama_memory_t mem = llama_get_memory(ctx);
+        if (mem) {
+            llama_memory_clear(mem, true);
+        }
+        llama_set_embeddings(ctx, true);
+        common_batch batch(ctx);
+        for (size_t k = next; k < end; ++k) {
+            const auto & toks = inputs[k].tokens;
+            if (toks.empty()) {
+                err = "empty tokens";
+                return false;
+            }
+            for (size_t i = 0; i < toks.size(); ++i) {
+                batch.add(toks[i], (llama_pos) i, /*seq_id*/ (llama_seq_id) (k - next), /*output*/ true);
+            }
+        }
+        const int rc = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+        if (rc != 0) {
+            err = string_format("llama_process failed with code %d", rc);
+            return false;
+        }
+        int idx = 0;
+        for (size_t k = next; k < end; ++k) {
+            const int n = (int) inputs[k].tokens.size();
+            embd_out[k].resize((size_t) n * (size_t) n_embd);
+            for (int i = 0; i < n; ++i, ++idx) {
+                float * e = llama_get_embeddings_ith(ctx, idx);
+                if (e == nullptr) {
+                    err = string_format("llama_get_embeddings_ith failed at token %d", idx);
+                    return false;
+                }
+                std::memcpy(embd_out[k].data() + (size_t) i * n_embd, e, (size_t) n_embd * sizeof(float));
+            }
+        }
+        next = end;
+    }
+    return true;
+}
+
+bool laya_decide_batch(
+        llama_context * ctx,
+        const laya_head_weights & w,
+        const std::vector<laya_decision_input> & inputs,
+        std::vector<laya_decision_result> & out,
+        std::string & err) {
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<std::vector<float>> embd;
+    if (!laya_encode_embeddings_batch(ctx, inputs, embd, err)) {
+        return false;
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+    out.assign(inputs.size(), {});
+    int total = 0;
+    for (size_t k = 0; k < inputs.size(); ++k) {
+        total += (int) inputs[k].tokens.size();
+        if (!laya_head_apply(w, embd[k].data(), (int) inputs[k].tokens.size(), inputs[k], out[k], err)) {
+            return false;
+        }
+    }
+    if (laya_timing()) {
+        const auto t2 = std::chrono::steady_clock::now();
+        LOG_INF("laya decisions: inputs=%zu tokens=%d threads=%d encode_ms=%.2f head_ms=%.2f\n", inputs.size(), total,
+                laya_threads(), std::chrono::duration<double, std::milli>(t1 - t0).count(),
+                std::chrono::duration<double, std::milli>(t2 - t1).count());
+    }
     return true;
 }
 

@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/ollama/ollama/api"
 )
@@ -123,8 +125,48 @@ func (s *llamaServerRunner) layaTokenizer(ctx context.Context) (LayaTokenizer, e
 	return &layaServerTokenizer{s: s, cls: cls, sep: sep, mask: mask, maskTok: maskTok}, nil
 }
 
+// layaTokenCacheMax bounds the memo; router questions and options are a few hundred
+// strings, so a full reset on overflow only costs one cold request.
+const layaTokenCacheMax = 4096
+
+// layaTokenCache memoises text → token ids for one loaded Laya model.
+//
+// WHY: llama-server /tokenize takes one text per call (an array content is concatenated,
+// not batched), and PackQuestions encodes the head, every option and the state once per
+// question — ~28 sequential round trips for a 4-question router, ~40–50 ms of the
+// decision (docs/auto-router-findings.md). Router questions never change between
+// requests, so after the first request only the new state is tokenized.
+type layaTokenCache struct {
+	mu sync.Mutex
+	m  map[string][]int
+}
+
+func (c *layaTokenCache) get(text string) ([]int, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ids, ok := c.m[text]
+	return ids, ok
+}
+
+func (c *layaTokenCache) put(text string, ids []int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil || len(c.m) >= layaTokenCacheMax {
+		c.m = make(map[string][]int)
+	}
+	c.m[text] = ids
+}
+
 func (t *layaServerTokenizer) Encode(text string) ([]int, error) {
-	return t.s.Tokenize(context.Background(), text)
+	if ids, ok := t.s.layaTokCache.get(text); ok {
+		return slices.Clone(ids), nil // callers may append/truncate
+	}
+	ids, err := t.s.Tokenize(context.Background(), text)
+	if err != nil {
+		return nil, err
+	}
+	t.s.layaTokCache.put(text, slices.Clone(ids))
+	return ids, nil
 }
 
 func (t *layaServerTokenizer) MaskToken() string { return t.maskTok }

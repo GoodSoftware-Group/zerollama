@@ -140,6 +140,7 @@ type llamaServerRunner struct {
 	loadActivity  atomic.Int64
 	loadTracking  atomic.Bool
 	rawEmbeddings bool
+	layaTokCache  layaTokenCache // Laya /tokenize memo; see llama_server_decisions.go
 
 	sem *semaphore.Weighted
 
