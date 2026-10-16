@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -276,4 +277,26 @@ func TestDecisionsHandlerCLMURLMissing(t *testing.T) {
 	c.Request.Header.Set("Content-Type", "application/json")
 	s.DecisionsHandler(c)
 	require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
+}
+
+// TestOpenJevTokenizeCached pins the per-label /tokenize memo: repeats are served from
+// cache, and another model name on the same sidecar never reuses those ids.
+func TestOpenJevTokenizeCached(t *testing.T) {
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"tokens": []int{42}})
+	}))
+	t.Cleanup(upstream.Close)
+
+	for range 3 {
+		ids, err := openJevTokenizeCached(t.Context(), upstream.URL, "openjev", "billing")
+		require.NoError(t, err)
+		require.Equal(t, []int{42}, ids)
+	}
+	require.EqualValues(t, 1, calls.Load(), "repeats should hit the cache")
+
+	_, err := openJevTokenizeCached(t.Context(), upstream.URL, "openjev-other", "billing")
+	require.NoError(t, err)
+	require.EqualValues(t, 2, calls.Load(), "a different model must not reuse cached ids")
 }

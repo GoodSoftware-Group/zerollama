@@ -36,6 +36,9 @@ func (s *Server) scoreRouterPolicies(ctx context.Context, classifier, prompt str
 		Prompt:          prompt,
 		Candidates:      candidates,
 		LengthNormalize: lengthNorm,
+		// WHY: a label outside the scorer's top-128 next tokens is negligible, not an
+		// error; strict scoring failed the whole call and sent the router to its fallback.
+		AllowMissing: true,
 	})
 	if err != nil {
 		return nil, err

@@ -140,7 +140,10 @@ type llamaServerRunner struct {
 	loadActivity  atomic.Int64
 	loadTracking  atomic.Bool
 	rawEmbeddings bool
-	layaTokCache  layaTokenCache // Laya /tokenize memo; see llama_server_decisions.go
+	layaTokCache  tokenizeCache // Laya pack /tokenize memo (llama_server_decisions.go)
+	// scoreLiteralTokCache memoises System One candidate-only tokenization
+	// (parse_special=false), which depends on the label text alone.
+	scoreLiteralTokCache tokenizeCache
 
 	sem *semaphore.Weighted
 
@@ -3440,6 +3443,41 @@ func (s *llamaServerRunner) tokenize(ctx context.Context, content any, addSpecia
 	}
 
 	return result.Tokens, nil
+}
+
+// tokenizeCacheMax bounds a tokenizeCache; callers memoise label / question text (a
+// few hundred strings), so a full reset on overflow only costs one cold request.
+const tokenizeCacheMax = 4096
+
+// tokenizeCache memoises text → token ids for one loaded model. llama-server /tokenize
+// takes one text per call (an array content is concatenated, not batched), so repeated
+// label text otherwise costs one HTTP round trip per use. Keep one cache per tokenize
+// mode (parse_special etc.): the key is the text alone.
+type tokenizeCache struct {
+	mu sync.Mutex
+	m  map[string][]int
+}
+
+// tokenize returns the cached ids for text or calls fetch and caches its result.
+// The returned slice is the caller's to modify.
+func (c *tokenizeCache) tokenize(text string, fetch func() ([]int, error)) ([]int, error) {
+	c.mu.Lock()
+	ids, ok := c.m[text]
+	c.mu.Unlock()
+	if ok {
+		return slices.Clone(ids), nil
+	}
+	ids, err := fetch()
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if c.m == nil || len(c.m) >= tokenizeCacheMax {
+		c.m = make(map[string][]int)
+	}
+	c.m[text] = slices.Clone(ids)
+	c.mu.Unlock()
+	return ids, nil
 }
 
 // Tokenize calls llama-server's /tokenize endpoint.
