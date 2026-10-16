@@ -15,9 +15,6 @@ __debug_bin*
 llama/build
 llama/vendor
 vendor/
-# In-tree llama.cpp vendor headers are build inputs (httplib, hash, sheredom, …), not the
-# gitignored git-am workspace above — sync_vendor_llama.sh rsyncs them; CGO needs them.
-!llama/llama.cpp/vendor/
 llama/patches.pre-*/
 /*.csv
 /ollama
