@@ -87,7 +87,7 @@ model=qwen2.5:0.5b  build=0.30.11  (pre trap 77/78 fixes)
 - **10/17/21** — need `--hf-repo` or a readable chat template for full upstream checks (native doctor still covers 10/21 from manifests)
 - Core **35 / 53 / 61** — no check in `minefield_doctor.py` (upstream leaves them as hand-runs; see §2.1). Zerollama covers **53** in doctor; **35** / **54** / **61** (+ **60** cold/warm) via lab scripts; **55/61** arithmetic in doctor; **63** via history round-trip doctor; **09** documented (VL).
 
-Coverage lines from the tool are **not** a bill of health for the full registry (138 numbered traps as of 2026-09-09; upstream doctor still implements ~19).
+Coverage lines from the tool are **not** a bill of health for the full registry (166 numbered traps as of 2026-10-15; upstream doctor implements ~70 IDs).
 
 ### 2.1 Core hand-runs (35 / 53 / 61) on zerollama
 
@@ -240,9 +240,9 @@ Zerollama strips **trailing** ` /think` / `/no_think` from assistant `content` /
 1. **Serve identity** ([`cmd/doctor_serve_identity.go`](../cmd/doctor_serve_identity.go)): **53** — who holds the port / version / start time
 2. **Readiness vs liveness** ([`cmd/doctor_readiness.go`](../cmd/doctor_readiness.go)): **112** — TCP/PID is not `/api/version`+`/api/tags`; tags≠warm `/api/ps`
 3. **Spec × slots on UMA** ([`cmd/doctor_spec_uma.go`](../cmd/doctor_spec_uma.go)): **98** — `draft_max × n_parallel` product; warn in the contributor-crash region when speculative env is on
-4. **N-gram JSON / HTTP concurrency** ([`cmd/doctor_ngram.go`](../cmd/doctor_ngram.go)): **138** warn if n-gram spec env is on; **135** prints engine slots vs client count
+4. **N-gram JSON / HTTP concurrency** ([`cmd/doctor_ngram.go`](../cmd/doctor_ngram.go)): **138/157** warn if n-gram spec env is on; **135** prints engine slots vs client count
 5. **Model config traps** ([`internal/modelhealth/traps.go`](../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
-6. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_api_traps.go`](../cmd/doctor_api_traps.go) + [`cmd/doctor_history_render.go`](../cmd/doctor_history_render.go) + [`cmd/doctor_roundtrip.go`](../cmd/doctor_roundtrip.go) + [`cmd/doctor_ceiling.go`](../cmd/doctor_ceiling.go) + [`cmd/doctor_think_toggle.go`](../cmd/doctor_think_toggle.go) + [`cmd/doctor_latency.go`](../cmd/doctor_latency.go) + [`cmd/doctor_orphan_think.go`](../cmd/doctor_orphan_think.go) + [`cmd/doctor_stream.go`](../cmd/doctor_stream.go) + [`cmd/doctor_kwarg_deadness.go`](../cmd/doctor_kwarg_deadness.go) + [`cmd/doctor_tool_markup.go`](../cmd/doctor_tool_markup.go) + [`cmd/doctor_think_off_spill.go`](../cmd/doctor_think_off_spill.go)): **29**, **77**, **07**, **78**, **23**, **04/20/25**, **63**, **02**, **66**, **48**, **55/61** ceilings, **01/03**, **12/64/65**, **126**, **19**, **26**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
+6. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../cmd/doctor_serving_traps.go) + [`cmd/doctor_think_lanes.go`](../cmd/doctor_think_lanes.go) + [`cmd/doctor_tool_ascii.go`](../cmd/doctor_tool_ascii.go) + [`cmd/doctor_think_off_spill.go`](../cmd/doctor_think_off_spill.go) + other `cmd/doctor_*.go`): **29**, **77**, **07**, **78**, **23**, **04/20/25**, **63**, **02**, **66**, **48**, **55/61**, **01/03**, **12/64/65**, **126**, **148**, **149**, **158**, **162**, **164**, **166**, **19**, **26**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
 
 ```bash
 ./zerollama doctor
@@ -328,6 +328,12 @@ python3 /tmp/zerollama-minefield-lab/minefield_doctor.py --base-url http://127.0
 | **126** | Think-off spills trace into `content` | **mapped** + `covered via doctor` | `kwargs.thinking` → `Think`; `doctorCheckThinkOffSpill` |
 | **135** | HTTP clients ≠ model concurrency | `covered via doctor` | `doctorCheckHTTPConcurrency` quotes slots |
 | **138** | N-gram structured JSON token dup | `covered via doctor` | Warn if n-gram spec env on; strict-parse JSON |
+| **148** | Tool JSON ASCII escaping | `covered via doctor` | `doctorCheckToolASCIIEscape` via `_debug_render_only` |
+| **149** | Think-on JSON schema runaway | `covered via doctor` | `doctorCheckJSONThinkOn` — A/B `format=json` |
+| **158** | Empty thought markers count as reasoning | `covered via doctor` | `doctorCheckEmptyThoughtMarkers` |
+| **162** | Think-on short answer in reasoning only | `covered via doctor` | `doctorCheckThinkOnContent` |
+| **164** | Thinking budget cut hides answer | `covered via doctor` | `doctorCheckThinkBudgetCut` (tiny `num_predict`) |
+| **166** | Per-call think switch splits prefix cache | `covered via doctor` | `doctorCheckThinkPrefixSplit` |
 
 ### Model config / Core gaps (also in native doctor)
 
@@ -433,4 +439,28 @@ Registry **124 → 138**. Native `TRAP_PATHS` still the original ~19. Mac-action
 | **132** | Spec placeholders corrupt prompt tail on **cold** chunked prefill | Document: do not score first cold turn under speculation; trap **60** cold/warm split. |
 | **125, 127–128, 130–131, 133–134, 136–137** | cgroup/CUDA-UMA, bind-mount crash loops, vLLM admission no-ops, cudagraph, HF refs, DSpark shared expert, NIC path-proof, pipeline `rc`, kernel selector rc | **Skip** Mac Metal primary (methodology **136** is “pipefail”; **137** is native-return ≠ process exit). |
 
-Open upstream: [PR #115](https://github.com/Blackwellboy/model-serving-minefield/pull/115) trap 139 (NCCL HCA), [PR #114](https://github.com/Blackwellboy/model-serving-minefield/pull/114) pin-closure policy.
+Open upstream as of 2026-09-12: [PR #115](https://github.com/Blackwellboy/model-serving-minefield/pull/115) trap 139 later landed; [PR #114](https://github.com/Blackwellboy/model-serving-minefield/pull/114) pin-closure policy.
+
+---
+
+## 10. Upstream traps 139–166 (2026-10-17)
+
+Registry **138 → 166**. Upstream doctor `TRAP_PATHS` is now **~70** IDs (was ~19). Mac-actionable:
+
+| Trap | Topic | Zerollama action |
+|------|-------|------------------|
+| **143** | Qwen3 `sliding_window` in config can still resolve every layer to full attention | Document: `use_sliding_window` + `max_window_layers` (default 28) gate the reconstructed types; a numeric window key is not proof. Cold needle still required (traps **60/61/129**). |
+| **146** | Gateway retry hides a correct context rejection | Document: surface the first 4xx/context error; do not retry-compress forever. Adjacent to trap **79** clamp. |
+| **148** | Identical tool JSON can tokenize differently via `ensure_ascii` | Live `doctorCheckToolASCIIEscape` |
+| **149** | `json_schema` OK with think off, runaway with think on | Live `doctorCheckJSONThinkOn` |
+| **153** | Thinking-budget processor hard-codes another family's marker IDs | Document: zerollama `Think` / effort strings are not SGLang's 151667/151668 logit processor; do not assume a foreign budget kwarg is live (trap **07**) |
+| **155** | Prefix-slot victim policy re-prefills two long chats | Document: need a slot per long conversation, or a victim rule that reclaims idle retained prefixes; quote `n_parallel` (**135**) |
+| **157** | N-gram wins single-stream, loses at real concurrency | Folded into `doctorCheckNgramStructured` when n-gram env is on |
+| **158** | Empty `<think></think>` counted as reasoning tokens | Live `doctorCheckEmptyThoughtMarkers` |
+| **162** | Think-on short answer is all reasoning, empty content, `stop` | Live `doctorCheckThinkOnContent` |
+| **164** | Thinking-token cap that actually cuts hides the answer (`length`) | Live `doctorCheckThinkBudgetCut` |
+| **165** | Think-off for “agent speed” passes tool checks, fails reasoning | Document + 126/158 probes: keep a think-on quality arm |
+| **166** | Per-call think/effort switch is its own prefix cache | Live `doctorCheckThinkPrefixSplit` |
+| **139–142, 144–145, 147, 150–152, 154, 156, 159–161, 163** | NCCL/Docker/SGLang/FlashInfer/NVFP4/ExLlama/JIT | **Skip** Mac Metal primary |
+
+Draft [PR #212](https://github.com/Blackwellboy/model-serving-minefield/pull/212) (bounded raw execution) is watch-only.

@@ -57,7 +57,7 @@ func NewDoctorCommand() *cobra.Command {
 
 Also runs model-serving-minefield style checks:
   - model config traps (quant label, generation defaults, chat template, context)
-  - serve identity (trap 53), readiness vs liveness (trap 112), spec×slots on UMA (trap 98), ngram JSON (138), HTTP vs slots (135), thinking gate (trap 29)
+  - serve identity (trap 53), readiness vs liveness (trap 112), spec×slots on UMA (trap 98), ngram JSON (138/157), HTTP vs slots (135), thinking gate (trap 29)
   - live serving probes against warm /api/ps models (77, 78, 04/20/25, reasoning, think empty-content, tool_calls)
   - MLX knob sheet, last decode, and round-cost tables (look for "mlx knobs" in the report)
 

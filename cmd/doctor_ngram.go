@@ -27,8 +27,8 @@ func doctorCheckNgramStructured() doctorCheck {
 	return doctorCheck{
 		Name:    name,
 		Status:  "warn",
-		Detail:  fmt.Sprintf("ngram speculative on (spec=%q eliza_ngram=%v) — JSON content can duplicate keys/tokens at temp 0 (trap 138)", spec, ngramEnv),
-		FixHint: "A/B structured JSON with n-gram off; parse assistant content strictly; HTTP 200 is not schema-valid",
+		Detail:  fmt.Sprintf("ngram speculative on (spec=%q eliza_ngram=%v) — JSON can duplicate tokens (trap 138); single-stream wins can lose at real concurrency (trap 157)", spec, ngramEnv),
+		FixHint: "A/B structured JSON with n-gram off; bench at production n_parallel, not C=1 (traps 135/157)",
 	}
 }
 
