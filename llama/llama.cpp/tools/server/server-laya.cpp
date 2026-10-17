@@ -3,6 +3,10 @@
 #include "common.h"
 #include "log.h"
 
+#include "ggml.h"
+#include "ggml-alloc.h"
+#include "ggml-backend.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -362,6 +366,214 @@ static void mha_forward(
 
 } // namespace
 
+// ---------------------------------------------------------------------------------------------
+// GPU head layers.
+//
+// WHY: after patch 0142 the head layers were ~60 ms of an ~85 ms decision — ~3 GFLOP per input,
+// on CPU, while the GPU that just ran the encoder sat idle. The two layers run here as one ggml
+// graph over every input of the request (matmuls batched across inputs, attention per input);
+// the scorer and act head stay on CPU (a few marker rows) so their math is unchanged.
+// LLAMA_LAYA_HEAD=cpu keeps the CPU path; any GPU failure falls back to it.
+
+struct laya_head_gpu {
+    struct layer {
+        ggml_tensor * attn_norm_w = nullptr, * attn_norm_b = nullptr;
+        ggml_tensor * qkv_w = nullptr, * qkv_b = nullptr;
+        ggml_tensor * out_w = nullptr, * out_b = nullptr;
+        ggml_tensor * ffn_norm_w = nullptr, * ffn_norm_b = nullptr;
+        ggml_tensor * up_w = nullptr, * up_b = nullptr;
+        ggml_tensor * down_w = nullptr, * down_b = nullptr;
+    };
+
+    ggml_backend_t        backend = nullptr;
+    ggml_context *        wctx    = nullptr;
+    ggml_backend_buffer_t wbuf    = nullptr;
+    ggml_gallocr_t        galloc  = nullptr;
+    std::vector<layer>    layers;
+
+    ~laya_head_gpu() {
+        if (galloc) {
+            ggml_gallocr_free(galloc);
+        }
+        if (wbuf) {
+            ggml_backend_buffer_free(wbuf);
+        }
+        if (wctx) {
+            ggml_free(wctx);
+        }
+        if (backend) {
+            ggml_backend_free(backend);
+        }
+    }
+};
+
+static bool laya_head_gpu_wanted() {
+    const char * e = std::getenv("LLAMA_LAYA_HEAD");
+    return e == nullptr || std::strcmp(e, "cpu") != 0;
+}
+
+// laya_head_gpu_init uploads the head layers to the first GPU device; leaves w.gpu empty if
+// there is none or anything fails (the CPU path is always available).
+static void laya_head_gpu_init(laya_head_weights & w) {
+    if (!laya_head_gpu_wanted()) {
+        return;
+    }
+    ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+    if (dev == nullptr) {
+        dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU);
+    }
+    if (dev == nullptr) {
+        return;
+    }
+    auto g = std::make_shared<laya_head_gpu>();
+    g->backend = ggml_backend_dev_init(dev, nullptr);
+    if (g->backend == nullptr) {
+        LOG_WRN("laya: GPU head disabled: could not init %s\n", ggml_backend_dev_name(dev));
+        return;
+    }
+
+    const size_t n_tensors = w.layers.size() * 12;
+    ggml_init_params ip = { ggml_tensor_overhead() * (n_tensors + 1), nullptr, /*no_alloc*/ true };
+    g->wctx = ggml_init(ip);
+
+    auto vec = [&](const std::vector<float> & v) -> ggml_tensor * {
+        return v.empty() ? nullptr : ggml_new_tensor_1d(g->wctx, GGML_TYPE_F32, (int64_t) v.size());
+    };
+    auto mat = [&](const laya_linear & L) {
+        return ggml_new_tensor_2d(g->wctx, GGML_TYPE_F32, L.n_in, L.n_out);
+    };
+    g->layers.resize(w.layers.size());
+    for (size_t i = 0; i < w.layers.size(); ++i) {
+        const auto & c = w.layers[i];
+        auto & d = g->layers[i];
+        d.attn_norm_w = vec(c.attn_norm.weight);
+        d.attn_norm_b = vec(c.attn_norm.bias);
+        d.qkv_w = mat(c.attn_qkv);
+        d.qkv_b = vec(c.attn_qkv.bias);
+        d.out_w = mat(c.attn_out);
+        d.out_b = vec(c.attn_out.bias);
+        d.ffn_norm_w = vec(c.ffn_norm.weight);
+        d.ffn_norm_b = vec(c.ffn_norm.bias);
+        d.up_w = mat(c.ffn_up);
+        d.up_b = vec(c.ffn_up.bias);
+        d.down_w = mat(c.ffn_down);
+        d.down_b = vec(c.ffn_down.bias);
+    }
+    g->wbuf = ggml_backend_alloc_ctx_tensors(g->wctx, g->backend);
+    if (g->wbuf == nullptr) {
+        LOG_WRN("laya: GPU head disabled: weight allocation failed\n");
+        return;
+    }
+    auto put = [](ggml_tensor * t, const std::vector<float> & v) {
+        if (t != nullptr) {
+            ggml_backend_tensor_set(t, v.data(), 0, v.size() * sizeof(float));
+        }
+    };
+    for (size_t i = 0; i < w.layers.size(); ++i) {
+        const auto & c = w.layers[i];
+        auto & d = g->layers[i];
+        put(d.attn_norm_w, c.attn_norm.weight);
+        put(d.attn_norm_b, c.attn_norm.bias);
+        put(d.qkv_w, c.attn_qkv.weight);
+        put(d.qkv_b, c.attn_qkv.bias);
+        put(d.out_w, c.attn_out.weight);
+        put(d.out_b, c.attn_out.bias);
+        put(d.ffn_norm_w, c.ffn_norm.weight);
+        put(d.ffn_norm_b, c.ffn_norm.bias);
+        put(d.up_w, c.ffn_up.weight);
+        put(d.up_b, c.ffn_up.bias);
+        put(d.down_w, c.ffn_down.weight);
+        put(d.down_b, c.ffn_down.bias);
+    }
+    g->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(g->backend));
+    LOG_INF("laya: head layers on %s (%zu layers, %.1f MiB)\n", ggml_backend_dev_name(dev), w.layers.size(),
+            ggml_backend_buffer_get_size(g->wbuf) / (1024.0 * 1024.0));
+    w.gpu = std::move(g);
+}
+
+static ggml_tensor * laya_gpu_norm(ggml_context * ctx, ggml_tensor * x, ggml_tensor * wt, ggml_tensor * b, float eps) {
+    x = ggml_norm(ctx, x, eps);
+    if (wt) {
+        x = ggml_mul(ctx, x, wt);
+    }
+    if (b) {
+        x = ggml_add(ctx, x, b);
+    }
+    return x;
+}
+
+static ggml_tensor * laya_gpu_linear(ggml_context * ctx, ggml_tensor * x, ggml_tensor * wt, ggml_tensor * b) {
+    x = ggml_mul_mat(ctx, wt, x);
+    return b ? ggml_add(ctx, x, b) : x;
+}
+
+// laya_head_layers_gpu runs the head layers on H_all ([n_embd, sum(lens)], inputs back to back,
+// type embedding already added) in place. Attention never crosses input boundaries.
+static bool laya_head_layers_gpu(const laya_head_weights & w, std::vector<float> & H_all, const std::vector<int> & lens) {
+    laya_head_gpu & g = *w.gpu;
+    const int n_embd   = w.n_embd;
+    const int n_head   = w.n_head;
+    const int head_dim = n_embd / n_head;
+    int total = 0;
+    for (int n : lens) {
+        total += n;
+    }
+
+    const size_t graph_size = 64 + w.layers.size() * (32 + 24 * lens.size());
+    ggml_init_params ip = { ggml_tensor_overhead() * graph_size + ggml_graph_overhead_custom(graph_size, false), nullptr, true };
+    ggml_context * ctx = ggml_init(ip);
+    ggml_cgraph * gf = ggml_new_graph_custom(ctx, graph_size, false);
+
+    ggml_tensor * inp = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_embd, total);
+    ggml_set_input(inp);
+    ggml_tensor * H = inp;
+    const float scale = 1.0f / std::sqrt((float) head_dim);
+
+    for (const auto & L : g.layers) {
+        ggml_tensor * x   = laya_gpu_norm(ctx, H, L.attn_norm_w, L.attn_norm_b, w.eps);
+        ggml_tensor * qkv = laya_gpu_linear(ctx, x, L.qkv_w, L.qkv_b); // [3*n_embd, total]
+
+        ggml_tensor * attn = nullptr;
+        int start = 0;
+        for (int n : lens) {
+            const size_t off = (size_t) start * qkv->nb[1];
+            ggml_tensor * q = ggml_view_3d(ctx, qkv, head_dim, n_head, n, head_dim * sizeof(float), qkv->nb[1], off);
+            ggml_tensor * k = ggml_view_3d(ctx, qkv, head_dim, n_head, n, head_dim * sizeof(float), qkv->nb[1],
+                                           off + (size_t) n_embd * sizeof(float));
+            ggml_tensor * v = ggml_view_3d(ctx, qkv, head_dim, n_head, n, head_dim * sizeof(float), qkv->nb[1],
+                                           off + (size_t) 2 * n_embd * sizeof(float));
+            q = ggml_permute(ctx, q, 0, 2, 1, 3);                  // [head_dim, n, n_head]
+            k = ggml_permute(ctx, k, 0, 2, 1, 3);                  // [head_dim, n, n_head]
+            v = ggml_cont(ctx, ggml_permute(ctx, v, 1, 2, 0, 3)); // [n, head_dim, n_head]
+            ggml_tensor * kq = ggml_mul_mat(ctx, k, q);            // [n_k, n_q, n_head]
+            kq = ggml_soft_max_ext(ctx, kq, nullptr, scale, 0.0f);
+            ggml_tensor * o = ggml_mul_mat(ctx, v, kq);            // [head_dim, n_q, n_head]
+            o = ggml_cont(ctx, ggml_permute(ctx, o, 0, 2, 1, 3));  // [head_dim, n_head, n_q]
+            o = ggml_reshape_2d(ctx, o, n_embd, n);
+            attn = attn ? ggml_concat(ctx, attn, o, 1) : o;
+            start += n;
+        }
+        H = ggml_add(ctx, H, laya_gpu_linear(ctx, attn, L.out_w, L.out_b));
+
+        x = laya_gpu_norm(ctx, H, L.ffn_norm_w, L.ffn_norm_b, w.eps);
+        ggml_tensor * mid = ggml_relu(ctx, laya_gpu_linear(ctx, x, L.up_w, L.up_b));
+        H = ggml_add(ctx, H, laya_gpu_linear(ctx, mid, L.down_w, L.down_b));
+    }
+    ggml_set_output(H);
+    ggml_build_forward_expand(gf, H);
+
+    bool ok = ggml_gallocr_alloc_graph(g.galloc, gf);
+    if (ok) {
+        ggml_backend_tensor_set(inp, H_all.data(), 0, H_all.size() * sizeof(float));
+        ok = ggml_backend_graph_compute(g.backend, gf) == GGML_STATUS_SUCCESS;
+    }
+    if (ok) {
+        ggml_backend_tensor_get(H, H_all.data(), 0, H_all.size() * sizeof(float));
+    }
+    ggml_free(ctx);
+    return ok;
+}
+
 bool laya_model_has_head(const llama_model * model) {
     return model != nullptr && llama_model_get_tensor(model, "laya.type_embd.weight") != nullptr;
 }
@@ -451,6 +663,7 @@ bool laya_head_load(const llama_model * model, laya_head_weights & out, std::str
         }
     }
 
+    laya_head_gpu_init(out);
     return true;
 }
 
@@ -514,17 +727,9 @@ bool laya_encode_embeddings(
     return true;
 }
 
-bool laya_head_apply(
-        const laya_head_weights & w,
-        const float * H_in,
-        int n_tokens,
-        const laya_decision_input & input,
-        laya_decision_result & out,
-        std::string & err) {
-    out = laya_decision_result{};
-    out.n_tokens = n_tokens;
-
-    if (H_in == nullptr || n_tokens <= 0) {
+// laya_check_input validates one input against the head before any compute.
+static bool laya_check_input(const laya_head_weights & w, int n_tokens, const laya_decision_input & input, std::string & err) {
+    if (n_tokens <= 0) {
         err = "empty embeddings";
         return false;
     }
@@ -536,36 +741,35 @@ bool laya_head_apply(
         err = "qtype must be 0..2";
         return false;
     }
-
-    const int n_embd = w.n_embd;
-    const size_t type_cols = w.type_embd.size() / (size_t) n_embd;
+    const size_t type_cols = w.type_embd.size() / (size_t) w.n_embd;
     if (type_cols < 3 || (size_t) input.qtype >= type_cols) {
         err = "type_embd missing qtype column";
         return false;
     }
-
     for (int32_t p : input.marker_pos) {
         if (p < 0 || p >= n_tokens) {
             err = string_format("marker_pos %d out of range for n_tokens=%d", (int) p, n_tokens);
             return false;
         }
     }
+    return true;
+}
 
-    // Working copy of H
-    std::vector<float> H((size_t) n_tokens * (size_t) n_embd);
-    std::memcpy(H.data(), H_in, H.size() * sizeof(float));
-
-    // a. H[t] += type_embd[qtype]
-    const float * te = w.type_embd.data() + (size_t) input.qtype * n_embd;
+// laya_add_type_embd: H[t] += type_embd[qtype] for every token.
+static void laya_add_type_embd(const laya_head_weights & w, float * H, int n_tokens, int qtype) {
+    const int n_embd = w.n_embd;
+    const float * te = w.type_embd.data() + (size_t) qtype * n_embd;
     for (int t = 0; t < n_tokens; ++t) {
-        float * row = H.data() + (size_t) t * n_embd;
+        float * row = H + (size_t) t * n_embd;
         for (int i = 0; i < n_embd; ++i) {
             row[i] += te[i];
         }
     }
+}
 
-    // b. head layers: pre-LN MHA + ReLU FFN
-    std::vector<float> tmp_ln((size_t) n_embd);
+// laya_head_layers_cpu runs the head transformer layers (pre-LN MHA + ReLU FFN) in place.
+static void laya_head_layers_cpu(const laya_head_weights & w, std::vector<float> & H, int n_tokens) {
+    const int n_embd = w.n_embd;
     std::vector<float> tmp_attn;
     std::vector<float> tmp_ffn;
 
@@ -598,6 +802,19 @@ bool laya_head_apply(
             H[i] += tmp_ffn[i];
         }
     }
+}
+
+// laya_head_tail runs the scorer on marker rows and the act head on H after the layers.
+static bool laya_head_tail(
+        const laya_head_weights & w,
+        const float * H,
+        int n_tokens,
+        const laya_decision_input & input,
+        laya_decision_result & out,
+        std::string & err) {
+    const int n_embd = w.n_embd;
+    out.n_tokens = n_tokens;
+    std::vector<float> tmp_ln((size_t) n_embd);
 
     // c+d. scorer on marker positions
     const int k = (int) input.marker_pos.size();
@@ -606,7 +823,7 @@ bool laya_head_apply(
     std::vector<float> sc_out(1);
 
     for (int i = 0; i < k; ++i) {
-        const float * hm = H.data() + (size_t) input.marker_pos[(size_t) i] * n_embd;
+        const float * hm = H + (size_t) input.marker_pos[(size_t) i] * n_embd;
         layernorm(w.scorer_norm, hm, tmp_ln.data(), n_embd, w.eps);
         linear_forward(w.scorer_fc1, tmp_ln.data(), sc_mid.data());
         for (size_t j = 0; j < sc_mid.size(); ++j) {
@@ -618,7 +835,6 @@ bool laya_head_apply(
 
     // e. softmax + dist features (mask unused with -1e4 — N/A when only real markers)
     std::vector<float> probs = out.logits;
-    // If caller pads beyond k, they would send fewer markers; we only have k.
     softmax_inplace(probs);
 
     float top1 = 0.0f;
@@ -647,7 +863,7 @@ bool laya_head_apply(
 
     // f. act_head on concat(H[0], feats)
     std::vector<float> act_in((size_t) n_embd + 4);
-    std::memcpy(act_in.data(), H.data(), (size_t) n_embd * sizeof(float));
+    std::memcpy(act_in.data(), H, (size_t) n_embd * sizeof(float));
     for (int i = 0; i < 4; ++i) {
         act_in[(size_t) n_embd + i] = feats[i];
     }
@@ -666,6 +882,28 @@ bool laya_head_apply(
     softmax_inplace(out.act);
 
     return true;
+}
+
+bool laya_head_apply(
+        const laya_head_weights & w,
+        const float * H_in,
+        int n_tokens,
+        const laya_decision_input & input,
+        laya_decision_result & out,
+        std::string & err) {
+    out = laya_decision_result{};
+    out.n_tokens = n_tokens;
+    if (H_in == nullptr) {
+        err = "empty embeddings";
+        return false;
+    }
+    if (!laya_check_input(w, n_tokens, input, err)) {
+        return false;
+    }
+    std::vector<float> H(H_in, H_in + (size_t) n_tokens * (size_t) w.n_embd);
+    laya_add_type_embd(w, H.data(), n_tokens, input.qtype);
+    laya_head_layers_cpu(w, H, n_tokens);
+    return laya_head_tail(w, H.data(), n_tokens, input, out, err);
 }
 
 // laya_encode_embeddings_batch encodes several inputs with as few llama_process calls as
@@ -765,16 +1003,49 @@ bool laya_decide_batch(
     const auto t1 = std::chrono::steady_clock::now();
     out.assign(inputs.size(), {});
     int total = 0;
-    for (size_t k = 0; k < inputs.size(); ++k) {
-        total += (int) inputs[k].tokens.size();
-        if (!laya_head_apply(w, embd[k].data(), (int) inputs[k].tokens.size(), inputs[k], out[k], err)) {
-            return false;
+    bool on_gpu = false;
+    if (w.gpu) {
+        std::vector<int> lens(inputs.size());
+        for (size_t k = 0; k < inputs.size(); ++k) {
+            lens[k] = (int) inputs[k].tokens.size();
+            if (!laya_check_input(w, lens[k], inputs[k], err)) {
+                return false;
+            }
+            total += lens[k];
+        }
+        std::vector<float> H_all;
+        H_all.reserve((size_t) total * (size_t) w.n_embd);
+        for (size_t k = 0; k < inputs.size(); ++k) {
+            const size_t at = H_all.size();
+            H_all.insert(H_all.end(), embd[k].begin(), embd[k].end());
+            laya_add_type_embd(w, H_all.data() + at, lens[k], inputs[k].qtype);
+        }
+        if (laya_head_layers_gpu(w, H_all, lens)) {
+            on_gpu = true;
+            size_t at = 0;
+            for (size_t k = 0; k < inputs.size(); ++k) {
+                if (!laya_head_tail(w, H_all.data() + at, lens[k], inputs[k], out[k], err)) {
+                    return false;
+                }
+                at += (size_t) lens[k] * (size_t) w.n_embd;
+            }
+        } else {
+            LOG_WRN("laya: GPU head failed; using CPU for this request\n");
+            total = 0;
+        }
+    }
+    if (!on_gpu) {
+        for (size_t k = 0; k < inputs.size(); ++k) {
+            total += (int) inputs[k].tokens.size();
+            if (!laya_head_apply(w, embd[k].data(), (int) inputs[k].tokens.size(), inputs[k], out[k], err)) {
+                return false;
+            }
         }
     }
     if (laya_timing()) {
         const auto t2 = std::chrono::steady_clock::now();
-        LOG_INF("laya decisions: inputs=%zu tokens=%d threads=%d encode_ms=%.2f head_ms=%.2f\n", inputs.size(), total,
-                laya_threads(), std::chrono::duration<double, std::milli>(t1 - t0).count(),
+        LOG_INF("laya decisions: inputs=%zu tokens=%d head=%s threads=%d encode_ms=%.2f head_ms=%.2f\n", inputs.size(), total,
+                on_gpu ? "gpu" : "cpu", laya_threads(), std::chrono::duration<double, std::milli>(t1 - t0).count(),
                 std::chrono::duration<double, std::milli>(t2 - t1).count());
     }
     return true;
