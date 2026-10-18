@@ -36,6 +36,8 @@ type Server struct {
 	Mux       *http.ServeMux
 	Peers     []string // peer storage base URLs for async replication
 	HTTP      *http.Client
+	// Pull, when set, enables POST /v1/pull (registry ingest into ModelsDir).
+	Pull PullFunc
 
 	metrics    metrics
 	rdmaServer // build-tagged: real verbs hub or empty stub
@@ -64,6 +66,7 @@ func New(modelsDir string, auth *remotestore.Auth) *Server {
 	s.Mux.HandleFunc("/v1/models", s.handleModelsList)
 	s.Mux.HandleFunc("/v1/verify", s.handleVerify)
 	s.Mux.HandleFunc("/v1/gc", s.handleGC)
+	s.Mux.HandleFunc("/v1/pull", s.handlePull)
 	s.Mux.HandleFunc("/v1/blob/", s.handleBlob)
 	s.Mux.HandleFunc("/v1/manifest/", s.handleManifest)
 	s.Mux.HandleFunc("/v1/tensor/", s.handleTensor)
@@ -86,6 +89,7 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 	}
 	cap := remotestore.Capability{
 		Transports: []string{"tcp"},
+		Pull:       s.Pull != nil,
 	}
 	if rc := s.rdmaCapability(); rc != nil && rc.GID != "" {
 		cap.Transports = append([]string{"rdma"}, cap.Transports...)

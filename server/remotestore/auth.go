@@ -51,6 +51,8 @@ type Capability struct {
 	RDMA       *RDMACap `json:"rdma,omitempty"`
 	UDPPort    int      `json:"udp_port,omitempty"` // roadmap
 	L2OK       bool     `json:"l2_ok,omitempty"`    // roadmap
+	// Pull is true when POST /v1/pull can ingest from a registry into ModelsDir.
+	Pull bool `json:"pull,omitempty"`
 }
 
 // RDMACap advertises InfiniBand verbs endpoint info for QP setup.

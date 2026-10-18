@@ -28,7 +28,7 @@ import (
 	"github.com/ollama/ollama/version"
 )
 
-// NewStorageCommand registers `zerollama storage serve|push|ls|verify|gc|sync`.
+// NewStorageCommand registers `zerollama storage serve|push|pull|ls|verify|gc|sync`.
 // Why a subcommand of zerollama (not a second binary): one package for operators,
 // shared auth/env with the inference daemon, same OLLAMA_MODELS layout.
 func NewStorageCommand() *cobra.Command {
@@ -44,6 +44,7 @@ See docs/remote-model-storage.md.`,
 	}
 	cmd.AddCommand(newStorageServeCommand())
 	cmd.AddCommand(newStoragePushCommand())
+	cmd.AddCommand(newStoragePullCommand())
 	cmd.AddCommand(newStorageLSCommand())
 	cmd.AddCommand(newStorageVerifyCommand())
 	cmd.AddCommand(newStorageGCCommand())
@@ -81,8 +82,13 @@ func newStorageServeCommand() *cobra.Command {
 			if (tlsCert == "") != (tlsKey == "") {
 				return fmt.Errorf("both --tls-cert and --tls-key (or ZEROLLAMA_STORAGE_TLS_CERT/KEY) are required together")
 			}
+			// Own OLLAMA_MODELS for this process so registry pulls land in ModelsDir.
+			if err := os.Setenv("OLLAMA_MODELS", models); err != nil {
+				return fmt.Errorf("set OLLAMA_MODELS: %w", err)
+			}
 			srv := storaged.New(models, auth)
 			srv.Peers = envconfig.ParseStoragePeers()
+			srv.Pull = storageServePull
 			httpSrv := &http.Server{
 				Addr:              listen,
 				Handler:           srv,
@@ -900,7 +906,11 @@ func runStorageDoctor(wait time.Duration) error {
 		} else if len(cap.Transports) > 0 {
 			verbs = strings.Join(cap.Transports, "+")
 		}
-		fmt.Printf("OK    %s (%s)\n", base, verbs)
+		pull := "pull=no"
+		if cap.Pull {
+			pull = "pull=yes"
+		}
+		fmt.Printf("OK    %s (%s, %s)\n", base, verbs, pull)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/v1/health", nil)
 		if err != nil {

@@ -57,6 +57,19 @@ export ZEROLLAMA_STORAGE_SECRET='long-random-shared-secret'
 
 **Why two-phase reclaim:** push walks many manifests; one blob can appear in dozens. Deleting after the first successful upload breaks later manifests that still need the local file to upload (or to skip HEAD). Reclaim runs only when every local reference has a successful remote push.
 
+### Pull onto storage from a client (no local weights)
+
+When the storage box has the disk and the client should not download GBs:
+
+```bash
+export ZEROLLAMA_STORAGE_SECRET='long-random-shared-secret'
+./zerollama storage pull http://storage-host:18090 llama3.2:3b
+# or with mDNS / ZEROLLAMA_STORAGE_SERVERS:
+./zerollama storage pull llama3.2:3b
+```
+
+This is `POST /v1/pull` on the storage server (registry ingest into its `$OLLAMA_MODELS`). Streams the same progress shape as `zerollama pull`. After success, peer replication (if configured) gets the new manifest.
+
 ### Inference node
 
 ```bash
@@ -154,6 +167,7 @@ Roadmap transports: raw Ethernet L2 (`AF_PACKET`), UDP/ARQ; ODP/file-backed MRs.
 | `GET /v1/capability` | Negotiate RDMA vs TCP (`verbs:true` when QP path is live) |
 | `GET /v1/health` | `live`/`ok` process up; `ready` when all configured peers are `ok` (or no peers); counts + peer status |
 | `GET /v1/models` | Operator catalog: name, digest, size, layers, modified (what `zerollama storage ls` prints) |
+| `POST /v1/pull` | Ask storage to pull a registry model into its tree (NDJSON progress; `capability.pull`) |
 | `GET /v1/blobs` / `GET /v1/manifests` | Raw digest / path dumps for ops (`storage ls --kind blobs\|manifests`) |
 | `GET /v1/metrics` | Prometheus text counters/gauges |
 | `GET /v1/blobs` / `GET /v1/manifests` | Paginated inventory (`?limit=&cursor=`) |
@@ -173,6 +187,7 @@ All require HMAC.
 ```bash
 ./zerollama storage ls http://storage-host:18090          # model table (NAME/ID/SIZE/…)
 ./zerollama storage ls http://storage-host:18090 comfy  # filter substring
+./zerollama storage pull http://storage-host:18090 llama3.2:3b  # registry → storage disk
 ./zerollama storage ls --kind blobs http://storage-host:18090   # raw digests
 ./zerollama storage ls --kind manifests http://storage-host:18090
 ./zerollama storage verify http://storage-host:18090
@@ -181,7 +196,7 @@ All require HMAC.
 ./zerollama storage sync http://peer-host:18090           # one-shot push of local tree
 ```
 
-`storage ls` defaults to the operator catalog (`GET /v1/models`). URL is optional when `ZEROLLAMA_STORAGE_SERVERS` or mDNS already points at a peer.
+`storage ls` defaults to the operator catalog (`GET /v1/models`). URL is optional when `ZEROLLAMA_STORAGE_SERVERS` or mDNS already points at a peer. `storage pull` asks the storage host to download from a registry (not a client→storage blob upload).
 ### Peer replication (v1.2)
 
 `ZEROLLAMA_STORAGE_PEERS` configures async replicate-after-PUT and a 5‑minute reconciler. Writes are **local-first + best-effort async** (RPO ≈ reconciler interval). Clients with multiple `ZEROLLAMA_STORAGE_SERVERS` soft-failover on 5xx/timeouts and skip cooled-down peers (~30s).
