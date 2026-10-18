@@ -134,10 +134,16 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		}
 		fi, err := os.Stat(path)
 		if err == nil {
+			// Why Content-Type + no preset Content-Length on GET: http.ServeFile
+			// sniffs 512 bytes when type is unset; combined with a preset full-file
+			// Content-Length some peers prepended (rangeLen-512) raw blob bytes
+			// before the HTTP status line, breaking keep-alive clients ("malformed
+			// HTTP status code"). Explicit type skips sniff; ServeFile owns CL/Range.
 			w.Header().Set("Accept-Ranges", "bytes")
-			w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+			w.Header().Set("Content-Type", "application/octet-stream")
 			s.metrics.incGet(fi.Size())
 			if r.Method == http.MethodHead {
+				w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
 				w.WriteHeader(http.StatusOK)
 				return
 			}
@@ -161,10 +167,11 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Accept-Ranges", "bytes")
-		w.Header().Set("Content-Length", strconv.FormatInt(pfi.Size(), 10))
+		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set(headerPartial, "1")
 		w.Header().Set(headerPartialSize, strconv.FormatInt(pfi.Size(), 10))
 		if r.Method == http.MethodHead {
+			w.Header().Set("Content-Length", strconv.FormatInt(pfi.Size(), 10))
 			w.WriteHeader(http.StatusOK)
 			return
 		}

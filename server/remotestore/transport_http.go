@@ -65,7 +65,7 @@ func (t *TCPTransport) FetchChunk(ctx context.Context, baseURL, digest string, o
 	}
 	resp, err := t.Client.Do(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, annotateMalformedHTTP(err)
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		defer resp.Body.Close()
@@ -169,4 +169,16 @@ func normalizeDigest(d string) string {
 		d = "sha256-" + d
 	}
 	return d
+}
+
+// annotateMalformedHTTP adds an operator hint when a peer prepends non-HTTP
+// bytes before the status line (seen as rangeLen-512 junk ahead of "HTTP/1.1").
+func annotateMalformedHTTP(err error) error {
+	if err == nil {
+		return nil
+	}
+	if !strings.Contains(err.Error(), "malformed HTTP status") {
+		return err
+	}
+	return fmt.Errorf("%w\nHint: storage peer sent blob bytes before the HTTP status (wedged Range/GET). Restart `zerollama storage serve` on that host; upgrade if it still fails after restart", err)
 }

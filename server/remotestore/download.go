@@ -230,6 +230,16 @@ func (r *Resolver) chunkHTTPClient() *http.Client {
 	if base.Transport != nil {
 		tr = base.Transport
 	}
+	// Clone so parallel Range workers do not share a polluted keep-alive conn
+	// when a peer mis-frames a prior response.
+	if ht, ok := tr.(*http.Transport); ok {
+		tr = ht.Clone()
+	} else {
+		tr = &http.Transport{Proxy: http.ProxyFromEnvironment}
+	}
+	if ht, ok := tr.(*http.Transport); ok {
+		ht.DisableKeepAlives = true
+	}
 	return &http.Client{
 		Transport:     tr,
 		CheckRedirect: base.CheckRedirect,

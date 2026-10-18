@@ -6,7 +6,7 @@ Centralize GGUF (and other Ollama-shaped) model blobs on one or more storage ser
 
 **Why not NFS/S3 alone:** POSIX mounts and object stores are fine for cold archives, but they do not speak Ollama manifests, HMAC between zerollama peers, InfiniBand preference, or the tensor-addressed language we need for later streaming. A small daemon next to the models tree keeps the wire close to how zerollama already names blobs.
 
-Full operator guide: this file. Package: `server/remotestore/`. CLI: `zerollama storage serve|push|ls|verify|gc|sync`.
+Full operator guide: this file. Package: `server/remotestore/`. CLI: `zerollama storage serve|push|pull|run|ls|verify|gc|sync|discover|doctor`.
 
 **Quality bar (v1.1/v1.2):** ops surface (health/metrics/list/verify/gc), optional TLS, parallel Range-GET with stall retries, fsync-safe PUTs, multi-URL client failover, and async peer replication — without becoming S3/NFS. We match mature shared-storage *reliability and ops*, not object-store APIs.
 
@@ -69,6 +69,21 @@ export ZEROLLAMA_STORAGE_SECRET='long-random-shared-secret'
 ```
 
 This is `POST /v1/pull` on the storage server (registry ingest into its `$OLLAMA_MODELS`). Streams the same progress shape as `zerollama pull`. After success, peer replication (if configured) gets the new manifest.
+
+### Run a storage model on this machine
+
+Fetch manifest + blobs from the storage server into local `$OLLAMA_MODELS`, then open chat (same path as `zerollama run`). Needs `zerollama serve` on `OLLAMA_HOST`.
+
+```bash
+export ZEROLLAMA_STORAGE_SECRET='long-random-shared-secret'
+./zerollama storage run http://192.168.10.39:18090 qwen3.8:latest
+# materialize only:
+./zerollama storage run http://192.168.10.39:18090 qwen3.8:latest --fetch-only
+```
+
+**Why not `storage pull` for this:** `pull` asks the *storage host* to download from a registry. `run` is the client-side direction (storage → laptop/GPU box → chat).
+
+**If fetch dies with `malformed HTTP status code`:** the storage peer is prepended blob bytes before `HTTP/1.1` on Range/GET (often after an aborted multi-MiB transfer). Restart `zerollama storage serve` on that host; rebuild/upgrade so GET sets `Content-Type: application/octet-stream` and does not preset `Content-Length` before `ServeFile`.
 
 ### Inference node
 
@@ -196,7 +211,7 @@ All require HMAC.
 ./zerollama storage sync http://peer-host:18090           # one-shot push of local tree
 ```
 
-`storage ls` defaults to the operator catalog (`GET /v1/models`). URL is optional when `ZEROLLAMA_STORAGE_SERVERS` or mDNS already points at a peer. `storage pull` asks the storage host to download from a registry (not a client→storage blob upload).
+`storage ls` defaults to the operator catalog (`GET /v1/models`). URL is optional when `ZEROLLAMA_STORAGE_SERVERS` or mDNS already points at a peer. `storage pull` asks the storage host to download from a registry (not a client→storage blob upload). `storage run` is the opposite direction for operators: storage → local `$OLLAMA_MODELS`, then chat.
 ### Peer replication (v1.2)
 
 `ZEROLLAMA_STORAGE_PEERS` configures async replicate-after-PUT and a 5‑minute reconciler. Writes are **local-first + best-effort async** (RPO ≈ reconciler interval). Clients with multiple `ZEROLLAMA_STORAGE_SERVERS` soft-failover on 5xx/timeouts and skip cooled-down peers (~30s).

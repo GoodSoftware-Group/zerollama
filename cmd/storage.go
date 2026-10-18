@@ -28,7 +28,7 @@ import (
 	"github.com/ollama/ollama/version"
 )
 
-// NewStorageCommand registers `zerollama storage serve|push|pull|ls|verify|gc|sync`.
+// NewStorageCommand registers `zerollama storage serve|push|pull|run|ls|verify|gc|sync`.
 // Why a subcommand of zerollama (not a second binary): one package for operators,
 // shared auth/env with the inference daemon, same OLLAMA_MODELS layout.
 func NewStorageCommand() *cobra.Command {
@@ -40,11 +40,15 @@ func NewStorageCommand() *cobra.Command {
 Why: keep one canonical $OLLAMA_MODELS tree on a big disk; inference nodes
 fetch on miss. Lab listen defaults to :18090 — never bind :11434/:8081.
 
+  storage pull  — registry → storage host (POST /v1/pull)
+  storage run   — storage host → this machine, then chat (like zerollama run)
+
 See docs/remote-model-storage.md.`,
 	}
 	cmd.AddCommand(newStorageServeCommand())
 	cmd.AddCommand(newStoragePushCommand())
 	cmd.AddCommand(newStoragePullCommand())
+	cmd.AddCommand(newStorageRunCommand())
 	cmd.AddCommand(newStorageLSCommand())
 	cmd.AddCommand(newStorageVerifyCommand())
 	cmd.AddCommand(newStorageGCCommand())
