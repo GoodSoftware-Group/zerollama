@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -44,46 +43,6 @@ func (t *TCPTransport) Available(cap Capability) bool {
 		}
 	}
 	return true // TCP always usable as last resort for HTTP control-plane peers
-}
-
-func (t *TCPTransport) FetchChunk(ctx context.Context, baseURL, digest string, offset, length int64) (io.ReadCloser, int64, error) {
-	digest = normalizeDigest(digest)
-	url := strings.TrimRight(baseURL, "/") + "/v1/blob/" + digest
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, 0, err
-	}
-	if length > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+length-1))
-	} else if offset > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
-	}
-	if t.Auth != nil {
-		if err := t.Auth.SignRequest(req, nil); err != nil {
-			return nil, 0, err
-		}
-	}
-	resp, err := t.Client.Do(req)
-	if err != nil {
-		return nil, 0, annotateMalformedHTTP(err)
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, 0, fmt.Errorf("tcp fetch %s: %s: %s", digest, resp.Status, strings.TrimSpace(string(b)))
-	}
-	n := resp.ContentLength
-	if n < 0 {
-		if cr := resp.Header.Get("Content-Range"); cr != "" {
-			// bytes start-end/total
-			if i := strings.LastIndex(cr, "/"); i >= 0 {
-				if tot, err := strconv.ParseInt(cr[i+1:], 10, 64); err == nil && length <= 0 {
-					n = tot - offset
-				}
-			}
-		}
-	}
-	return resp.Body, n, nil
 }
 
 // HeadBlob checks existence and size via HEAD.
