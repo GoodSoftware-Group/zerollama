@@ -54,6 +54,7 @@ import (
 	"github.com/ollama/ollama/server/modality"
 	"github.com/ollama/ollama/server/modality/comfyui"
 	"github.com/ollama/ollama/server/openapi"
+	"github.com/ollama/ollama/server/remotestore"
 	"github.com/ollama/ollama/server/vram"
 	"github.com/ollama/ollama/template"
 	"github.com/ollama/ollama/thinking"
@@ -3214,6 +3215,10 @@ func Serve(listeners ...net.Listener) error {
 
 	// Register mDNS after startup work so the HTTP listener is about to accept connections.
 	startNodeMDNS(ctx, ln)
+
+	// Tier-1: browse LAN for storage peers when STORAGE_SERVERS unset (opt-in mDNS).
+	remotestore.BootstrapMDNSIfNeeded(ctx)
+	logServeCoach()
 
 	for _, extra := range extras {
 		if extra == nil {

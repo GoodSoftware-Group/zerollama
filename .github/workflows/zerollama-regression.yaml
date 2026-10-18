@@ -99,6 +99,9 @@ jobs:
           P15_UPSTREAM_JSON: /tmp/phase15-upstream-kv-watch.json
         run: ./scripts/phase/phase15_upstream_kv_watch.sh
 
+      - name: Mac build script surface (referenced helpers exist)
+        run: ./scripts/build/check_mac_build_scripts.sh
+
       - name: GLiNER scripts + pin check (GL0–GL5a)
         run: ./scripts/check_gliner_scripts.sh
 

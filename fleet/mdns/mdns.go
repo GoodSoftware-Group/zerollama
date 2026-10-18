@@ -21,7 +21,11 @@ const (
 	ServiceNode = "_zerollama._tcp"
 	// ServiceFleet is the DNS-SD type for the fleet management HTTP endpoint.
 	ServiceFleet = "_zerollama-fleet._tcp"
-	serviceDomain = "local."
+	// ServiceStorage is the DNS-SD type for remote model storage (storage serve).
+	// Why a distinct type: inference nodes and storage share a LAN but different ports/roles;
+	// clients must not treat :11434 peers as blob stores.
+	ServiceStorage = "_zerollama-storage._tcp"
+	serviceDomain  = "local."
 )
 
 // RegisterOpts configures mDNS registration.

@@ -204,7 +204,7 @@ Registers **`_zerollama-fleet._tcp`** so agents can find the manager without a f
 | `ZEROLLAMA_FLEET_ASSIGN_SECRET` | *(empty)* | F5 HMAC secret on **manager + nodes**; empty disables tokens. |
 | `ZEROLLAMA_FLEET_ASSIGN_TTL` | `8s` | Soft-hold window (clamped 2–30s). |
 | `ZEROLLAMA_FLEET_ASSIGN_PUSH` | `1` | Manager POSTs `/api/fleet/assign-hold` after mint. |
-| `ZEROLLAMA_MDNS` | `0` | On inference nodes: advertise `_zerollama._tcp` when `zerollama serve` starts. |
+| `ZEROLLAMA_MDNS` | `0` | On inference nodes: advertise `_zerollama._tcp` when `zerollama serve` starts. Also inherited by storage advertise (`_zerollama-storage._tcp`) and storage browse when `STORAGE_SERVERS` is empty. |
 | `ZEROLLAMA_FLEET_MDNS` | `0` | Fleet manager: browse LAN for `_zerollama._tcp` peers (merged with static list). |
 | `ZEROLLAMA_FLEET_MDNS_ADVERTISE` | `0` | Fleet manager: advertise `_zerollama-fleet._tcp` for agent discovery. |
 

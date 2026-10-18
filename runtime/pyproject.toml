@@ -16,9 +16,9 @@ gpu = ["nvidia-ml-py>=12.0"]
 dev = ["pytest>=8.0", "httpx>=0.27"]
 native = []  # builds runtime.kv._kv_native C extension (Phase 15)
 
-[[tool.setuptools.ext-modules]]
-name = "runtime.kv._kv_native"
-sources = ["native/kv_block_pool.c", "native/kv_decode_loop.c"]
+# Native ext is configured in setup.py (optional libllama link flags).
+# Do not declare [[tool.setuptools.ext-modules]] here — absolute/merged paths
+# break editable installs on macOS.
 
 [project.scripts]
 zerollama-runtime = "runtime.cli:main"

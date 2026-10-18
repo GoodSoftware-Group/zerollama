@@ -61,6 +61,7 @@ func New(modelsDir string, auth *remotestore.Auth) *Server {
 	s.Mux.HandleFunc("/v1/metrics", s.handleMetrics)
 	s.Mux.HandleFunc("/v1/blobs", s.handleBlobsList)
 	s.Mux.HandleFunc("/v1/manifests", s.handleManifestsList)
+	s.Mux.HandleFunc("/v1/models", s.handleModelsList)
 	s.Mux.HandleFunc("/v1/verify", s.handleVerify)
 	s.Mux.HandleFunc("/v1/gc", s.handleGC)
 	s.Mux.HandleFunc("/v1/blob/", s.handleBlob)

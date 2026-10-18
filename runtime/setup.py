@@ -68,14 +68,14 @@ def _resolve_libllama_path(cpp_root: Path) -> Path | None:
 
 
 def _kv_native_extension() -> Extension:
-    runtime_dir = Path(__file__).resolve().parent
+    # Relative paths only — setuptools editable wheels reject absolute source paths.
     sources = [
-        str(runtime_dir / "native" / "kv_block_pool.c"),
-        str(runtime_dir / "native" / "kv_decode_loop.c"),
-        str(runtime_dir / "native" / "kv_tensor_probe.c"),
+        "native/kv_block_pool.c",
+        "native/kv_decode_loop.c",
+        "native/kv_tensor_probe.c",
     ]
     define_macros: list[tuple[str, str | None]] = []
-    include_dirs: list[str] = [str(runtime_dir / "native")]
+    include_dirs: list[str] = ["native"]
     libraries: list[str] = []
     library_dirs: list[str] = []
     extra_link_args: list[str] = []

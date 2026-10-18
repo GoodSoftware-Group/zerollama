@@ -24,7 +24,7 @@ On the Mac lab host (`~/Sites/inference/zerollama`):
 
 - Production listeners on **11434** / **8081** — lab ports only (`11435`, `18081`, …).
 - **PVE hypervisor (ryzen7950x0):** never start or bind `zerollama` / `llama-server`. Serve only inside **CT 1564** (`pct exec 1564`, clients `192.168.255.164:8080`).
-- Remote model storage serve defaults to **`:18090`** (lab). Never point `storage serve` at inference ports. Operator guide + WHYs: [docs/remote-model-storage.md](./docs/remote-model-storage.md).
+- Remote model storage serve defaults to **`:18090`** (lab). Never point `storage serve` at inference ports. LAN discover: `ZEROLLAMA_MDNS=1` → `_zerollama-storage._tcp`; clients `zerollama storage discover` / `storage doctor`. Guide: [docs/remote-model-storage.md](./docs/remote-model-storage.md).
 
 ## Mac setup (fresh clone)
 
@@ -42,16 +42,19 @@ Canonical guide: **[docs/mac-dev-setup.md](./docs/mac-dev-setup.md)**.
 **Tier 0 (no models required):**
 
 ```bash
-./scripts/runtime/dev_bootstrap.sh
-./zerollama serve          # :11434 + sidecar :8081 on Darwin
-./zerollama pull llama3.2:3b
+./scripts/runtime/dev_bootstrap.sh   # host deps + ggml build + ~/.local/bin install
+zerollama serve                      # :11434 + sidecar :8081 on Darwin
+zerollama pull llama3.2:3b
 ```
 
 | Script layout (post-reorg) | Use this |
 |----------------------------|----------|
 | Bootstrap | `scripts/runtime/dev_bootstrap.sh` / `mac_setup.sh` |
+| Host deps (no Homebrew required) | `scripts/runtime/mac_host_deps.sh` |
+| Install to PATH | `scripts/install_mac.sh` (`PREFIX=~/.local`) |
 | Mac CGO build | `scripts/build/build_zerollama_mac.sh` |
 | Runtime venv | `scripts/runtime/runtime_uv_venv.sh` |
+| CGO vendor headers | `scripts/vendor/ensure_llama_cgo_vendor.sh` |
 | Sibling llama.cpp | `scripts/vendor/ensure_llama_cpp_sibling.sh` |
 | Metal sign-off | `scripts/gpu/metal_signoff.sh` (CI `:8080`, not production `:11434`) |
 

@@ -67,6 +67,29 @@ export ZEROLLAMA_REMOTE_CACHE_MAX_BYTES=$((200*1024*1024*1024))  # optional LRU 
 ./zerollama serve   # ordinary serve; GetModel fetches missing blobs transparently
 ```
 
+**LAN discovery (tier-1 DX):** opt-in mDNS — no typed IP when both hosts share Wi‑Fi.
+
+```bash
+# storage host
+export ZEROLLAMA_STORAGE_SECRET='long-random-shared-secret'
+export ZEROLLAMA_MDNS=1
+zerollama storage serve --listen 0.0.0.0:18090   # advertises _zerollama-storage._tcp
+
+# inference host
+export ZEROLLAMA_STORAGE_SECRET='long-random-shared-secret'
+export ZEROLLAMA_MDNS=1   # browse when STORAGE_SERVERS empty (or set STORAGE_MDNS_BROWSE=1)
+zerollama storage discover          # prints http://…:18090
+zerollama storage doctor            # secret + HMAC reachability
+zerollama serve                     # BootstrapMDNSIfNeeded at startup
+```
+
+| Env | Role |
+|-----|------|
+| `ZEROLLAMA_MDNS=1` | Inference advertise `_zerollama._tcp`; storage inherits advertise + browse |
+| `ZEROLLAMA_STORAGE_MDNS` | Override storage advertise (empty inherits `MDNS`) |
+| `ZEROLLAMA_STORAGE_MDNS_BROWSE` | Override browse when `STORAGE_SERVERS` empty |
+| `ZEROLLAMA_STORAGE_MDNS_WAIT` | Browse window (default `2s`) |
+
 **Why integrate into `GetModel`:** every load path already goes through manifests + layer digests. Transparent miss-fetch means `zerollama run` / `/api/chat` keep working without a separate “sync models” step.
 
 ---
@@ -130,6 +153,8 @@ Roadmap transports: raw Ethernet L2 (`AF_PACKET`), UDP/ARQ; ODP/file-backed MRs.
 |----------|-----|
 | `GET /v1/capability` | Negotiate RDMA vs TCP (`verbs:true` when QP path is live) |
 | `GET /v1/health` | `live`/`ok` process up; `ready` when all configured peers are `ok` (or no peers); counts + peer status |
+| `GET /v1/models` | Operator catalog: name, digest, size, layers, modified (what `zerollama storage ls` prints) |
+| `GET /v1/blobs` / `GET /v1/manifests` | Raw digest / path dumps for ops (`storage ls --kind blobs\|manifests`) |
 | `GET /v1/metrics` | Prometheus text counters/gauges |
 | `GET /v1/blobs` / `GET /v1/manifests` | Paginated inventory (`?limit=&cursor=`) |
 | `POST /v1/verify` | Re-hash digests; report mismatches |
@@ -146,14 +171,17 @@ All require HMAC.
 ### Ops CLI
 
 ```bash
-./zerollama storage ls http://storage-host:18090
-./zerollama storage ls http://storage-host:18090 --kind manifests
+./zerollama storage ls http://storage-host:18090          # model table (NAME/ID/SIZE/…)
+./zerollama storage ls http://storage-host:18090 comfy  # filter substring
+./zerollama storage ls --kind blobs http://storage-host:18090   # raw digests
+./zerollama storage ls --kind manifests http://storage-host:18090
 ./zerollama storage verify http://storage-host:18090
 ./zerollama storage gc http://storage-host:18090          # dry-run
 ./zerollama storage gc http://storage-host:18090 --apply
 ./zerollama storage sync http://peer-host:18090           # one-shot push of local tree
 ```
 
+`storage ls` defaults to the operator catalog (`GET /v1/models`). URL is optional when `ZEROLLAMA_STORAGE_SERVERS` or mDNS already points at a peer.
 ### Peer replication (v1.2)
 
 `ZEROLLAMA_STORAGE_PEERS` configures async replicate-after-PUT and a 5‑minute reconciler. Writes are **local-first + best-effort async** (RPO ≈ reconciler interval). Clients with multiple `ZEROLLAMA_STORAGE_SERVERS` soft-failover on 5xx/timeouts and skip cooled-down peers (~30s).

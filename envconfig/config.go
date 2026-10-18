@@ -736,6 +736,9 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_FLEET_ASSIGN_SECRET":            {"ZEROLLAMA_FLEET_ASSIGN_SECRET", "(set/unset)", "F5 HMAC secret for assignment tokens (empty disables)"},
 		"ZEROLLAMA_FLEET_ASSIGN_TTL":               {"ZEROLLAMA_FLEET_ASSIGN_TTL", Var("ZEROLLAMA_FLEET_ASSIGN_TTL"), "F5 assign token TTL (default 8s, clamp 2–30s)"},
 		"ZEROLLAMA_MDNS":                           {"ZEROLLAMA_MDNS", mdnsEnabledDisplay(), "Advertise this zerollama node via mDNS (_zerollama._tcp) on LAN"},
+		"ZEROLLAMA_STORAGE_MDNS":                   {"ZEROLLAMA_STORAGE_MDNS", storageMDNSDisplay(), "Advertise storage serve via mDNS (_zerollama-storage._tcp); empty inherits ZEROLLAMA_MDNS"},
+		"ZEROLLAMA_STORAGE_MDNS_BROWSE":            {"ZEROLLAMA_STORAGE_MDNS_BROWSE", storageMDNSBrowseDisplay(), "Browse LAN for storage peers when STORAGE_SERVERS empty; empty inherits ZEROLLAMA_MDNS"},
+		"ZEROLLAMA_STORAGE_MDNS_WAIT":              {"ZEROLLAMA_STORAGE_MDNS_WAIT", Var("ZEROLLAMA_STORAGE_MDNS_WAIT"), "Storage mDNS browse window (default 2s)"},
 		"ZEROLLAMA_FLEET_MDNS":                     {"ZEROLLAMA_FLEET_MDNS", fleetMDNSDisplay(), "Browse LAN for zerollama nodes via mDNS (merges with ZEROLLAMA_FLEET_PEERS)"},
 		"ZEROLLAMA_FLEET_MDNS_ADVERTISE":           {"ZEROLLAMA_FLEET_MDNS_ADVERTISE", fleetMDNSAdvertiseDisplay(), "Advertise fleet management endpoint via mDNS (_zerollama-fleet._tcp)"},
 		"ZEROLLAMA_GGML_CLAMP_NUM_CTX":             {"ZEROLLAMA_GGML_CLAMP_NUM_CTX", ggmlClampNumCtxDisplay(), "Lower ggml merged num_ctx to suggested_max before load (default off; why: silent clamp broke operator trust — parity with Phase 13 runtime clamp)"},
@@ -1525,6 +1528,58 @@ func MDNSEnabled() bool {
 	}
 	b, _ := strconv.ParseBool(v)
 	return b
+}
+
+// StorageMDNSAdvertise registers storage serve on LAN (_zerollama-storage._tcp).
+// Empty ZEROLLAMA_STORAGE_MDNS inherits ZEROLLAMA_MDNS so one flag enables both roles.
+func StorageMDNSAdvertise() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_STORAGE_MDNS"))
+	if v == "" {
+		return MDNSEnabled()
+	}
+	b, _ := strconv.ParseBool(v)
+	return b
+}
+
+// StorageMDNSBrowse discovers storage peers when ZEROLLAMA_STORAGE_SERVERS is empty.
+// Empty inherits ZEROLLAMA_MDNS.
+func StorageMDNSBrowse() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_STORAGE_MDNS_BROWSE"))
+	if v == "" {
+		return MDNSEnabled()
+	}
+	b, _ := strconv.ParseBool(v)
+	return b
+}
+
+// StorageMDNSBrowseWait is how long serve waits for storage mDNS peers at startup.
+func StorageMDNSBrowseWait() time.Duration {
+	v := strings.TrimSpace(Var("ZEROLLAMA_STORAGE_MDNS_WAIT"))
+	if v == "" {
+		return 2 * time.Second
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 2 * time.Second
+	}
+	if d > 30*time.Second {
+		return 30 * time.Second
+	}
+	return d
+}
+
+func storageMDNSDisplay() string {
+	if StorageMDNSAdvertise() {
+		return "1"
+	}
+	return "0"
+}
+
+func storageMDNSBrowseDisplay() string {
+	if StorageMDNSBrowse() {
+		return "1"
+	}
+	return "0"
 }
 
 // FleetMDNS enables mDNS browse for inference nodes on the fleet manager.

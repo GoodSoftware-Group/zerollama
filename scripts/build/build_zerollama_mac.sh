@@ -26,6 +26,9 @@
 #   BUILD_RUNTIME_KV_EXT=auto (default) rebuild runtime/kv/_kv_native when sources or libllama stale
 #   BUILD_RUNTIME_KV_EXT=1   force _kv_native rebuild (needs vendor libllama)
 #   BUILD_RUNTIME_KV_EXT=0   skip Python native ext (sidecar falls back to Python pool)
+#   BUILD_ANE_RESTORE=auto (default) restore ANE hook sources only if missing in-tree
+#   BUILD_ANE_RESTORE=1      always run restore_ane_hook_intree.sh
+#   BUILD_ANE_RESTORE=0      never (tier-0 bootstrap — avoids dirtying llama/llama.cpp/common)
 #   ./scripts/build/build_zerollama_mac.sh /path/to/output/binary
 set -euo pipefail
 
@@ -43,6 +46,16 @@ fi
 BUILD_MLX="${BUILD_MLX:-auto}"
 BUILD_UMA="${BUILD_UMA:-auto}"
 
+# Fail-fast checklist (host deps). Prefer ./scripts/runtime/mac_host_deps.sh on bare Macs.
+if ! command -v go >/dev/null 2>&1; then
+  echo "error: go not on PATH — run ./scripts/runtime/mac_host_deps.sh (or brew install go)" >&2
+  exit 1
+fi
+if ! command -v pkg-config >/dev/null 2>&1; then
+  echo "error: pkg-config not on PATH — run ./scripts/runtime/mac_host_deps.sh" >&2
+  exit 1
+fi
+
 # shellcheck source=scripts/runtime/mac_cgo_env.sh
 source "${ROOT}/scripts/runtime/mac_cgo_env.sh"
 mac_cgo_env_warn_path
@@ -51,6 +64,19 @@ mac_cgo_env_prefer_training_embed "${ROOT}"
 
 if [[ ! -x "${ROOT}/.venv-training/bin/python" ]]; then
   echo ">>> note: .venv-training missing — training embed falls back to system python3-embed (3.9 on Xcode); run: MAC_SETUP_TRAINING=1 ./scripts/runtime/mac_setup.sh" >&2
+fi
+
+# CGO version headers (ggml.c / llama.cpp) — CMake normally emits these into the build tree.
+if [[ -x "${ROOT}/scripts/phase/ensure_ggml_version_h.sh" ]]; then
+  echo ">>> ensuring ggml/llama version headers for CGO" >&2
+  "${ROOT}/scripts/phase/ensure_ggml_version_h.sh"
+fi
+
+# CGO vendor extras (gitignored) — restore from sibling / shallow pin when missing.
+if [[ -f "${ROOT}/scripts/vendor/ensure_llama_cgo_vendor.sh" ]]; then
+  # shellcheck source=scripts/vendor/ensure_llama_cgo_vendor.sh
+  source "${ROOT}/scripts/vendor/ensure_llama_cgo_vendor.sh"
+  ensure_llama_cgo_vendor
 fi
 
 _mlx_dev_lib() {
@@ -396,51 +422,37 @@ _ensure_and_build_llama_server
 
 _ensure_runtime_kv_ext
 
-if [[ "$(uname -s)" == Darwin && -f "${ROOT}/scripts/vendor/restore_ane_hook_intree.sh" ]]; then
-  echo ">>> syncing in-tree ANE hook sources (CGO llama-common)" >&2
+# ANE intree restore rewrites llama/llama.cpp/common (noisy git status). Default
+# auto: only when hooks are missing. Bootstrap sets BUILD_ANE_RESTORE=0.
+_BUILD_ANE_RESTORE="${BUILD_ANE_RESTORE:-auto}"
+_ane_hooks_present() {
+  [[ -f "${ROOT}/llama/llama.cpp/common/ane_draft_hook.cpp" ]] \
+    && [[ -f "${ROOT}/llama/llama.cpp/common/ane_draft_hook.h" ]]
+}
+_should_restore_ane() {
+  case "${_BUILD_ANE_RESTORE}" in
+    0|off|false|no) return 1 ;;
+    1|on|true|yes) return 0 ;;
+    auto)
+      if _ane_hooks_present; then
+        echo ">>> BUILD_ANE_RESTORE=auto: ANE hooks present — skip restore" >&2
+        return 1
+      fi
+      return 0
+      ;;
+    *)
+      echo "error: BUILD_ANE_RESTORE must be 0, 1, or auto (got ${_BUILD_ANE_RESTORE})" >&2
+      exit 1
+      ;;
+  esac
+}
+if [[ "$(uname -s)" == Darwin && -f "${ROOT}/scripts/vendor/restore_ane_hook_intree.sh" ]] \
+  && _should_restore_ane; then
+  echo ">>> syncing in-tree ANE hook sources (BUILD_ANE_RESTORE=${_BUILD_ANE_RESTORE})" >&2
   "${ROOT}/scripts/vendor/restore_ane_hook_intree.sh"
 fi
 
-# CGO llama.cpp/common needs nlohmann/miniaudio/stb under llama/llama.cpp/vendor.
-# b10488 mtmd also needs vendor/hash (sha256.c) via llama/cgo_vendor_hash.cpp.
-# Repo .gitignore matches any vendor/, so pin syncs leave these missing unless staged.
-_ensure_llama_cgo_vendor_headers() {
-  local dest="${ROOT}/llama/llama.cpp/vendor"
-  local need=0
-  [[ -f "${dest}/nlohmann/json.hpp" && -f "${dest}/miniaudio/miniaudio.h" && -f "${dest}/stb/stb_image.h" ]] || need=1
-  [[ -f "${dest}/hash/sha256/sha256.c" ]] || need=1
-  if [[ "${need}" -eq 0 ]]; then
-    return 0
-  fi
-  local src="" d
-  local pin
-  pin="$(tr -d '[:space:]' <"${ROOT}/LLAMA_CPP_COMMIT" 2>/dev/null || true)"
-  for d in \
-    "${ROOT}/vendor/llama-cpp-${pin}/vendor" \
-    "${ROOT}/vendor/llama-cpp-b10488/vendor" \
-    "${ROOT}/vendor/llama-cpp-${pin:0:8}/vendor" \
-    "${ROOT}"/vendor/llama-cpp-*/vendor \
-    "${ROOT}/../llama.cpp/vendor"
-  do
-    if [[ -f "${d}/nlohmann/json.hpp" || -f "${d}/hash/sha256/sha256.c" ]]; then
-      src="${d}"
-      [[ -f "${d}/nlohmann/json.hpp" ]] && break
-    fi
-  done
-  if [[ -z "${src}" ]]; then
-    echo ">>> warn: missing llama.cpp vendor extras under ${dest}; CGO build may fail (sync vendor pin)" >&2
-    return 0
-  fi
-  echo ">>> restoring CGO llama vendor headers from ${src}" >&2
-  mkdir -p "${dest}"
-  for name in nlohmann miniaudio stb hash; do
-    if [[ -d "${src}/${name}" ]]; then
-      rm -rf "${dest:?}/${name}"
-      cp -R "${src}/${name}" "${dest}/${name}"
-    fi
-  done
-}
-_ensure_llama_cgo_vendor_headers
+# Vendor headers already ensured above via ensure_llama_cgo_vendor (includes cpp-httplib).
 
 GO_TAGS=()
 if _should_build_uma; then

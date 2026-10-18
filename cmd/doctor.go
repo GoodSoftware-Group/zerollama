@@ -498,7 +498,7 @@ func doctorCheckMacCGO(repo string) doctorCheck {
 			Name:    "mac cgo build",
 			Status:  status,
 			Detail:  text,
-			FixHint: "xcode-select --install; ./scripts/build/build_zerollama_mac.sh (see docs/mac-dev-setup.md)",
+			FixHint: "./scripts/runtime/mac_host_deps.sh; ./scripts/build/build_zerollama_mac.sh (or ./scripts/runtime/dev_bootstrap.sh)",
 		}
 	}
 	detail := text
@@ -518,7 +518,7 @@ func doctorCheckUV() doctorCheck {
 			Name:    "uv",
 			Status:  "fail",
 			Detail:  "not on PATH",
-			FixHint: "install from https://docs.astral.sh/uv/",
+			FixHint: "./scripts/runtime/mac_host_deps.sh (or https://docs.astral.sh/uv/)",
 		}
 	}
 	out, _ := exec.Command("uv", "--version").CombinedOutput()

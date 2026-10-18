@@ -4,7 +4,8 @@
 .venv
 .swp
 dist
-build
+# Repo-root CMake/MLX output only — do not ignore scripts/build/ helpers.
+/build
 .cache
 .gocache
 *.exe
@@ -14,7 +15,8 @@ test_data
 __debug_bin*
 llama/build
 llama/vendor
-vendor/
+# Repo-root Go/module vendor only — do not ignore scripts/vendor/ helpers.
+/vendor/
 llama/patches.pre-*/
 /*.csv
 /ollama

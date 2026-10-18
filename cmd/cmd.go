@@ -1584,7 +1584,33 @@ func PullHandler(cmd *cobra.Command, args []string) error {
 	}
 
 	request := api.PullRequest{Model: args[0], Insecure: insecure}
-	return client.Pull(cmd.Context(), &request, fn)
+	if err := client.Pull(cmd.Context(), &request, fn); err != nil {
+		return pullFixHint(err)
+	}
+	return nil
+}
+
+// pullFixHint maps common pull failures to a one-line FixHint (tier-1 DX).
+func pullFixHint(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	low := strings.ToLower(msg)
+	switch {
+	case strings.Contains(low, "connection refused"), strings.Contains(low, "connect: connection refused"):
+		return fmt.Errorf("%w\nHint: start the daemon — zerollama serve", err)
+	case strings.Contains(low, "no such host"), strings.Contains(low, "lookup"):
+		return fmt.Errorf("%w\nHint: check OLLAMA_HOST / DNS", err)
+	case strings.Contains(low, "401"), strings.Contains(low, "unauthorized"), strings.Contains(low, "forbidden"):
+		return fmt.Errorf("%w\nHint: registry auth or ZEROLLAMA_STORAGE_SECRET mismatch for remote blobs", err)
+	case strings.Contains(low, "no space"), strings.Contains(low, "disk full"), strings.Contains(low, "enospc"):
+		return fmt.Errorf("%w\nHint: free disk under OLLAMA_MODELS or raise ZEROLLAMA_REMOTE_CACHE_MAX_BYTES", err)
+	case strings.Contains(low, "not found"), strings.Contains(low, "404"):
+		return fmt.Errorf("%w\nHint: check model name; for LAN blobs: zerollama storage doctor", err)
+	default:
+		return fmt.Errorf("%w\nHint: zerollama doctor — or docs/mac-dev-setup.md tier 1", err)
+	}
 }
 
 type generateContextKey string
@@ -2054,11 +2080,15 @@ func RunServer(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// Retain loopback guards for process lifetime (do not close).
-	// WHY: on Darwin a later bind(127.0.0.1:PORT) can coexist with *:PORT and
-	// steal loopback accepts; holding the specific tuples forces EADDRINUSE.
-	_ = guards
-	err = server.Serve(ln)
+	// Pass guards into Serve so HTTP Accept runs on them for process lifetime.
+	// WHY: holding without Serve leaves Darwin routing 127.0.0.1/::1 into an
+	// unserved listen queue (identity probe / clients hang until timeout). A bare
+	// `_ = guards` also lets the compiler drop liveness so GC can close the
+	// sockets and re-open the steal window the guards were meant to close.
+	listeners := make([]net.Listener, 0, 1+len(guards))
+	listeners = append(listeners, ln)
+	listeners = append(listeners, guards...)
+	err = server.Serve(listeners...)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

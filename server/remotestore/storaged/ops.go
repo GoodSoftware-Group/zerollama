@@ -12,6 +12,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/ollama/ollama/types/model"
 )
 
 // HealthResponse is returned by GET /v1/health.
@@ -187,6 +190,147 @@ func (s *Server) handleManifestsList(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// ModelListItem is one tagged model on the storage tree (operator catalog view).
+// Why a dedicated /v1/models: raw /v1/blobs is digests-only; humans need names + sizes
+// like zerollama ls, without N+1 client GETs for every manifest.
+type ModelListItem struct {
+	Name       string    `json:"name"`
+	Path       string    `json:"path"`
+	Digest     string    `json:"digest,omitempty"`
+	Size       int64     `json:"size"`
+	Layers     int       `json:"layers"`
+	ModifiedAt time.Time `json:"modified_at"`
+}
+
+// ModelsListResponse is GET /v1/models.
+type ModelsListResponse struct {
+	Models     []ModelListItem `json:"models"`
+	NextCursor string          `json:"next_cursor,omitempty"`
+}
+
+func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.Auth.VerifyRequest(r, nil); err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	limit := parseLimit(r, 500)
+	cursor := r.URL.Query().Get("cursor")
+	prefix := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	all, err := s.listManifestRels("")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sort.Strings(all)
+	start := 0
+	if cursor != "" {
+		i := sort.SearchStrings(all, cursor)
+		if i < len(all) && all[i] == cursor {
+			start = i + 1
+		} else {
+			start = i
+		}
+	}
+	items := make([]ModelListItem, 0, limit)
+	lastPath := ""
+	for i := start; i < len(all); i++ {
+		rel := all[i]
+		item, ok := s.modelListItemFromRel(rel)
+		if !ok {
+			continue
+		}
+		if prefix != "" {
+			if !strings.Contains(strings.ToLower(item.Name), prefix) &&
+				!strings.Contains(strings.ToLower(item.Path), prefix) {
+				continue
+			}
+		}
+		items = append(items, item)
+		lastPath = rel
+		if len(items) >= limit {
+			break
+		}
+	}
+	resp := ModelsListResponse{Models: items}
+	if lastPath != "" {
+		idx := sort.SearchStrings(all, lastPath)
+		if idx+1 < len(all) {
+			resp.NextCursor = lastPath
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) modelListItemFromRel(rel string) (ModelListItem, bool) {
+	path := filepath.Join(s.ModelsDir, "manifests", filepath.FromSlash(rel))
+	fi, err := os.Stat(path)
+	if err != nil {
+		return ModelListItem{}, false
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ModelListItem{}, false
+	}
+	var mf struct {
+		Config struct {
+			Digest string `json:"digest"`
+			Size   int64  `json:"size"`
+		} `json:"config"`
+		Layers []struct {
+			Digest string `json:"digest"`
+			Size   int64  `json:"size"`
+		} `json:"layers"`
+	}
+	if err := json.Unmarshal(b, &mf); err != nil {
+		return ModelListItem{}, false
+	}
+	var size int64
+	size += mf.Config.Size
+	for _, layer := range mf.Layers {
+		size += layer.Size
+	}
+	name := storageDisplayName(rel)
+	digest := mf.Config.Digest
+	if digest == "" && len(mf.Layers) > 0 {
+		digest = mf.Layers[0].Digest
+	}
+	return ModelListItem{
+		Name:       name,
+		Path:       rel,
+		Digest:     digest,
+		Size:       size,
+		Layers:     len(mf.Layers),
+		ModifiedAt: fi.ModTime().UTC(),
+	}, true
+}
+
+func storageDisplayName(rel string) string {
+	slash := filepath.ToSlash(rel)
+	n := model.ParseNameFromFilepath(filepath.FromSlash(slash))
+	if !n.IsValid() {
+		// Fallback when parts are nonstandard: host/ns/model/tag → ns/model:tag or model:tag
+		parts := strings.Split(slash, "/")
+		if len(parts) == 4 {
+			host, ns, m, tag := parts[0], parts[1], parts[2], parts[3]
+			n = model.Name{Host: host, Namespace: ns, Model: m, Tag: tag}
+			if n.IsValid() {
+				return n.DisplayShortest()
+			}
+			if ns == "library" || ns == "" {
+				return m + ":" + tag
+			}
+			return ns + "/" + m + ":" + tag
+		}
+		return slash
+	}
+	return n.DisplayShortest()
 }
 
 type verifyRequest struct {

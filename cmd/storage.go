@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,8 +20,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/fleet/mdns"
+	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/server/remotestore"
 	"github.com/ollama/ollama/server/remotestore/storaged"
+	"github.com/ollama/ollama/types/model"
+	"github.com/ollama/ollama/version"
 )
 
 // NewStorageCommand registers `zerollama storage serve|push|ls|verify|gc|sync`.
@@ -43,6 +48,8 @@ See docs/remote-model-storage.md.`,
 	cmd.AddCommand(newStorageVerifyCommand())
 	cmd.AddCommand(newStorageGCCommand())
 	cmd.AddCommand(newStorageSyncCommand())
+	cmd.AddCommand(newStorageDiscoverCommand())
+	cmd.AddCommand(newStorageDoctorCommand())
 	return cmd
 }
 
@@ -89,6 +96,7 @@ func newStorageServeCommand() *cobra.Command {
 			defer stop()
 			srv.StartReplicator(ctx)
 			slog.Info("zerollama storage serve", "listen", ln.Addr().String(), "models", models, "tls", tlsCert != "", "peers", len(srv.Peers))
+			startStorageMDNS(ctx, ln)
 
 			go func() {
 				<-ctx.Done()
@@ -142,48 +150,277 @@ func newStoragePushCommand() *cobra.Command {
 func newStorageLSCommand() *cobra.Command {
 	var secret string
 	var kind string
+	var asJSON bool
 	cmd := &cobra.Command{
-		Use:   "ls <server-url>",
-		Short: "List blobs or manifests on a storage server",
-		Args:  cobra.ExactArgs(1),
+		Use:   "ls [server-url] [filter]",
+		Short: "List models on a storage server (table like zerollama ls)",
+		Long: `List tagged models on remote storage in a human table (NAME, ID, SIZE, LAYERS, MODIFIED).
+
+Default kind is models. For ops dumps:
+  zerollama storage ls --kind blobs http://host:18090
+  zerollama storage ls --kind manifests http://host:18090
+
+Server URL is optional when ZEROLLAMA_STORAGE_SERVERS is set, or when mDNS
+finds a peer (ZEROLLAMA_MDNS=1 on the storage host).`,
+		Args: cobra.MaximumNArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
-			base := strings.TrimRight(args[0], "/")
+			base, filter, err := storageLSResolveArgs(args)
+			if err != nil {
+				return err
+			}
 			auth, err := storageAuth(secret)
 			if err != nil {
 				return err
 			}
-			path := "/v1/blobs"
-			if kind == "manifests" {
-				path = "/v1/manifests"
-			}
 			client := &http.Client{Timeout: 2 * time.Minute}
-			cursor := ""
-			for {
-				url := base + path
-				if cursor != "" {
-					url += "?cursor=" + cursor
-				}
-				var resp struct {
-					Items      []string `json:"items"`
-					NextCursor string   `json:"next_cursor"`
-				}
-				if err := storageJSON(context.Background(), auth, client, http.MethodGet, url, nil, &resp); err != nil {
-					return err
-				}
-				for _, item := range resp.Items {
-					fmt.Println(item)
-				}
-				if resp.NextCursor == "" {
-					break
-				}
-				cursor = resp.NextCursor
+			ctx := context.Background()
+			switch strings.ToLower(kind) {
+			case "blobs", "manifests":
+				return storageLSRaw(ctx, auth, client, base, kind, asJSON)
+			case "models", "":
+				return storageLSModels(ctx, auth, client, base, filter, asJSON)
+			default:
+				return fmt.Errorf("unknown --kind %q (models|blobs|manifests)", kind)
 			}
-			return nil
 		},
 	}
 	cmd.Flags().StringVar(&secret, "secret", "", "Shared HMAC secret")
-	cmd.Flags().StringVar(&kind, "kind", "blobs", "blobs or manifests")
+	cmd.Flags().StringVar(&kind, "kind", "models", "models (default table), blobs, or manifests")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Print JSON instead of a table")
 	return cmd
+}
+
+func storageLSResolveArgs(args []string) (base, filter string, err error) {
+	if len(args) >= 1 && (strings.HasPrefix(args[0], "http://") || strings.HasPrefix(args[0], "https://")) {
+		base = strings.TrimRight(args[0], "/")
+		if len(args) >= 2 {
+			filter = args[1]
+		}
+		return base, filter, nil
+	}
+	if len(args) >= 1 {
+		filter = args[0]
+	}
+	if servers := remotestore.StorageServers(); len(servers) > 0 {
+		return servers[0], filter, nil
+	}
+	found := remotestore.BrowseStorage(context.Background(), envconfig.StorageMDNSBrowseWait())
+	if len(found) == 0 {
+		return "", "", fmt.Errorf("storage server URL required (or set ZEROLLAMA_STORAGE_SERVERS / enable mDNS)\nHint: zerollama storage discover")
+	}
+	if len(found) > 1 {
+		fmt.Fprintf(os.Stderr, "using first of %d discovered storage peers: %s\n", len(found), found[0])
+	}
+	return found[0], filter, nil
+}
+
+func storageLSRaw(ctx context.Context, auth *remotestore.Auth, client *http.Client, base, kind string, asJSON bool) error {
+	path := "/v1/blobs"
+	if kind == "manifests" {
+		path = "/v1/manifests"
+	}
+	var all []string
+	cursor := ""
+	for {
+		url := base + path
+		if cursor != "" {
+			url += "?cursor=" + cursor
+		}
+		var resp struct {
+			Items      []string `json:"items"`
+			NextCursor string   `json:"next_cursor"`
+		}
+		if err := storageJSON(ctx, auth, client, http.MethodGet, url, nil, &resp); err != nil {
+			return err
+		}
+		all = append(all, resp.Items...)
+		if resp.NextCursor == "" {
+			break
+		}
+		cursor = resp.NextCursor
+	}
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]any{"kind": kind, "items": all})
+	}
+	for _, item := range all {
+		fmt.Println(item)
+	}
+	if len(all) == 0 {
+		fmt.Fprintf(os.Stderr, "no %s on %s\n", kind, base)
+	}
+	return nil
+}
+
+func storageLSModels(ctx context.Context, auth *remotestore.Auth, client *http.Client, base, filter string, asJSON bool) error {
+	var models []storaged.ModelListItem
+	cursor := ""
+	for {
+		u, err := url.Parse(base + "/v1/models")
+		if err != nil {
+			return err
+		}
+		q := u.Query()
+		if cursor != "" {
+			q.Set("cursor", cursor)
+		}
+		if filter != "" {
+			q.Set("q", filter)
+		}
+		u.RawQuery = q.Encode()
+		var page storaged.ModelsListResponse
+		if err := storageJSON(ctx, auth, client, http.MethodGet, u.String(), nil, &page); err != nil {
+			// Older storage servers: fall back to manifests + per-manifest GET.
+			if cursor == "" && strings.Contains(err.Error(), "404") {
+				return storageLSModelsLegacy(ctx, auth, client, base, filter, asJSON)
+			}
+			return fmt.Errorf("list models: %w\nHint: upgrade storage serve, or --kind manifests", err)
+		}
+		models = append(models, page.Models...)
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]any{"models": models})
+	}
+	if len(models) == 0 {
+		fmt.Fprintf(os.Stderr, "no models on %s\n", base)
+		fmt.Fprintln(os.Stderr, "hint: zerollama storage push "+base+"   # migrate local tags")
+		return nil
+	}
+	rows := make([]listTableRow, 0, len(models))
+	for _, m := range models {
+		digest := m.Digest
+		if len(digest) > 12 {
+			if i := strings.Index(digest, ":"); i >= 0 && i+1 < len(digest) {
+				digest = digest[i+1:]
+			}
+			if len(digest) > 12 {
+				digest = digest[:12]
+			}
+		}
+		layers := "--"
+		if m.Layers > 0 {
+			layers = fmt.Sprintf("%d", m.Layers)
+		}
+		rows = append(rows, listTableRow{
+			name:     m.Name,
+			id:       digest,
+			size:     format.HumanBytes(m.Size),
+			params:   layers, // reuse PARAMS column as LAYERS for storage
+			ctx:      "--",
+			perf:     "--",
+			modified: format.HumanTime(m.ModifiedAt, "Never"),
+		})
+	}
+	// Storage-specific header: LAYERS instead of PARAMS/CTX/PERF.
+	printStorageListTable(os.Stdout, rows, terminalWidth())
+	return nil
+}
+
+func printStorageListTable(w io.Writer, rows []listTableRow, width int) {
+	table := newPlainTable(w)
+	table.SetHeader([]string{"NAME", "ID", "SIZE", "LAYERS", "MODIFIED"})
+	for _, r := range rows {
+		table.Append([]string{r.name, r.id, r.size, r.params, r.modified})
+	}
+	_ = width
+	table.Render()
+}
+
+func storageLSModelsLegacy(ctx context.Context, auth *remotestore.Auth, client *http.Client, base, filter string, asJSON bool) error {
+	// Pre-/v1/models server: list manifest paths then GET each.
+	var paths []string
+	cursor := ""
+	for {
+		url := base + "/v1/manifests"
+		if cursor != "" {
+			url += "?cursor=" + cursor
+		}
+		var resp struct {
+			Items      []string `json:"items"`
+			NextCursor string   `json:"next_cursor"`
+		}
+		if err := storageJSON(ctx, auth, client, http.MethodGet, url, nil, &resp); err != nil {
+			return err
+		}
+		paths = append(paths, resp.Items...)
+		if resp.NextCursor == "" {
+			break
+		}
+		cursor = resp.NextCursor
+	}
+	models := make([]storaged.ModelListItem, 0, len(paths))
+	for _, rel := range paths {
+		var mf struct {
+			Config struct {
+				Digest string `json:"digest"`
+				Size   int64  `json:"size"`
+			} `json:"config"`
+			Layers []struct {
+				Digest string `json:"digest"`
+				Size   int64  `json:"size"`
+			} `json:"layers"`
+		}
+		if err := storageJSON(ctx, auth, client, http.MethodGet, base+"/v1/manifest/"+rel, nil, &mf); err != nil {
+			continue
+		}
+		var size int64
+		size += mf.Config.Size
+		for _, layer := range mf.Layers {
+			size += layer.Size
+		}
+		name := rel
+		// best-effort display name from path
+		parts := strings.Split(rel, "/")
+		if len(parts) == 4 {
+			n := model.Name{Host: parts[0], Namespace: parts[1], Model: parts[2], Tag: parts[3]}
+			if n.IsValid() {
+				name = n.DisplayShortest()
+			}
+		}
+		if filter != "" && !strings.Contains(strings.ToLower(name), strings.ToLower(filter)) {
+			continue
+		}
+		digest := mf.Config.Digest
+		models = append(models, storaged.ModelListItem{
+			Name:   name,
+			Path:   rel,
+			Digest: digest,
+			Size:   size,
+			Layers: len(mf.Layers),
+		})
+	}
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]any{"models": models})
+	}
+	rows := make([]listTableRow, 0, len(models))
+	for _, m := range models {
+		digest := m.Digest
+		if i := strings.Index(digest, ":"); i >= 0 && i+1 < len(digest) {
+			digest = digest[i+1:]
+		}
+		if len(digest) > 12 {
+			digest = digest[:12]
+		}
+		layers := "--"
+		if m.Layers > 0 {
+			layers = fmt.Sprintf("%d", m.Layers)
+		}
+		rows = append(rows, listTableRow{
+			name: m.Name, id: digest, size: format.HumanBytes(m.Size),
+			params: layers, modified: "—",
+		})
+	}
+	printStorageListTable(os.Stdout, rows, terminalWidth())
+	return nil
 }
 
 func newStorageVerifyCommand() *cobra.Command {
@@ -520,4 +757,181 @@ func extractDigests(s string) []string {
 		s = rest[7:]
 	}
 	return out
+}
+
+// startStorageMDNS advertises _zerollama-storage._tcp when ZEROLLAMA_STORAGE_MDNS
+// (or inherited ZEROLLAMA_MDNS) is on.
+func startStorageMDNS(ctx context.Context, ln net.Listener) {
+	if !envconfig.StorageMDNSAdvertise() || ln == nil {
+		return
+	}
+	port, err := mdns.PortFromAddr(ln.Addr())
+	if err != nil || port <= 0 {
+		slog.Warn("storage mdns not started", "error", err)
+		return
+	}
+	srv, err := mdns.Register(mdns.RegisterOpts{
+		Service: mdns.ServiceStorage,
+		Port:    port,
+		TXT: map[string]string{
+			"role":    "storage",
+			"version": version.Version,
+		},
+	})
+	if err != nil {
+		slog.Warn("storage mdns registration failed", "error", err)
+		return
+	}
+	go func() {
+		<-ctx.Done()
+		srv.Shutdown()
+		slog.Info("storage mdns unregistered", "service", mdns.ServiceStorage)
+	}()
+}
+
+func newStorageDiscoverCommand() *cobra.Command {
+	var wait time.Duration
+	cmd := &cobra.Command{
+		Use:   "discover",
+		Short: "Browse LAN for zerollama storage peers (mDNS)",
+		Long: `Browse _zerollama-storage._tcp for a short window and print base URLs.
+
+On the storage host: ZEROLLAMA_MDNS=1 zerollama storage serve
+On this host:        zerollama storage discover
+Then:                export ZEROLLAMA_STORAGE_SERVERS=<url>
+                     export ZEROLLAMA_STORAGE_SECRET=…  # same as storage host`,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			if wait <= 0 {
+				wait = envconfig.StorageMDNSBrowseWait()
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), wait+time.Second)
+			defer cancel()
+			found := remotestore.BrowseStorage(ctx, wait)
+			if len(found) == 0 {
+				fmt.Println("no storage peers found")
+				fmt.Println("hint: ZEROLLAMA_MDNS=1 zerollama storage serve on the model host")
+				fmt.Println("hint: same Wi‑Fi/LAN; firewall allow UDP 5353 + TCP 18090")
+				return nil
+			}
+			for _, u := range found {
+				fmt.Println(u)
+			}
+			fmt.Fprintf(os.Stderr, "hint: export ZEROLLAMA_STORAGE_SERVERS=%s\n", strings.Join(found, ","))
+			if envconfig.StorageSecret() == "" {
+				fmt.Fprintln(os.Stderr, "hint: export ZEROLLAMA_STORAGE_SECRET=… (must match storage host)")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().DurationVar(&wait, "wait", 0, "Browse window (default ZEROLLAMA_STORAGE_MDNS_WAIT or 2s)")
+	return cmd
+}
+
+func newStorageDoctorCommand() *cobra.Command {
+	var wait time.Duration
+	cmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Check storage secret, configured/discovered servers, and HMAC reachability",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runStorageDoctor(wait)
+		},
+	}
+	cmd.Flags().DurationVar(&wait, "wait", 0, "mDNS browse window when STORAGE_SERVERS empty")
+	return cmd
+}
+
+func runStorageDoctor(wait time.Duration) error {
+	failed := 0
+	secret := envconfig.StorageSecret()
+	if secret == "" {
+		fmt.Println("FAIL  storage secret unset")
+		fmt.Println("  fix: export ZEROLLAMA_STORAGE_SECRET='long-random-shared-secret'")
+		failed++
+	} else {
+		fmt.Println("OK    storage secret set")
+	}
+
+	servers := remotestore.StorageServers()
+	if len(servers) == 0 {
+		fmt.Println("WARN  ZEROLLAMA_STORAGE_SERVERS empty — browsing mDNS…")
+		if wait <= 0 {
+			wait = envconfig.StorageMDNSBrowseWait()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), wait+time.Second)
+		defer cancel()
+		servers = remotestore.BrowseStorage(ctx, wait)
+		if len(servers) == 0 {
+			fmt.Println("FAIL  no storage servers configured or discovered")
+			fmt.Println("  fix: export ZEROLLAMA_STORAGE_SERVERS=http://host:18090")
+			fmt.Println("  or:  ZEROLLAMA_MDNS=1 on storage host + zerollama storage discover")
+			failed++
+		} else {
+			fmt.Printf("OK    discovered %d server(s) via mDNS\n", len(servers))
+		}
+	} else {
+		fmt.Printf("OK    STORAGE_SERVERS (%d)\n", len(servers))
+	}
+
+	if secret == "" || len(servers) == 0 {
+		if failed > 0 {
+			return fmt.Errorf("storage doctor: %d check(s) failed", failed)
+		}
+		return nil
+	}
+
+	auth, err := remotestore.NewAuth(secret)
+	if err != nil {
+		fmt.Printf("FAIL  auth: %v\n", err)
+		return err
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	ctx := context.Background()
+	for _, base := range servers {
+		cap, err := remotestore.GetCapability(ctx, auth, client, base)
+		if err != nil {
+			fmt.Printf("FAIL  %s capability: %v\n", base, err)
+			fmt.Println("  fix: check firewall TCP :18090, matching secret, storage serve up")
+			failed++
+			continue
+		}
+		verbs := "tcp"
+		if cap.RDMA != nil && cap.RDMA.Verbs {
+			verbs = "tcp+rdma"
+		} else if len(cap.Transports) > 0 {
+			verbs = strings.Join(cap.Transports, "+")
+		}
+		fmt.Printf("OK    %s (%s)\n", base, verbs)
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/v1/health", nil)
+		if err != nil {
+			fmt.Printf("FAIL  %s health build: %v\n", base, err)
+			failed++
+			continue
+		}
+		if err := auth.SignRequest(req, nil); err != nil {
+			fmt.Printf("FAIL  %s health sign: %v\n", base, err)
+			failed++
+			continue
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Printf("FAIL  %s health: %v\n", base, err)
+			failed++
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			fmt.Printf("FAIL  %s health HTTP %d: %s\n", base, resp.StatusCode, strings.TrimSpace(string(body)))
+			failed++
+			continue
+		}
+		fmt.Printf("OK    %s health\n", base)
+	}
+
+	if failed > 0 {
+		return fmt.Errorf("storage doctor: %d check(s) failed", failed)
+	}
+	fmt.Println("PASS  storage doctor")
+	return nil
 }
