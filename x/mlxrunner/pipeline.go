@@ -108,10 +108,19 @@ func (r *Runner) Prepare(request *Request) (err error) {
 // The runner serializes requests today so we just use a fixed slot ID.
 const pipelineSlot = 0
 
+// skipCleanupOnPanic keeps a backend failure from being replaced by cleanup
+// that evaluates or saves partially updated cache state.
+func skipCleanupOnPanic(cleanup func()) {
+	if failure := recover(); failure != nil {
+		panic(failure)
+	}
+	cleanup()
+}
+
 func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) error {
 	mlx.ResetPeakMemory()
 
-	defer func() {
+	defer skipCleanupOnPanic(func() {
 		request.compiledGrammar.close()
 		request.compiledGrammar = nil
 		r.Sampler.Remove(pipelineSlot)
@@ -123,18 +132,18 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 			r.cache.dumpTree()
 		}
 		slog.Info("peak memory", "size", mlx.PrettyBytes(mlx.PeakMemory()))
-	}()
+	})
 
 	inputs := request.Tokens
 
 	session := r.cache.begin(r.Model, inputs, request.PromptCacheKey, request.CacheReset)
-	defer session.close()
+	defer skipCleanupOnPanic(session.close)
 	caches := session.caches
 
 	// Built before prefill so a drafter with draft caches follows the prompt
 	// through prefill alongside the target.
 	spec := r.spec.open(request, caches)
-	defer spec.close()
+	defer skipCleanupOnPanic(spec.close)
 
 	seed, position, promptEval, err := r.prefill(ctx, request, session, spec)
 	if err != nil {
@@ -169,7 +178,7 @@ func (r *Runner) TextGenerationPipeline(ctx context.Context, request Request) er
 	}(); err != nil {
 		return err
 	}
-	defer d.close()
+	defer skipCleanupOnPanic(d.close)
 	return r.decode(ctx, request, session, d, promptEval)
 }
 
@@ -415,12 +424,12 @@ type decoder interface {
 // not streamed or counted.
 func (r *Runner) decode(ctx context.Context, request Request, session *cacheSession, d decoder, promptEval time.Duration) error {
 	// A sampled-but-undelivered result is still a produced token; record it.
-	defer func() {
+	defer skipCleanupOnPanic(func() {
 		results, _ := d.drain()
 		for _, res := range results {
 			session.outputs = append(session.outputs, int32(res.Token.Int()))
 		}
-	}()
+	})
 
 	detok := detokenizer{
 		tokenizer:       r.Tokenizer,

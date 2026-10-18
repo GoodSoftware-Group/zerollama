@@ -604,6 +604,12 @@ type ResponsesWriter struct {
 	responseID string
 	itemID     string
 	request    openai.ResponsesRequest
+	think      *api.ThinkValue
+}
+
+// SetThinking keeps web-search follow-ups aligned with the resolved chat request.
+func (w *ResponsesWriter) SetThinking(think *api.ThinkValue) {
+	w.think = think
 }
 
 func (w *ResponsesWriter) writeEvent(eventType string, data any) error {
@@ -689,6 +695,12 @@ func ResponsesMiddleware(thinkingLookup ...ThinkingLookup) gin.HandlerFunc {
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 			return
+		}
+
+		// Clients can retain reasoning effort when switching to a non-thinking
+		// model. Ignore that effort, but preserve explicit Ollama think overrides.
+		if chatReq.Think == nil {
+			c.Set("relax_thinking", true)
 		}
 
 		// Check if client requested streaming (defaults to false)

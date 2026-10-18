@@ -25,7 +25,7 @@ Clone beside zerollama (no merge into this repo):
 # default: ../ollama-upstream
 ```
 
-**Last pulled:** 2026-10-07 — `../ollama-upstream` `main` @ **`e3cddc3e`** (latest tag **v0.40.0**; tip **v0.40.1-rc0** / `v0.40.1-2-ge3cddc3e`; `LLAMA_CPP_VERSION` **b11351**; MLX **`a59cc231`** / MLX-C **`ebc88f10`**). Previous triage tip was **`c1737589`** / v0.34.4-rc0.
+**Last pulled:** 2026-10-17 — `../ollama-upstream` `main` @ **`d1ed3fd1`** (latest tag **v0.40.6**; tip **v0.40.6-1-gd1ed3fd1**; upstream `LLAMA_CPP_VERSION` tip **b11669** — zl stays **b11351**; MLX **`a59cc231`** / MLX-C **`ebc88f10`**). Previous triage tip was **`e3cddc3e`** / v0.40.1-rc0.
 
 Build and run on a different port for A/B:
 
@@ -421,6 +421,29 @@ Path-filtered **+73** commits on sibling. Do **not** rebase. Prior **v0.32.15 �
 ### Skip (not our product)
 
 Desktop `app/` / Settings / CLI onboarding; ollama.com cloud usage/balance `#18829`; README churn; wholesale `sched.go` / deleting ggml or `runtime/`; blind “MLX for everything” without doctor/show matrix.
+
+---
+
+## Cherry-pick status (Oct 2026, `e3cddc3e` → **v0.40.6-1** / `d1ed3fd1`)
+
+Path-filtered “worth pulling” batch (no rebase; pin bumps deferred).
+
+| Commit | Topic | Status |
+|--------|-------|--------|
+| `997b98f9` **#18886** | MLX `skipCleanupOnPanic` — preserve generation panics during cleanup | **Done (Oct 2026)** — `x/mlxrunner/pipeline.go` |
+| `d1ed3fd1` **#19010** | Responses effort on non-thinking models (`relax_thinking` + `SetThinking`) | **Done (Oct 2026)** — `middleware/openai.go`, `server/routes.go` |
+| `cc3cacf2` **#18967** | GGUF `q2_0` / related tensor + file types | **Done (Oct 2026)** — `fs/gguf/tensor.go` |
+| `a5b659e6` **#18955** | Recurrent compact after speculative rollback | **Done (Oct 2026)** — `x/mlxrunner/cache/recurrent.go` + `cache.go` |
+| `41503eb2` **#18809** | Gemma4 MLX SDPA for wide head dims | **Done (Oct 2026)** — `x/models/gemma4/gemma4.go` (MLX path only; dropped CUDA manual port) |
+| `cf410b09` **#18911** | Responses history `custom_tool_call` / `custom_tool_call_output` | **Done (Oct 2026)** — `openai/responses.go` |
+| `c185cf5d` **#18974** + `1ba3c76b` | Decision JSON state prompts + validation / option descriptions; `PythonJSON` | **Done (Oct 2026)** — `decision/*`, `model/renderers/json.go` |
+| `c1c53629` | Quantized head candidate logits in float32 | **Done (Oct 2026)** — `x/models/qwen3_5/score.go` `UnembedCandidates` |
+| `80cedab0` | MLX clip long Laya states | **Skipped** — no MLX Laya score path in tree |
+| `d919272e` + tip MLX pins | llama.cpp **b11669** / tip MLX | **Deferred** — zl stays **b11351** / `a59cc231` / `ebc88f10` |
+
+### Skip (this window)
+
+Clef cloud launch / System One cloud proxy; CLI `ollama run` decision UX; decision integration benches; Kev MLX scoring; orphaned-runner Windows; registry proxy redirects; docs cloud grouping; wholesale pin bump.
 
 ---
 

@@ -74,7 +74,7 @@ func TestCompile(t *testing.T) {
 				t.Fatalf("schema order changed: %+v", payload.Schema)
 			}
 		}
-		if got := payload.Schema[0].Choices; got[0].Value != "billing" || got[1].Value != "technical" || got[1].Description != "technical" {
+		if got := payload.Schema[0].Choices; got[0].Value != "billing" || got[1].Value != "technical" || got[1].Description != nil {
 			t.Fatalf("choice order or null description changed: %+v", got)
 		}
 		if payload.Schema[1].Description != `{"rule":"Explicit refund request?","notes":["Only facts"]}` {

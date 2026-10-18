@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -186,6 +187,15 @@ func (o *ResponsesFunctionCallOutput) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
+	if aux.Type == "custom_tool_call_output" {
+		if strings.TrimSpace(aux.CallID) == "" {
+			return errors.New("custom tool output requires a non-empty call_id")
+		}
+		if len(aux.Output) == 0 || string(aux.Output) == "null" {
+			return errors.New("custom tool output requires output")
+		}
+	}
+
 	o.Type = aux.Type
 	o.CallID = aux.CallID
 	o.Output = ""
@@ -269,11 +279,36 @@ func unmarshalResponsesInputItem(data []byte) (ResponsesInputItem, error) {
 			return nil, err
 		}
 		return fc, nil
-	case "function_call_output":
+	case "custom_tool_call":
+		var call struct {
+			ResponsesFunctionCall
+			Input *string `json:"input"`
+		}
+		if err := json.Unmarshal(data, &call); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(call.CallID) == "" {
+			return nil, errors.New("custom tool call requires a non-empty call_id")
+		}
+		if strings.TrimSpace(call.Name) == "" {
+			return nil, errors.New("custom tool call requires a non-empty name")
+		}
+		if call.Input == nil {
+			return nil, errors.New("custom tool call requires input")
+		}
+		arguments, err := json.Marshal(map[string]string{"input": *call.Input})
+		if err != nil {
+			return nil, err
+		}
+		call.Type = "function_call"
+		call.Arguments = string(arguments)
+		return call.ResponsesFunctionCall, nil
+	case "function_call_output", "custom_tool_call_output":
 		var output ResponsesFunctionCallOutput
 		if err := json.Unmarshal(data, &output); err != nil {
 			return nil, err
 		}
+		output.Type = "function_call_output"
 		return output, nil
 	case "reasoning":
 		var reasoning ResponsesReasoningInput
