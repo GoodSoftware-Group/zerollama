@@ -243,6 +243,7 @@ See `server/vram/broker.go` and `server/runtime_manifest.go`. **Next (ship hardw
 | **M15f** | **Mid-stream preempt signal + grammar** | server + mlx gate + runtime + openai | **Done (Jul 2026)** — terminal `done_reason=preempted` + `preempted_reason`; MLX interactive soft-cancels lower-class inflight; Python forwards `format`/`response_format` to llama-server; GBNF `format.type=gbnf`; tools+grammar → 400. **Why:** wait-abort alone left Hermes acting on truncated streams; runtime proxy dropped schemas. Findings: [hermes-gap-closure-findings.md](./hermes-gap-closure-findings.md). |
 | **M16** | **Flash-MoE (anemll) via llama-server** | Go + fork build | **Partial (Jul 2026)** — `--moe-*` passthrough, Modelfile options, `build_flash_moe_llama_server.sh`, **`flash_moe_smoke.sh` tier 0–2**, doctor check, envconfig, **`pull` auto-extract sidecar (opt-in `ZEROLLAMA_FLASH_MOE_AUTO_EXTRACT=1`, persists `moe_sidecar` to manifest)**; **why:** Qwen3.5-class MoE exceeds unified RAM; ggml Metal path cannot slot-bank stream from SSD. **Open:** vendor pin merge (anemll fork not yet upstream-stable). **Lab:** FreeToken policy sim (`x/freetokenlab`, [freetoken-moe-lab.md](./freetoken-moe-lab.md)) — LRU vs static, \(q^\star\) miss split, prefill overlap; not vendored. Doc: [flash-moe.md](./flash-moe.md). **Related:** EXL3 GLM-5.3-Flash sidecar ladder **M28** / [glm-flash-lite-ladder.md](./glm-flash-lite-ladder.md) — same FreeToken ideas, different engine. |
 | **M28** | **GLM Flash Lite sidecar (GF0–GF7)** | Ops + optional Go proxy | **Ladder complete except GF6 parked (astra, Oct 2026)** — sidecar `:30000` @ 55 GiB RAM tier (~7.3 tok/s); `openai-remote` `/v1`+`/api/chat`; FreeToken rematch + Flash-MoE watch notes. GF6 waits on anemll CPU-miss flag. **Non-goal:** vendor `nv2` / EXL3. Doc: [glm-flash-lite-ladder.md](./glm-flash-lite-ladder.md). |
+| **M29** | **DeepInfer borrowings (DI0–DI8)** | Docs → C++/runtime | **Partial (Oct 2026)** — **DI0–DI1**; **DI7** (**0140**); **DI6**; **DI4**; **DI5** eval hygiene; **DI2** design (adaptive-dm delivery) — [deepinfer-ladder.md](./deepinfer-ladder.md). Next: **DI3** spike when DFlash/MTP lab A/B active. **Non-goal:** vendor FlashMLA/DeepEP/DeepInfer. |
 | **M17** | **ANE probe (maderix/ANE)** | Repo + subprocess | **Partial (Jun 2026)** — `tools/ane-probe`, `libane_bridge` smoke, doctor + hidden CLI; **why:** validate ANE reachability before hybrid inference research without linking private APIs into Go. Doc: [ane-probe.md](./ane-probe.md). |
 | **M18** | **ANE in-process dflash draft (B1–B7, P1–P11 matmul)** | llama-common + discover | **Partial (Jul 2026, lab)** — P1–**P3** blk.0 FFN on ANE (`shadow_hidden_cos=1.0`). **P7–P9** blk.1 gate/up/down use **host fp32**. **P9** chain 10 — lab `golden_cosine=1.0`. **P7b/B8** chain 8 — **2b proxy** `golden_cosine=1.0`; **27b native** chain 8 **`golden_cosine=0.9854`** (real `dflash_fc` + per-layer export handoff). **P10** chain 11 — **2b** `golden_cosine=1.0`; **27b native** chain 11 **`golden_cosine=1.0`** (`dflash_fc` + `dflash_hidden_norm` + `blk.0.attn_q`). **Jul 12:** Metal `cross.v_embd` sync uses real `embeddings_layer_inp` (not pre-norm tile); `--spec-type dflash` alias fixed; export ctor wired but graph concat still open. **Open:** Metal draft acceptance still ~0% on short lab smokes; target-arch `t_dflash_target_features` concat; ANE attn/KV/lm_head for `shadow_match_pct`. Doc: [ane-draft-inprocess.md](./ane-draft-inprocess.md). |
 | **M19** | **Optional Mac MLX build (mlx-cgo)** | Repo + build | **Not started (eval only)** — optional **`OLLAMA_MLX_C_SOURCE`** fork [WhoseBiasDoYallSeek/mlx-cgo](https://github.com/WhoseBiasDoYallSeek/mlx-cgo) instead of upstream `ml-explore/mlx-c`. **Why consider:** Go `mlxgen` replaces Python mlx-c codegen (no `pip`); committed `mlx/c/` for normal builds; may avoid `go generate ./x/...` failures during cmake on newer Go. **Not default:** ship path stays upstream pins + `build_mlx_dylibs_mac.sh`; **5080 CUDA / imagegen MLX unchanged** (mlx-cgo is Apple Silicon–only). **Runtime unchanged:** zerollama still uses `libmlx`/`libmlxc` dylibs + mlxrunner subprocess — not static CGo embed. **Open:** pin + smoke vs upstream; `libjaccl` install in cmake bundle; fork drift tracking. See [Optional Mac MLX build path](#optional-mac-mlx-build-path-mlx-cgo). |
@@ -396,6 +397,28 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 **Track status (Jul 2026):** L3-R0…L3-R11 **complete** (L3-R6b cell+tensor+pages COW). Next: optional NIXL/Mooncake RDMA; optional non-agent default-on.
 
 **Doc:** [radix-prefix-share.md](./radix-prefix-share.md) — architecture, env, product gaps, validation status.
+
+### DeepInfer borrowings (DI0–DI8) — serving policy, not SM100 engine
+
+**Why a separate track:** DeepSeek open-sourced [DeepInfer](https://github.com/deepseek-ai/DeepInfer) (Oct 2026) — vLLM-derived offline engine for V4.1-Flash on **SM100 / Ascend**. We cannot bench it on 5080/4090/H200. Portable value is **schedule / speculation / SWA policy** for ggml + runtime — not FlashMLA/DeepEP wheels. Complements [vLLM L3](#local-voice--llama-borrowings-eliza-v3) and [DeepGEMM ideas](./deepgemm-borrowings.md); distinct from [M26 MLX DeepSeek-V4 Flash](#apple-silicon--metal-track).
+
+**Guide:** [deepinfer-borrowings.md](./deepinfer-borrowings.md) · **Ladder:** [deepinfer-ladder.md](./deepinfer-ladder.md) · ROADMAP **M29**
+
+| Rung | Goal | Status |
+|------|------|--------|
+| **DI0** | Sibling inventory + hardware probe (astra `/mnt/ssd2/src/DeepInfer`) | **Done (Oct 2026)** |
+| **DI1** | Borrowings doc + ROADMAP/sibling wire | **Done (Oct 2026)** |
+| **DI7** | Prefill join cadence while decode-hot (llama-server) | **Done (Oct 2026)** — patch **0140**; opt-in; not DP ALL/ANY |
+| **DI6** | Async schedule sync audit (lab; no ZOS port) | **Done (Oct 2026)** — inventory; optional lab counter only |
+| **DI4** | YOCO keep-token budget (policy) | **Done (policy)** — helper+tests; hybrid whole-prompt wire **non-goal** |
+| **DI5** | Eval hygiene env (goldens / doctor) | **Done (Oct 2026)** — force greedy+seed; serialize batch APIs; not kernel batch-invariance |
+| **DI2** | Confidence-scheduled draft budget — design | **Done (Oct 2026)** — map + naming trap; see ladder |
+| **DI3** | Confidence / adaptive draft — lab spike + smoke | **Parked** (per-pos EWMA on adaptive-dm) |
+| **DI8** | Do not vendor DeepInfer / SM100 kernel stack | Standing rule |
+
+**Suggested order:** **DI7 → DI6 → DI4** (schedule/prefill first); **DI5** anytime; **DI2–DI3** when speculation is unparked.
+
+**Non-goals:** DeepInfer as modality backend; FlashMLA/DeepGEMM/DeepEP in runtime; claiming 5080/H200 DeepInfer-compatible; EP fleet / Engram / closed KV store.
 
 ### Tier B — voice (after Tier A baseline)
 

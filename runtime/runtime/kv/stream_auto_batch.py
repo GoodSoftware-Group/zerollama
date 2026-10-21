@@ -49,6 +49,10 @@ def stream_auto_batch_eligible(
     """Whether this streaming request may enter the stream auto-batch coordinator."""
     if not stream or not native_stream_auto_batch_enabled():
         return False
+    from runtime.batch_invariant import batch_invariant_denies_auto_batch
+
+    if batch_invariant_denies_auto_batch():
+        return False
     from runtime.worker.factory import LlamaBackendKind
 
     if engine._resolved_llama_backend() != LlamaBackendKind.INPROCESS:

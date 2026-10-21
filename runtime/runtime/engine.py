@@ -522,6 +522,27 @@ class InferenceEngine:
         )
         from runtime.worker.factory import LlamaBackendKind
 
+        from runtime.batch_invariant import batch_invariant_denies_prefix_cache
+
+        if batch_invariant_denies_prefix_cache():
+            # DI5: eval mode — no cache_prompt / resume (batch-shape logit drift).
+            slot = self._id_slot_for_request(req)
+            record_prefix_cache_decision(
+                spec=apply_cache_level_to_policy(
+                    policy, getattr(req, "cache_level", None)
+                ).to_spec(),
+                prompt_cache_key=req.prompt_cache_key,
+                seq_pos=self._decode_current_pos_for_request(req) or 0,
+                prompt_tokens=req.num_prompt_tokens,
+                cache_prompt=False,
+                resume_pos=None,
+                spec_method=self.config.speculative.method,
+                id_slot=slot if slot >= 0 else None,
+                deny_reason="batch_invariant",
+                prefix_block_match=None,
+            )
+            return False, None
+
         if getattr(req, "cache_reset", False):
             # WHY under the same prompt_cache_key: clients already have a stable
             # interactive key; a cold: prefix would fragment L3/ps continuity.
@@ -1378,6 +1399,7 @@ class InferenceEngine:
                 model_path,
                 prefer_loaded_num_ctx=True,
             )
+        from runtime.batch_invariant import batch_invariant_health
         from runtime.go_coordination import go_coordination_health
 
         go_coord = go_coordination_health()
@@ -1440,6 +1462,7 @@ class InferenceEngine:
             "kv_forward_plans": self._kv_forward_plans_health(),
             "kv_continuous_batch": self._kv_continuous_batch_health(),
             "kv_auto_batch": self._kv_auto_batch_health(),
+            "batch_invariant": batch_invariant_health(),
             "kv_page_bind": self._kv_page_bind_health(),
             "kv_decode_loop": self._kv_decode_loop_health(),
             "kv_resume": self._kv_resume_health(),
@@ -2601,6 +2624,10 @@ class InferenceEngine:
         num_ctx: int | None = None,
         options: dict | None = None,
     ) -> Request:
+        from runtime.batch_invariant import apply_batch_invariant_options
+
+        # DI5: pin seed / greedy defaults before VRAM/policy see the request.
+        options = apply_batch_invariant_options(options)
         admit_gguf = gguf
         if admit_gguf is None and self.config.llama_model:
             admit_gguf = Path(self.config.llama_model)
@@ -2929,8 +2956,10 @@ class InferenceEngine:
         options: dict | None = None,
         prefill_cancel: Any | None = None,
     ) -> GenerateResult:
+        from runtime.batch_invariant import apply_batch_invariant_options
         from runtime.kv.auto_batch import auto_batch_eligible
 
+        options = apply_batch_invariant_options(options)
         active = self._admit_one(
             prompt, n_predict, gguf=gguf, num_ctx=num_ctx, options=options
         )
@@ -3012,6 +3041,9 @@ class InferenceEngine:
         prefill_cancel: Any | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Yield Ollama-shaped NDJSON objects for /api/generate streaming."""
+        from runtime.batch_invariant import apply_batch_invariant_options
+
+        options = apply_batch_invariant_options(options)
         created = self._utc_now()
         yield self._generate_progress_chunk(
             model, "accepted", "request accepted", created=created
@@ -3267,7 +3299,19 @@ class InferenceEngine:
         if not prompts:
             return []
 
-        batch_opts = dict(options or {})
+        from runtime.batch_invariant import (
+            apply_batch_invariant_options,
+            batch_invariant_serializes_generate_batch,
+        )
+
+        # DI5: do not multi-row decode under eval hygiene — serial generate().
+        if batch_invariant_serializes_generate_batch():
+            opts = apply_batch_invariant_options(options)
+            return [
+                self.generate(p, n_predict=n_predict, options=opts) for p in prompts
+            ]
+
+        batch_opts = apply_batch_invariant_options(options)
         if batch_opts.get("priority") is None:
             batch_opts["priority"] = "batch"
         priority = priority_from_options(batch_opts)
@@ -3445,7 +3489,37 @@ class InferenceEngine:
         if not prompts:
             return iter(())
 
-        batch_opts = dict(options or {})
+        from runtime.batch_invariant import (
+            apply_batch_invariant_options,
+            batch_invariant_serializes_generate_batch,
+        )
+
+        # DI5: serial stream per prompt (same wire: request_id / seq_idx / response / done).
+        if batch_invariant_serializes_generate_batch():
+            opts = apply_batch_invariant_options(options)
+            model = "batch"
+
+            def _serial_stream() -> Iterator[dict[str, Any]]:
+                for seq_idx, prompt in enumerate(prompts):
+                    req_id = uuid.uuid4().hex[:12]
+                    for chunk in self.stream_generate(
+                        prompt,
+                        model,
+                        n_predict=n_predict,
+                        options=opts,
+                    ):
+                        if chunk.get("status") and not chunk.get("done"):
+                            continue
+                        yield {
+                            "request_id": req_id,
+                            "seq_idx": seq_idx,
+                            "response": chunk.get("response") or "",
+                            "done": bool(chunk.get("done")),
+                        }
+
+            return _serial_stream()
+
+        batch_opts = apply_batch_invariant_options(options)
         if batch_opts.get("priority") is None:
             batch_opts["priority"] = "batch"
         priority = priority_from_options(batch_opts)

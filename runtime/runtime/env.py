@@ -183,7 +183,14 @@ def radix_prefix_share_enabled() -> bool:
 
     Auto-enables prefix block pool when on. Prefer ``ZEROLLAMA_L3_PROFILE=agent``
     over raw env; explicit ``ZEROLLAMA_RADIX_PREFIX_SHARE=0/1`` wins over YAML.
+
+    DI5: ``ZEROLLAMA_BATCH_INVARIANT=1`` forces off so goldens do not pick up
+    cross-slot KV that changes effective batch/prefix shape.
     """
+    from runtime.batch_invariant import batch_invariant_denies_prefix_cache
+
+    if batch_invariant_denies_prefix_cache():
+        return False
     explicit = env_tri_state("ZEROLLAMA_RADIX_PREFIX_SHARE")
     if explicit is not None:
         return explicit

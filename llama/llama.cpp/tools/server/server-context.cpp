@@ -1003,6 +1003,14 @@ private:
     int slots_debug = 0;  // env: LLAMA_SERVER_SLOTS_DEBUG
     int slots_n_diff = 0; // env: LLAMA_SERVER_SLOTS_N_DIFF
 
+    // DI7 (DeepInfer-inspired cadence, single-node): defer launching new completion
+    // prompts onto free slots while any slot is GENERATING, until decode-step windows open.
+    // Env: ZEROLLAMA_PREFILL_ATTEMPT_INTERVAL (default 1 = off),
+    //      ZEROLLAMA_PREFILL_ANY_ATTEMPT_INTERVAL (default 1 = unset; set >1 for starve).
+    int prefill_attempt_interval = 1;
+    int prefill_any_attempt_interval = 1;
+    uint64_t n_decode_at_last_prefill_launch = 0;
+
     int n_empty_consecutive = 0;
 
     std::unique_ptr<server_prompt_cache> prompt_cache;
@@ -1481,6 +1489,26 @@ private:
 
             if (slots_n_diff) {
                 SRV_WRN("LLAMA_SERVER_SLOTS_N_DIFF = %d\n", slots_n_diff);
+            }
+        }
+
+        {
+            // DI7 — opt-in join cadence while decode-hot (not DeepInfer DP ALL/ANY).
+            // attempt<=1 → off. If attempt>1 and ANY env unset → starve = 2*attempt.
+            // Explicit ANY=1 → periodic windows only (no starve). ANY>1 → that starve gap.
+            const char * a = getenv("ZEROLLAMA_PREFILL_ATTEMPT_INTERVAL");
+            const char * b = getenv("ZEROLLAMA_PREFILL_ANY_ATTEMPT_INTERVAL");
+            if (a && *a) {
+                prefill_attempt_interval = std::max(1, atoi(a));
+            }
+            if (b && *b) {
+                prefill_any_attempt_interval = std::max(1, atoi(b));
+            } else if (prefill_attempt_interval > 1) {
+                prefill_any_attempt_interval = prefill_attempt_interval * 2;
+            }
+            if (prefill_attempt_interval > 1) {
+                SRV_WRN("DI7 prefill join cadence: attempt=%d starve=%d (metrics.n_decode clock)\n",
+                        prefill_attempt_interval, prefill_any_attempt_interval);
             }
         }
 
@@ -2652,6 +2680,59 @@ private:
                 cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
     }
 
+    bool has_generating_slot() const {
+        for (const auto & slot : slots) {
+            if (slot.state == SLOT_STATE_GENERATING) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // DI7: while decode-hot, allow new COMPLETION/INFILL launches on periodic / starve
+    // windows. attempt<=1 → off. Clock = decode batches since last launch (metrics.n_decode).
+    bool may_launch_new_prefill() const {
+        if (prefill_attempt_interval <= 1) {
+            return true;
+        }
+        if (!has_generating_slot()) {
+            return true;
+        }
+        const uint64_t n = metrics.n_decode;
+        const uint64_t since = n >= n_decode_at_last_prefill_launch
+            ? n - n_decode_at_last_prefill_launch
+            : 0;
+        // Starve: force join after this many decode batches with no new launch.
+        if (prefill_any_attempt_interval > 1 &&
+            since >= (uint64_t) prefill_any_attempt_interval) {
+            return true;
+        }
+        // Periodic: every `attempt` decode batches since last launch (not absolute n).
+        if (since > 0 && (since % (uint64_t) prefill_attempt_interval) == 0) {
+            return true;
+        }
+        return false;
+    }
+
+    void note_prefill_launched() {
+        n_decode_at_last_prefill_launch = metrics.n_decode;
+    }
+
+    // Re-offer cadence-deferred tasks after a decode step so they are not stuck until a slot frees.
+    void maybe_requeue_deferred_prefills() {
+        if (prefill_attempt_interval <= 1) {
+            return;
+        }
+        if (!may_launch_new_prefill()) {
+            return;
+        }
+        for (auto & slot : slots) {
+            if (!slot.is_processing()) {
+                queue_tasks.pop_deferred_task(slot.id);
+            }
+        }
+    }
+
     // returns false to decline the task, it is offered again after the decode is done
     bool process_single_task(server_task && task, bool is_yielding) {
         // while yielding, an encode / decode is running and only reading the server state is safe
@@ -2675,6 +2756,8 @@ private:
                     }
 
                     const int id_task = task.id;
+                    const bool is_gen_task =
+                        task.type == SERVER_TASK_TYPE_COMPLETION || task.type == SERVER_TASK_TYPE_INFILL;
 
                     server_slot * slot = get_available_slot(task);
 
@@ -2696,6 +2779,15 @@ private:
                         break;
                     }
 
+                    // DI7: free slot exists but decode is hot — wait for attempt/any decode window.
+                    // Embedding/rerank skip: they are not generative decode contention.
+                    if (is_gen_task && !may_launch_new_prefill()) {
+                        SRV_DBG("DI7 cadence defer prefill launch, id_task = %d, n_decode = %" PRIu64 "\n",
+                                id_task, metrics.n_decode);
+                        queue_tasks.defer(std::move(task));
+                        break;
+                    }
+
                     if (task.is_parent()) {
                         // try getting free slots for all child tasks
                         size_t n_child_tasks = task.child_tasks.size();
@@ -2709,9 +2801,14 @@ private:
                             SRV_ERR("failed to launch slot with parent task, id_task = %d\n", id_task);
                             break; // drop the task
                         }
+                        if (is_gen_task) {
+                            note_prefill_launched();
+                        }
                     } else if (!launch_slot_with_task(*slot, std::move(task))) {
                         SRV_ERR("failed to launch slot with task, id_task = %d\n", id_task);
                         break; // drop the task
+                    } else if (is_gen_task) {
+                        note_prefill_launched();
                     }
 
                     if (params_base.cache_idle_slots) {
@@ -3355,6 +3452,10 @@ private:
                 break; // stop any further processing
             }
         }
+
+        // DI7: after decode steps advance metrics.n_decode, re-offer cadence-deferred prompts
+        // while free slots exist (defer alone only wakes on slot release).
+        maybe_requeue_deferred_prefills();
     }
 
     void pre_decode() {

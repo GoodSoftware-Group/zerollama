@@ -19,6 +19,7 @@ On the Mac lab host (`~/Sites/inference/zerollama`):
 | M4 Metal prefill kernels (do **not** vendor host engine) | `../m4-prefill-engine` → [docs/m4-prefill-borrowings.md](./docs/m4-prefill-borrowings.md) + [findings](./docs/m4-prefill-borrowings-findings.md) (durable: MTL FA fix; FA+q8_0 KV useful; native Q8 FA / fused SwiGLU regress on M4 Max; lab: `scripts/phase/m4_prefill_lab_serve.sh`) |
 | Vanilla Ollama diff | `../ollama-upstream` → [docs/upstream-ollama-diff.md](./docs/upstream-ollama-diff.md) |
 | DeepGEMM (optional; CUDA ideas only) | `../DeepGEMM` → [docs/deepgemm-borrowings.md](./docs/deepgemm-borrowings.md) — **do not** vendor; skip Ascend port |
+| DeepInfer (optional; SM100 engine; ideas only) | `../DeepInfer` (astra: `/mnt/ssd2/src/DeepInfer`) → [docs/deepinfer-borrowings.md](./docs/deepinfer-borrowings.md) · ladder [docs/deepinfer-ladder.md](./docs/deepinfer-ladder.md) (**DI0–DI8**, ROADMAP **M29**) — **do not** vendor; skip FlashMLA/DeepEP wheels |
 
 ## Do not touch
 
@@ -78,3 +79,4 @@ zerollama pull llama3.2:3b
 - Product diffs vs Ollama (README hero): **megaprompts** (Gigatoken-inspired tokenize + L3) + visuals + harness — [README.md § Why](./README.md#2-why-zerollama) · [Tour](./README.md#4-tour--what-makes-us-different)
 - MiniMax Music 3 (mlx hear → C later): [docs/music-c.md](./docs/music-c.md) — **why** not Comfy / not H3 VAE / not blocking TTS
 - GLM Flash Lite (EXL3 sidecar): **GF0–GF7** — astra `127.0.0.1:30000` + tag `glm-5.3-flash` (`openai-remote` `/v1`+`/api/chat`); GF6 parked; rematch [freetoken-moe-lab.md](./docs/freetoken-moe-lab.md); **do not** vendor EXL3 — [docs/glm-flash-lite-ladder.md](./docs/glm-flash-lite-ladder.md) · ROADMAP **M28**
+- DeepInfer borrowings: **DI0–DI8** — **DI7** (**0140**); **DI6**; **DI4**; **DI5** eval hygiene; **DI2** design (adaptive-dm); **DI3** spike parked — [docs/deepinfer-ladder.md](./docs/deepinfer-ladder.md) · ROADMAP **M29**

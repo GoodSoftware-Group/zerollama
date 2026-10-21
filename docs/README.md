@@ -41,6 +41,8 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [L2 unified llama-server profiles](./gpu-profiles-l2.md) — L1 vs fork argv on one binary; **5080 Jun 2026:** L1 q8_0 wins @ 8k (fork profiles opt-in).
 * [CUDA lanes (dual-4090 / 5080)](./cuda-lanes.md) — **why** shared CUDA playbook vs 5080-only; NVFP4/MXFP4/FP8 weight roadmap; probes + sign-off.
 * [DeepGEMM borrowings](./deepgemm-borrowings.md) — **why** Ascend DeepGEMM is not a port target; keep grouped GEMM / SF layout / MoE-fuse ideas for ggml CUDA+Metal (skip EP8 / Ascend MAD).
+* [DeepInfer borrowings](./deepinfer-borrowings.md) — **why** not vendor SM100 DeepInfer; bring confidence-varlen MTP, YOCO SWA compact replay, async schedule discipline (skip EP fleet / FlashMLA wheels).
+* [DeepInfer ladder (DI0–DI8)](./deepinfer-ladder.md) — ROADMAP **M29**; DI7–DI5 + DI2 design; DI3 spike parked.
 * [Native FP8 GGUF (E4M3/E5M2)](./native-fp8-gguf.md) — **why** block FP8 types + `--fp8-native` instead of full F16 dequant; patches 0073–0076; MMVQ/MMQ; probes.
 * [Runtime env reference](./runtime-env.md) — **why** profiles/YAML/smart defaults beat dozens of `ZEROLLAMA_*` exports; L3, KV, VRAM; `./scripts/runtime/runtime_env_doctor.sh`.
 * [L3 prompt cache → slot bridge](./gpu-profiles-l3.md) — **why** Phase 15 dynamic slots discard KV each turn; stable keys → pinned llama-server slots + disk TTL; cuts agent prefill latency (complements L1 tok/s, L2 VRAM). **Audit (Jun 2026):** canonical GGUF hashing, orphan hash-dir sweep, strict batch keys, native bind before slot release; SWA/draft-spec policy; decode graph epoch + CUDA invalidation (in-process + subprocess HTTP).

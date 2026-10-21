@@ -59,7 +59,7 @@ You are working in the **zerollama** repo (Ollama fork): local GGUF inference + 
 ## Roadmap status (read `docs/ROADMAP.md`)
 
 - **Done:** Phases 0–10 (CI gate), 8–9 (VRAM broker, manifest→gguf), 11 (admission; 5080 keep defaults), 12 tools path, 13 core VRAM/autotune (5080 production calibrate), training T1
-- **Partial / next:** Phase 15 / L3 polish; Phase 12 tokenize-accurate render; optional Phase 13 clamp-on smoke; training **T6** + **T9** stock Trainer polish + **T10–T11** (**T3/T7/T8 Done**; no Unsloth Core dual backend)
+- **Partial / next:** Phase 15 / L3 polish; Phase 12 tokenize-accurate render; optional Phase 13 clamp-on smoke; training **T6** + **T9** stock Trainer polish + **T10–T11** (**T3/T7/T8 Done**; no Unsloth Core dual backend); DeepInfer borrowings **M29** (**DI0–DI1**; **DI7** **0140**; **DI6**; **DI4**; **DI5** eval hygiene; **DI2** design — [docs/deepinfer-ladder.md](../../docs/deepinfer-ladder.md); **DI3** spike parked)
 - **Product model:** many stakeholders → inference queues (Go + Python schedulers) + separate training job queue; unified “train when idle” orchestrator is **not** shipped yet (T6 + Phase 11)
 
 ## Important code paths
