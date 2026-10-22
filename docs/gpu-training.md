@@ -16,7 +16,7 @@ This document describes how **Ollama’s Go daemon** and **embedded CPython** ru
 
 5. **VRAM: inference-first (v1)** — On a single consumer GPU, inference and training contend for the same memory. **Why:** default policy favors **interactive inference**: when training hits CUDA OOM, Go **pauses new loads**, **evicts loaded inference runners**, then calls back into Python to **ack** so `load_model` may retry. Training mid-loop does not magically continue; **load_model** can wait once after relief; failed jobs still fail—**why:** safe default without pretending we can checkpoint-resume every arbitrary training graph.
 
-**Roadmap (directional):** train→GGUF + efficient SFT (**T7/T8 Done**); stock Trainer polish (**T9**, no second backend); GRPO; lite recipes — [ROADMAP § GPU training](./ROADMAP.md#gpu-training-fine-tuning) (**T7–T11**). This doc remains the operator/API reference for what is shipped.
+**Roadmap:** train→GGUF + efficient SFT (**T7/T8 Done**); stock Trainer polish (**T9**, no second backend); **T10 GRPO scaffold** ([t10-grpo.md](./t10-grpo.md)); **T11 lite recipes** ([t11-recipes.md](./t11-recipes.md)) — [ROADMAP § GPU training](./ROADMAP.md#gpu-training-fine-tuning). This doc remains the operator/API reference for what is shipped.
 
 **T8 SFT formatting (Done):** train payloads accept `format` (`auto` \| `chatml` \| `llama3` \| `hf` \| `alpaca` \| `modelfile`) and `max_length` (default 2048). `auto` uses the HF tokenizer `chat_template` when present, else ChatML. **`padding_free` defaults on** (Transformers `DataCollatorWithFlattening`). Opt-in `packing: true` concatenates short rows into `max_length` blocks (T9 keeps completion-only masks when packing). **`format=modelfile`** renders the serve Go TEMPLATE via `zerollama template render --train` (pass `template` / `template_file` / `template_name`). Opt-in **`padding_free_flash_attn`** requires `flash-attn` + FA2 load and emits `cu_seq_lens_*`. Loss-curve fixture: `tests/test_training_loss_fixture.py`. Smoke: `./scripts/training/t8_flash_attn_5080_smoke.sh`.
 
@@ -48,6 +48,10 @@ Set `LLAMA_CPP_DIR` (or sibling `../llama.cpp`) so convert/quantize are found. J
 | `padding_free_flash_attn` | auto if flash-attn installed | FA2 + `cu_seq_lens_*` |
 
 See [`training_optim.py`](../training_optim.py), [`training_labels.py`](../training_labels.py), [`training_pack.py`](../training_pack.py) (`pack_labeled_token_id_lists`). Smoke: `./scripts/training/t9_qlora_ckpt_smoke.sh` (`RUN_E2E_T9=1` for QLoRA+ckpt on a free GPU).
+
+**T10 GRPO (Partial — scaffold):** **Why:** Unsloth’s GRPO without a second backend. `POST /api/train/jobs` with `"kind": "grpo"` or `"rl"`. Payload needs `model_name`, `prompts` (or `training_data`), and HTTP-safe `reward_builtin=length` (JSON cannot carry callables). Default is **dry_run** (`trained=false`; `trl` optional); set `grpo_run=true` only on a free GPU lab with `trl` installed. Worker owns `training_active`. Doc: [t10-grpo.md](./t10-grpo.md). Smoke: `./scripts/training/t10_grpo_smoke.sh`.
+
+**T11 lite recipes (Partial):** **Why:** spreadsheet → SFT rows without Studio. `python training_recipes.py data.csv -o sft.jsonl` or `zerollama train recipe data.csv -o sft.jsonl` (same engine). CSV/JSONL/TXT stdlib; PDF/DOCX optional. Doc: [t11-recipes.md](./t11-recipes.md). Smoke: `./scripts/training/t11_recipes_smoke.sh`.
 
 ---
 

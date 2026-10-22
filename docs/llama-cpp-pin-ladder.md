@@ -1,7 +1,7 @@
 # llama.cpp pin-debt ladder (L6 enabler)
 
 **Status (Oct 2026):** **rung 5 (tip) landed** — pin **b11351** + **140** patches
-(CUDA `llama-server` + Clef on tip `common_batch` API; **0136** ANE shim, **0137** Laya; **0140** DI7 join cadence).
+(CUDA `llama-server` + Clef on tip `common_batch` API; **0136** ANE shim, **0137** Laya; **0140** DI7 join cadence; **0141** DI3 `accept_by_pos`).
 Rollback: `vendor/llama-cpp-b11232/` + `LLAMA_CPP_*.prev`.
 
 | Field | Value |
@@ -10,7 +10,7 @@ Rollback: `vendor/llama-cpp-b11232/` + `LLAMA_CPP_*.prev`.
 | **Previous (rollback)** | **b11232** (`6f767fe9…`) — keep `vendor/llama-cpp-b11232/` |
 | **Ollama tip pin** | **b11351** (matched) |
 | **Clef runtime floor** | **b11232+** — tip wire uses `common_batch` / `batch.view` |
-| **Patch series** | `llama/patches/` through **0140** (140 commits on b11351) |
+| **Patch series** | `llama/patches/` through **0141** (141 commits on b11351) |
 | **Pin truth** | [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) · `LLAMA_CPP_VERSION` / `LLAMA_CPP_COMMIT` · `Makefile.sync` |
 | **CUDA toolkit (5080 CT)** | Prefer **CUDA 12.8** (`CUDA_HOME=/usr/local/cuda-12.8`) — CUDA 13.3 `libcudart` aborts in `cudaGetDeviceCount` on this host |
 
@@ -33,7 +33,7 @@ conflicts stay reviewable.
 | **2** | **b10969** | `391fac16…` | Mid Sep tip (`#18446`) | **Done** — kept as `vendor/llama-cpp-b10969/` rollback |
 | **3** | **b11081** | `161755f2…` | Prior “skip until rebase” gate in [upstream-ollama-diff](./upstream-ollama-diff.md) | **Done** — kept as `vendor/llama-cpp-b11081/` rollback |
 | **4** | **b11232** | `6f767fe9…` | Clef floor (`#18652` / Clef `#18741`) | **Done** — kept as `vendor/llama-cpp-b11232/` rollback |
-| **5 (ship / tip)** | **b11351** | `631109b3…` | Match Ollama **v0.40.x** tip (`#18761`) | **Done (Oct 2026)** — 140 patches (through **0140** DI7); tip `common_batch` + Clef; lab chat smoke OK (CPU when VRAM held) |
+| **5 (ship / tip)** | **b11351** | `631109b3…` | Match Ollama **v0.40.x** tip (`#18761`) | **Done (Oct 2026)** — 141 patches (through **0141** DI3); tip `common_batch` + Clef; lab chat smoke OK (CPU when VRAM held) |
 
 **Do not** jump 0 → 5 in one shot unless you have a clean worktree day and a
 rollback plan (`vendor/llama-cpp-b10615/` + `llama/patches/` backup).

@@ -1,0 +1,308 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Wed, 21 Oct 2026 15:45:00 -0700
+Subject: [PATCH] server: DI3 expose verified accept_by_pos on timings + slots
+
+WHY: adaptive-dm already used per-pos EWMA inside decide_profit_n_max; lab
+A/B needed the curve on the wire (timings = per-request counts; slots =
+controller EWMA). Not a DSpark confidence head; no production default flip.
+Lab opt-in via --spec-dm-adaptive profit / ZEROLLAMA_SPEC_DM_ADAPTIVE.
+---
+ tools/server/server-adaptive-dm.h | 16 +
+ tools/server/server-common.cpp    | 10 +
+ tools/server/server-common.h      |  6 +-
+ tools/server/server-context.cpp   | 40 +-
+ tools/server/unit/common.h        |  3 +
+ tools/server/unit/di3_adaptive_dm_stubs.h | 44 +
+ tools/server/unit/log.h           |  6 +
+ tools/server/unit/test-di3-accept-by-pos.cpp | 60 +
+ 8 files changed
+
+diff --git a/tools/server/server-adaptive-dm.h b/tools/server/server-adaptive-dm.h
+index 55e741f0..52d21688 100644
+--- a/tools/server/server-adaptive-dm.h
++++ b/tools/server/server-adaptive-dm.h
+@@ -1168,6 +1168,22 @@ struct server_adaptive_dm_state {
+         }
+     }
+ 
++    // DI3: export verified per-position EWMA (ex-post accept, not a confidence head).
++    // Returns number of positions with samples > 0 written into out[].
++    int export_verified_accept_by_pos(float * out, int out_cap) const {
++        if (!out || out_cap <= 0) {
++            return 0;
++        }
++        int n = 0;
++        for (int pos = 0; pos < PROFIT_POSITIONS && n < out_cap; ++pos) {
++            if (profit_pos_samples[pos] <= 0) {
++                break;
++            }
++            out[n++] = std::clamp(profit_pos_accept_ewma[pos], 0.0f, 1.0f);
++        }
++        return n;
++    }
++
+     void observe_profit_timing(
+             int requested_n_max,
+             int actual_n_draft,
+diff --git a/tools/server/server-common.cpp b/tools/server/server-common.cpp
+index 6aa1dcdd..5aae3bad 100644
+--- a/tools/server/server-common.cpp
++++ b/tools/server/server-common.cpp
+@@ -99,6 +99,16 @@ json server_slot_stats::to_json() const {
+     if (n_draft_tokens > 0) {
+         base["draft_n"]          = n_draft_tokens;
+         base["draft_n_accepted"] = n_draft_accepted;
++        base["accept_rate"]      = (double) n_draft_accepted / (double) n_draft_tokens;
++        if (n_draft_verif_steps > 0 && !n_accepted_per_pos.empty()) {
++            json rates = json::array();
++            for (uint64_t accepted : n_accepted_per_pos) {
++                rates.push_back((double) accepted / (double) n_draft_verif_steps);
++            }
++            // DI3: verified empirical per-depth accept (not predicted confidence).
++            base["accept_by_pos"]      = rates;
++            base["accept_by_pos_kind"] = "verified";
++        }
+     }
+ 
+     return base;
+diff --git a/tools/server/server-common.h b/tools/server/server-common.h
+index 65d56453..e1378fee 100644
+--- a/tools/server/server-common.h
++++ b/tools/server/server-common.h
+@@ -391,10 +391,12 @@ struct server_slot_stats {
+     uint64_t n_gen              = 0;
+ 
+     // speculative decoding stats
+-    // note: the per-position breakdown lives in server_slot, it is not needed in a task result
++    // DI3: per-position verified accept counts ride on the task result so timings JSON
++    // can expose accept_rate + accept_by_pos (ex-post; not a confidence head).
+     uint64_t n_draft_tokens      = 0;
+     uint64_t n_draft_accepted    = 0;
+     uint64_t n_draft_verif_steps = 0;
++    std::vector<uint64_t> n_accepted_per_pos;
+ 
+     // these are absolute timestamps (in us)
+     // note: must be signed - they are subtracted before the later ones are set
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 84c6c965..f0e88eb9 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -363,10 +363,6 @@ struct server_slot {
+ 
+     server_slot_stats stats;
+ 
+-    // accepted tokens per draft position
+-    // not in server_slot_stats to avoid copying to every task result
+-    std::vector<uint64_t> n_accepted_per_pos;
+-
+     // Reasoning loop guard (opt-in via --reasoning-loop-guard / request JSON)
+     server_loop_guard loop_guard;
+     int32_t loop_guard_interventions = 0;
+@@ -416,7 +412,6 @@ struct server_slot {
+ 
+         // note: callback_on_reset() must have run before this, see release()
+         stats = {};
+-        n_accepted_per_pos.clear();
+ 
+         loop_guard.reset();
+         loop_guard_interventions = 0;
+@@ -731,11 +726,11 @@ struct server_slot {
+ 
+             std::string acceptance_rates_per_pos;
+             if (n_draft_verif_steps > 0) {
+-                for (size_t i = 0; i < n_accepted_per_pos.size(); ++i) {
++                for (size_t i = 0; i < stats.n_accepted_per_pos.size(); ++i) {
+                     if (i > 0) {
+                         acceptance_rates_per_pos += ", ";
+                     }
+-                    acceptance_rates_per_pos += string_format("%.3f", (double) n_accepted_per_pos[i] / (double) n_draft_verif_steps);
++                    acceptance_rates_per_pos += string_format("%.3f", (double) stats.n_accepted_per_pos[i] / (double) n_draft_verif_steps);
+                 }
+             }
+ 
+@@ -782,6 +777,23 @@ struct server_slot {
+             }
+         }
+ 
++        // DI3: adaptive-dm verified accept curve (lab; opt-in via --spec-dm-adaptive profit).
++        if (adaptive_dm.dm_adaptive) {
++            float ewma[SERVER_ADAPTIVE_DM_PROFIT_POSITIONS];
++            const int n_ewma = adaptive_dm.export_verified_accept_by_pos(
++                    ewma, SERVER_ADAPTIVE_DM_PROFIT_POSITIONS);
++            json ewma_arr = json::array();
++            for (int i = 0; i < n_ewma; ++i) {
++                ewma_arr.push_back(ewma[i]);
++            }
++            res["adaptive_dm"] = {
++                {"controller", "profit"},
++                {"adaptive_n_max", adaptive_dm.adaptive_n_max},
++                {"verified_accept_by_pos_ewma", ewma_arr},
++                {"accept_by_pos_kind", "verified_ewma"},
++            };
++        }
++
+         return res;
+     }
+ 
+@@ -4570,7 +4582,7 @@ private:
+                 apply_adaptive_profit_decision(slot);
+             }
+ 
+-            auto & n_accepted_per_pos = slot.n_accepted_per_pos;
++            auto & n_accepted_per_pos = slot.stats.n_accepted_per_pos;
+             if (n_accepted_per_pos.empty()) {
+                 n_accepted_per_pos.resize(common_speculative_n_max(spec.get()), 0);
+             }
+@@ -4729,7 +4741,7 @@ private:
+         metrics.n_draft_verif_steps += slot.stats.n_draft_verif_steps;
+ 
+         auto & dst = metrics.n_accepted_per_pos;
+-        const auto & src = slot.n_accepted_per_pos;
++        const auto & src = slot.stats.n_accepted_per_pos;
+ 
+         if (dst.size() < src.size()) {
+             dst.resize(src.size(), 0);
+
+diff --git a/tools/server/unit/common.h b/tools/server/unit/common.h
+new file mode 100644
+index 00000000..11111111
+--- /dev/null
++++ b/tools/server/unit/common.h
+@@ -0,0 +1,3 @@
++// Stub common.h for DI3 unit test (shadows llama/common via -I).
++#pragma once
++#include "di3_adaptive_dm_stubs.h"
+
+diff --git a/tools/server/unit/log.h b/tools/server/unit/log.h
+new file mode 100644
+index 00000000..11111111
+--- /dev/null
++++ b/tools/server/unit/log.h
+@@ -0,0 +1,6 @@
++// Stub log.h for DI3 unit test (shadows llama/common via -I).
++#pragma once
++#define LOG_DBG(...) ((void)0)
++#define LOG_INF(...) ((void)0)
++#define LOG_WRN(...) ((void)0)
++#define LOG_ERR(...) ((void)0)
+
+diff --git a/tools/server/unit/di3_adaptive_dm_stubs.h b/tools/server/unit/di3_adaptive_dm_stubs.h
+new file mode 100644
+index 00000000..11111111
+--- /dev/null
++++ b/tools/server/unit/di3_adaptive_dm_stubs.h
+@@ -0,0 +1,44 @@
++// Minimal stubs so DI3 can unit-test server-adaptive-dm.h without linking llama.
++#pragma once
++
++#include <cstdint>
++#include <string>
++
++enum common_speculative_dm_controller {
++    COMMON_SPECULATIVE_DM_CONTROLLER_OFF,
++    COMMON_SPECULATIVE_DM_CONTROLLER_PROFIT,
++};
++
++struct common_params_speculative_draft {
++    int32_t n_min = 0;
++    float p_split = 0.0f;
++    float p_min = 0.0f;
++    int32_t backend_sampling = 0;
++    int32_t cache_type_k = 0;
++    int32_t cache_type_v = 0;
++};
++
++struct common_params_speculative {
++    common_params_speculative_draft draft;
++    common_speculative_dm_controller dm_controller = COMMON_SPECULATIVE_DM_CONTROLLER_PROFIT;
++    float   dm_profit_min               = 0.05f;
++    float   dm_profit_raise_margin      = 0.05f;
++    float   dm_profit_lower_margin      = 0.05f;
++    float   dm_profit_ewma_alpha        = 0.15f;
++    int32_t dm_profit_min_samples       = 3;
++    int32_t dm_profit_warmup            = 0;
++    int32_t dm_profit_baseline_interval = 1024;
++};
++
++struct common_params_sampling {
++    int32_t top_k = 0;
++    float temp = 0.0f;
++    float top_p = 1.0f;
++    float min_p = 0.0f;
++    bool grammar_lazy = false;
++    std::string grammar;
++};
++
++inline const std::string & common_grammar_value(const std::string & g) {
++    return g;
++}
+
+diff --git a/tools/server/unit/test-di3-accept-by-pos.cpp b/tools/server/unit/test-di3-accept-by-pos.cpp
+new file mode 100644
+index 00000000..11111111
+--- /dev/null
++++ b/tools/server/unit/test-di3-accept-by-pos.cpp
+@@ -0,0 +1,61 @@
++// DI3 host unit: verified accept_by_pos EWMA + survival expected accept.
++// Compile via scripts/phase/di3_accept_by_pos_unit.sh (no GPU / llama-server).
++
++#include "../server-adaptive-dm.h"
++
++#include <cassert>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++
++static void expect_near(float got, float want, float eps, const char * label) {
++    if (std::fabs(got - want) > eps) {
++        std::fprintf(stderr, "FAIL %s: got=%g want=%g\n", label, got, want);
++        std::exit(1);
++    }
++}
++
++int main() {
++    // Clean case: all accept then none (alpha=1 → last sample wins).
++    server_adaptive_dm_state st;
++    st.dm_profit_ewma_alpha = 1.0f;
++    st.dm_profit_min_samples = 1;
++    st.observe_profit_acceptance(4, 4);
++    float out[8] = {};
++    assert(st.export_verified_accept_by_pos(out, 8) == 4);
++    for (int i = 0; i < 4; ++i) {
++        expect_near(out[i], 1.0f, 1e-5f, "all-accept ewma");
++    }
++
++    st.observe_profit_acceptance(4, 0);
++    assert(st.export_verified_accept_by_pos(out, 8) == 4);
++    for (int i = 0; i < 4; ++i) {
++        expect_near(out[i], 0.0f, 1e-5f, "none-accept ewma");
++    }
++
++    // Survival expected accept needs min_samples.
++    server_adaptive_dm_state st2;
++    st2.dm_profit_ewma_alpha = 0.5f;
++    st2.dm_profit_min_samples = 3;
++    for (int i = 0; i < 5; ++i) {
++        st2.observe_profit_acceptance(3, 2);
++    }
++    bool ready = false;
++    const float expected = server_adaptive_dm_survival_expected_accept(
++            st2.profit_pos_accept_ewma,
++            st2.profit_pos_samples,
++            server_adaptive_dm_state::PROFIT_POSITIONS,
++            /*depth=*/2,
++            st2.dm_profit_min_samples,
++            &ready);
++    assert(ready);
++    assert(expected > 0.0f);
++    assert(expected <= 2.0f + 1e-5f);
++
++    float ewma[4];
++    const int n_export = st2.export_verified_accept_by_pos(ewma, 4);
++    assert(n_export == 3);
++
++    std::printf("ok di3 accept_by_pos unit (export=%d expected=%.3f)\n", n_export, expected);
++    return 0;
++}
+

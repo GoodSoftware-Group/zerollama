@@ -69,7 +69,7 @@ zerollama pull llama3.2:3b
 
 - [docs/ROADMAP.md](./docs/ROADMAP.md)
 - [docs/README.md](./docs/README.md) — index of in-repo guides
-- Training borrowings (Unsloth → T7–T11): [ROADMAP § GPU training](./docs/ROADMAP.md#gpu-training-fine-tuning)
+- Training borrowings (Unsloth → T7–T11): [ROADMAP § GPU training](./docs/ROADMAP.md#gpu-training-fine-tuning) · [t10-grpo.md](./docs/t10-grpo.md) · [t11-recipes.md](./docs/t11-recipes.md) · [gpu-training.md](./docs/gpu-training.md)
 - Doctor Modelfile repair (empty `response` / slash-collapse / ChatML hygiene): `zerollama doctor --repair-models [--all-local] [--apply]` — **why** not `doctor --fix`: [docs/doctor-model-repair.md](./docs/doctor-model-repair.md)
 - Hermes `/v1` gaps (M15e/M15f): [docs/hermes-zerollama-gap.md](./docs/hermes-zerollama-gap.md) (§8 batch wire) · [findings](./docs/hermes-gap-closure-findings.md) · OpenAPI `server/openapi/openapi.yaml` (`ChatCompletionsBatchResponse`)
 - MultiDecode (forest decode): patches **0127–0129**; `POST /v1/multidecode` + `capabilities.multidecode`; silent LCP pack on Hermes batch — [docs/multidecode-llama-cpp.md](./docs/multidecode-llama-cpp.md) · [findings](./docs/multidecode-llama-cpp-findings.md) · skill `agentskills/multidecode/`
@@ -79,4 +79,4 @@ zerollama pull llama3.2:3b
 - Product diffs vs Ollama (README hero): **megaprompts** (Gigatoken-inspired tokenize + L3) + visuals + harness — [README.md § Why](./README.md#2-why-zerollama) · [Tour](./README.md#4-tour--what-makes-us-different)
 - MiniMax Music 3 (mlx hear → C later): [docs/music-c.md](./docs/music-c.md) — **why** not Comfy / not H3 VAE / not blocking TTS
 - GLM Flash Lite (EXL3 sidecar): **GF0–GF7** — astra `127.0.0.1:30000` + tag `glm-5.3-flash` (`openai-remote` `/v1`+`/api/chat`); GF6 parked; rematch [freetoken-moe-lab.md](./docs/freetoken-moe-lab.md); **do not** vendor EXL3 — [docs/glm-flash-lite-ladder.md](./docs/glm-flash-lite-ladder.md) · ROADMAP **M28**
-- DeepInfer borrowings: **DI0–DI8** — **DI7** (**0140**); **DI6**; **DI4**; **DI5** eval hygiene; **DI2** design (adaptive-dm); **DI3** spike parked — [docs/deepinfer-ladder.md](./docs/deepinfer-ladder.md) · ROADMAP **M29**
+- DeepInfer borrowings: **DI0–DI8** — **DI7** (**0140**); **DI6**; **DI4**; **DI5**; **DI2** design; **DI3** (**0141** verified `accept_by_pos`) — [docs/deepinfer-ladder.md](./docs/deepinfer-ladder.md) · ROADMAP **M29**

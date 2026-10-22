@@ -21,7 +21,7 @@ func TrainingSubmitUnsupported(err error) bool {
 }
 
 func checkTrainingQloraPayload(kind string, payload json.RawMessage) error {
-	if kind != "train" || len(payload) == 0 {
+	if (kind != "train" && kind != "grpo") || len(payload) == 0 {
 		return nil
 	}
 	var p struct {

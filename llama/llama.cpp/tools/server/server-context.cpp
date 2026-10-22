@@ -363,10 +363,6 @@ struct server_slot {
 
     server_slot_stats stats;
 
-    // accepted tokens per draft position
-    // not in server_slot_stats to avoid copying to every task result
-    std::vector<uint64_t> n_accepted_per_pos;
-
     // Reasoning loop guard (opt-in via --reasoning-loop-guard / request JSON)
     server_loop_guard loop_guard;
     int32_t loop_guard_interventions = 0;
@@ -416,7 +412,6 @@ struct server_slot {
 
         // note: callback_on_reset() must have run before this, see release()
         stats = {};
-        n_accepted_per_pos.clear();
 
         loop_guard.reset();
         loop_guard_interventions = 0;
@@ -731,11 +726,11 @@ struct server_slot {
 
             std::string acceptance_rates_per_pos;
             if (n_draft_verif_steps > 0) {
-                for (size_t i = 0; i < n_accepted_per_pos.size(); ++i) {
+                for (size_t i = 0; i < stats.n_accepted_per_pos.size(); ++i) {
                     if (i > 0) {
                         acceptance_rates_per_pos += ", ";
                     }
-                    acceptance_rates_per_pos += string_format("%.3f", (double) n_accepted_per_pos[i] / (double) n_draft_verif_steps);
+                    acceptance_rates_per_pos += string_format("%.3f", (double) stats.n_accepted_per_pos[i] / (double) n_draft_verif_steps);
                 }
             }
 
@@ -780,6 +775,25 @@ struct server_slot {
                 res["prompt"] = ptask->tokens.detokenize(ctx_tgt, true);
                 res["generated"] = generated_text.empty() ? debug_generated_text : generated_text;
             }
+        }
+
+        // DI3 WHY on /slots: adaptive-dm already used this EWMA inside decide_profit_n_max;
+        // lab A/B needed the same curve without parsing logs. Opt-in via --spec-dm-adaptive profit.
+        // Distinct from timings.accept_by_pos (per-request counts) — see accept_by_pos_kind.
+        if (adaptive_dm.dm_adaptive) {
+            float ewma[SERVER_ADAPTIVE_DM_PROFIT_POSITIONS];
+            const int n_ewma = adaptive_dm.export_verified_accept_by_pos(
+                    ewma, SERVER_ADAPTIVE_DM_PROFIT_POSITIONS);
+            json ewma_arr = json::array();
+            for (int i = 0; i < n_ewma; ++i) {
+                ewma_arr.push_back(ewma[i]);
+            }
+            res["adaptive_dm"] = {
+                {"controller", "profit"},
+                {"adaptive_n_max", adaptive_dm.adaptive_n_max},
+                {"verified_accept_by_pos_ewma", ewma_arr},
+                {"accept_by_pos_kind", "verified_ewma"},
+            };
         }
 
         return res;
@@ -4570,7 +4584,7 @@ private:
                 apply_adaptive_profit_decision(slot);
             }
 
-            auto & n_accepted_per_pos = slot.n_accepted_per_pos;
+            auto & n_accepted_per_pos = slot.stats.n_accepted_per_pos;
             if (n_accepted_per_pos.empty()) {
                 n_accepted_per_pos.resize(common_speculative_n_max(spec.get()), 0);
             }
@@ -4729,7 +4743,7 @@ private:
         metrics.n_draft_verif_steps += slot.stats.n_draft_verif_steps;
 
         auto & dst = metrics.n_accepted_per_pos;
-        const auto & src = slot.n_accepted_per_pos;
+        const auto & src = slot.stats.n_accepted_per_pos;
 
         if (dst.size() < src.size()) {
             dst.resize(src.size(), 0);

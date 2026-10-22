@@ -89,6 +89,14 @@ jobs:
           LLAMA_PATCH_JSON: /tmp/llama-patch-doctor.json
         run: ./scripts/vendor/llama_patch_doctor.sh
 
+      - name: DI3 accept_by_pos host unit (no GPU)
+        run: ./scripts/phase/di3_accept_by_pos_unit.sh
+
+      - name: T10 GRPO + T11 recipes host units (no GPU)
+        run: |
+          ./scripts/training/t10_grpo_smoke.sh
+          ./scripts/training/t11_recipes_smoke.sh
+
       - name: Phase 17 L2 pin status report
         env:
           P17_L2_OUT: /tmp/phase17-l2-pin-status.json

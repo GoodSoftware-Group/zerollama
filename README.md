@@ -101,13 +101,15 @@ Live chat jumps ahead of background jobs. You can see *who* is holding the card.
 | Load / pin / batch | `/api/can-load`, `/api/propose-load`, **`POST /api/load`**, `/api/pin`, `/api/cache/pin`, Hermes batch |
 | “Broken model” that’s a template | `zerollama doctor --repair-models` |
 | Fine-tune without killing chat | `/api/train/*` + idle-wait / defer — submit; runs when the GPU is quiet |
+| GRPO / RL job kind (lab) | `kind=grpo` dry-run by default; `grpo_run=true` needs `trl` — [t10-grpo.md](docs/t10-grpo.md) |
+| Spreadsheet → SFT rows | `zerollama train recipe data.csv -o sft.jsonl` — [t11-recipes.md](docs/t11-recipes.md) |
 | Share models across machines | `zerollama fleet serve` · `zerollama storage serve` (lab `:18090`) |
 
 ```bash
 curl -s http://127.0.0.1:11434/api/version | jq '{distribution, capabilities: .zerollama.capabilities}'
 ```
 
-→ [agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md) · [hermes-zerollama-gap.md](docs/hermes-zerollama-gap.md) · [doctor-model-repair.md](docs/doctor-model-repair.md) · [t6-unified-queue.md](docs/t6-unified-queue.md) · [gpu-training.md](docs/gpu-training.md)
+→ [agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md) · [hermes-zerollama-gap.md](docs/hermes-zerollama-gap.md) · [doctor-model-repair.md](docs/doctor-model-repair.md) · [t6-unified-queue.md](docs/t6-unified-queue.md) · [gpu-training.md](docs/gpu-training.md) · [t10-grpo.md](docs/t10-grpo.md) · [t11-recipes.md](docs/t11-recipes.md)
 
 Vs upstream matrix: [upstream-ollama-diff.md](docs/upstream-ollama-diff.md)
 
@@ -186,7 +188,8 @@ Vendor pin: **`f280b269` / b10615** — [runtime/LLAMA_CPP_PIN.md](runtime/LLAMA
 | Decide / extract | [laya-llama-cpp.md](docs/laya-llama-cpp.md) · [clm.md](docs/clm.md) · [gliner-cpp.md](docs/gliner-cpp.md) · [gliner-decide.md](docs/gliner-decide.md) |
 | Speed | [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md) · [gpu-profiles-l3.md](docs/gpu-profiles-l3.md) |
 | Media | [wan-t2v.md](docs/wan-t2v.md) · [ltx-t2v.md](docs/ltx-t2v.md) · [h3-cuda-port.md](docs/h3-cuda-port.md) · [music-c.md](docs/music-c.md) |
-| Train / idle queue | [gpu-training.md](docs/gpu-training.md) · [t6-unified-queue.md](docs/t6-unified-queue.md) |
+| Train / idle queue | [gpu-training.md](docs/gpu-training.md) · [t6-unified-queue.md](docs/t6-unified-queue.md) · [t10-grpo.md](docs/t10-grpo.md) · [t11-recipes.md](docs/t11-recipes.md) |
+| Serving ideas (not vendor) | [deepinfer-borrowings.md](docs/deepinfer-borrowings.md) · [deepinfer-ladder.md](docs/deepinfer-ladder.md) · [vllm-borrowings.md](docs/vllm-borrowings.md) |
 | Doctor | [model-serving-minefield.md](docs/model-serving-minefield.md) · [doctor-model-repair.md](docs/doctor-model-repair.md) |
 | Storage / fleet | [remote-model-storage.md](docs/remote-model-storage.md) · [fleet-management.md](docs/fleet-management.md) |
 
@@ -209,6 +212,7 @@ We reimplement **ideas** in our Go + llama.cpp + runtime shape — we do **not**
 |---------|----------------|
 | **[Gigatoken](https://github.com/chynggi/gigatoken-llama.cpp)** | Fast tokenize — patches **0106–0126** |
 | **[vLLM](https://github.com/vllm-project/vllm)** / **[SGLang](https://github.com/sgl-project/sglang)** | Prefix cache + agent multimodal patterns |
+| **[DeepInfer](https://github.com/deepseek-ai/DeepInfer)** | Schedule / SWA / speculation **ideas** only (SM100 engine not vendored) — [deepinfer-ladder.md](docs/deepinfer-ladder.md) |
 | **[LocalAI](https://github.com/mudler/LocalAI)** | Control-plane habits (rerank, repair, bench) |
 | **[WestCoastML/multidecode](https://github.com/WestCoastML/multidecode)** | Forest decode — patches **0129–0131** |
 | **[GLiNER.cpp](https://github.com/Knowledgator/GLiNER.cpp)** / **[GLiNER2.5-Decide](https://huggingface.co/fastino/GLiNER2.5-Decide)** | Extract + encoder triage |

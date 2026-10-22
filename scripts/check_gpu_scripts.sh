@@ -121,6 +121,9 @@ scripts=(
   phase15_stream_auto_batch_smoke.sh
   phase15_auto_batch_smoke.sh
   phase15_auto_batch_signoff.sh
+  di3_accept_by_pos_unit.sh
+  t10_grpo_smoke.sh
+  t11_recipes_smoke.sh
 )
 
 for s in "${scripts[@]}"; do
@@ -339,6 +342,16 @@ grep -q 'GgmlRunnerLinked' "${ROOT}/envconfig/ggml_runner.go"
 grep -q 'phase15_llama_kv_ext_pin_check.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
 grep -q 'doctorCheckLlamaPatches' "${ROOT}/cmd/doctor.go"
 grep -q 'llama_patch_doctor.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
+grep -q 'di3_accept_by_pos_unit.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
+grep -q 'di3_accept_by_pos_unit.sh' "$(spath check_gpu_scripts.sh)"
+grep -q 't10_grpo_smoke.sh' "$(spath check_gpu_scripts.sh)"
+grep -q 't11_recipes_smoke.sh' "$(spath check_gpu_scripts.sh)"
+grep -q 't10-grpo.md' "${ROOT}/docs/README.md"
+grep -q 't11-recipes.md' "${ROOT}/docs/README.md"
+grep -q 't10_grpo_smoke.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
+grep -q 't11_recipes_smoke.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
+grep -q 'NewTrainCommand' "${ROOT}/cmd/cmd.go"
+grep -q 'train recipe' "${ROOT}/cmd/train.go"
 grep -q 'doctorCheckGgmlRunner' "${ROOT}/cmd/doctor.go"
 grep -q 'schedSkipGgmlRunnerLoad' "${ROOT}/server/sched.go"
 grep -q 'phase17_l2_pin_status.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"

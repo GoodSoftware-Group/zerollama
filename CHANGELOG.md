@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### DeepInfer borrowings ladder complete (M29 DI0–DI8) — Oct 2026
+
+**Why not vendor DeepInfer:** DeepSeek’s engine is SM100/Ascend + ~510 GB Flash weights — wrong substrate for GGUF/`llama-server` on 5080/4090/Metal. We steal **schedule / speculation / SWA policy** only.
+
+| Rung | What shipped | WHY |
+|------|--------------|-----|
+| DI0–DI1 | Sibling inventory + borrowings doc | Hardware reality before code |
+| DI7 | Prefill join cadence while decode-hot (**0140**) | Reduce decode jank when new prompts arrive mid-stream (not DP ALL/ANY) |
+| DI6 | Sync/overlap inventory | Keep `yield_to_queue`; no ZOS/`forbid_cuda_sync` port |
+| DI4 | YOCO keep-token budget helper | Policy only — hybrid whole-prompt truncate is a non-goal |
+| DI5 | `ZEROLLAMA_BATCH_INVARIANT` eval hygiene | Goldens need greedy+seed + serialized batch — not FlashMLA split-KV |
+| DI2 | Confidence-scheduled draft design | Map DSpark → adaptive-dm; name trap: predicted ≠ verified |
+| DI3 | Verified `accept_by_pos` on timings + slots (**0141**) | Lab A/B can read the curve adaptive-dm already used internally |
+| DI8 | Standing skip | Never claim 5080/H200 “DeepInfer compatible” |
+
+Docs: [deepinfer-borrowings.md](docs/deepinfer-borrowings.md) · [deepinfer-ladder.md](docs/deepinfer-ladder.md). Host unit: `./scripts/phase/di3_accept_by_pos_unit.sh`.
+
+### Training T10 GRPO scaffold + T11 lite recipes — Oct 2026
+
+**Why one backend:** Unsloth’s GRPO/Studio path is AGPL / dual-stack. Zerollama keeps PEFT + Transformers/`trl` on the same `/api/train` queue as SFT (T6 defer / VRAM broker).
+
+**T10 GRPO:** `kind=grpo|rl` → embed cmd `grpo`. HTTP-safe `reward_builtin=length` only (JSON cannot carry callables). Default **dry-run** (`trained=false`; `trl` optional); `grpo_run=true` needs `trl` + free GPU lab. Doc: [t10-grpo.md](docs/t10-grpo.md). Smoke: `./scripts/training/t10_grpo_smoke.sh`.
+
+**T11 recipes:** CSV/JSONL/TXT → `{prompt,response}` (stdlib); PDF/DOCX optional. Python CLI + `zerollama train recipe` (same engine). **Why not Studio:** operators need ingest without a visual node editor. Doc: [t11-recipes.md](docs/t11-recipes.md). Smoke: `./scripts/training/t11_recipes_smoke.sh`.
+
 ### Embed llama-server `-ub` matches `num_ctx`
 
 Chat default `NumBatch=512` was passed as `-b/-ub` on embeddings, so BERT/nomic/gemma 400’d past ~512 tokens while `-c` was already 2k–8k. Raise embed ubatch to the parallel context window (same as ggml).

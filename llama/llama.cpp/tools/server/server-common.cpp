@@ -99,6 +99,18 @@ json server_slot_stats::to_json() const {
     if (n_draft_tokens > 0) {
         base["draft_n"]          = n_draft_tokens;
         base["draft_n_accepted"] = n_draft_accepted;
+        // WHY accept_rate on timings: one scalar for dashboards without parsing per-pos.
+        base["accept_rate"]      = (double) n_draft_accepted / (double) n_draft_tokens;
+        if (n_draft_verif_steps > 0 && !n_accepted_per_pos.empty()) {
+            json rates = json::array();
+            for (uint64_t accepted : n_accepted_per_pos) {
+                rates.push_back((double) accepted / (double) n_draft_verif_steps);
+            }
+            // DI3: verified empirical per-depth accept (not predicted confidence).
+            // WHY kind field: keep A/B scripts from confusing this with adaptive-dm EWMA.
+            base["accept_by_pos"]      = rates;
+            base["accept_by_pos_kind"] = "verified";
+        }
     }
 
     return base;

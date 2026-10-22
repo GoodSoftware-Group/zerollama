@@ -391,10 +391,13 @@ struct server_slot_stats {
     uint64_t n_gen              = 0;
 
     // speculative decoding stats
-    // note: the per-position breakdown lives in server_slot, it is not needed in a task result
+    // DI3 WHY on stats (not only slot): completion timings JSON is what lab A/B reads.
+    // Counts are per-request verified survival (accepted ≥ pos+1) — not a confidence head.
+    // Distinct from slots[].adaptive_dm.verified_accept_by_pos_ewma (cross-request controller).
     uint64_t n_draft_tokens      = 0;
     uint64_t n_draft_accepted    = 0;
     uint64_t n_draft_verif_steps = 0;
+    std::vector<uint64_t> n_accepted_per_pos;
 
     // these are absolute timestamps (in us)
     // note: must be signed - they are subtracted before the later ones are set

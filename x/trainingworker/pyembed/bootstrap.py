@@ -134,7 +134,13 @@ def _job_to_dict(job) -> dict:
         metrics = getattr(job, "progress_metrics", None)
     out = {
         "jobId": jid,
-        "kind": "JOB_KIND_TRAIN" if cmd == "train" else "JOB_KIND_RUN_SCRIPT",
+        "kind": (
+            "JOB_KIND_TRAIN"
+            if cmd == "train"
+            else "JOB_KIND_GRPO"
+            if cmd == "grpo"
+            else "JOB_KIND_RUN_SCRIPT"
+        ),
         "status": st,
         "progress": progress,
         "progressMessage": pmsg,
@@ -183,7 +189,17 @@ class _TrainingShimAPI:
     def submit_job(self, kind: str, payload_json: str) -> dict:
         import training
 
-        cmd = "train" if kind != "run_script" else "run_script"
+        # WHY mirror Go normalizeTrainingJobKind: embed path must reject unknown kinds
+        # the same way HTTP does (no silent coerce to train).
+        k = (kind or "train").strip().lower()
+        if k in ("", "train", "sft"):
+            cmd = "train"
+        elif k == "run_script":
+            cmd = "run_script"
+        elif k in ("grpo", "rl"):
+            cmd = "grpo"
+        else:
+            return {"error": f"unknown kind {kind!r} (want train|run_script|grpo|rl)"}
         try:
             data = json.loads(payload_json) if payload_json else {}
         except json.JSONDecodeError as e:

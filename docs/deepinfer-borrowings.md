@@ -19,7 +19,7 @@
 | Mac lab | `../DeepInfer` under `~/Sites/inference/` |
 | astra | `/mnt/ssd2/src/DeepInfer` (cloned 2026-10-20; Python 3.12 venv at `.venv`) |
 
-**Last checked:** 2026-10-20 — tip shallow clone + vendor submodules; hardware probe on astra 2×4090 → SM89, `is_sm_major_10=False`.
+**Last checked:** 2026-10-21 — ladder **DI0–DI7/DI5/DI2/DI3 done**; DI8 standing skip. Hardware probe (2026-10-20) astra 2×4090 → SM89, `is_sm_major_10=False`.
 
 ---
 
@@ -58,7 +58,7 @@ Delivery path is always **llama.cpp patches / runtime / Go scheduler**, not Deep
 | **Async schedule discipline (ZOS + sync guard)** | `csrc/engine/zos.*`, `utils.forbid_cuda_sync`, `DeferredRelease` | Overlap CPU `schedule(N+1)` with GPU `forward(N)`; forbid accidental host sync in hot path. | **DI6 done** — inventory in [deepinfer-ladder.md](./deepinfer-ladder.md): `yield_to_queue` already overlaps; logits/sampler syncs required; no ZOS/`forbid_cuda_sync` port. |
 | **SWA bounded re-prefill (YOCO compact)** | `DEEPINFER_YOCO_PREFILL_*`, `worker/cache_engine.py` StateBlock, `v4_modules/yoco.py` | On consumer SWA recompute, keep suffix ≥ `window + max_backtrack` instead of full prompt. | **DI4 policy done** — keep-token budget helper; **non-goal:** whole-prompt truncate on hybrid GGUF (YOCO is layer-aware) |
 | **Batch-invariant eval mode** | `DEEPINFER_BATCH_INVARIANT`, FlashMLA split-KV off, fixed `seq_seed` | Goldens must not drift with co-batching. | **DI5 done (eval hygiene)** — force greedy+seed; deny cache_prompt/Radix/auto-batch; serialize `generate_batch`; not kernel batch-invariance |
-| **Confidence-scheduled draft budget (DSpark / MTP varlen)** | `tilelang_ops/schedule_mtp_varlen.py`, `csrc/engine/mtp_varlen.hpp`, confidence head in `models/mtp/dflash.py` | Fixed draft depth wastes verify; allocate batch `total_q` by predicted accept. | **DI2 design done** — deliver via adaptive-dm; predicted confidence ≠ verified accept; **DI3** spike parked |
+| **Confidence-scheduled draft budget (DSpark / MTP varlen)** | `tilelang_ops/schedule_mtp_varlen.py`, `csrc/engine/mtp_varlen.hpp`, confidence head in `models/mtp/dflash.py` | Fixed draft depth wastes verify; allocate batch `total_q` by predicted accept. | **DI2+DI3 done** — adaptive-dm delivery; timings/slots expose **verified** `accept_by_pos` (patch **0141**); not a confidence head |
 
 ---
 
@@ -111,6 +111,6 @@ When someone links DeepInfer or the DeepSeek “open-source inference engine” 
 
 Ordered rungs **DI0–DI8** (ROADMAP **M29**): [deepinfer-ladder.md](./deepinfer-ladder.md).
 
-| Done | Next |
-|------|------|
-| DI0–DI1; DI7 (**0140**); DI6; DI4; DI5; DI2 design | **DI3** spike parked; DI4 hybrid wire non-goal |
+| Done | Standing / non-goals |
+|------|----------------------|
+| DI0–DI1; DI7 (**0140**); DI6; DI4; DI5; DI2; DI3 (**0141**) | **DI8** skip; DI4 hybrid whole-prompt wire non-goal |

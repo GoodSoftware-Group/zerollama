@@ -2661,6 +2661,7 @@ func NewCLI() *cobra.Command {
 	doctorCmd := NewDoctorCommand()
 	benchCmd := NewBenchCommand()
 	templateCmd := NewTemplateCommand()
+	trainCmd := NewTrainCommand()
 
 	envVars := envconfig.AsMap()
 
@@ -2757,6 +2758,7 @@ func NewCLI() *cobra.Command {
 		freetokenCmd,
 		doctorCmd,
 		templateCmd,
+		trainCmd,
 		benchCmd,
 		NewRepairCommand(),
 		NewBlobsCommand(),

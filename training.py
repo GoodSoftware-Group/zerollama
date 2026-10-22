@@ -169,7 +169,7 @@ class JobStatus(str, Enum):
 @dataclass
 class Job:
     id: str
-    cmd: str  # "train" or "run_script"
+    cmd: str  # "train", "run_script", or "grpo"
     data: Dict[str, Any]
     status: JobStatus = JobStatus.PENDING
     progress: float = 0.0
@@ -690,6 +690,19 @@ def job_processor():
             try:
                 if job.cmd == "train":
                     result = process_training_request(job.data)
+                elif job.cmd == "grpo":
+                    from training_grpo import process_grpo_request
+
+                    # WHY training_active for GRPO: same OccupiesGPU / BLOCK_INFERENCE
+                    # signal as SFT — RL steps hold the GPU; chat must defer (T6).
+                    # WHY set here (not inside training_grpo): avoid clearing the flag
+                    # before this worker finishes the job.
+                    STATE.training_active = True
+                    try:
+                        result = process_grpo_request(job.data)
+                    finally:
+                        STATE.training_active = False
+                        _empty_device_cache()
                 elif job.cmd == "run_script":
                     # Expand {job_id} here (not at submit): Python uuid is assigned at queue time.
                     # All env string values (WAN_OUTPUT_PATH, MUSIC3_OUTPUT_PATH, LTX_*, …).
@@ -1646,7 +1659,16 @@ def handle_request(request: Dict[str, Any], client_id: Optional[str] = None) -> 
     
     elif cmd == "submit_job":
         # Queue a training job (non-blocking)
-        job_cmd = request.get("job_cmd", "train")  # "train" or "run_script"
+        job_cmd = request.get("job_cmd", "train")  # train | run_script | grpo
+        if job_cmd in ("", "sft"):
+            job_cmd = "train"
+        elif job_cmd == "rl":
+            job_cmd = "grpo"
+        if job_cmd not in ("train", "run_script", "grpo"):
+            return {
+                "status": "error",
+                "error": f"unknown job_cmd {job_cmd!r} (want train|run_script|grpo|rl)",
+            }
         data = request.get("data", {})
         job_id = JOB_QUEUE.submit(job_cmd, data, client_id)
         return {

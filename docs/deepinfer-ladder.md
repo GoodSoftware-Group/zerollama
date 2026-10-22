@@ -5,7 +5,7 @@
 **Sibling checkout:** Mac `../DeepInfer`; astra `/mnt/ssd2/src/DeepInfer`  
 **ROADMAP:** **M29**
 
-**Status (Oct 2026):** **DI0–DI1 / DI7 / DI6 / DI4 / DI5 done.** **DI2** design done (below). **DI3** spike parked. Do **not** try to serve DeepInfer on 4090 / 5080 / H200.
+**Status (Oct 2026):** **DI0–DI1 / DI7 / DI6 / DI4 / DI5 / DI2 / DI3 done.** **DI8** standing skip. Do **not** try to serve DeepInfer on 4090 / 5080 / H200.
 
 ---
 
@@ -30,7 +30,7 @@
 | ZOS + `forbid_cuda_sync` | PA tick + continuous batch | **DI6** — inventory only (no ZOS port) |
 | YOCO SWA compact | L3 SWA store/resume gates | **DI4** — keep-token *budget* helper; no hybrid whole-prompt truncate |
 | Batch-invariant + `seq_seed` | `ZEROLLAMA_BATCH_INVARIANT` | **DI5** — eval hygiene (force greedy+seed; not kernel batch-invariance) |
-| DSpark confidence-varlen MTP | adaptive-dm (profit), ggml MTP, ANE dflash, MLX MTP | **DI2** design → **DI3** spike (parked) |
+| DSpark confidence-varlen MTP | adaptive-dm (profit), ggml MTP, ANE dflash, MLX MTP | **DI2** design → **DI3** spike (accept_by_pos) |
 | FlashMLA / DeepGEMM / DeepEP | [deepgemm-borrowings.md](./deepgemm-borrowings.md) | **DI8** standing skip |
 | xgrammar structured output | Ollama `format` / GBNF / MLX xgrammar | Already covered — not a DI rung |
 
@@ -47,10 +47,10 @@
 | **DI4** | YOCO keep-token budget (policy) | Python L3 | Document budget; **non-goal:** whole-prompt truncate on hybrid GGUF | **Done (policy)** — engine wire parked |
 | **DI5** | Eval hygiene env (batch-invariant *idea*) | Runtime / doctor | Force greedy+seed; deny KV reuse/auto-batch; serialize generate_batch | **Done (Oct 2026)** — audit-fixed |
 | **DI2** | Confidence-scheduled draft — design | Spec | Map DSpark → adaptive-dm / MTP; name accept vs confidence | **Done (Oct 2026)** — design below |
-| **DI3** | Confidence / adaptive draft — spike | C++ / runtime | Lab flag; no production default | **Parked** (needs DI2; unpark when DFlash/MTP lab active) |
+| **DI3** | Verified accept_by_pos exposure + unit | llama-server | Timings + slots export; host unit; no production default | **Done (Oct 2026)** — patch **0141** |
 | **DI8** | Do not vendor DeepInfer | Policy | Standing skip | Standing |
 
-**Priority order (historical):** DI7 → DI6 → DI4 → DI5 → DI2. Next: **DI3** lab spike when speculation A/B is in play.
+**Priority order (historical):** DI7 → DI6 → DI4 → DI5 → DI2 → DI3. Ladder complete aside from **DI8** standing skip.
 
 ---
 
@@ -199,13 +199,33 @@ DI3 must keep separate fields (`predicted_accept` vs `verified_accept`) if both 
 | `total_q` / `seqlens_q` | Fixed / `adaptive_n_max` per slot | Cohort clamp in adaptive-dm; extend with pos curve |
 | Decode perf curve | Profit cycle-time EWMA | Keep; do not duplicate DeepInfer’s curve store |
 
-**DI2 exit:** this section. **DI3** parked until a DFlash/MTP lab A/B wants the per-position EWMA spike.
+**DI2 exit:** this section. **DI3** ships the per-position verified EWMA surface (below).
 
 ---
 
-## DI3 — spike (parked)
+## DI3 — verified accept_by_pos (spike done)
 
-Lab-only: opt-in on adaptive-dm path; smoke shows `accept_rate` + optional `accept_by_pos`; no production default. Unpark when speculation A/B is active on astra/5080.
+**Why DI3 after DI2:** adaptive-dm already maintained `profit_pos_accept_ewma[]` and used it inside `decide_profit_n_max` (survival expected accept). Lab A/B could not *see* that curve on the wire — only logs/prometheus counts. DI3 closes the **observability** gap without claiming a DSpark confidence head (predicted P(accept) ≠ verified accept).
+
+| Piece | Detail |
+|-------|--------|
+| Patch | `llama/patches/0141-server-DI3-verified-accept-by-pos-timings-slots.patch` |
+| Timings JSON | `accept_rate`, `accept_by_pos[]`, `accept_by_pos_kind=verified` when `draft_n > 0` |
+| Slots JSON | `adaptive_dm.verified_accept_by_pos_ewma` + `adaptive_n_max` when profit controller on |
+| Export helper | `server_adaptive_dm_state::export_verified_accept_by_pos` |
+| Host unit | `./scripts/phase/di3_accept_by_pos_unit.sh` (no GPU) |
+| Lab opt-in | Existing `ZEROLLAMA_SPEC_DM_ADAPTIVE=profit` / `--spec-dm-adaptive profit` |
+| Defaults | Off — no production flip |
+| Not claimed | Predicted confidence head; DSpark `total_q` allocator; SM100 kernels |
+
+**Two verified signals (do not mix):**
+
+| Field | Scope | Meaning |
+|-------|-------|---------|
+| `timings.accept_by_pos` | **This request** | Count[pos] / `n_draft_verif_steps` (empirical survival) |
+| `slots[].adaptive_dm.verified_accept_by_pos_ewma` | **Controller** (cross-request, profit on) | EWMA used inside `decide_profit_n_max` |
+
+**Naming:** both are **ex-post verified** — never label them `predicted_accept` / `confidence`.
 
 ---
 
@@ -232,3 +252,5 @@ Lab-only: opt-in on adaptive-dm path; smoke shows `accept_rate` + optional `acce
 | 2026-10-20 | DI5: `ZEROLLAMA_BATCH_INVARIANT` eval hygiene; `/health.batch_invariant`. |
 | 2026-10-20 | DI5 audit fix: **force** greedy (override client temp); serialize `generate_batch`; mode=`eval_hygiene`; prefer `-np 1` for strongest goldens. |
 | 2026-10-20 | DI2 design: DSpark confidence-varlen → adaptive-dm delivery; trap = predicted confidence ≠ verified accept; DI3 = per-pos EWMA spike (parked). |
+| 2026-10-21 | DI3 spike: timings `accept_rate`/`accept_by_pos` + slots EWMA export; patch **0141**; host unit `di3_accept_by_pos_unit.sh`. |
+| 2026-10-21 | DI3 audit: document timings (per-request) vs slots EWMA (controller) as distinct verified signals. |

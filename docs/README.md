@@ -41,8 +41,8 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [L2 unified llama-server profiles](./gpu-profiles-l2.md) — L1 vs fork argv on one binary; **5080 Jun 2026:** L1 q8_0 wins @ 8k (fork profiles opt-in).
 * [CUDA lanes (dual-4090 / 5080)](./cuda-lanes.md) — **why** shared CUDA playbook vs 5080-only; NVFP4/MXFP4/FP8 weight roadmap; probes + sign-off.
 * [DeepGEMM borrowings](./deepgemm-borrowings.md) — **why** Ascend DeepGEMM is not a port target; keep grouped GEMM / SF layout / MoE-fuse ideas for ggml CUDA+Metal (skip EP8 / Ascend MAD).
-* [DeepInfer borrowings](./deepinfer-borrowings.md) — **why** not vendor SM100 DeepInfer; bring confidence-varlen MTP, YOCO SWA compact replay, async schedule discipline (skip EP fleet / FlashMLA wheels).
-* [DeepInfer ladder (DI0–DI8)](./deepinfer-ladder.md) — ROADMAP **M29**; DI7–DI5 + DI2 design; DI3 spike parked.
+* [DeepInfer borrowings](./deepinfer-borrowings.md) — **why** not vendor SM100 DeepInfer; bring schedule / SWA / speculation ideas into ggml + runtime (skip EP fleet / FlashMLA wheels).
+* [DeepInfer ladder (DI0–DI8)](./deepinfer-ladder.md) — ROADMAP **M29**; DI0–DI7/DI5/DI2/DI3 done (DI3: verified `accept_by_pos`); DI8 standing skip.
 * [Native FP8 GGUF (E4M3/E5M2)](./native-fp8-gguf.md) — **why** block FP8 types + `--fp8-native` instead of full F16 dequant; patches 0073–0076; MMVQ/MMQ; probes.
 * [Runtime env reference](./runtime-env.md) — **why** profiles/YAML/smart defaults beat dozens of `ZEROLLAMA_*` exports; L3, KV, VRAM; `./scripts/runtime/runtime_env_doctor.sh`.
 * [L3 prompt cache → slot bridge](./gpu-profiles-l3.md) — **why** Phase 15 dynamic slots discard KV each turn; stable keys → pinned llama-server slots + disk TTL; cuts agent prefill latency (complements L1 tok/s, L2 VRAM). **Audit (Jun 2026):** canonical GGUF hashing, orphan hash-dir sweep, strict batch keys, native bind before slot release; SWA/draft-spec policy; decode graph epoch + CUDA invalidation (in-process + subprocess HTTP).
@@ -116,7 +116,9 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Phase 15 handoff](./handoff-phase15-native-kv.md) — code map, `/health` fields, gaps; **v0–v31 shipped** (C decode loop, engine resume, L3 gate, batch decode + Metal sign-off PASS Jun 2026).
 * [GPU training integration](./gpu-training.md) — **why** Go fronts HTTP + TCP `:9500` while Python holds PyTorch; embedded CPython; inference-first VRAM policy; OOM ordering; env vars and troubleshooting.
 * [GPU training handoff (internal)](./handoff-gpu-training-integration.md) — embedded training + Phase 11 VRAM interaction (not a substitute for `gpu-training.md`).
-* [Roadmap — training track T7–T11](./ROADMAP.md#gpu-training-fine-tuning) — Unsloth borrowings: train→GGUF (**T7 Done**), efficient SFT (**T8 Done**), stock Trainer polish (**T9**, no second backend), GRPO, lite recipes (not Studio).
+* [Roadmap — training track T7–T11](./ROADMAP.md#gpu-training-fine-tuning) — Unsloth borrowings: train→GGUF (**T7 Done**), efficient SFT (**T8 Done**), stock Trainer polish (**T9**, no second backend), [GRPO (T10)](./t10-grpo.md), [lite recipes (T11)](./t11-recipes.md) (not Studio).
+* [T10 GRPO](./t10-grpo.md) — `kind=grpo\|rl` on `/api/train`; dry-run default; `grpo_run=true` lab only.
+* [T11 lite recipes](./t11-recipes.md) — CSV/JSONL/TXT/(PDF\|DOCX) → `{prompt,response}`; `zerollama train recipe`.
 * [Phase 12 tools + Phase 11 admission handoff](./handoff-phase12-runtime-tools.md) — runtime tools (Go render/parse), opinionated admission, smokes, code maps.
 * [Inference smoke testing](./testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU.
 * [Model serving minefield](./model-serving-minefield.md) — trap registry mapped onto `zerollama doctor` (config + live serving checks) and known gaps.

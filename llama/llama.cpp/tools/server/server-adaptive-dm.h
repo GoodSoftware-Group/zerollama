@@ -1168,6 +1168,24 @@ struct server_adaptive_dm_state {
         }
     }
 
+    // DI3: export verified per-position EWMA for /slots JSON.
+    // WHY export (not only use internally): decide_profit_n_max already consumed this
+    // curve; lab A/B needed the same numbers on the wire. Ex-post accept ≠ confidence head.
+    // Returns number of positions with samples > 0 written into out[].
+    int export_verified_accept_by_pos(float * out, int out_cap) const {
+        if (!out || out_cap <= 0) {
+            return 0;
+        }
+        int n = 0;
+        for (int pos = 0; pos < PROFIT_POSITIONS && n < out_cap; ++pos) {
+            if (profit_pos_samples[pos] <= 0) {
+                break;
+            }
+            out[n++] = std::clamp(profit_pos_accept_ewma[pos], 0.0f, 1.0f);
+        }
+        return n;
+    }
+
     void observe_profit_timing(
             int requested_n_max,
             int actual_n_draft,

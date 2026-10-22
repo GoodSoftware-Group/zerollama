@@ -42,9 +42,10 @@ func (s *Server) trainHTTPSubmitJob(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	kind := "train"
-	if strings.EqualFold(req.Kind, "run_script") {
-		kind = "run_script"
+	kind, kerr := normalizeTrainingJobKind(req.Kind)
+	if kerr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": kerr.Error()})
+		return
 	}
 	payload := req.Payload
 	if len(payload) == 0 || string(payload) == "null" {
