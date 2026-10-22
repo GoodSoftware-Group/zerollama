@@ -81,11 +81,15 @@ training_uv_venv() {
       # WHY --index-url (not --extra-index-url): CPU wheel index does not host bitsandbytes
       # or other non-torch deps; --extra-index-url keeps PyPI as the primary source for those
       # while still preferring the CPU torch build over any CUDA default from PyPI.
+      # WHY unsafe-best-match: torch index may ship an old requests; uv first-index wins otherwise.
       "${uv_bin}" pip install --python "${py}" -r "${TRAINING_UV_ROOT}/requirements-training.txt" \
-        --extra-index-url https://download.pytorch.org/whl/cpu
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        --index-strategy unsafe-best-match
     else
+      # WHY unsafe-best-match: cu128 index has requests==2.28.1; T10 needs requests>=2.31 from PyPI.
       "${uv_bin}" pip install --python "${py}" -r "${TRAINING_UV_ROOT}/requirements-training.txt" \
-        --extra-index-url https://download.pytorch.org/whl/cu128
+        --extra-index-url https://download.pytorch.org/whl/cu128 \
+        --index-strategy unsafe-best-match
     fi
   fi
   export TRAINING_UV_PYTHON="${py}"

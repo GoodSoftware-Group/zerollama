@@ -6,7 +6,7 @@
 
 **Continue here (Aug 2026):** L1 + Phase 17 `auto` + embed attach shipped on CT 1564. **Spec A/B (eliza-1-2b @ 8k, L1 q8_0/−b 1024/−np 2):** baseline **~188–189 tok/s**; `ngram-simple` wires / **0 accepts**; DFlash/MTP need matching target (Qwen3.5-2B) or newer pin. **Radix agent lane (lab `:18081`):** `ZEROLLAMA_INFERENCE_PROFILE=agent` → `l3_agent_subprocess.yaml` (not Phase 17 Go alone — Radix is Python runtime L3). Live PASS beside prod: OuteTTS 1B @ 4k, donor **5.36s** → target **0.52s**, `radix_seed` **64**, `kv_unified` metadata (`/tmp/l3-radix-prefix-smoke-live.json`). Do **not** flip daily prod to `agent` (multi-slot / kv_unified tradeoffs); keep `auto`→throughput + `single_gpu.yaml`. Lab LD must include `/root/nvidia-host` (fixed in `linux_runtime_export_llama_ld_path`) or ctypes/`llama-server` abort `munmap_chunk`. Next: Phase 15 polish / RotorQuant no-merge.
 
-**Training (Oct 2026):** T10b GRPO + T11 recipes are in-tree. After `TRAINING_UV_SYNC=1` (pulls pinned `trl` + `requests`), host units always; optional GPU A/B on a **free** card — see [Training embed + venvs](#training-embed--venvs) and [Tier 5](#tier-5--optional--periodic). **WHY not default-on GRPO in prod:** dry-run unless `grpo_run=true`; keep inference-first / T6 idle-wait. **T6a–c:** unknown `priority`/`slo_class` → **400**; submit/defer echo `priority`; with `QUEUE_ON_BUSY=1`, waiting `defer-*` pauses **new** ggml loads (override `ZEROLLAMA_TRAINING_DEFER_PAUSES_GGML=0`) — [t6-unified-queue.md](./t6-unified-queue.md).
+**Training (Oct 2026):** T10b GRPO + T11 recipes are in-tree. After `TRAINING_UV_SYNC=1` (pulls pinned `trl` + `requests`), host units always; optional GPU A/B on a **free** card — see [Training embed + venvs](#training-embed--venvs) and [Tier 5](#tier-5--optional--periodic). **CT 1564 GPU sign-off (Oct 2026):** T10c Qwen 0.5B A/B + T9 QLoRA+ckpt PASS (prod tip briefly down); HTTP GRPO dry-run + `/api/train/recipes` PASS on tip `run/zerollama-lab` (libpython**3.11**). **WHY not default-on GRPO in prod:** dry-run unless `grpo_run=true`; keep inference-first / T6 idle-wait. **T6a–c:** unknown `priority`/`slo_class` → **400**; submit/defer echo `priority`; with `QUEUE_ON_BUSY=1`, waiting `defer-*` pauses **new** ggml loads (override `ZEROLLAMA_TRAINING_DEFER_PAUSES_GGML=0`) — [t6-unified-queue.md](./t6-unified-queue.md).
 
 **This is the only doc you need on CT 1564.** Build, serve, env, every gate, pass criteria, artifacts, and troubleshooting live here. Do not switch to [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) for daily ops — it is a legacy appendix. Mac counterpart: [apple-silicon-metal.md](./apple-silicon-metal.md) + `./scripts/gpu/metal_signoff.sh`. Fork labs: [llama-fork-watchlist.md](./llama-fork-watchlist.md).
 
@@ -324,7 +324,7 @@ curl -s http://127.0.0.1:8080/api/train/status | jq .
 - **Sibling empty `mlx/`:** repo-root `mlx/` namespace makes transformers think MLX is installed → mid-step `No module named 'mlx.core'`. `training_grpo` shields this; do not `pip install mlx` on CUDA CT.
 - **Do not** set production-default GRPO; keep T6 idle-wait / defer when serving agents on the same GPU.
 
-**4090 lab sign-off (Oct 2026):** tiny-gpt2 `length`/`format_json` both `trained=true` — findings doc. **5080:** rerun with Qwen 0.5B when HF cache is warm; record wall times in findings if they differ materially.
+**4090 lab sign-off (Oct 2026):** tiny-gpt2 + Qwen 0.5B A/B `trained=true` — [findings](./t10-grpo-findings.md). **5080 CT 1564 (Oct 2026):** Qwen 0.5B `length` ~14s / `format_json` ~11s `trained=true`; T9 QLoRA+ckpt PASS — same findings.
 
 ### T11 — lite recipes (ingest only)
 
@@ -995,6 +995,9 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 | L1 sidecar 502 + `go-coordination` spam | Embedded `zerollama serve` still on `:8081` | `5080_stop_serve` (SIGKILL + `:8082`) before `l1_cuda_full_gate.sh` |
 | `/health` hang with training + embed | Shared CPython GIL | `ZEROLLAMA_RUNTIME_SHARED_PYTHON=1`; see [shared-interpreter-health-hang.md](./bugs/shared-interpreter-health-hang.md) |
 | `trl` import OK but `GRPOTrainer` → `No module named 'requests'` | tip trl 0.29 pulls vllm_client | `TRAINING_UV_SYNC=1 ./scripts/training/training_uv_venv.sh --verify` (pins `requests` in `requirements-training.txt`) |
+| `TRAINING_UV_SYNC` unsatisfiable `requests>=2.31` | cu128 index ships `requests==2.28.1`; uv first-index wins | Fixed: script passes `--index-strategy unsafe-best-match` |
+| GRPO/numpy `cpython-311` vs python `3.10` | Binary linked default `python3-embed` 3.10; `.venv-training` is 3.11 | `source ./scripts/training/training_embed_build_env.sh 3.11` then `go clean -cache && CGO_ENABLED=1 go build` — verify `ldd … \| grep python` |
+| Prod LAN “down” but `127.0.0.1:8080` OK | Serve inherited `OLLAMA_HOST=127.0.0.1:8080` | Production must bind `0.0.0.0:8080` (`~/bin/serve.sh` / tip env) |
 | GRPO `generation_batch_size … num_generations` | tip default 8/8 vs lab `batch_size=1` | Payload/`training_grpo` lab defaults `num_generations=2` + aligned gen batch — upgrade binary/script |
 | GRPO mid-step `No module named 'mlx.core'` | Empty sibling `~/zerollama/mlx` namespace | Fixed in `training_grpo._shield_sibling_mlx_false_positive`; do not install Apple MLX on CUDA CT |
 | GRPO LoRA target modules not found (tiny-gpt2) | Default targets are LLaMA `q_proj`… | Pass `lora_target_modules: ["c_attn","c_proj"]` or use `T10B_MODEL=Qwen/Qwen2.5-0.5B-Instruct` |

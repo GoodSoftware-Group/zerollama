@@ -7,7 +7,10 @@
 #
 # Linux + NVIDIA (CUDA wheels via uv):
 #   uv pip install --python .venv-training/bin/python -r requirements-training.txt \
-#     --extra-index-url https://download.pytorch.org/whl/cu128
+#     --extra-index-url https://download.pytorch.org/whl/cu128 \
+#     --index-strategy unsafe-best-match
+# WHY unsafe-best-match: cu128 index has requests==2.28.1; T10 needs requests>=2.31 from PyPI.
+# Prefer: TRAINING_UV_SYNC=1 ./scripts/training/training_uv_venv.sh --verify (passes the flag).
 #
 # macOS Apple Silicon (MPS; bitsandbytes excluded on Darwin):
 #   uv pip install --python .venv-training/bin/python -r requirements-training.txt

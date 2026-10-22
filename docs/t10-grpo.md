@@ -86,7 +86,7 @@ JSON **cannot** carry Python callables. Do **not** send `reward_funcs` / `reward
 
 On a **free** GPU (never production `:11434` / `:8081`):
 
-1. Sync venv: `TRAINING_UV_SYNC=1 ./scripts/training/training_uv_venv.sh --verify` (pulls pinned `trl` + `requests`).
+1. Sync venv: `TRAINING_UV_SYNC=1 ./scripts/training/training_uv_venv.sh --verify` (pulls pinned `trl` + `requests`; uses `--index-strategy unsafe-best-match` so cu128’s old `requests` does not win).
 2. Dry-run + optional Trainer A/B:
 
 ```bash
@@ -101,6 +101,8 @@ RUN_E2E_T10B=1 CUDA_VISIBLE_DEVICES=1 ./scripts/training/t10b_grpo_ab_smoke.sh
 **Lab defaults on `grpo_run`:** `num_generations=2` with aligned `generation_batch_size` (tip TRL defaults to 8 — too heavy for smokes). Sibling empty `mlx/` checkout is neutralized before Trainer (see findings).
 
 **4090 sign-off (Oct 2026):** `length` + `format_json` both `trained=true` on tiny-gpt2 — [t10-grpo-findings.md](./t10-grpo-findings.md).
+
+**5080 CT 1564 sign-off (Oct 2026):** Qwen2.5-0.5B-Instruct A/B `trained=true` (~14s / ~11s); T9 QLoRA+ckpt PASS — [findings](./t10-grpo-findings.md).
 
 ## Non-goals
 
@@ -118,4 +120,4 @@ RUN_E2E_T10B=1 CUDA_VISIBLE_DEVICES=1 ./scripts/training/t10b_grpo_ab_smoke.sh
 3. Honest dry-run (`trained=false`) vs `grpo_run=true` GPU path
 4. **T10b:** pinned `trl`; builtins + `reward_url` + `reward_hf`; unit coverage for URL hook + exact_match
 
-**T10c (Oct 2026):** Qwen2.5-0.5B-Instruct A/B PASS on 4090 — see [findings](./t10-grpo-findings.md). Optional: re-run on 5080 production venv.
+**T10c (Oct 2026):** Qwen2.5-0.5B-Instruct A/B PASS on 4090 and 5080 production venv — [findings](./t10-grpo-findings.md).
