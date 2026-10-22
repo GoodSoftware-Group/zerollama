@@ -116,9 +116,70 @@ func TestTrainHTTPSubmitQueuesOnBusy(t *testing.T) {
 	}
 }
 
+// T6d: HTTP defer under busy ggml must PauseNewLoads immediately (starve-proof).
+func TestTrainHTTPDeferPausesGgmlLoads(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("ZEROLLAMA_TRAINING_WAIT_INFERENCE_IDLE", "1")
+	t.Setenv("ZEROLLAMA_TRAINING_QUEUE_ON_BUSY", "1")
+	t.Setenv("ZEROLLAMA_TRAINING_DEFER_PAUSES_GGML", "1")
+	t.Setenv("ZEROLLAMA_BLOCK_INFERENCE_DURING_TRAINING", "0")
+	t.Setenv("ZEROLLAMA_RUNTIME_URL", "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sched := InitScheduler(ctx)
+	sched.pending.Push(&LlmRequest{
+		ctx:   ctx,
+		model: &Model{ModelPath: "/tmp/m"},
+	})
+
+	tw := &trainingworker.Client{}
+	s := &Server{sched: sched, training: tw}
+	s.trainingDefer = newTrainingDeferQueue(s)
+	tw.SetSubmitHandler(s.handleTrainingSubmitRequest)
+
+	r := gin.New()
+	s.registerTrainingRoutes(r)
+
+	body, _ := json.Marshal(map[string]any{
+		"kind":          "train",
+		"payload":       map[string]any{},
+		"queue_on_busy": true,
+		"priority":      "low",
+	})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/train/jobs", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := out["job_id"].(string)
+	if id == "" || !isDeferredTrainingJobID(id) {
+		t.Fatalf("expected defer job_id, got %v", out)
+	}
+	if !sched.LoadsPaused() {
+		t.Fatal("expected PauseNewLoads after HTTP defer enqueue")
+	}
+
+	w2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodDelete, "/api/train/jobs/"+id, nil)
+	r.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("cancel status=%d body=%s", w2.Code, w2.Body.String())
+	}
+	if sched.LoadsPaused() {
+		t.Fatal("expected ResumeLoads after defer cancel")
+	}
+}
+
 func TestDeferredTrainingJobStatusJSON(t *testing.T) {
 	s := &Server{trainingDefer: newTrainingDeferQueue(&Server{})}
-	id, err := s.trainingDefer.enqueue("train", []byte(`{}`))
+	id, err := s.trainingDefer.enqueue("train", []byte(`{}`), TrainingPriorityLow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,9 +189,10 @@ func TestDeferredTrainingJobStatusJSON(t *testing.T) {
 	}
 	var wrap struct {
 		Job struct {
-			JobID  string `json:"jobId"`
-			Status string `json:"status"`
-			Defer  bool   `json:"defer"`
+			JobID    string `json:"jobId"`
+			Status   string `json:"status"`
+			Defer    bool   `json:"defer"`
+			Priority string `json:"priority"`
 		} `json:"job"`
 	}
 	if err := json.Unmarshal(raw, &wrap); err != nil {
@@ -138,6 +200,9 @@ func TestDeferredTrainingJobStatusJSON(t *testing.T) {
 	}
 	if wrap.Job.JobID != id || wrap.Job.Status != "pending" || !wrap.Job.Defer {
 		t.Fatalf("unexpected job: %+v", wrap.Job)
+	}
+	if wrap.Job.Priority != "low" {
+		t.Fatalf("expected priority=low, got %q", wrap.Job.Priority)
 	}
 }
 
@@ -186,7 +251,7 @@ func TestTrainingDeferQueueDrainBlockedWhileBusy(t *testing.T) {
 
 	s := &Server{sched: sched, training: &trainingworker.Client{}}
 	s.trainingDefer = newTrainingDeferQueue(s)
-	id, _ := s.trainingDefer.enqueue("train", []byte(`{}`))
+	id, _ := s.trainingDefer.enqueue("train", []byte(`{}`), TrainingPriorityNormal)
 	s.trainingDefer.drainOnce(ctx)
 	if j, ok := s.trainingDefer.lookupSnapshot(id); !ok || j.state != deferredStateWaiting {
 		t.Fatal("defer job should remain waiting while inference busy")

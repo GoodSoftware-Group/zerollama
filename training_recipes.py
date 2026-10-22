@@ -21,9 +21,19 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 Row = Dict[str, str]
 
-# T11c chat-export presets (JSON/JSONL objects). WHY named presets: ChatGPT/ShareGPT
+# T11c/T11d chat-export presets (JSON/JSONL objects). WHY named presets: ChatGPT/ShareGPT
 # dumps do not use prompt/response keys; operators should not hand-rewrite exports.
-_PRESETS = frozenset({"auto", "sharegpt", "openai", "alpaca", "prompt_response"})
+_PRESETS = frozenset(
+    {
+        "auto",
+        "sharegpt",
+        "openai",
+        "alpaca",
+        "prompt_response",
+        "chatgpt_export",
+        "claude_export",
+    }
+)
 
 
 def _clean(s: Any) -> str:
@@ -67,7 +77,16 @@ def normalize_preset(preset: Optional[str]) -> str:
     aliases = {
         "share_gpt": "sharegpt",
         "vicuna": "sharegpt",
-        "chatgpt": "openai",
+        # WHY chatgpt → mapping tree (not openai messages): data-export ZIP uses mapping.
+        "chatgpt": "chatgpt_export",
+        "chatgpt_export": "chatgpt_export",
+        "mapping": "chatgpt_export",
+        "conversations_json": "chatgpt_export",
+        # Claude.ai privacy export uses chat_messages[].sender (human|assistant).
+        "claude": "claude_export",
+        "claude_export": "claude_export",
+        "anthropic": "claude_export",
+        "chat_messages": "claude_export",
         "chat": "openai",
         "messages": "openai",
         "sft": "prompt_response",
@@ -77,7 +96,7 @@ def normalize_preset(preset: Optional[str]) -> str:
     if p not in _PRESETS:
         raise ValueError(
             f"unknown preset {preset!r} "
-            "(want auto|sharegpt|openai|alpaca|prompt_response)"
+            "(want auto|sharegpt|openai|alpaca|prompt_response|chatgpt_export|claude_export)"
         )
     return p
 
@@ -143,36 +162,240 @@ def _pair_from_alpaca(obj: Dict[str, Any]) -> Tuple[str, str]:
     return prompt, out
 
 
-def pair_from_obj(obj: Dict[str, Any], *, preset: str = "auto") -> Tuple[str, str]:
-    """Extract (prompt, response) from one JSON object using a chat-export preset."""
+def _chatgpt_parts_text(content: Any) -> str:
+    """Join text parts from ChatGPT message content (skip image/tool blobs)."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return _clean(content)
+    if not isinstance(content, dict):
+        return _clean(content)
+    parts = content.get("parts")
+    if isinstance(parts, list):
+        texts: List[str] = []
+        for p in parts:
+            if isinstance(p, str) and p.strip():
+                texts.append(p.strip())
+            elif isinstance(p, dict):
+                t = p.get("text") or p.get("content")
+                if isinstance(t, str) and t.strip():
+                    texts.append(t.strip())
+        return "\n".join(texts)
+    return _clean(content.get("text") or content.get("result"))
+
+
+def _linear_messages_from_chatgpt_mapping(obj: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Walk ChatGPT export ``mapping`` from ``current_node`` → root → forward.
+
+    WHY current_node: edits/regenerates create branches; the tip marks the active path.
+    """
+    mapping = obj.get("mapping")
+    if not isinstance(mapping, dict) or not mapping:
+        return []
+    start = obj.get("current_node")
+    if not (isinstance(start, str) and start in mapping):
+        start = next(
+            (
+                k
+                for k, v in mapping.items()
+                if isinstance(v, dict) and not v.get("parent")
+            ),
+            None,
+        )
+    if not start:
+        return []
+    chain: List[Dict[str, Any]] = []
+    seen: set = set()
+    node_id: Any = start
+    while isinstance(node_id, str) and node_id in mapping and node_id not in seen:
+        seen.add(node_id)
+        node = mapping[node_id]
+        if not isinstance(node, dict):
+            break
+        chain.append(node)
+        node_id = node.get("parent")
+    chain.reverse()
+    out: List[Dict[str, str]] = []
+    for node in chain:
+        msg = node.get("message")
+        if not isinstance(msg, dict):
+            continue
+        author = msg.get("author") if isinstance(msg.get("author"), dict) else {}
+        role = _clean(author.get("role")).lower()
+        text = _chatgpt_parts_text(msg.get("content"))
+        if not text:
+            continue
+        if role in ("user", "assistant", "system"):
+            out.append({"role": role, "content": text})
+    return out
+
+
+def _pairs_from_turn_messages(messages: List[Dict[str, str]]) -> List[Tuple[str, str]]:
+    """Emit every consecutive user→assistant turn as its own SFT row."""
+    pairs: List[Tuple[str, str]] = []
+    user = ""
+    for m in messages:
+        role = m.get("role", "")
+        content = m.get("content", "")
+        if role == "user" and content:
+            user = content
+        elif role == "assistant" and content and user:
+            pairs.append((user, content))
+            user = ""
+    return pairs
+
+
+def _claude_message_text(msg: Dict[str, Any]) -> str:
+    """Claude.ai export: ``text`` string or Anthropic ``content`` parts."""
+    text = msg.get("text")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    content = msg.get("content")
+    if isinstance(content, str):
+        return _clean(content)
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, str) and p.strip():
+                parts.append(p.strip())
+            elif isinstance(p, dict):
+                t = p.get("text") or p.get("content")
+                if isinstance(t, str) and t.strip():
+                    parts.append(t.strip())
+        return "\n".join(parts)
+    return ""
+
+
+def _linear_messages_from_claude_export(obj: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Claude.ai privacy export: ``chat_messages`` with ``sender`` human|assistant."""
+    raw = obj.get("chat_messages") or obj.get("chatMessages")
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, str]] = []
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
+        sender = _clean(m.get("sender") or m.get("role")).lower()
+        text = _claude_message_text(m)
+        if not text:
+            continue
+        if sender in ("human", "user"):
+            out.append({"role": "user", "content": text})
+        elif sender in ("assistant", "bot", "claude", "model"):
+            out.append({"role": "assistant", "content": text})
+        # system / tool: skip for SFT pairs
+    return out
+
+
+def _messages_list_to_role_dicts(messages: Any) -> List[Dict[str, str]]:
+    if not isinstance(messages, list):
+        return []
+    msgs: List[Dict[str, str]] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = _clean(m.get("role")).lower()
+        content = m.get("content")
+        if isinstance(content, list):
+            parts = [
+                _clean(p.get("text"))
+                for p in content
+                if isinstance(p, dict) and p.get("type") in (None, "text")
+            ]
+            content = "\n".join(x for x in parts if x)
+        content = _clean(content)
+        if role in ("user", "assistant") and content:
+            msgs.append({"role": role, "content": content})
+    return msgs
+
+
+def _pairs_from_sharegpt_turns(obj: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """All human→gpt turns (not only the last)."""
+    conv = obj.get("conversations") or obj.get("conversation")
+    if not isinstance(conv, list):
+        return []
+    msgs: List[Dict[str, str]] = []
+    for turn in conv:
+        if not isinstance(turn, dict):
+            continue
+        frm = _clean(turn.get("from") or turn.get("role")).lower()
+        val = _clean(turn.get("value") or turn.get("content") or turn.get("text"))
+        if not val:
+            continue
+        if frm in ("human", "user", "man"):
+            msgs.append({"role": "user", "content": val})
+        elif frm in ("gpt", "assistant", "bot", "chatgpt", "model"):
+            msgs.append({"role": "assistant", "content": val})
+    return _pairs_from_turn_messages(msgs)
+
+
+def pairs_from_obj(obj: Dict[str, Any], *, preset: str = "auto") -> List[Tuple[str, str]]:
+    """Extract zero or more (prompt, response) pairs from one JSON object."""
     preset = normalize_preset(preset)
+    if preset == "chatgpt_export":
+        return _pairs_from_turn_messages(_linear_messages_from_chatgpt_mapping(obj))
+    if preset == "claude_export":
+        return _pairs_from_turn_messages(_linear_messages_from_claude_export(obj))
     if preset == "sharegpt":
-        return _pair_from_sharegpt(obj)
+        pairs = _pairs_from_sharegpt_turns(obj)
+        if pairs:
+            return pairs
+        p, r = _pair_from_sharegpt(obj)
+        return [(p, r)] if p and r else []
     if preset == "openai":
-        return _pair_from_messages(obj.get("messages"))
+        pairs = _pairs_from_turn_messages(_messages_list_to_role_dicts(obj.get("messages")))
+        if pairs:
+            return pairs
+        p, r = _pair_from_messages(obj.get("messages"))
+        return [(p, r)] if p and r else []
     if preset == "alpaca":
-        return _pair_from_alpaca(obj)
+        p, r = _pair_from_alpaca(obj)
+        return [(p, r)] if p and r else []
     if preset == "prompt_response":
         p = obj.get("prompt") or obj.get("question") or obj.get("input")
         r = obj.get("response") or obj.get("answer") or obj.get("output")
-        return _clean(p), _clean(r)
+        p, r = _clean(p), _clean(r)
+        return [(p, r)] if p and r else []
 
-    # auto: try shapes in order of specificity
+    # auto: ChatGPT mapping → Claude chat_messages → ShareGPT → OpenAI messages → Alpaca.
+    if isinstance(obj.get("mapping"), dict) and obj.get("mapping"):
+        pairs = _pairs_from_turn_messages(_linear_messages_from_chatgpt_mapping(obj))
+        if pairs:
+            return pairs
+    if isinstance(obj.get("chat_messages") or obj.get("chatMessages"), list):
+        pairs = _pairs_from_turn_messages(_linear_messages_from_claude_export(obj))
+        if pairs:
+            return pairs
     if isinstance(obj.get("conversations") or obj.get("conversation"), list):
+        pairs = _pairs_from_sharegpt_turns(obj)
+        if pairs:
+            return pairs
         p, r = _pair_from_sharegpt(obj)
         if p and r:
-            return p, r
+            return [(p, r)]
     if isinstance(obj.get("messages"), list):
+        pairs = _pairs_from_turn_messages(_messages_list_to_role_dicts(obj["messages"]))
+        if pairs:
+            return pairs
         p, r = _pair_from_messages(obj.get("messages"))
         if p and r:
-            return p, r
+            return [(p, r)]
     if obj.get("instruction") is not None or obj.get("instruct") is not None:
         p, r = _pair_from_alpaca(obj)
         if p and r:
-            return p, r
+            return [(p, r)]
     p = obj.get("prompt") or obj.get("question") or obj.get("input")
     r = obj.get("response") or obj.get("answer") or obj.get("output")
-    return _clean(p), _clean(r)
+    p, r = _clean(p), _clean(r)
+    return [(p, r)] if p and r else []
+
+
+def pair_from_obj(obj: Dict[str, Any], *, preset: str = "auto") -> Tuple[str, str]:
+    """Extract the last (prompt, response) pair (compat for single-pair callers)."""
+    pairs = pairs_from_obj(obj, preset=preset)
+    if not pairs:
+        return "", ""
+    return pairs[-1]
 
 
 def objects_to_rows(objs: Iterable[Any], *, preset: str = "auto") -> List[Row]:
@@ -180,8 +403,8 @@ def objects_to_rows(objs: Iterable[Any], *, preset: str = "auto") -> List[Row]:
     for obj in objs:
         if not isinstance(obj, dict):
             continue
-        p, r = pair_from_obj(obj, preset=preset)
-        rows.append({"prompt": p, "response": r})
+        for p, r in pairs_from_obj(obj, preset=preset):
+            rows.append({"prompt": p, "response": r})
     return rows_to_training_data(rows)
 
 
@@ -558,7 +781,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument(
         "--preset",
         default="auto",
-        help="JSON/JSONL chat-export: auto|sharegpt|openai|alpaca|prompt_response",
+        help="JSON/JSONL: auto|sharegpt|openai|alpaca|prompt_response|chatgpt_export|claude_export",
     )
     p.add_argument("--prompt-col", default="prompt")
     p.add_argument("--response-col", default="response")

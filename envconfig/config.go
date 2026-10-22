@@ -1293,6 +1293,25 @@ func TrainingQueueOnBusy() bool {
 	return v == "1" || strings.EqualFold(v, "true")
 }
 
+// TrainingDeferPausesGgml pauses new ggml model loads while deferred training jobs wait.
+//
+// WHY: with idle-wait + defer, continuous chat can keep inference "busy" forever so
+// defer-* never promotes. Holding new ggml loads (not unloading active chats) gives
+// the defer drain a chance without a hard kill of in-flight generate.
+//
+// Default follows TrainingQueueOnBusy (operators who asked for defer want progress).
+// Override: ZEROLLAMA_TRAINING_DEFER_PAUSES_GGML=0|1.
+func TrainingDeferPausesGgml() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_TRAINING_DEFER_PAUSES_GGML"))
+	if v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	if v == "1" || strings.EqualFold(v, "true") {
+		return true
+	}
+	return TrainingQueueOnBusy()
+}
+
 // TrainingQueuePollInterval returns how often the deferred training queue is polled.
 func TrainingQueuePollInterval() time.Duration {
 	raw := strings.TrimSpace(Var("ZEROLLAMA_TRAINING_QUEUE_POLL_SECS"))

@@ -25,6 +25,10 @@ on:
       - 'LLAMA_CPP_COMMIT'
       - 'x/trainingworker/**'
       - 'x/runtimeworker/**'
+      - 'x/trainprio/**'
+      - 'training*.py'
+      - 'tests/test_training*.py'
+      - 'requirements-training.txt'
       - '.github/workflows/zerollama-regression.yaml'
   push:
     branches:
@@ -51,6 +55,10 @@ on:
       - 'LLAMA_CPP_COMMIT'
       - 'x/trainingworker/**'
       - 'x/runtimeworker/**'
+      - 'x/trainprio/**'
+      - 'training*.py'
+      - 'tests/test_training*.py'
+      - 'requirements-training.txt'
       - '.github/workflows/zerollama-regression.yaml'
 
 concurrency:
@@ -72,7 +80,7 @@ jobs:
         env:
           CGO_ENABLED: '1'
           OLLAMA_NO_CLOUD: 'true'
-        run: go test -count=1 ./server/... ./envconfig/... ./x/trainingworker/... ./x/runtimeworker/...
+        run: go test -count=1 ./server/... ./envconfig/... ./x/trainingworker/... ./x/runtimeworker/... ./x/trainprio/...
 
       - name: Phase 16 edge compile marker smoke
         env:
@@ -92,11 +100,18 @@ jobs:
       - name: DI3 accept_by_pos host unit (no GPU)
         run: ./scripts/phase/di3_accept_by_pos_unit.sh
 
-      - name: T10 GRPO + T11 recipes host units (no GPU)
+      - name: DeepGEMM borrowings host unit (no GPU)
+        run: ./scripts/phase/deepgemm_borrowings_unit.sh
+
+      - name: T9 Trainer unit + T10 GRPO + T11 recipes host units (no GPU)
         run: |
+          ./scripts/training/t9_qlora_ckpt_smoke.sh
           ./scripts/training/t10_grpo_smoke.sh
           ./scripts/training/t10b_grpo_ab_smoke.sh
           ./scripts/training/t11_recipes_smoke.sh
+
+      - name: T6 contention host unit (defer pauses ggml)
+        run: ./scripts/e2e/e2e_t6_contention_live.sh
 
       - name: Phase 17 L2 pin status report
         env:

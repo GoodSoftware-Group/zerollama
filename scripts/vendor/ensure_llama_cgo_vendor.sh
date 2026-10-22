@@ -44,22 +44,38 @@ ensure_llama_cgo_vendor() {
     return 0
   fi
 
-  local src="" d pin
+  local src="" d pin dest_real
   pin="$(tr -d '[:space:]' <"${ZEROLLAMA_REPO}/LLAMA_CPP_COMMIT" 2>/dev/null || true)"
+  dest_real="$(cd "${dest}" 2>/dev/null && pwd -P || echo "${dest}")"
+  # Prefer a *complete* vendor tree (incl. hash/). Skip dest itself when
+  # LLAMA_CPP_ROOT points at the in-tree llama.cpp (common on CT builds).
+  _cgo_vendor_complete() {
+    [[ -f "$1/nlohmann/json.hpp" && -f "$1/cpp-httplib/httplib.h" && -f "$1/hash/sha256/sha256.c" ]]
+  }
   for d in \
     "${LLAMA_CPP_ROOT:-${ZEROLLAMA_REPO}/../llama.cpp}/vendor" \
+    "${ZEROLLAMA_REPO}/../llama.cpp/vendor" \
     "${ZEROLLAMA_REPO}/vendor/llama-cpp-${pin}/vendor" \
     "${ZEROLLAMA_REPO}/vendor/llama-cpp-b11351/vendor" \
+    "${ZEROLLAMA_REPO}/vendor/llama-cpp-b10615/vendor" \
     "${ZEROLLAMA_REPO}/vendor/llama-cpp-b10488/vendor" \
     "${ZEROLLAMA_REPO}"/vendor/llama-cpp-*/vendor
   do
-    if [[ -f "${d}/nlohmann/json.hpp" ]]; then
+    [[ -d "${d}" ]] || continue
+    local d_real
+    d_real="$(cd "${d}" 2>/dev/null && pwd -P || echo "${d}")"
+    [[ "${d_real}" == "${dest_real}" ]] && continue
+    if _cgo_vendor_complete "${d}"; then
       src="${d}"
       break
     fi
+    # Incomplete but usable fallback if we never find hash.
+    if [[ -z "${src}" && -f "${d}/nlohmann/json.hpp" ]]; then
+      src="${d}"
+    fi
   done
 
-  if [[ -z "${src}" && "${MAC_SETUP_LLAMA_CLONE:-1}" == "1" ]]; then
+  if { [[ -z "${src}" ]] || ! _cgo_vendor_complete "${src}"; } && [[ "${MAC_SETUP_LLAMA_CLONE:-1}" == "1" ]]; then
     # Headers-only: shallow ggml-org pin into a cache under the repo (not full elizaOS).
     local cache="${ZEROLLAMA_REPO}/.cache/llama-cpp-vendor-pin"
     local ref="${pin:-631109b34da437a3c4a5ebd75091d677671392e3}"
@@ -77,7 +93,9 @@ ensure_llama_cgo_vendor() {
     git -C "${cache}" checkout --force "${ref}" 2>/dev/null \
       || git -C "${cache}" checkout --force FETCH_HEAD
     git -C "${cache}" sparse-checkout set vendor 2>/dev/null || true
-    if [[ -f "${cache}/vendor/nlohmann/json.hpp" ]]; then
+    if _cgo_vendor_complete "${cache}/vendor"; then
+      src="${cache}/vendor"
+    elif [[ -z "${src}" && -f "${cache}/vendor/nlohmann/json.hpp" ]]; then
       src="${cache}/vendor"
     fi
   fi
@@ -99,6 +117,10 @@ ensure_llama_cgo_vendor() {
   done
   if [[ ! -f "${dest}/nlohmann/json.hpp" || ! -f "${dest}/cpp-httplib/httplib.h" ]]; then
     echo "error: restore incomplete under ${dest}" >&2
+    return 1
+  fi
+  if [[ ! -f "${dest}/hash/sha256/sha256.c" ]]; then
+    echo "error: restore missing vendor/hash (mtmd CGO). Source was ${src}" >&2
     return 1
   fi
   echo ">>> CGO llama vendor headers ready" >&2

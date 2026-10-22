@@ -1157,12 +1157,12 @@ type ExtractRequest struct {
 	Labels    []string `json:"labels"`
 	Threshold *float64 `json:"threshold,omitempty"`
 	// Engine knobs (honored on /v1/gliner; stripped on /v1/extract proxy):
-	FlatNer    *bool   `json:"flat_ner,omitempty"`
-	MultiLabel *bool   `json:"multi_label,omitempty"`
-	MaxWidth   *int    `json:"max_width,omitempty"`
-	MaxLength  *int    `json:"max_length,omitempty"`
-	ModelType  string  `json:"model_type,omitempty"` // span|token
-	DeviceID   *int    `json:"device_id,omitempty"`
+	FlatNer    *bool  `json:"flat_ner,omitempty"`
+	MultiLabel *bool  `json:"multi_label,omitempty"`
+	MaxWidth   *int   `json:"max_width,omitempty"`
+	MaxLength  *int   `json:"max_length,omitempty"`
+	ModelType  string `json:"model_type,omitempty"` // span|token
+	DeviceID   *int   `json:"device_id,omitempty"`
 }
 
 // ExtractEntity is one span from GLiNER (or another extract backend).
@@ -1558,16 +1558,21 @@ type RadixMirrorStatus struct {
 
 // TrainingQueuePolicy summarizes T6 training submit gates on GET /api/status.
 type TrainingQueuePolicy struct {
-	WaitInferenceIdle          bool   `json:"wait_inference_idle"`
-	WaitGgmlLoaded             bool   `json:"wait_ggml_loaded"`
-	WaitFailClosed             bool   `json:"wait_fail_closed"`
-	QueueOnBusy                bool   `json:"queue_on_busy"`
-	AllowedWindow              string `json:"allowed_window,omitempty"`
-	AllowedWindowEnabled       bool   `json:"allowed_window_enabled"`
-	AllowedWindowMisconfigured bool   `json:"allowed_window_misconfigured,omitempty"`
-	CrossQueueFifo             bool   `json:"cross_queue_fifo"`
-	DeferWaiting               int    `json:"defer_waiting,omitempty"`
-	DeferTracked               int    `json:"defer_tracked,omitempty"`
+	WaitInferenceIdle            bool   `json:"wait_inference_idle"`
+	WaitGgmlLoaded               bool   `json:"wait_ggml_loaded"`
+	WaitFailClosed               bool   `json:"wait_fail_closed"`
+	QueueOnBusy                  bool   `json:"queue_on_busy"`
+	DeferPausesGgml              bool   `json:"defer_pauses_ggml"`
+	BlockInferenceDuringTraining bool   `json:"block_inference_during_training"`
+	AllowedWindow                string `json:"allowed_window,omitempty"`
+	AllowedWindowEnabled         bool   `json:"allowed_window_enabled"`
+	AllowedWindowMisconfigured   bool   `json:"allowed_window_misconfigured,omitempty"`
+	CrossQueueFifo               bool   `json:"cross_queue_fifo"`
+	DeferWaiting                 int    `json:"defer_waiting,omitempty"`
+	DeferTracked                 int    `json:"defer_tracked,omitempty"`
+	// Live (best-effort): training currently occupies GPU / ggml loads paused.
+	TrainingGPUBusy bool `json:"training_gpu_busy,omitempty"`
+	GgmlLoadsPaused bool `json:"ggml_loads_paused,omitempty"`
 }
 
 // TrainingStatus is the training-side snapshot on GET /api/status.

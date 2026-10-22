@@ -30,8 +30,21 @@ func (s *Server) trainingPausesGgml(ctx context.Context) bool {
 	return s.trainingOccupiesGPU(ctx)
 }
 
+// trainingDeferPausesGgml reports whether waiting defer-* jobs should hold new ggml loads.
+//
+// WHY (T6c): idle-wait + continuous chat can starve promotion forever. Pause *new*
+// loads only — in-flight generate keeps running until natural idle.
+func (s *Server) trainingDeferPausesGgml() bool {
+	if s == nil || !envconfig.TrainingDeferPausesGgml() || s.trainingDefer == nil {
+		return false
+	}
+	st := s.trainingDefer.coordinationStats()
+	n, _ := st["defer_waiting"].(int)
+	return n > 0
+}
+
 func (s *Server) inferencePausesGgml(ctx context.Context, h runtimeHealthSnapshot) bool {
-	return s.trainingPausesGgml(ctx) || runtimeBacklogPausesGgmlFrom(h)
+	return s.trainingPausesGgml(ctx) || s.trainingDeferPausesGgml() || runtimeBacklogPausesGgmlFrom(h)
 }
 
 // updateSchedInferencePauses pauses ggml scheduling when training or runtime backlog requires it.

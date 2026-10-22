@@ -173,9 +173,149 @@ class TestTrainingRecipes(unittest.TestCase):
 
     def test_normalize_preset_aliases(self):
         self.assertEqual(normalize_preset("vicuna"), "sharegpt")
-        self.assertEqual(normalize_preset("chatgpt"), "openai")
+        self.assertEqual(normalize_preset("chatgpt"), "chatgpt_export")
+        self.assertEqual(normalize_preset("mapping"), "chatgpt_export")
+        self.assertEqual(normalize_preset("claude"), "claude_export")
+        self.assertEqual(normalize_preset("anthropic"), "claude_export")
+        self.assertEqual(normalize_preset("chat_messages"), "claude_export")
         with self.assertRaises(ValueError):
             normalize_preset("studio")
+
+    def test_claude_export_multi_turn(self):
+        from training_recipes import pairs_from_obj
+
+        conv = {
+            "uuid": "c1",
+            "name": "demo",
+            "chat_messages": [
+                {"sender": "human", "text": "hi"},
+                {"sender": "assistant", "text": "hello"},
+                {"sender": "human", "text": "bye"},
+                {"sender": "assistant", "text": "cya"},
+            ],
+        }
+        self.assertEqual(
+            pairs_from_obj(conv, preset="claude_export"),
+            [("hi", "hello"), ("bye", "cya")],
+        )
+        self.assertEqual(pairs_from_obj(conv, preset="auto"), [("hi", "hello"), ("bye", "cya")])
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "conversations.json"
+            p.write_text(json.dumps([conv]), encoding="utf-8")
+            rows = ingest_json(p, preset="claude")
+            self.assertEqual(
+                rows,
+                [
+                    {"prompt": "hi", "response": "hello"},
+                    {"prompt": "bye", "response": "cya"},
+                ],
+            )
+
+    def test_openai_preset_multi_turn(self):
+        from training_recipes import pairs_from_obj
+
+        obj = {
+            "messages": [
+                {"role": "user", "content": "a"},
+                {"role": "assistant", "content": "1"},
+                {"role": "user", "content": "b"},
+                {"role": "assistant", "content": "2"},
+            ]
+        }
+        self.assertEqual(
+            pairs_from_obj(obj, preset="openai"),
+            [("a", "1"), ("b", "2")],
+        )
+
+    def test_chatgpt_mapping_export(self):
+        # Branched tree: root → user → asst_v1; also user → asst_v2 (current tip).
+        conv = {
+            "title": "demo",
+            "current_node": "n3",
+            "mapping": {
+                "root": {"id": "root", "parent": None, "children": ["n1"], "message": None},
+                "n1": {
+                    "id": "n1",
+                    "parent": "root",
+                    "children": ["n2", "n3"],
+                    "message": {
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["What is 2+2?"]},
+                    },
+                },
+                "n2": {
+                    "id": "n2",
+                    "parent": "n1",
+                    "children": [],
+                    "message": {
+                        "author": {"role": "assistant"},
+                        "content": {"content_type": "text", "parts": ["maybe 5"]},
+                    },
+                },
+                "n3": {
+                    "id": "n3",
+                    "parent": "n1",
+                    "children": [],
+                    "message": {
+                        "author": {"role": "assistant"},
+                        "content": {"content_type": "text", "parts": ["4"]},
+                    },
+                },
+            },
+        }
+        from training_recipes import pairs_from_obj
+
+        pairs = pairs_from_obj(conv, preset="chatgpt_export")
+        self.assertEqual(pairs, [("What is 2+2?", "4")])
+        # auto detects mapping
+        self.assertEqual(pairs_from_obj(conv, preset="auto"), [("What is 2+2?", "4")])
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "conversations.json"
+            p.write_text(json.dumps([conv]), encoding="utf-8")
+            rows = ingest_json(p, preset="auto")
+            self.assertEqual(rows, [{"prompt": "What is 2+2?", "response": "4"}])
+
+    def test_chatgpt_mapping_multi_turn(self):
+        from training_recipes import pairs_from_obj
+
+        conv = {
+            "current_node": "a2",
+            "mapping": {
+                "r": {"parent": None, "message": None},
+                "u1": {
+                    "parent": "r",
+                    "message": {
+                        "author": {"role": "user"},
+                        "content": {"parts": ["hi"]},
+                    },
+                },
+                "a1": {
+                    "parent": "u1",
+                    "message": {
+                        "author": {"role": "assistant"},
+                        "content": {"parts": ["hello"]},
+                    },
+                },
+                "u2": {
+                    "parent": "a1",
+                    "message": {
+                        "author": {"role": "user"},
+                        "content": {"parts": ["bye"]},
+                    },
+                },
+                "a2": {
+                    "parent": "u2",
+                    "message": {
+                        "author": {"role": "assistant"},
+                        "content": {"parts": ["cya"]},
+                    },
+                },
+            },
+        }
+        self.assertEqual(
+            pairs_from_obj(conv, preset="chatgpt"),
+            [("hi", "hello"), ("bye", "cya")],
+        )
 
     def test_main_stdin(self):
         import io

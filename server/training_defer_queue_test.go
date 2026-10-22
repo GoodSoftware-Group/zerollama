@@ -13,7 +13,7 @@ import (
 
 func TestDeferTombstoneSurvivesPromotion(t *testing.T) {
 	q := newTrainingDeferQueue(&Server{})
-	id, err := q.enqueue("train", []byte(`{}`))
+	id, err := q.enqueue("train", []byte(`{}`), TrainingPriorityNormal)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestDeferTombstoneSurvivesPromotion(t *testing.T) {
 func TestDeferMarkFailedKeepsRecord(t *testing.T) {
 	t.Setenv("ZEROLLAMA_TRAINING_QUEUE_RETRY_MAX", "0")
 	q := newTrainingDeferQueue(&Server{})
-	id, _ := q.enqueue("train", []byte(`{}`))
+	id, _ := q.enqueue("train", []byte(`{}`), TrainingPriorityNormal)
 	q.mu.Lock()
 	q.markFailedOrRetryLocked(id, "python blew up")
 	q.mu.Unlock()
@@ -67,7 +67,7 @@ func TestDeferMarkFailedKeepsRecord(t *testing.T) {
 
 func TestDeferCancelWaiting(t *testing.T) {
 	q := newTrainingDeferQueue(&Server{})
-	id, _ := q.enqueue("train", []byte(`{}`))
+	id, _ := q.enqueue("train", []byte(`{}`), TrainingPriorityNormal)
 	ok, err := q.cancel(id)
 	if err != nil || !ok {
 		t.Fatalf("cancel: ok=%v err=%v", ok, err)
@@ -84,7 +84,7 @@ func TestDeferCancelWaiting(t *testing.T) {
 
 func TestDeferCancelPromotedFails(t *testing.T) {
 	q := newTrainingDeferQueue(&Server{})
-	id, _ := q.enqueue("train", []byte(`{}`))
+	id, _ := q.enqueue("train", []byte(`{}`), TrainingPriorityNormal)
 	q.mu.Lock()
 	q.markPromotedLocked(id, "real")
 	q.mu.Unlock()
@@ -106,7 +106,7 @@ func TestShouldDeferRequiresIdleWait(t *testing.T) {
 func TestDeferTombstoneEviction(t *testing.T) {
 	t.Setenv("ZEROLLAMA_TRAINING_QUEUE_TOMBSTONE_SECS", "1")
 	q := newTrainingDeferQueue(&Server{})
-	id, _ := q.enqueue("train", []byte(`{}`))
+	id, _ := q.enqueue("train", []byte(`{}`), TrainingPriorityNormal)
 	q.mu.Lock()
 	q.markPromotedLocked(id, "job-real")
 	q.mu.Unlock()
@@ -125,7 +125,7 @@ func TestDeferPromotionRetry(t *testing.T) {
 	t.Setenv("ZEROLLAMA_TRAINING_QUEUE_RETRY_SECS", "60")
 
 	q := newTrainingDeferQueue(&Server{})
-	id, _ := q.enqueue("train", []byte(`{}`))
+	id, _ := q.enqueue("train", []byte(`{}`), TrainingPriorityNormal)
 	q.mu.Lock()
 	q.markFailedOrRetryLocked(id, "transient")
 	q.mu.Unlock()
@@ -142,8 +142,8 @@ func TestDeferPromotionRetry(t *testing.T) {
 func TestDeferListWaitingOnlyByDefault(t *testing.T) {
 	t.Setenv("ZEROLLAMA_TRAINING_QUEUE_LIST_ALL", "0")
 	q := newTrainingDeferQueue(&Server{})
-	waitID, _ := q.enqueue("train", []byte(`{"a":1}`))
-	doneID, _ := q.enqueue("train", []byte(`{"b":2}`))
+	waitID, _ := q.enqueue("train", []byte(`{"a":1}`), TrainingPriorityNormal)
+	doneID, _ := q.enqueue("train", []byte(`{"b":2}`), TrainingPriorityNormal)
 	q.mu.Lock()
 	q.markPromotedLocked(doneID, "real-1")
 	q.mu.Unlock()
@@ -156,7 +156,7 @@ func TestDeferListWaitingOnlyByDefault(t *testing.T) {
 
 func TestMergeDeferredJobsListJSON(t *testing.T) {
 	s := &Server{trainingDefer: newTrainingDeferQueue(&Server{})}
-	_, _ = s.trainingDefer.enqueue("train", []byte(`{}`))
+	_, _ = s.trainingDefer.enqueue("train", []byte(`{}`), TrainingPriorityNormal)
 	merged, err := s.mergeDeferredJobsListJSON([]byte(`{"jobs":[]}`))
 	if err != nil {
 		t.Fatal(err)

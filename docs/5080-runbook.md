@@ -6,6 +6,8 @@
 
 **Continue here (Aug 2026):** L1 + Phase 17 `auto` + embed attach shipped on CT 1564. **Spec A/B (eliza-1-2b @ 8k, L1 q8_0/−b 1024/−np 2):** baseline **~188–189 tok/s**; `ngram-simple` wires / **0 accepts**; DFlash/MTP need matching target (Qwen3.5-2B) or newer pin. **Radix agent lane (lab `:18081`):** `ZEROLLAMA_INFERENCE_PROFILE=agent` → `l3_agent_subprocess.yaml` (not Phase 17 Go alone — Radix is Python runtime L3). Live PASS beside prod: OuteTTS 1B @ 4k, donor **5.36s** → target **0.52s**, `radix_seed` **64**, `kv_unified` metadata (`/tmp/l3-radix-prefix-smoke-live.json`). Do **not** flip daily prod to `agent` (multi-slot / kv_unified tradeoffs); keep `auto`→throughput + `single_gpu.yaml`. Lab LD must include `/root/nvidia-host` (fixed in `linux_runtime_export_llama_ld_path`) or ctypes/`llama-server` abort `munmap_chunk`. Next: Phase 15 polish / RotorQuant no-merge.
 
+**Training (Oct 2026):** T10b GRPO + T11 recipes are in-tree. After `TRAINING_UV_SYNC=1` (pulls pinned `trl` + `requests`), host units always; optional GPU A/B on a **free** card — see [Training embed + venvs](#training-embed--venvs) and [Tier 5](#tier-5--optional--periodic). **WHY not default-on GRPO in prod:** dry-run unless `grpo_run=true`; keep inference-first / T6 idle-wait. **T6a–c:** unknown `priority`/`slo_class` → **400**; submit/defer echo `priority`; with `QUEUE_ON_BUSY=1`, waiting `defer-*` pauses **new** ggml loads (override `ZEROLLAMA_TRAINING_DEFER_PAUSES_GGML=0`) — [t6-unified-queue.md](./t6-unified-queue.md).
+
 **This is the only doc you need on CT 1564.** Build, serve, env, every gate, pass criteria, artifacts, and troubleshooting live here. Do not switch to [gpu-5080-operator-guide.md](./gpu-5080-operator-guide.md) for daily ops — it is a legacy appendix. Mac counterpart: [apple-silicon-metal.md](./apple-silicon-metal.md) + `./scripts/gpu/metal_signoff.sh`. Fork labs: [llama-fork-watchlist.md](./llama-fork-watchlist.md).
 
 ---
@@ -20,7 +22,7 @@
 6. [Vendor llama-server (Radix)](#vendor-llama-server-radix--patch-0017)
 7. [Start serve (sign-off)](#start-serve-required-before-tier-1)
 8. [Production serve](#production-serve-binserve)
-9. [Training embed + venvs](#training-embed--venvs)
+9. [Training embed + venvs](#training-embed--venvs) (T9–T11 / GRPO / recipes)
 10. [Tier 0–5 gates](#tier-0--sanity-no-gpu)
 11. [`gpu_5080_session.sh` internals](#gpu_5080_sessionsh-internals)
 12. [Phase 13 VRAM / snapshot](#phase-13-vram--snapshot)
@@ -96,6 +98,8 @@ source ./scripts/gpu/5080_env.sh
 | Stop everything | `5080_stop_serve` |
 | Health | `curl -s http://127.0.0.1:8081/health \| jq .` |
 | Training status | `curl -s http://127.0.0.1:8080/api/train/status \| jq .` |
+| Training host units (no GPU) | `./scripts/training/t10_grpo_smoke.sh && ./scripts/training/t10b_grpo_ab_smoke.sh && ./scripts/training/t11_recipes_smoke.sh` |
+| GRPO lab A/B (free GPU) | `RUN_E2E_T10B=1 CUDA_VISIBLE_DEVICES=0 ./scripts/training/t10b_grpo_ab_smoke.sh` — prefer `T10B_MODEL=Qwen/Qwen2.5-0.5B-Instruct` when cached |
 | Single tier | `./scripts/gpu/5080_resignoff.sh --tier 2 --no-serve` (serve must already be healthy) |
 
 ---
@@ -288,7 +292,9 @@ source ./scripts/training/training_embed_build_env.sh 3.11
 CGO_ENABLED=1 go build -o zerollama .
 cp zerollama /usr/bin/zerollama
 
-TRAINING_UV_PYTHON_VER=3.11 ./scripts/training/training_uv_venv.sh --verify
+# Sync pulls peft/transformers + T10 pins (trl>=0.14,<1 + requests):
+TRAINING_UV_PYTHON_VER=3.11 TRAINING_UV_SYNC=1 ./scripts/training/training_uv_venv.sh --verify
+.venv-training/bin/python -c 'from trl import GRPOTrainer; print("trl ok")'
 ```
 
 **Cleanup after migration:** `rm -rf venv-training/ .venv-training-py310.bak` (~7 GiB each if duplicate torch stacks).
@@ -298,6 +304,48 @@ TRAINING_UV_PYTHON_VER=3.11 ./scripts/training/training_uv_venv.sh --verify
 ```bash
 curl -s http://127.0.0.1:8080/api/train/status | jq .
 ```
+
+### T10 / T10b — GRPO (stock path, not Unsloth)
+
+**Docs:** [t10-grpo.md](./t10-grpo.md) · [findings](./t10-grpo-findings.md) · [gpu-training.md](./gpu-training.md)
+
+| Step | Command | Notes |
+|------|---------|-------|
+| Host unit | `./scripts/training/t10_grpo_smoke.sh` | No GPU; dry-run + kind normalize |
+| Reward A/B dry-run | `./scripts/training/t10b_grpo_ab_smoke.sh` | Labels only |
+| Trainer A/B (lab) | `RUN_E2E_T10B=1 CUDA_VISIBLE_DEVICES=0 ./scripts/training/t10b_grpo_ab_smoke.sh` | **Free GPU only** — never compete with prod `:8080` inference |
+| Instruct model | `T10B_MODEL=Qwen/Qwen2.5-0.5B-Instruct RUN_E2E_T10B=1 CUDA_VISIBLE_DEVICES=0 ./scripts/training/t10b_grpo_ab_smoke.sh` | Default toy is tiny-gpt2 (needs GPT-2 LoRA targets); Qwen uses default LLaMA-style modules |
+| HTTP dry-run | `POST /api/train/jobs` with `"kind":"grpo"` + `reward_builtin` — omit `grpo_run` | Expect `trained=false` |
+| HTTP train | same + `"grpo_run": true`, short `max_steps` | Requires `trl`; lab `num_generations` defaults to **2** |
+
+**WHYs for 5080 operators:**
+
+- **`grpo_run` not bare `run`:** avoids accidental Trainer starts from unrelated payload fields.
+- **Sibling empty `mlx/`:** repo-root `mlx/` namespace makes transformers think MLX is installed → mid-step `No module named 'mlx.core'`. `training_grpo` shields this; do not `pip install mlx` on CUDA CT.
+- **Do not** set production-default GRPO; keep T6 idle-wait / defer when serving agents on the same GPU.
+
+**4090 lab sign-off (Oct 2026):** tiny-gpt2 `length`/`format_json` both `trained=true` — findings doc. **5080:** rerun with Qwen 0.5B when HF cache is warm; record wall times in findings if they differ materially.
+
+### T11 — lite recipes (ingest only)
+
+**Doc:** [t11-recipes.md](./t11-recipes.md)
+
+```bash
+# Host unit (CSV + ShareGPT + ChatGPT mapping + stdin):
+./scripts/training/t11_recipes_smoke.sh
+
+# Offline ingest (no GPU job):
+zerollama train recipe data.csv -o /tmp/sft.jsonl
+zerollama train recipe conversations.json --preset chatgpt_export -o /tmp/sft.jsonl
+
+# Optional HTTP ingest while serve is up (does NOT enqueue train):
+curl -sS http://127.0.0.1:8080/api/train/recipes \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"[{\"instruction\":\"Add\",\"input\":\"2+2\",\"output\":\"4\"}]",
+       "preset":"alpaca","model_name":"demo"}' | jq .
+```
+
+**WHY `/api/train/recipes` ≠ `/api/train/jobs`:** operators still choose T6 window / priority when they POST a real train job.
 
 ---
 
@@ -759,6 +807,11 @@ Uncomment `llama_backend: inprocess` in `runtime/configs/single_gpu.yaml` — `/
 | Goal | Command | Why |
 |------|---------|-----|
 | **Training ops** | `RUN_E2E_TRAINING_OPS=1` (serve needs `OLLAMA_TRAINING=true`) | Embedded training HTTP/TCP without blocking inference smokes |
+| **T10/T11 host units** | `./scripts/training/t10_grpo_smoke.sh && ./scripts/training/t10b_grpo_ab_smoke.sh && ./scripts/training/t11_recipes_smoke.sh` | GRPO validation + recipes (incl. ChatGPT `mapping`) — no GPU |
+| **T6 contention** | `./scripts/e2e/e2e_t6_contention_live.sh` | T6c/T6d defer→pause (HTTP path); opt `RUN_E2E_T6_LIVE=1` lab `:11435` |
+| **T9 QLoRA+ckpt** | `RUN_E2E_T9=1 CUDA_VISIBLE_DEVICES=1 ./scripts/training/t9_qlora_ckpt_smoke.sh` | Tiny QLoRA + packing masks (4090 lab PASS Oct 2026) |
+| **T10b GRPO Trainer A/B** | `RUN_E2E_T10B=1 CUDA_VISIBLE_DEVICES=0 ./scripts/training/t10b_grpo_ab_smoke.sh` | Free-GPU `grpo_run` length vs format_json; see [Training embed](#training-embed--venvs) |
+| **T10c Qwen GRPO** | `RUN_E2E_T10B=1 CUDA_VISIBLE_DEVICES=1 T10B_MODEL=Qwen/Qwen2.5-0.5B-Instruct ./scripts/training/t10b_grpo_ab_smoke.sh` | Instruct-class wire (4090 lab PASS Oct 2026); warm HF cache first |
 | **Phase 11 contention** | `./scripts/phase/phase11_5080_contention_smoke.sh` or `RUN_E2E_PHASE11_CONTENTION=1` | Concurrent normal + low generates; JSON `/tmp/phase11-5080-contention.json` — [phase11-runtime-admission.md](./phase11-runtime-admission.md) |
 | **Tools chat** | `RUN_E2E_TOOLS=1 ./scripts/gpu/gpu_smoke_all.sh` | Runtime `/api/chat` with tools — 501 means wrong route |
 | **VRAM clamp** | `RUN_E2E_VRAM_CLAMP=1` + `ZEROLLAMA_RUNTIME_VRAM_CLAMP_NUM_CTX=auto` on serve | Opt-in clamp policy — default off in YAML |
@@ -941,6 +994,11 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 | L1 concurrent **0 tok/s** / `llama-server exited early` | `LLAMA_CPP_LIB` sibling `.so` with vendor `llama-server` | Scripts call `l1_export_llama_binary_env` — vendor bin + matching `libllama.so`; `5080_stop_serve` before L1 |
 | L1 sidecar 502 + `go-coordination` spam | Embedded `zerollama serve` still on `:8081` | `5080_stop_serve` (SIGKILL + `:8082`) before `l1_cuda_full_gate.sh` |
 | `/health` hang with training + embed | Shared CPython GIL | `ZEROLLAMA_RUNTIME_SHARED_PYTHON=1`; see [shared-interpreter-health-hang.md](./bugs/shared-interpreter-health-hang.md) |
+| `trl` import OK but `GRPOTrainer` → `No module named 'requests'` | tip trl 0.29 pulls vllm_client | `TRAINING_UV_SYNC=1 ./scripts/training/training_uv_venv.sh --verify` (pins `requests` in `requirements-training.txt`) |
+| GRPO `generation_batch_size … num_generations` | tip default 8/8 vs lab `batch_size=1` | Payload/`training_grpo` lab defaults `num_generations=2` + aligned gen batch — upgrade binary/script |
+| GRPO mid-step `No module named 'mlx.core'` | Empty sibling `~/zerollama/mlx` namespace | Fixed in `training_grpo._shield_sibling_mlx_false_positive`; do not install Apple MLX on CUDA CT |
+| GRPO LoRA target modules not found (tiny-gpt2) | Default targets are LLaMA `q_proj`… | Pass `lora_target_modules: ["c_attn","c_proj"]` or use `T10B_MODEL=Qwen/Qwen2.5-0.5B-Instruct` |
+| ChatGPT export → wrong assistant text | Branched `mapping` / regenerate sibling | `--preset chatgpt_export` (or `auto`); walks `current_node` — [t11-recipes.md](./t11-recipes.md) |
 
 ---
 
@@ -977,6 +1035,9 @@ P17_NUM_PREDICT=32 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" P16_MODEL=llama3.2:3b ./
 | Phase 8 broker | `server/vram/broker.go` |
 | Vendor sync | `Makefile.sync` → `vendor/llama-cpp-<pin>` |
 | Patch doctor | `scripts/vendor/llama_patch_doctor.sh` |
+| T10 GRPO | `training_grpo.py`, `scripts/training/t10_grpo_smoke.sh`, `t10b_grpo_ab_smoke.sh` |
+| T11 recipes | `training_recipes.py`, `cmd/train.go`, `server/training_recipes_api.go`, `t11_recipes_smoke.sh` |
+| Training deps | `requirements-training.txt` (`trl`, `requests`, peft, …) |
 
 ---
 

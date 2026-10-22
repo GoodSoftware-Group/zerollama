@@ -118,4 +118,4 @@ RUN_E2E_T10B=1 CUDA_VISIBLE_DEVICES=1 ./scripts/training/t10b_grpo_ab_smoke.sh
 3. Honest dry-run (`trained=false`) vs `grpo_run=true` GPU path
 4. **T10b:** pinned `trl`; builtins + `reward_url` + `reward_hf`; unit coverage for URL hook + exact_match
 
-**Next:** optional Qwen 0.5B A/B on 5080; T11c presets/upload already shipped.
+**T10c (Oct 2026):** Qwen2.5-0.5B-Instruct A/B PASS on 4090 — see [findings](./t10-grpo-findings.md). Optional: re-run on 5080 production venv.

@@ -18,7 +18,7 @@ On the Mac lab host (`~/Sites/inference/zerollama`):
 | Gigatoken / BMTL techniques (do **not** vendor Rust) | `../bmtl` → [docs/faster-bpe-tokenize.md](./docs/faster-bpe-tokenize.md) + [findings](./docs/faster-bpe-tokenize-findings.md) (unicode/BPE pretok in `llama/patches/` through **0105** port of islands/SWAR; must reach **`llama/llama.cpp/`** via sync — note **0122–0126** filenames are **m4-prefill stubs**, not BPE) |
 | M4 Metal prefill kernels (do **not** vendor host engine) | `../m4-prefill-engine` → [docs/m4-prefill-borrowings.md](./docs/m4-prefill-borrowings.md) + [findings](./docs/m4-prefill-borrowings-findings.md) (durable: MTL FA fix; FA+q8_0 KV useful; native Q8 FA / fused SwiGLU regress on M4 Max; lab: `scripts/phase/m4_prefill_lab_serve.sh`) |
 | Vanilla Ollama diff | `../ollama-upstream` → [docs/upstream-ollama-diff.md](./docs/upstream-ollama-diff.md) |
-| DeepGEMM (optional; CUDA ideas only) | `../DeepGEMM` → [docs/deepgemm-borrowings.md](./docs/deepgemm-borrowings.md) — **do not** vendor; skip Ascend port |
+| DeepGEMM (optional; CUDA ideas only) | `../DeepGEMM` → [docs/deepgemm-borrowings.md](./docs/deepgemm-borrowings.md) · [findings](./docs/deepgemm-borrowings-findings.md) — **do not** vendor; skip Ascend / Mega MoE EP; host unit `./scripts/phase/deepgemm_borrowings_unit.sh` |
 | DeepInfer (optional; SM100 engine; ideas only) | `../DeepInfer` (astra: `/mnt/ssd2/src/DeepInfer`) → [docs/deepinfer-borrowings.md](./docs/deepinfer-borrowings.md) · ladder [docs/deepinfer-ladder.md](./docs/deepinfer-ladder.md) (**DI0–DI8**, ROADMAP **M29**) — **do not** vendor; skip FlashMLA/DeepEP wheels |
 
 ## Do not touch

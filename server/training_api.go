@@ -38,6 +38,8 @@ func (s *Server) trainHTTPSubmitJob(c *gin.Context) {
 		Kind        string          `json:"kind"`
 		Payload     json.RawMessage `json:"payload"`
 		Priority    string          `json:"priority"`
+		Slo         string          `json:"slo"`
+		SloClass    string          `json:"slo_class"`
 		QueueOnBusy *bool           `json:"queue_on_busy"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -49,12 +51,21 @@ func (s *Server) trainHTTPSubmitJob(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": kerr.Error()})
 		return
 	}
+	slo := req.SloClass
+	if strings.TrimSpace(slo) == "" {
+		slo = req.Slo
+	}
+	prio, perr := resolveTrainingSubmitPriority(req.Priority, slo)
+	if perr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": perr.Error()})
+		return
+	}
 	payload := req.Payload
 	if len(payload) == 0 || string(payload) == "null" {
 		payload = []byte("{}")
 	}
 	res, err := s.submitTrainingJob(c.Request.Context(), kind, payload, TrainingSubmitOptions{
-		Priority:    parseTrainingPriority(req.Priority),
+		Priority:    prio,
 		QueueOnBusy: req.QueueOnBusy,
 	})
 	if err != nil {
@@ -77,7 +88,7 @@ func (s *Server) trainHTTPSubmitJob(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
-	out := gin.H{"job_id": res.JobID}
+	out := gin.H{"job_id": res.JobID, "priority": res.Priority.String()}
 	if res.Queued {
 		out["queued"] = true
 		out["state"] = "waiting_for_inference_idle"

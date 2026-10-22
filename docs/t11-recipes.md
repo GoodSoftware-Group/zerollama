@@ -1,7 +1,7 @@
 # T11 / T11c — lite data recipes (ingest → `/api/train`)
 
 **ROADMAP:** [GPU training T11](./ROADMAP.md#phases-training-track)  
-**Status (Oct 2026):** **Partial** — CSV/TSV/JSONL/JSON/TXT stdlib ingest; PDF/DOCX optional; chat-export presets (ShareGPT / OpenAI / Alpaca); Python CLI + **`zerollama train recipe`**; optional **`POST /api/train/recipes`** upload helper (ingest only). **Not** Studio’s node editor.
+**Status (Oct 2026):** **Partial** — CSV/TSV/JSONL/JSON/TXT stdlib ingest; PDF/DOCX optional; chat-export presets (ShareGPT / OpenAI / Alpaca / ChatGPT `mapping` / **Claude `chat_messages`**); Python CLI + **`zerollama train recipe`**; optional **`POST /api/train/recipes`** upload helper (ingest only). **Not** Studio’s node editor.
 
 ## Why this exists
 
@@ -40,11 +40,17 @@
 
 | `--preset` / `preset` | Shape |
 |-----------------------|--------|
-| `auto` (default) | Detect ShareGPT → OpenAI messages → Alpaca → prompt/response |
-| `sharegpt` | `conversations: [{from: human\|gpt, value}]` (aliases: vicuna) |
-| `openai` | `messages: [{role, content}]` (aliases: chatgpt, chat) |
+| `auto` (default) | ChatGPT `mapping` → Claude `chat_messages` → ShareGPT → OpenAI messages → Alpaca → prompt/response |
+| `sharegpt` | `conversations: [{from: human\|gpt, value}]` (aliases: vicuna); **all** turns |
+| `openai` | `messages: [{role, content}]` (aliases: chat, messages); **all** turns |
+| `chatgpt_export` | Data-export `conversations.json` `mapping` + `current_node` (aliases: chatgpt, mapping) |
+| `claude_export` | Claude.ai privacy export `chat_messages[].sender` (aliases: claude, anthropic, chat_messages) |
 | `alpaca` | `instruction` + optional `input` → prompt; `output` → response |
 | `prompt_response` | Force `prompt`/`response` (or question/answer) only |
+
+**WHY `current_node`:** regenerates/edits branch the tree; we walk parent→root then forward on the active tip so stale assistant siblings are dropped. Multi-turn conversations emit **one SFT row per user→assistant pair**.
+
+**WHY Claude `sender`:** Claude.ai exports use `human`/`assistant` on `chat_messages`, not OpenAI `role` — auto-detect that key so operators do not rename fields.
 
 **Why PDF “summarize” pairs:** a PDF alone has no gold assistant text. Chunk→“summarize this excerpt” / response=chunk is a honest self-distill default; operators replace rows offline when they have real targets.
 
@@ -56,6 +62,8 @@ python training_recipes.py data.csv -o /tmp/sft.jsonl
 zerollama train recipe data.csv -o /tmp/sft.jsonl
 
 zerollama train recipe export.json --preset sharegpt -o /tmp/sft.jsonl
+zerollama train recipe conversations.json --preset chatgpt_export -o /tmp/sft.jsonl
+zerollama train recipe claude_conversations.json --preset claude_export -o /tmp/sft.jsonl
 zerollama train recipe /tmp/sft.jsonl -o /tmp/train_payload.json \
   --model-name Qwen/Qwen2.5-0.5B-Instruct
 
@@ -74,10 +82,10 @@ curl -sS http://127.0.0.1:11435/api/train/recipes \
 - Visual node editor / Studio UI
 - Guaranteeing PDF OCR quality
 - Auto-submit to `/api/train/jobs` (operators POST the JSON)
-- Full ChatGPT.com `mapping` tree exports (use OpenAI `messages` / ShareGPT dumps)
+- Guaranteeing multimodal / tool `parts` (text parts only)
 
-## Exit (T11c)
+## Exit (T11c / T11d / T11e)
 
-1. Presets ShareGPT / OpenAI / Alpaca covered by unit tests
+1. Presets ShareGPT / OpenAI / Alpaca / ChatGPT `mapping` / Claude `chat_messages` covered by unit tests
 2. `POST /api/train/recipes` returns `{n_rows, training_data}` without enqueue
 3. Smoke: `./scripts/training/t11_recipes_smoke.sh`

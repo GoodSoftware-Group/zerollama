@@ -43,16 +43,19 @@ type InferenceSubmitGuard func(ctx context.Context) error
 
 // SubmitRequest is passed to SubmitHandler (HTTP/TCP training submit).
 type SubmitRequest struct {
-	Kind        string
-	Payload     json.RawMessage
-	Priority    string
+	Kind     string
+	Payload  json.RawMessage
+	Priority string
+	// SloClass is an optional synonym for Priority (T6); empty = omit.
+	SloClass    string
 	QueueOnBusy *bool
 }
 
 // SubmitResponse is returned from SubmitHandler.
 type SubmitResponse struct {
-	JobID  string
-	Queued bool
+	JobID    string
+	Queued   bool
+	Priority string // resolved tier label (normal|low|high); empty if unset by handler
 }
 
 // SubmitHandler implements server-side idle-wait and defer-queue policy.
@@ -574,18 +577,26 @@ func (c *Client) handlePublicRequest(ctx context.Context, req map[string]any) ma
 		}
 		payload, _ := json.Marshal(data)
 		priority, _ := req["priority"].(string)
+		sloClass, _ := req["slo_class"].(string)
+		if sloClass == "" {
+			sloClass, _ = req["slo"].(string)
+		}
 		var queueOnBusy *bool
 		if v, ok := req["queue_on_busy"].(bool); ok {
 			queueOnBusy = &v
 		}
 		sub, err := c.trainSubmitJobWithOpts(ctx, jobCmd, payload, SubmitRequest{
 			Priority:    priority,
+			SloClass:    sloClass,
 			QueueOnBusy: queueOnBusy,
 		})
 		if err != nil {
 			return map[string]any{"status": "error", "error": err.Error()}
 		}
 		out := map[string]any{"status": "ok", "job_id": sub.JobID, "message": "queued"}
+		if sub.Priority != "" {
+			out["priority"] = sub.Priority
+		}
 		if sub.Queued {
 			out["defer"] = true
 		}

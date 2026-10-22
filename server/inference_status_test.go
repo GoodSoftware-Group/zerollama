@@ -302,7 +302,7 @@ func TestInferenceStatusTrainingQueuePolicy(t *testing.T) {
 	t.Setenv("ZEROLLAMA_TRAINING_ALLOWED_WINDOW", "22:00-06:00")
 
 	s := &Server{trainingDefer: newTrainingDeferQueue(&Server{})}
-	_, _ = s.trainingDefer.enqueue("train", []byte(`{}`))
+	_, _ = s.trainingDefer.enqueue("train", []byte(`{}`), TrainingPriorityNormal)
 
 	st := s.inferenceStatus(context.Background())
 	if st.Training == nil {
@@ -311,6 +311,12 @@ func TestInferenceStatusTrainingQueuePolicy(t *testing.T) {
 	p := st.Training.QueuePolicy
 	if !p.WaitInferenceIdle || !p.QueueOnBusy || !p.CrossQueueFifo {
 		t.Fatalf("policy=%+v", p)
+	}
+	if !p.DeferPausesGgml {
+		t.Fatal("expected defer_pauses_ggml to follow queue_on_busy")
+	}
+	if !p.BlockInferenceDuringTraining {
+		t.Fatal("expected block_inference_during_training default on")
 	}
 	if !p.AllowedWindowEnabled || p.AllowedWindow == "" {
 		t.Fatalf("window=%q enabled=%v", p.AllowedWindow, p.AllowedWindowEnabled)

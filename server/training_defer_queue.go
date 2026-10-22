@@ -33,17 +33,18 @@ const (
 )
 
 type deferredTrainingJob struct {
-	id         string
-	kind       string
-	payload    json.RawMessage
-	enqueuedAt time.Time
-	finishedAt time.Time
+	id          string
+	kind        string
+	payload     json.RawMessage
+	priority    TrainingPriority // T6b: resolved submit tier (for status echo)
+	enqueuedAt  time.Time
+	finishedAt  time.Time
 	nextRetryAt time.Time
-	state      deferredJobState
-	promotedID string
-	errMsg     string
-	retryCount int
-	fifoSeq    uint64
+	state       deferredJobState
+	promotedID  string
+	errMsg      string
+	retryCount  int
+	fifoSeq     uint64
 }
 
 type trainingDeferQueue struct {
@@ -78,7 +79,7 @@ func (q *trainingDeferQueue) start(ctx context.Context) {
 	}
 }
 
-func (q *trainingDeferQueue) enqueue(kind string, payload json.RawMessage) (string, error) {
+func (q *trainingDeferQueue) enqueue(kind string, payload json.RawMessage, priority TrainingPriority) (string, error) {
 	if q == nil {
 		return "", errors.New("training defer queue unavailable")
 	}
@@ -102,6 +103,7 @@ func (q *trainingDeferQueue) enqueue(kind string, payload json.RawMessage) (stri
 		id:         id,
 		kind:       kind,
 		payload:    payload,
+		priority:   priority,
 		enqueuedAt: time.Now(),
 		state:      deferredStateWaiting,
 		fifoSeq:    AllocCrossQueueSeq(),
@@ -157,8 +159,8 @@ func (q *trainingDeferQueue) coordinationStats() map[string]any {
 		}
 	}
 	return map[string]any{
-		"defer_waiting":      waiting,
-		"defer_tracked":      len(q.items),
+		"defer_waiting":        waiting,
+		"defer_tracked":        len(q.items),
 		"fifo_go_oldest_defer": q.oldestWaitingFifoSeqLocked(),
 	}
 }
@@ -330,6 +332,8 @@ func (q *trainingDeferQueue) drainOnce(ctx context.Context) {
 		if kind == "run_script" {
 			q.srv.acquireVideoExclusiveGPU(ctx, jobID)
 		}
+		// T6c: re-evaluate ggml pause after waiting count drops (may ResumeLoads).
+		q.srv.syncRuntimeCoordinationAndPauses(ctx)
 	}
 }
 

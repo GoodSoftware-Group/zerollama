@@ -27,7 +27,16 @@ Host: dual 4090, `CUDA_VISIBLE_DEVICES=1`, `trl==0.29.1`, toy `sshleifer/tiny-gp
 
 Smoke: `./scripts/training/t10b_grpo_ab_smoke.sh` (dry-run always); `RUN_E2E_T10B=1 CUDA_VISIBLE_DEVICES=1 …` for Trainer.
 
-**5080:** same script with `T10B_MODEL=Qwen/Qwen2.5-0.5B-Instruct` when HF cache is warm (default LLaMA-style LoRA targets).
+### T10c — Qwen2.5-0.5B-Instruct (4090 #1, Oct 2026)
+
+`T10B_MODEL=Qwen/Qwen2.5-0.5B-Instruct` (default LLaMA-style LoRA targets), same `max_steps=2` / `num_generations=2`.
+
+| reward_builtin | wall_s | trained | notes |
+|----------------|--------|---------|-------|
+| `length` | ~23.1 | yes | includes cold load; reward mean ~850–1k on clipped 256-tok completions |
+| `format_json` | ~8.1 | yes | reward mean **0** (short JSON prompts; model does not emit JSON — expected wire check) |
+
+Artifact: `/tmp/zerollama-t10c-qwen-ab/ab_summary.json`. **5080:** re-run same command on free card when production venv is warm.
 
 ## Lab checklist
 
@@ -35,7 +44,8 @@ Smoke: `./scripts/training/t10b_grpo_ab_smoke.sh` (dry-run always); `RUN_E2E_T10
 - [x] Dry-run `length` / `format_json` / `exact_match`
 - [x] `grpo_run=true` max_steps≤2 on free GPU → `trained=true`
 - [x] A/B wall time recorded (above)
-- [ ] Optional: Qwen 0.5B instruct A/B on 5080 (operator)
+- [x] Qwen 0.5B instruct A/B on 4090 (T10c)
+- [ ] Optional: 5080 re-run with production `.venv-training`
 
 ## Non-claims
 

@@ -7,7 +7,7 @@ import (
 
 func TestTrainingDeferCoordinationStats(t *testing.T) {
 	q := newTrainingDeferQueue(&Server{})
-	_, err := q.enqueue("train", []byte(`{}`))
+	_, err := q.enqueue("train", []byte(`{}`), TrainingPriorityNormal)
 	if err != nil {
 		t.Fatal(err)
 	}

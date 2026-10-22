@@ -43,6 +43,7 @@ func (s *Server) pushRuntimeCoordinationFromHealth(ctx context.Context, h runtim
 	s.trainingVRAMMu.Unlock()
 	snap := map[string]any{
 		"block_inference_during_training": envconfig.BlockInferenceDuringTraining(),
+		"defer_pauses_ggml":               envconfig.TrainingDeferPausesGgml(),
 		"training_gpu_blocked":            blocked,
 		"ggml_loads_paused":               s.inferencePausesGgml(ctx, h),
 	}
@@ -89,6 +90,7 @@ func (s *Server) pushRuntimeCoordinationFinal(ctx context.Context, h runtimeHeal
 	}
 	snap := map[string]any{
 		"block_inference_during_training": envconfig.BlockInferenceDuringTraining(),
+		"defer_pauses_ggml":               envconfig.TrainingDeferPausesGgml(),
 		"training_gpu_blocked":            false,
 		"ggml_loads_paused":               false,
 	}

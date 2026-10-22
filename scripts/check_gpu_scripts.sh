@@ -122,6 +122,7 @@ scripts=(
   phase15_auto_batch_smoke.sh
   phase15_auto_batch_signoff.sh
   di3_accept_by_pos_unit.sh
+  deepgemm_borrowings_unit.sh
   t10_grpo_smoke.sh
   t11_recipes_smoke.sh
 )
@@ -344,10 +345,13 @@ grep -q 'doctorCheckLlamaPatches' "${ROOT}/cmd/doctor.go"
 grep -q 'llama_patch_doctor.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
 grep -q 'di3_accept_by_pos_unit.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
 grep -q 'di3_accept_by_pos_unit.sh' "$(spath check_gpu_scripts.sh)"
+grep -q 'deepgemm_borrowings_unit.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
+grep -q 'deepgemm_borrowings_unit.sh' "$(spath check_gpu_scripts.sh)"
 grep -q 't10_grpo_smoke.sh' "$(spath check_gpu_scripts.sh)"
 grep -q 't11_recipes_smoke.sh' "$(spath check_gpu_scripts.sh)"
 grep -q 't10-grpo.md' "${ROOT}/docs/README.md"
 grep -q 't11-recipes.md' "${ROOT}/docs/README.md"
+grep -q 'deepgemm-borrowings.md' "${ROOT}/docs/README.md"
 grep -q 't10_grpo_smoke.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
 grep -q 't11_recipes_smoke.sh' "${ROOT}/.github/workflows/zerollama-regression.yaml"
 grep -q 'NewTrainCommand' "${ROOT}/cmd/cmd.go"

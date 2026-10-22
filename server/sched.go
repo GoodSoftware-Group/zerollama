@@ -1874,6 +1874,14 @@ func (s *Scheduler) ResumeLoads() {
 	}
 }
 
+// LoadsPaused reports whether PauseNewLoads is latched (T6 /api/status surface).
+func (s *Scheduler) LoadsPaused() bool {
+	if s == nil {
+		return false
+	}
+	return s.loadsPaused.Load()
+}
+
 // UnloadAllRunners evicts loaded models but keeps pin/fulfillment-protected keys.
 // WHY soft: otherwise POST /api/pin is a no-op against the runtime VRAM broker
 // (every chat called UnloadAllRunners and wiped the lease).
@@ -2104,7 +2112,9 @@ func (s *Scheduler) InferenceBacklog() (pending int, active int, loaded int) {
 	if s == nil {
 		return 0, 0, 0
 	}
-	pending = s.pending.Len()
+	if s.pending != nil {
+		pending = s.pending.Len()
+	}
 	s.loadedMu.Lock()
 	loaded = len(s.loaded)
 	runners := make([]*runnerRef, 0, len(s.loaded))

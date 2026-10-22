@@ -2,20 +2,14 @@ package server
 
 import "testing"
 
-func TestParseTrainingPriority(t *testing.T) {
-	cases := []struct {
-		in   string
-		want TrainingPriority
-	}{
-		{"", TrainingPriorityNormal},
-		{"low", TrainingPriorityLow},
-		{"batch", TrainingPriorityLow},
-		{"high", TrainingPriorityHigh},
-		{"interactive", TrainingPriorityHigh},
+// Thin sanity that server wrappers stay wired; full cases live in x/trainprio.
+func TestParseTrainingPriorityWrapper(t *testing.T) {
+	p, err := parseTrainingPriority("overnight")
+	if err != nil || p != TrainingPriorityLow {
+		t.Fatalf("got %v %v", p, err)
 	}
-	for _, tc := range cases {
-		if got := parseTrainingPriority(tc.in); got != tc.want {
-			t.Fatalf("%q: got %v want %v", tc.in, got, tc.want)
-		}
+	_, err = parseTrainingPriority("higgh")
+	if err == nil {
+		t.Fatal("expected error")
 	}
 }

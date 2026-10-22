@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### DeepGEMM borrowings rematch (M30) — Oct 2026
+
+**Why not vendor:** DeepGEMM targets **SM90/SM100** + optional Mega MoE EP; our lanes are ggml on **sm_89 / sm_120**. Ascend port is checklist-only.
+
+| Piece | Detail |
+|-------|--------|
+| Rematch | Grouped contiguous/masked, Mega MoE, FP8×FP4, Ascend 2026-09-30 news |
+| Findings | [deepgemm-borrowings-findings.md](docs/deepgemm-borrowings-findings.md) |
+| Host unit | `./scripts/phase/deepgemm_borrowings_unit.sh` |
+
+Doc: [deepgemm-borrowings.md](docs/deepgemm-borrowings.md). Follow-on FP8/FP4: [cuda-lanes.md](docs/cuda-lanes.md) P2 (5080 Blackwell MMA).
+
 ### DeepInfer borrowings ladder complete (M29 DI0–DI8) — Oct 2026
 
 **Why not vendor DeepInfer:** DeepSeek’s engine is SM100/Ascend + ~510 GB Flash weights — wrong substrate for GGUF/`llama-server` on 5080/4090/Metal. We steal **schedule / speculation / SWA policy** only.
@@ -20,6 +32,56 @@ All notable changes to this project are documented in this file. The format is b
 | DI8 | Standing skip | Never claim 5080/H200 “DeepInfer compatible” |
 
 Docs: [deepinfer-borrowings.md](docs/deepinfer-borrowings.md) · [deepinfer-ladder.md](docs/deepinfer-ladder.md). Host unit: `./scripts/phase/di3_accept_by_pos_unit.sh`.
+
+### T6a–T6c training queue policy — Oct 2026
+
+**Why:** unknown `priority` coerced to normal; automation needed resolved tier; continuous chat could starve `defer-*` promote forever.
+
+| Piece | Detail |
+|-------|--------|
+| T6a | unknown `priority`/`slo_class` → **400**; `overnight`/`realtime` aliases; `x/trainprio` |
+| T6b | submit/defer echo `"priority":"low\|normal\|high"` |
+| T6c | `ZEROLLAMA_TRAINING_DEFER_PAUSES_GGML` (default=`queue_on_busy`) pauses **new** ggml loads while defer waiting; sync on enqueue/cancel/promote (not ticker-only) |
+| T6d | HTTP busy→defer→`PauseNewLoads`→cancel→resume (`TestTrainHTTPDeferPausesGgmlLoads`) |
+| Status | `/api/status` + go_coordination expose `defer_pauses_ggml` / pause bits |
+| Smoke | `scripts/e2e/e2e_t6_contention_live.sh` |
+
+Doc: [t6-unified-queue.md](docs/t6-unified-queue.md).
+
+### Training T10c Qwen 0.5B GRPO lab A/B — Oct 2026
+
+**Why:** tiny-gpt2 only proved Trainer wire; operators need an instruct-class LoRA target path.
+
+| Piece | Detail |
+|-------|--------|
+| Model | `T10B_MODEL=Qwen/Qwen2.5-0.5B-Instruct` |
+| Lab | 4090 `#1` PASS — length ~23s (cold), format_json ~8s; both `trained=true` |
+| Findings | [t10-grpo-findings.md](docs/t10-grpo-findings.md) |
+
+### Training T11e Claude chat_messages recipes — Oct 2026
+
+**Why:** Claude.ai privacy export uses `chat_messages[].sender` (`human`/`assistant`), not OpenAI `role` or ChatGPT `mapping`.
+
+| Piece | Detail |
+|-------|--------|
+| Preset | `claude_export` (aliases `claude`, `anthropic`, `chat_messages`) |
+| Auto | After ChatGPT `mapping`, before ShareGPT |
+| Multi-turn | OpenAI / ShareGPT presets also emit **all** user→assistant rows |
+
+Doc: [t11-recipes.md](docs/t11-recipes.md). Smoke: `./scripts/training/t11_recipes_smoke.sh`.
+
+### Training T11d ChatGPT mapping-tree recipes — Oct 2026
+
+**Why:** ChatGPT “Export data” `conversations.json` is a branched `mapping` DAG; last-message heuristics pick the wrong regenerate sibling.
+
+| Piece | Detail |
+|-------|--------|
+| Preset | `chatgpt_export` (aliases `chatgpt`, `mapping`) |
+| Walk | `current_node` → parents → root → forward; one SFT row per user→assistant turn |
+| Auto | Detects `mapping` before ShareGPT/messages |
+| 5080 | [5080-runbook.md](docs/5080-runbook.md#training-embed--venvs) — T10/T11 ops, Tier 5 smokes, troubleshooting |
+
+Doc: [t11-recipes.md](docs/t11-recipes.md). Smoke: `./scripts/training/t11_recipes_smoke.sh`.
 
 ### Training T10b GRPO lab A/B + TRL tip fixes — Oct 2026
 
@@ -462,9 +524,10 @@ was a misdiagnosis of correct-model behavior at small canvases; ComfyUI's own
 
 - **No** second backend / Unsloth Core fork — polish existing `training.py` + PEFT + Transformers `Trainer`
 - [`training_optim.py`](./training_optim.py): gradient checkpointing (CUDA default on); `adamw_torch_fused` / `adamw_bnb_8bit` (QLoRA); pin_memory; `use_rslora` default on; optional LoftQ; richer knobs (`gradient_accumulation_steps`, `seed`, `max_steps`, `torch_compile`)
-- [`training_labels.py`](./training_labels.py): **completion-only loss** (default on; skipped when `packing=true`)
+- [`training_labels.py`](./training_labels.py): **completion-only loss** (default on; **pack-aware** via `tokenize_and_pack_completion_only`)
 - Auto `padding_free_flash_attn` when flash-attn is installed
-- Tests: `python3 -m unittest tests.test_training_optim`
+- Tests: `python3 -m unittest tests.test_training_optim` · smoke [`t9_qlora_ckpt_smoke.sh`](./scripts/training/t9_qlora_ckpt_smoke.sh)
+- **4090 lab PASS (Oct 2026):** `RUN_E2E_T9=1 CUDA_VISIBLE_DEVICES=1` tiny-gpt2 QLoRA+ckpt
 
 ### Training T7 (Done) — train → serve export
 

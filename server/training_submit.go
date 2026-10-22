@@ -21,8 +21,9 @@ type TrainingSubmitOptions struct {
 
 // TrainingSubmitResult is returned from a training job submit attempt.
 type TrainingSubmitResult struct {
-	JobID  string
-	Queued bool
+	JobID    string
+	Queued   bool
+	Priority TrainingPriority // resolved tier (T6b echo for operators / automation)
 }
 
 func (s *Server) submitTrainingJob(
@@ -59,7 +60,7 @@ func (s *Server) submitTrainingJob(
 	if err != nil {
 		return TrainingSubmitResult{}, err
 	}
-	return TrainingSubmitResult{JobID: jobID}, nil
+	return TrainingSubmitResult{JobID: jobID, Priority: opts.Priority}, nil
 }
 
 func (s *Server) tryDeferTrainingSubmit(
@@ -75,12 +76,14 @@ func (s *Server) tryDeferTrainingSubmit(
 	if s.trainingDefer == nil {
 		return TrainingSubmitResult{}, false, nil
 	}
-	id, qerr := s.trainingDefer.enqueue(kind, payload)
+	id, qerr := s.trainingDefer.enqueue(kind, payload, opts.Priority)
 	if qerr != nil {
 		return TrainingSubmitResult{}, false, qerr
 	}
-	s.pushRuntimeCoordination(ctx)
-	return TrainingSubmitResult{JobID: id, Queued: true}, true, nil
+	// WHY sync (not push-only): T6c must PauseNewLoads immediately when defer waits,
+	// not wait for the ~400ms training GPU policy ticker.
+	s.syncRuntimeCoordinationAndPauses(ctx)
+	return TrainingSubmitResult{JobID: id, Queued: true, Priority: opts.Priority}, true, nil
 }
 
 func shouldDeferTrainingSubmit(err error, opts TrainingSubmitOptions) bool {
@@ -131,6 +134,7 @@ func (s *Server) deferredTrainingJobStatusJSON(ctx context.Context, id string) (
 					job["deferJobId"] = id
 					job["promotedJobId"] = j.promotedID
 					job["defer"] = true
+					job["priority"] = j.priority.String()
 					if j.kind == "run_script" {
 						modelName, size := wanVideoJobMeta(j.payload)
 						if _, has := job["videoModel"]; !has && modelName != "" {
@@ -173,6 +177,7 @@ func (s *Server) deferredTrainingJobStatusJSON(ctx context.Context, id string) (
 		"progressMessage": msg,
 		"promotedJobId":   j.promotedID,
 		"defer":           true,
+		"priority":        j.priority.String(),
 		"enqueuedAt":      j.enqueuedAt.UTC().Format(time.RFC3339),
 		"submittedAt":     j.enqueuedAt.UTC().Format(time.RFC3339),
 	}
@@ -203,7 +208,12 @@ func (s *Server) cancelDeferredTrainingJob(id string) (bool, error) {
 	if s == nil || s.trainingDefer == nil {
 		return false, nil
 	}
-	return s.trainingDefer.cancel(id)
+	ok, err := s.trainingDefer.cancel(id)
+	if ok {
+		// Resume ggml loads if this was the last waiting defer (T6c).
+		s.syncRuntimeCoordinationAndPauses(context.Background())
+	}
+	return ok, err
 }
 
 func (s *Server) mergeDeferredJobsListJSON(pythonList []byte) ([]byte, error) {
@@ -220,9 +230,10 @@ func (s *Server) mergeDeferredJobsListJSON(pythonList []byte) ([]byte, error) {
 	}
 	for _, j := range s.trainingDefer.listEntries() {
 		entry := map[string]any{
-			"jobId":     j.id,
-			"status":    string(j.state),
-			"defer":     true,
+			"jobId":      j.id,
+			"status":     string(j.state),
+			"defer":      true,
+			"priority":   j.priority.String(),
 			"enqueuedAt": j.enqueuedAt.UTC().Format(time.RFC3339),
 		}
 		if j.promotedID != "" {
@@ -241,12 +252,20 @@ func (s *Server) handleTrainingSubmitRequest(
 	ctx context.Context,
 	req trainingworker.SubmitRequest,
 ) (trainingworker.SubmitResponse, error) {
+	prio, perr := resolveTrainingSubmitPriority(req.Priority, req.SloClass)
+	if perr != nil {
+		return trainingworker.SubmitResponse{}, perr
+	}
 	res, err := s.submitTrainingJob(ctx, req.Kind, req.Payload, TrainingSubmitOptions{
-		Priority:    parseTrainingPriority(req.Priority),
+		Priority:    prio,
 		QueueOnBusy: req.QueueOnBusy,
 	})
 	if err != nil {
 		return trainingworker.SubmitResponse{}, err
 	}
-	return trainingworker.SubmitResponse{JobID: res.JobID, Queued: res.Queued}, nil
+	return trainingworker.SubmitResponse{
+		JobID:    res.JobID,
+		Queued:   res.Queued,
+		Priority: res.Priority.String(),
+	}, nil
 }

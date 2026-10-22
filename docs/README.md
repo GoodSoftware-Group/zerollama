@@ -40,7 +40,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [llama.cpp backend unification](./llama-cpp-unification.md) — **why** one elizaOS tree @ `LLAMA_CPP_COMMIT` replaces stock + eliza-llama siblings; discovery, doctor, vendor rebase plan.
 * [L2 unified llama-server profiles](./gpu-profiles-l2.md) — L1 vs fork argv on one binary; **5080 Jun 2026:** L1 q8_0 wins @ 8k (fork profiles opt-in).
 * [CUDA lanes (dual-4090 / 5080)](./cuda-lanes.md) — **why** shared CUDA playbook vs 5080-only; NVFP4/MXFP4/FP8 weight roadmap; probes + sign-off.
-* [DeepGEMM borrowings](./deepgemm-borrowings.md) — **why** Ascend DeepGEMM is not a port target; keep grouped GEMM / SF layout / MoE-fuse ideas for ggml CUDA+Metal (skip EP8 / Ascend MAD).
+* [DeepGEMM borrowings](./deepgemm-borrowings.md) · [findings](./deepgemm-borrowings-findings.md) — ROADMAP **M30**; **why** not vendor (SM90/SM100 ≠ sm_89/sm_120); skip Ascend / Mega MoE EP; host unit `deepgemm_borrowings_unit.sh`.
 * [DeepInfer borrowings](./deepinfer-borrowings.md) — **why** not vendor SM100 DeepInfer; bring schedule / SWA / speculation ideas into ggml + runtime (skip EP fleet / FlashMLA wheels).
 * [DeepInfer ladder (DI0–DI8)](./deepinfer-ladder.md) — ROADMAP **M29**; DI0–DI7/DI5/DI2/DI3 done (DI3: verified `accept_by_pos`); DI8 standing skip.
 * [Native FP8 GGUF (E4M3/E5M2)](./native-fp8-gguf.md) — **why** block FP8 types + `--fp8-native` instead of full F16 dequant; patches 0073–0076; MMVQ/MMQ; probes.

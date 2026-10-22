@@ -21,11 +21,13 @@ export ZEROLLAMA_RUNTIME_URL="${ZEROLLAMA_RUNTIME_URL:-http://127.0.0.1:8081}"
 echo "== T6 Go unit tests (offline) =="
 (
   cd "${ROOT}"
-  go test ./server -run 'TestSubmitTrainingJob|TestTrainHTTPSubmit|TestDeferredTraining|TestDefer|TestTrainingDefer|TestCrossQueue|TestCrossFifo|TestSchedYield|TestPendingQueueOldest|TestAllocCrossQueue|TestShouldDefer|TestInferenceStatusTraining|TestStatusHandlerIncludesTraining' -count=1 -timeout 120s
+  # Priority/SLO parse is CGO-free (x/trainprio); server package needs CGO on full hosts.
+  go test ./x/trainprio -count=1 -timeout 30s
+  go test ./server -run 'TestSubmitTrainingJob|TestTrainHTTPSubmit|TestDeferredTraining|TestDefer|TestTrainingDefer|TestCrossQueue|TestCrossFifo|TestSchedYield|TestPendingQueueOldest|TestAllocCrossQueue|TestShouldDefer|TestInferenceStatusTraining|TestStatusHandlerIncludesTraining|TestParseTrainingPriorityWrapper|TestTrainingDeferPausesGgml|TestInferencePausesGgmlIncludesDefer|TestDeferEnqueuePausesGgmlImmediately|TestTrainHTTPDeferPausesGgmlLoads' -count=1 -timeout 120s
 )
 (
   cd "${ROOT}"
-  go test ./envconfig -run 'TestTrainingAllowedWindow' -count=1 -timeout 60s
+  go test ./envconfig -run 'TestTrainingAllowedWindow|TestTrainingDeferPausesGgml' -count=1 -timeout 60s
 )
 
 echo ""
@@ -56,7 +58,8 @@ qp = tr.get("queue_policy") or {}
 if not qp:
     raise SystemExit("missing inference.training.queue_policy on /api/status")
 for k in ("wait_inference_idle", "wait_ggml_loaded", "wait_fail_closed",
-          "queue_on_busy", "cross_queue_fifo"):
+          "queue_on_busy", "cross_queue_fifo", "defer_pauses_ggml",
+          "block_inference_during_training"):
     if k not in qp:
         raise SystemExit(f"missing queue_policy.{k}")
 print("queue_policy:", {k: qp[k] for k in sorted(qp) if qp.get(k) not in (False, 0, "", None)})

@@ -8,13 +8,15 @@ import (
 // trainingQueuePolicy reports configured T6 gates and live defer depth for GET /api/status.
 func trainingQueuePolicy(s *Server) api.TrainingQueuePolicy {
 	p := api.TrainingQueuePolicy{
-		WaitInferenceIdle:        envconfig.TrainingWaitInferenceIdle(),
-		WaitGgmlLoaded:           envconfig.TrainingWaitGgmlLoaded(),
-		WaitFailClosed:           envconfig.TrainingWaitFailClosed(),
-		QueueOnBusy:              envconfig.TrainingQueueOnBusy(),
-		AllowedWindowEnabled:     envconfig.TrainingAllowedWindowEnabled(),
-		AllowedWindowMisconfigured: envconfig.TrainingAllowedWindowMisconfigured(),
-		CrossQueueFifo:           true,
+		WaitInferenceIdle:            envconfig.TrainingWaitInferenceIdle(),
+		WaitGgmlLoaded:               envconfig.TrainingWaitGgmlLoaded(),
+		WaitFailClosed:               envconfig.TrainingWaitFailClosed(),
+		QueueOnBusy:                  envconfig.TrainingQueueOnBusy(),
+		DeferPausesGgml:              envconfig.TrainingDeferPausesGgml(),
+		BlockInferenceDuringTraining: envconfig.BlockInferenceDuringTraining(),
+		AllowedWindowEnabled:         envconfig.TrainingAllowedWindowEnabled(),
+		AllowedWindowMisconfigured:   envconfig.TrainingAllowedWindowMisconfigured(),
+		CrossQueueFifo:               true,
 	}
 	if envconfig.TrainingAllowedWindowConfigured() {
 		p.AllowedWindow = envconfig.TrainingAllowedWindowLabel()
@@ -26,6 +28,13 @@ func trainingQueuePolicy(s *Server) api.TrainingQueuePolicy {
 		}
 		if n, ok := st["defer_tracked"].(int); ok {
 			p.DeferTracked = n
+		}
+	}
+	if s != nil {
+		// Best-effort live bits for fleet dashboards (no extra health probe here).
+		p.TrainingGPUBusy = s.trainingVRAMBlocked || s.videoExclusiveActive()
+		if s.sched != nil {
+			p.GgmlLoadsPaused = s.sched.LoadsPaused()
 		}
 	}
 	return p
