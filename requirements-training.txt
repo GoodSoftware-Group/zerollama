@@ -20,3 +20,7 @@ datasets>=2.18
 peft>=0.10
 accelerate>=0.28
 bitsandbytes>=0.43; platform_system != "Darwin"
+# T10/T10b GRPO — pin floor so GRPOTrainer import stays stable; upper <1 avoids tip breakage.
+# WHY requests: trl≥0.29 GRPOTrainer imports vllm_client → requests (not always pulled as hard dep).
+trl>=0.14,<1.0
+requests>=2.31

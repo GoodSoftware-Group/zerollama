@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# T10 GRPO scaffold smoke (host unit; no GPU).
+# T10/T10b GRPO smoke (host unit; no GPU).
 #
 # Always:
 #   ./scripts/training/t10_grpo_smoke.sh
-#     → unittest training_grpo validation + Go kind normalize
+#     → unittest training_grpo (builtins, reward_url, reward_hf dry-run) + Go kind normalize
 #
-# Optional GPU (never production ports):
+# Optional lab (never production ports):
 #   RUN_E2E_T10=1 CUDA_VISIBLE_DEVICES=1 ./scripts/training/t10_grpo_smoke.sh
-#     → requires .venv-training with trl; submits kind=grpo dry_run via embed
-#       (full GRPOTrainer needs grpo_run=true — lab only)
+#     → dry_run via process_grpo_request; note trl presence
+#       (full GRPOTrainer needs grpo_run=true — lab only; pin in requirements-training.txt)
 #
-# Doc: docs/t10-grpo.md · ROADMAP T10
+# Doc: docs/t10-grpo.md · ROADMAP T10/T10b
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"

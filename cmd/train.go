@@ -36,6 +36,7 @@ func newTrainRecipeCommand() *cobra.Command {
 	var (
 		outPath     string
 		format      string
+		preset      string
 		promptCol   string
 		responseCol string
 		chunkChars  int
@@ -51,8 +52,11 @@ Delegates to repo-root training_recipes.py (stdlib CSV/JSONL/TXT; optional pypdf
 python-docx). Output .jsonl is one object per line; .json wraps {training_data:[…]}
 (and optional model_name) for easy merge into a train payload.
 
+Chat-export presets (JSON/JSONL): --preset sharegpt|openai|alpaca|prompt_response|auto
+
 Examples:
   zerollama train recipe data.csv -o sft.jsonl
+  zerollama train recipe sharegpt.json --preset sharegpt -o sft.jsonl
   zerollama train recipe sft.jsonl -o payload.json --model-name Qwen/Qwen2.5-0.5B-Instruct
 `,
 		Args: cobra.ExactArgs(1),
@@ -60,6 +64,7 @@ Examples:
 			return runTrainRecipe(args[0], trainRecipeOpts{
 				Out:         outPath,
 				Format:      format,
+				Preset:      preset,
 				PromptCol:   promptCol,
 				ResponseCol: responseCol,
 				ChunkChars:  chunkChars,
@@ -70,6 +75,7 @@ Examples:
 	}
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "Output .jsonl or .json (required)")
 	cmd.Flags().StringVar(&format, "format", "auto", "auto|csv|tsv|jsonl|json|txt|pdf|docx")
+	cmd.Flags().StringVar(&preset, "preset", "auto", "auto|sharegpt|openai|alpaca|prompt_response")
 	cmd.Flags().StringVar(&promptCol, "prompt-col", "prompt", "CSV prompt column")
 	cmd.Flags().StringVar(&responseCol, "response-col", "response", "CSV response column")
 	cmd.Flags().IntVar(&chunkChars, "chunk-chars", 1200, "PDF/DOCX chunk size")
@@ -80,8 +86,8 @@ Examples:
 }
 
 type trainRecipeOpts struct {
-	Out, Format, PromptCol, ResponseCol, ModelName, PythonBin string
-	ChunkChars                                                int
+	Out, Format, Preset, PromptCol, ResponseCol, ModelName, PythonBin string
+	ChunkChars                                                        int
 }
 
 func runTrainRecipe(input string, opts trainRecipeOpts) error {
@@ -102,11 +108,16 @@ func runTrainRecipe(input string, opts trainRecipeOpts) error {
 		return err
 	}
 
+	preset := strings.TrimSpace(opts.Preset)
+	if preset == "" {
+		preset = "auto"
+	}
 	args := []string{
 		script,
 		input,
 		"-o", opts.Out,
 		"--format", opts.Format,
+		"--preset", preset,
 		"--prompt-col", opts.PromptCol,
 		"--response-col", opts.ResponseCol,
 		"--chunk-chars", fmt.Sprintf("%d", opts.ChunkChars),

@@ -21,11 +21,49 @@ All notable changes to this project are documented in this file. The format is b
 
 Docs: [deepinfer-borrowings.md](docs/deepinfer-borrowings.md) · [deepinfer-ladder.md](docs/deepinfer-ladder.md). Host unit: `./scripts/phase/di3_accept_by_pos_unit.sh`.
 
+### Training T10b GRPO lab A/B + TRL tip fixes — Oct 2026
+
+**Why:** tip `trl` 0.29 needs aligned `num_generations` / `generation_batch_size`, `requests`, and a shield against sibling empty `mlx/` namespaces that trip transformers mid-step.
+
+| Piece | Detail |
+|-------|--------|
+| Lab defaults | `num_generations=2`, aligned `generation_batch_size` |
+| Deps | `trl>=0.14,<1` + `requests>=2.31` |
+| Smoke | [`t10b_grpo_ab_smoke.sh`](scripts/training/t10b_grpo_ab_smoke.sh) (`RUN_E2E_T10B=1`) |
+| Sign-off | 4090: `length`/`format_json` `trained=true` on tiny-gpt2 |
+
+Findings: [t10-grpo-findings.md](docs/t10-grpo-findings.md).
+
+### Training T11c chat-export presets + recipes upload — Oct 2026
+
+**Why:** ShareGPT / OpenAI / Alpaca dumps should not require hand-rewriting to `prompt`/`response`. Upload helper must not start a GPU job.
+
+| Piece | Detail |
+|-------|--------|
+| Presets | `--preset sharegpt\|openai\|alpaca\|prompt_response\|auto` |
+| HTTP | `POST /api/train/recipes` (JSON or multipart) → `{n_rows, training_data}` |
+| Engine | Same [`training_recipes.py`](training_recipes.py) (`--stdin` for serve) |
+
+Doc: [t11-recipes.md](docs/t11-recipes.md). Smoke: `./scripts/training/t11_recipes_smoke.sh`.
+
+### Training T10b GRPO rewards + trl pin — Oct 2026
+
+**Why:** agents need wire-safe reward signals beyond length; `trl` must be pinned so `.venv-training` syncs get `GRPOTrainer`.
+
+| Piece | Detail |
+|-------|--------|
+| Builtins | `length`, `nonempty`, `format_json`, `exact_match` (+ `references`) |
+| Agent hook | `reward_url` http(s) POST → `{rewards:[…]}` (`file://` rejected) |
+| HF RM | `reward_hf` / `reward_model=org/name` (lazy-load on `grpo_run`) |
+| Pin | `trl>=0.14,<1` in [`requirements-training.txt`](requirements-training.txt) |
+
+Doc: [t10-grpo.md](docs/t10-grpo.md) · [findings](docs/t10-grpo-findings.md). Smoke: `./scripts/training/t10_grpo_smoke.sh`.
+
 ### Training T10 GRPO scaffold + T11 lite recipes — Oct 2026
 
 **Why one backend:** Unsloth’s GRPO/Studio path is AGPL / dual-stack. Zerollama keeps PEFT + Transformers/`trl` on the same `/api/train` queue as SFT (T6 defer / VRAM broker).
 
-**T10 GRPO:** `kind=grpo|rl` → embed cmd `grpo`. HTTP-safe `reward_builtin=length` only (JSON cannot carry callables). Default **dry-run** (`trained=false`; `trl` optional); `grpo_run=true` needs `trl` + free GPU lab. Doc: [t10-grpo.md](docs/t10-grpo.md). Smoke: `./scripts/training/t10_grpo_smoke.sh`.
+**T10 GRPO:** `kind=grpo|rl` → embed cmd `grpo`. HTTP-safe rewards (see T10b). Default **dry-run** (`trained=false`; `trl` optional); `grpo_run=true` needs `trl` + free GPU lab. Doc: [t10-grpo.md](docs/t10-grpo.md). Smoke: `./scripts/training/t10_grpo_smoke.sh`.
 
 **T11 recipes:** CSV/JSONL/TXT → `{prompt,response}` (stdlib); PDF/DOCX optional. Python CLI + `zerollama train recipe` (same engine). **Why not Studio:** operators need ingest without a visual node editor. Doc: [t11-recipes.md](docs/t11-recipes.md). Smoke: `./scripts/training/t11_recipes_smoke.sh`.
 

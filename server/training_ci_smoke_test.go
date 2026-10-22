@@ -35,6 +35,7 @@ func TestTrainingRoutesRegisteredOnlyWithWorker(t *testing.T) {
 		"/api/train/jobs/:id",
 		"/api/train/jobs/:id/events",
 		"/api/train/status",
+		"/api/train/recipes",
 	} {
 		if !paths[want] {
 			t.Fatalf("missing route %q in %v", want, paths)

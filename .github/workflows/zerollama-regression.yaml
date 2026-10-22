@@ -95,6 +95,7 @@ jobs:
       - name: T10 GRPO + T11 recipes host units (no GPU)
         run: |
           ./scripts/training/t10_grpo_smoke.sh
+          ./scripts/training/t10b_grpo_ab_smoke.sh
           ./scripts/training/t11_recipes_smoke.sh
 
       - name: Phase 17 L2 pin status report

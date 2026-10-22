@@ -116,8 +116,8 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Phase 15 handoff](./handoff-phase15-native-kv.md) — code map, `/health` fields, gaps; **v0–v31 shipped** (C decode loop, engine resume, L3 gate, batch decode + Metal sign-off PASS Jun 2026).
 * [GPU training integration](./gpu-training.md) — **why** Go fronts HTTP + TCP `:9500` while Python holds PyTorch; embedded CPython; inference-first VRAM policy; OOM ordering; env vars and troubleshooting.
 * [GPU training handoff (internal)](./handoff-gpu-training-integration.md) — embedded training + Phase 11 VRAM interaction (not a substitute for `gpu-training.md`).
-* [Roadmap — training track T7–T11](./ROADMAP.md#gpu-training-fine-tuning) — Unsloth borrowings: train→GGUF (**T7 Done**), efficient SFT (**T8 Done**), stock Trainer polish (**T9**, no second backend), [GRPO (T10)](./t10-grpo.md), [lite recipes (T11)](./t11-recipes.md) (not Studio).
-* [T10 GRPO](./t10-grpo.md) — `kind=grpo\|rl` on `/api/train`; dry-run default; `grpo_run=true` lab only.
+* [Roadmap — training track T7–T11](./ROADMAP.md#gpu-training-fine-tuning) — Unsloth borrowings: train→GGUF (**T7 Done**), efficient SFT (**T8 Done**), stock Trainer polish (**T9**, no second backend), [GRPO (T10)](./t10-grpo.md), [lite recipes (T11/T11c)](./t11-recipes.md) (not Studio).
+* [T10 GRPO](./t10-grpo.md) — `kind=grpo\|rl` on `/api/train`; builtins + `reward_url` + `reward_hf`; dry-run default; `grpo_run=true` lab only. Findings: [t10-grpo-findings.md](./t10-grpo-findings.md).
 * [T11 lite recipes](./t11-recipes.md) — CSV/JSONL/TXT/(PDF\|DOCX) → `{prompt,response}`; `zerollama train recipe`.
 * [Phase 12 tools + Phase 11 admission handoff](./handoff-phase12-runtime-tools.md) — runtime tools (Go render/parse), opinionated admission, smokes, code maps.
 * [Inference smoke testing](./testing-smoke.md) — **why** runtime (`:8081`) and legacy ggml (`:8080`) share one GPU.

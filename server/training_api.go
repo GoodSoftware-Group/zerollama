@@ -29,6 +29,8 @@ func (s *Server) registerTrainingRoutes(r *gin.Engine) {
 	g.DELETE("/jobs/:id", s.trainHTTPCancelJob)
 	g.POST("/unload", s.trainHTTPUnload)
 	g.GET("/status", s.trainHTTPHealth)
+	// T11c: ingest only — does not enqueue a GPU job.
+	g.POST("/recipes", s.trainHTTPRecipes)
 }
 
 func (s *Server) trainHTTPSubmitJob(c *gin.Context) {

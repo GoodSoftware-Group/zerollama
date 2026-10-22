@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,7 +14,12 @@ from training_recipes import (
     ingest_file,
     ingest_json,
     ingest_jsonl,
+    ingest_text,
     ingest_txt_pairs,
+    main_stdin,
+    normalize_preset,
+    pair_from_obj,
+    recipe_result,
     write_jsonl,
     write_train_payload,
 )
@@ -111,6 +117,99 @@ class TestTrainingRecipes(unittest.TestCase):
                 with self.assertRaises(ImportError) as ctx:
                     ingest_file(p)
                 self.assertIn("pypdf", str(ctx.exception))
+
+    def test_sharegpt_preset(self):
+        obj = {
+            "conversations": [
+                {"from": "human", "value": "hi"},
+                {"from": "gpt", "value": "hello"},
+            ]
+        }
+        self.assertEqual(pair_from_obj(obj, preset="sharegpt"), ("hi", "hello"))
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "sg.json"
+            p.write_text(json.dumps([obj]), encoding="utf-8")
+            rows = ingest_json(p, preset="sharegpt")
+            self.assertEqual(rows, [{"prompt": "hi", "response": "hello"}])
+
+    def test_alpaca_preset(self):
+        obj = {"instruction": "Add", "input": "2+2", "output": "4"}
+        self.assertEqual(pair_from_obj(obj, preset="alpaca"), ("Add\n\n2+2", "4"))
+
+    def test_openai_preset_auto(self):
+        obj = {
+            "messages": [
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": "a"},
+            ]
+        }
+        self.assertEqual(pair_from_obj(obj, preset="openai"), ("q", "a"))
+        self.assertEqual(pair_from_obj(obj, preset="auto"), ("q", "a"))
+
+    def test_ingest_text_jsonl(self):
+        text = (
+            json.dumps(
+                {
+                    "conversations": [
+                        {"from": "human", "value": "x"},
+                        {"from": "gpt", "value": "y"},
+                    ]
+                }
+            )
+            + "\n"
+        )
+        rows = ingest_text(text, fmt="jsonl", preset="sharegpt")
+        self.assertEqual(rows, [{"prompt": "x", "response": "y"}])
+
+    def test_recipe_result_envelope(self):
+        body = recipe_result(
+            [{"prompt": "p", "response": "r"}],
+            model_name="m",
+            preset="openai",
+        )
+        self.assertEqual(body["n_rows"], 1)
+        self.assertEqual(body["model_name"], "m")
+        self.assertEqual(body["preset"], "openai")
+
+    def test_normalize_preset_aliases(self):
+        self.assertEqual(normalize_preset("vicuna"), "sharegpt")
+        self.assertEqual(normalize_preset("chatgpt"), "openai")
+        with self.assertRaises(ValueError):
+            normalize_preset("studio")
+
+    def test_main_stdin(self):
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+
+        payload = json.dumps(
+            {
+                "content": json.dumps(
+                    [
+                        {
+                            "instruction": "Say hi",
+                            "input": "",
+                            "output": "hi",
+                        }
+                    ]
+                ),
+                "format": "json",
+                "preset": "alpaca",
+                "model_name": "demo",
+            }
+        )
+        buf = io.StringIO()
+        err = io.StringIO()
+        old = sys.stdin
+        try:
+            sys.stdin = io.StringIO(payload)
+            with redirect_stdout(buf), redirect_stderr(err):
+                rc = main_stdin()
+        finally:
+            sys.stdin = old
+        self.assertEqual(rc, 0)
+        out = json.loads(buf.getvalue())
+        self.assertEqual(out["n_rows"], 1)
+        self.assertEqual(out["training_data"][0]["response"], "hi")
 
 
 if __name__ == "__main__":

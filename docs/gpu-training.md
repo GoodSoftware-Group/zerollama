@@ -49,9 +49,9 @@ Set `LLAMA_CPP_DIR` (or sibling `../llama.cpp`) so convert/quantize are found. J
 
 See [`training_optim.py`](../training_optim.py), [`training_labels.py`](../training_labels.py), [`training_pack.py`](../training_pack.py) (`pack_labeled_token_id_lists`). Smoke: `./scripts/training/t9_qlora_ckpt_smoke.sh` (`RUN_E2E_T9=1` for QLoRA+ckpt on a free GPU).
 
-**T10 GRPO (Partial — scaffold):** **Why:** Unsloth’s GRPO without a second backend. `POST /api/train/jobs` with `"kind": "grpo"` or `"rl"`. Payload needs `model_name`, `prompts` (or `training_data`), and HTTP-safe `reward_builtin=length` (JSON cannot carry callables). Default is **dry_run** (`trained=false`; `trl` optional); set `grpo_run=true` only on a free GPU lab with `trl` installed. Worker owns `training_active`. Doc: [t10-grpo.md](./t10-grpo.md). Smoke: `./scripts/training/t10_grpo_smoke.sh`.
+**T10 GRPO (Partial — T10b rewards):** **Why:** Unsloth’s GRPO without a second backend. `POST /api/train/jobs` with `"kind": "grpo"` or `"rl"`. Payload needs `model_name`, `prompts` (or `training_data`), and an HTTP-safe reward: builtins (`length`/`nonempty`/`format_json`/`exact_match`), `reward_url`, or `reward_hf` (JSON cannot carry callables). Default is **dry_run** (`trained=false`; `trl` optional); `trl>=0.14,<1` pinned in `requirements-training.txt`; set `grpo_run=true` only on a free GPU lab. Worker owns `training_active`. Doc: [t10-grpo.md](./t10-grpo.md). Smoke: `./scripts/training/t10_grpo_smoke.sh`.
 
-**T11 lite recipes (Partial):** **Why:** spreadsheet → SFT rows without Studio. `python training_recipes.py data.csv -o sft.jsonl` or `zerollama train recipe data.csv -o sft.jsonl` (same engine). CSV/JSONL/TXT stdlib; PDF/DOCX optional. Doc: [t11-recipes.md](./t11-recipes.md). Smoke: `./scripts/training/t11_recipes_smoke.sh`.
+**T11 lite recipes (Partial — T11c):** **Why:** spreadsheet / chat export → SFT rows without Studio. `python training_recipes.py data.csv -o sft.jsonl` or `zerollama train recipe … --preset sharegpt|openai|alpaca`. Optional `POST /api/train/recipes` returns `{training_data}` (no GPU job). CSV/JSONL/TXT stdlib; PDF/DOCX optional. Doc: [t11-recipes.md](./t11-recipes.md). Smoke: `./scripts/training/t11_recipes_smoke.sh`.
 
 ---
 

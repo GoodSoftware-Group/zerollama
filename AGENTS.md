@@ -69,7 +69,7 @@ zerollama pull llama3.2:3b
 
 - [docs/ROADMAP.md](./docs/ROADMAP.md)
 - [docs/README.md](./docs/README.md) — index of in-repo guides
-- Training borrowings (Unsloth → T7–T11): [ROADMAP § GPU training](./docs/ROADMAP.md#gpu-training-fine-tuning) · [t10-grpo.md](./docs/t10-grpo.md) · [t11-recipes.md](./docs/t11-recipes.md) · [gpu-training.md](./docs/gpu-training.md)
+- Training borrowings (Unsloth → T7–T11): [ROADMAP § GPU training](./docs/ROADMAP.md#gpu-training-fine-tuning) · [t10-grpo.md](./docs/t10-grpo.md) (+ [findings](./docs/t10-grpo-findings.md)) · [t11-recipes.md](./docs/t11-recipes.md) (presets + `POST /api/train/recipes`) · [gpu-training.md](./docs/gpu-training.md)
 - Doctor Modelfile repair (empty `response` / slash-collapse / ChatML hygiene): `zerollama doctor --repair-models [--all-local] [--apply]` — **why** not `doctor --fix`: [docs/doctor-model-repair.md](./docs/doctor-model-repair.md)
 - Hermes `/v1` gaps (M15e/M15f): [docs/hermes-zerollama-gap.md](./docs/hermes-zerollama-gap.md) (§8 batch wire) · [findings](./docs/hermes-gap-closure-findings.md) · OpenAPI `server/openapi/openapi.yaml` (`ChatCompletionsBatchResponse`)
 - MultiDecode (forest decode): patches **0127–0129**; `POST /v1/multidecode` + `capabilities.multidecode`; silent LCP pack on Hermes batch — [docs/multidecode-llama-cpp.md](./docs/multidecode-llama-cpp.md) · [findings](./docs/multidecode-llama-cpp-findings.md) · skill `agentskills/multidecode/`

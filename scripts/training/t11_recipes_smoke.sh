@@ -36,6 +36,19 @@ grep -q '"training_data"' "$TMP/payload.json"
 grep -q '"model_name": "demo"' "$TMP/payload.json"
 echo "OK: CLI wrote $(wc -l <"$TMP/out.jsonl" | tr -d ' ') rows"
 
+echo "== T11c: ShareGPT preset + --stdin envelope =="
+cat >"$TMP/sharegpt.json" <<'EOF'
+[{"conversations":[{"from":"human","value":"ping"},{"from":"gpt","value":"pong"}]}]
+EOF
+"$PY" "${ROOT}/training_recipes.py" "$TMP/sharegpt.json" --preset sharegpt -o "$TMP/sg.jsonl"
+test "$(wc -l <"$TMP/sg.jsonl" | tr -d ' ')" = "1"
+grep -q '"prompt": "ping"' "$TMP/sg.jsonl"
+printf '%s' '{"content":"[{\"instruction\":\"Add\",\"input\":\"1+1\",\"output\":\"2\"}]","format":"json","preset":"alpaca","model_name":"demo"}' \
+  | "$PY" "${ROOT}/training_recipes.py" --stdin >"$TMP/stdin_out.json"
+grep -q '"n_rows": 1' "$TMP/stdin_out.json"
+grep -q '"response": "2"' "$TMP/stdin_out.json"
+echo "OK: T11c presets + stdin"
+
 echo "== T11b: Go train recipe helpers =="
 if command -v go >/dev/null 2>&1; then
   if (cd "$ROOT" && CGO_ENABLED=0 go test -count=1 ./cmd -run 'TestResolveTrainRecipePython|TestRunTrainRecipeMissingScript' >/tmp/t11b-go.log 2>&1); then
