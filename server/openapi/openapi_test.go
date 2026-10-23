@@ -72,6 +72,17 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 			t.Fatalf("ChatCompletionsBatchResponse missing %s", f)
 		}
 	}
+	// OpenJev / Jev honesty flag on typed answers (DG8/DG9).
+	for _, ans := range []string{"ChoiceAnswer", "ScoreAnswer", "NoulAnswer"} {
+		props := schemas[ans].(map[string]any)["properties"].(map[string]any)
+		if _, ok := props["calibrated"]; !ok {
+			t.Fatalf("%s missing calibrated (OpenJev DG8/DG9)", ans)
+		}
+	}
+	decPath := paths["/v1/decisions"].(map[string]any)["post"].(map[string]any)
+	if desc, _ := decPath["description"].(string); !strings.Contains(desc, "OpenJev") {
+		t.Fatalf("/v1/decisions description should mention OpenJev; got %q", desc)
+	}
 	batchPath := paths["/v1/chat/completions/batch"].(map[string]any)["post"].(map[string]any)
 	batch200 := batchPath["responses"].(map[string]any)["200"].(map[string]any)
 	batchContent := batch200["content"].(map[string]any)["application/json"].(map[string]any)

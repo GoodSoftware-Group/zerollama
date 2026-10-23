@@ -1497,20 +1497,32 @@ components:
         pass answers every question — not chat, not `/api/score` continuations, not
         `/v1/rerank` RANK pooling. WHY a dedicated route: chat would force sampling
         free text; score/rerank return one scalar per candidate, not calibrated
-        choice/score/noul + act head. `state` is string|object|array; `questions`
-        maps stable ids → typed defs. Wire caps match Unsloth Desktop / Jev Decision
-        API: ≤64 questions, ≤255 choice options, ≤10 score levels. Backends: Laya
-        GGUF (`general.architecture=laya`), CLM/OpenJev/GLiNER-Decide URLs, or local
-        **score** models (tev1 / nimble / Clef / Strands) via `decision.Compile`.
+        choice/score/noul + act head. Public wire is always `{model,state,questions}`
+        (plus optional `images`/`options`/`keep_alive`). Go packs LA16 prompts and
+        OpenJev `readout.gather` markers internally — clients must **not** send
+        sibling `prompt`/`readout` fields on this route. Wire caps match Unsloth
+        Desktop / Jev Decision API: ≤64 questions, ≤255 choice options, ≤10 score
+        levels. Backends (first match): `ZEROLLAMA_LAYA_URL` / `ZEROLLAMA_CLM_URL` /
+        `ZEROLLAMA_OPENJEV_URL` / `ZEROLLAMA_GLINER_DECIDE_URL` when model name or
+        `modality_backends.decisions` selects that path; else local Laya GGUF
+        (`general.architecture=laya`, llama-server `--decisions`) or local **score**
+        models (tev1 / nimble / Clef / Strands) via `decision.Compile`. Docs:
+        docs/laya-llama-cpp.md, docs/clm.md, docs/diffusion-gemma-llama-cpp.md,
+        docs/gliner-decide.md, docs/system-one-score.md.
       properties:
         model:
           type: string
           description: >
-            Local tag or alias that loads as Laya/CLM/OpenJev/score-decision. Common Laya HF
-            variant names when created from convert: `laya`, `laya-multilingual`
-            (~678 MB / ~4 GB RAM), `laya-english`, `laya-typed-decisions`.
-            Unsloth also accepts `default` / `jev-latest` for the Desktop-selected
-            model — map those via Modelfile aliases if you need drop-in clients.
+            Local tag or alias that loads as Laya/CLM/OpenJev/GLiNER-Decide/score-decision.
+            Common Laya HF variant names when created from convert: `laya`,
+            `laya-multilingual` (~678 MB / ~4 GB RAM), `laya-english`,
+            `laya-typed-decisions`. OpenJev / DiffusionGemma Decider names:
+            `openjev`, `openjev:*`, `openjev-*`, `diffusiongemma*` (requires
+            `ZEROLLAMA_OPENJEV_URL`). CLM: tag with `modality_backends.decisions=clm`
+            or `ZEROLLAMA_CLM_URL`. GLiNER-Decide triage: `gliner-decide*` /
+            `gliner2.5-decide*` + `ZEROLLAMA_GLINER_DECIDE_URL`. Unsloth also accepts
+            `default` / `jev-latest` for the Desktop-selected model — map those via
+            Modelfile aliases if you need drop-in clients.
         state:
           description: Conversation/state payload (string | object | array)
         images:
@@ -1601,15 +1613,24 @@ components:
           additionalProperties:
             type: number
           description: >
-            Per-option calibrated probs. Gate automation on these (e.g. only act when
-            `billing` > 0.8), not on `confidence` — Laya vs cloud Jev confidence
-            formulas differ (Unsloth/Jev migration note).
+            Per-option probs (Laya/CLM head or OpenJev marker-logit softmax). Gate
+            automation on these (e.g. only act when `billing` > 0.8), not on
+            `confidence` — Laya vs cloud Jev confidence formulas differ
+            (Unsloth/Jev migration note).
         confidence:
           type: number
           format: float
           description: >
             Normalized Shannon entropy peakiness (1 − H(p)/log(k)). Not interchangeable
             with cloud Jev confidence thresholds.
+        calibrated:
+          type: boolean
+          description: >
+            Honesty flag for OpenJev / DiffusionGemma Decider answers. Default
+            `false` until marker-logit readout + operator opt-in. Set
+            `ZEROLLAMA_OPENJEV_CALIBRATED=1` for choice/score `calibrated:true`
+            (DG8). Laya GGUF / CLM heads omit or treat as calibrated System-1 —
+            still gate on `probabilities`, not this flag alone.
         action:
           $ref: "#/components/schemas/DecisionAction"
     ScoreAnswer:
@@ -1622,7 +1643,7 @@ components:
         score:
           type: number
           format: float
-          description: Expected level index (0-based) under calibrated probs
+          description: Expected level index (0-based) under answer probs
         legend:
           type: object
           additionalProperties:
@@ -1637,6 +1658,11 @@ components:
           type: number
           format: float
           description: Entropy-based peakiness; do not reuse cloud Jev confidence thresholds
+        calibrated:
+          type: boolean
+          description: >
+            OpenJev honesty flag (same semantics as ChoiceAnswer.calibrated).
+            `ZEROLLAMA_OPENJEV_CALIBRATED=1` for score `calibrated:true` (DG8).
         action:
           $ref: "#/components/schemas/DecisionAction"
     NoulAnswer:
@@ -1656,15 +1682,25 @@ components:
           type: number
           format: float
           description: max(noul, 1−noul); prefer thresholding `noul` itself for yes/no policy
+        calibrated:
+          type: boolean
+          description: >
+            OpenJev honesty flag for noul. Requires both
+            `ZEROLLAMA_OPENJEV_CALIBRATED=1` and `ZEROLLAMA_OPENJEV_NOUL_CALIBRATED=1`
+            (DG9); otherwise `false` even when choice/score are calibrated.
+            Optional `ZEROLLAMA_OPENJEV_NOUL_BIAS` subtracts from the positive logit
+            before softmax.
         action:
           $ref: "#/components/schemas/DecisionAction"
     DecisionsResponse:
       type: object
       description: >
-        Calibrated typed answers keyed by question_id. Each value is one of
+        Typed answers keyed by question_id. Each value is one of
         ChoiceAnswer | ScoreAnswer | NoulAnswer (discriminated by `type`). Extra
-        fields vs Unsloth Desktop (`action`, noul `confidence`) are additive —
-        Jev clients that ignore unknown keys stay compatible.
+        fields vs Unsloth Desktop (`action`, noul `confidence`, OpenJev
+        `calibrated`) are additive — Jev clients that ignore unknown keys stay
+        compatible. OpenJev answers default `calibrated:false` until DG8/DG9 env
+        opt-in; Laya/CLM remain the calibrated System-1 path for production.
       properties:
         model:
           type: string
@@ -4998,16 +5034,19 @@ paths:
                 $ref: "#/components/schemas/InferenceError"
   /v1/decisions:
     post:
-      summary: Typed System-1 decisions (Laya)
+      summary: Typed System-1 decisions (Laya / Jev / OpenJev / CLM)
       description: >
-        Non-autoregressive choice/score/noul answers (LAYA2). WHY not chat: Laya is
-        an encoder + decision head (ModernBERT-class) — one pass, calibrated
-        probabilities, act/escalate. WHY not `/v1/rerank`: RANK pooling returns a
-        single scalar; Laya needs per-MASK logits + act head. Go packs
-        `{state,questions}` (LA16-style); llama-server runs with `--decisions` when
-        GGUF `general.architecture=laya`. Alias `/v1/systemone`. Lab docs:
-        docs/laya-llama-cpp.md. Never confuse with production `:11434` smokes —
-        use lab ports when agents test.
+        Non-autoregressive choice/score/noul answers (LAYA2 / Jev Decision API).
+        WHY not chat: encoder + decision head (or OpenJev marker logits) — one pass,
+        typed probs, act/escalate. WHY not `/v1/rerank`: RANK pooling returns a
+        single scalar; Laya needs per-MASK logits + act head. Public body is
+        `{model,state,questions}` (LA16); Go packs OpenJev `prompt` + `readout.gather`
+        when routing to `ZEROLLAMA_OPENJEV_URL`. Local Laya GGUF uses llama-server
+        `--decisions` when `general.architecture=laya` (patches **0124–0125**).
+        Alias `/v1/systemone`. OpenJev answers include `calibrated` (default false;
+        DG8/DG9 env opt-in). Docs: docs/laya-llama-cpp.md, docs/clm.md,
+        docs/diffusion-gemma-llama-cpp.md. Lab smokes use non-production ports —
+        never bind agent tests to production `:11434` / `:8080` without operator ask.
       operationId: decisionsV1
       requestBody:
         required: true
@@ -5017,7 +5056,7 @@ paths:
               $ref: "#/components/schemas/DecisionsRequest"
       responses:
         "200":
-          description: Calibrated typed answers
+          description: Typed answers (see ChoiceAnswer/ScoreAnswer/NoulAnswer; OpenJev may set calibrated)
           content:
             application/json:
               schema:
@@ -5030,19 +5069,21 @@ paths:
                 $ref: "#/components/schemas/InferenceError"
         "501":
           description: >
-            Runner or GGUF does not support decisions (wrong arch, or llama-server
-            built without patches 0127–0128 / not started with `--decisions`)
+            Runner or GGUF does not support decisions (wrong arch, missing URL for
+            OpenJev/CLM/Laya sidecar, or llama-server built without Laya `--decisions`
+            patches **0124–0125**)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/InferenceError"
   /v1/systemone:
     post:
-      summary: Alias for /v1/decisions
+      summary: Alias for /v1/decisions (Jev / Unsloth Desktop)
       description: >
         Same contract as `/v1/decisions`. WHY alias: Jev/System-1 clients and Unsloth
         Desktop Decision API use `/v1/systemone`; keep one Decider path underneath.
-        Wire caps: ≤64 questions, ≤255 choice options, ≤10 score levels.
+        Wire caps: ≤64 questions, ≤255 choice options, ≤10 score levels. Model names
+        `openjev*` / `diffusiongemma*` route to `ZEROLLAMA_OPENJEV_URL` when set.
       operationId: systemOneV1
       requestBody:
         required: true
@@ -5052,7 +5093,7 @@ paths:
               $ref: "#/components/schemas/DecisionsRequest"
       responses:
         "200":
-          description: Calibrated typed answers
+          description: Typed answers (same as /v1/decisions)
           content:
             application/json:
               schema:
