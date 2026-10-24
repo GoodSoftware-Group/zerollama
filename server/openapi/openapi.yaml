@@ -73,6 +73,12 @@ components:
       description: Local model that endpoint would route to, when one can serve it.
       schema:
         type: string
+    ZerollamaRouteSuggestMissing:
+      description: >
+        Comma-separated fields the client must add before sending the suggested request.
+        Music suggestions set this to `input` (lyrics); the chat text is only a caption.
+      schema:
+        type: string
     ZerollamaRouterReason:
       description: >
         Short reason for the router's choice — `warm`, `best-fit`, `only-candidate`
@@ -1986,7 +1992,17 @@ components:
         body:
           type: object
           additionalProperties: true
-          description: Ready request for `endpoint` (speech reads back the previous assistant reply).
+          description: >
+            Request for `endpoint`. Speech reads back the previous assistant reply.
+            Music sets `instructions` (caption) only; see `incomplete` and `missing`.
+        incomplete:
+          type: boolean
+          description: True when `body` is not ready to send. Music is missing lyrics.
+        missing:
+          type: array
+          items:
+            type: string
+          description: Fields the client must supply. Music lists `input` (lyrics).
     AutoRouteDecision:
       type: object
       description: Deterministic auto-router detail (implicit `auto`) — filters and ranking.
@@ -3413,6 +3429,8 @@ paths:
               $ref: "#/components/headers/ZerollamaRouteSuggestEndpoint"
             X-Zerollama-Route-Suggest-Model:
               $ref: "#/components/headers/ZerollamaRouteSuggestModel"
+            X-Zerollama-Route-Suggest-Missing:
+              $ref: "#/components/headers/ZerollamaRouteSuggestMissing"
           content:
             application/json:
               schema:
@@ -3642,6 +3660,8 @@ paths:
               $ref: "#/components/headers/ZerollamaRouteSuggestEndpoint"
             X-Zerollama-Route-Suggest-Model:
               $ref: "#/components/headers/ZerollamaRouteSuggestModel"
+            X-Zerollama-Route-Suggest-Missing:
+              $ref: "#/components/headers/ZerollamaRouteSuggestMissing"
           content:
             application/json:
               schema:

@@ -36,7 +36,9 @@ type ModalitySuggestion struct {
 	Endpoint    string         `json:"endpoint"`
 	Model       string         `json:"model,omitempty"`       // local model the target surface would route to
 	Unavailable string         `json:"unavailable,omitempty"` // why no local model can serve it
-	Body        map[string]any `json:"body,omitempty"`        // ready request for Endpoint
+	Body        map[string]any `json:"body,omitempty"`        // request for Endpoint; see Incomplete
+	Incomplete  bool           `json:"incomplete,omitempty"`  // body is not ready to send as-is
+	Missing     []string       `json:"missing,omitempty"`     // fields the client must fill (e.g. music lyrics)
 }
 
 var suggestTargets = map[string]struct {
@@ -77,6 +79,11 @@ func (s *Server) attachSuggestion(ctx context.Context, name string, sig autorout
 		sug.Unavailable = err.Error()
 	}
 	sug.Body = suggestionBody(modality, sug.Model, sig)
+	if modality == autoroute.ModalityMusic {
+		// Chat text is a caption, not lyrics. /v1/audio/generations rejects an empty input.
+		sug.Incomplete = true
+		sug.Missing = []string{"input"}
+	}
 	dec.Suggestion = sug
 	if write {
 		metricsRouteSuggest(modality, source)
@@ -184,11 +191,9 @@ func suggestionBody(modality, model string, sig autoroute.Signals) map[string]an
 		}
 		body["input"] = input
 	case autoroute.ModalityMusic:
-		// /v1/audio/generations requires nonempty input (lyrics); Music 3 also uses
-		// instructions as the caption. Mirror the chat text into both so the body is
-		// ready to send (client can still edit lyrics).
+		// instructions is the Music 3 caption. Lyrics (input) are not invented from the
+		// chat turn — attachSuggestion marks the suggestion incomplete instead.
 		body["instructions"] = sig.Text
-		body["input"] = sig.Text
 	}
 	return body
 }

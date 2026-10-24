@@ -123,8 +123,11 @@ routers:
 	if !strings.Contains(musicCaption(dec), "something to study to") {
 		t.Fatalf("music body = %v", dec.Suggestion.Body)
 	}
-	if input, _ := dec.Suggestion.Body["input"].(string); !strings.Contains(input, "something to study to") {
-		t.Fatalf("music lyrics (input) missing: %v", dec.Suggestion.Body)
+	if _, ok := dec.Suggestion.Body["input"]; ok {
+		t.Fatalf("music suggestion must not invent lyrics: %v", dec.Suggestion.Body)
+	}
+	if !dec.Suggestion.Incomplete || len(dec.Suggestion.Missing) != 1 || dec.Suggestion.Missing[0] != "input" {
+		t.Fatalf("music suggestion should be incomplete: %+v", dec.Suggestion)
 	}
 
 	// Turn 2 is sticky (decider batch skipped) — the modality question alone is still asked.

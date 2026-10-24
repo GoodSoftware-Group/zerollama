@@ -255,12 +255,13 @@ func (s *Server) routeAvailability(ctx context.Context, sig autoroute.Signals) a
 func estimateTokens(bytes int) int { return bytes / 4 }
 
 func chatRouteSignals(c *gin.Context, req *api.ChatRequest) autoroute.Signals {
+	// BeforeRuntimeProxy stays false here. ChatHandler calls this after the runtime
+	// proxy; routeSignalsFromBody (route-ahead and /v1/route) sets the flag.
 	sig := autoroute.Signals{
-		Surface:            autoroute.SurfaceChat,
-		Text:               lastUserMessageText(req.Messages),
-		HasVideo:           modality.ChatRequestHasVideoPayload(req),
-		HasTools:           len(req.Tools) > 0,
-		BeforeRuntimeProxy: true, // live chat routes ahead of the runtime proxy
+		Surface:  autoroute.SurfaceChat,
+		Text:     lastUserMessageText(req.Messages),
+		HasVideo: modality.ChatRequestHasVideoPayload(req),
+		HasTools: len(req.Tools) > 0,
 	}
 	n := 0
 	for _, msg := range req.Messages {
@@ -320,9 +321,7 @@ func generateRouteSignals(c *gin.Context, req *api.GenerateRequest) autoroute.Si
 		sig.SessionKey = "key:" + k
 	}
 	sig.Fresh = routeFresh(req.Options)
-	// Live /api/generate text routes ahead of the runtime proxy; image surfaces do not.
-	if sig.Surface == autoroute.SurfaceGenerate {
-		sig.BeforeRuntimeProxy = true
-	}
+	// BeforeRuntimeProxy stays false. GenerateHandler calls this after the runtime
+	// proxy; routeSignalsFromBody sets the flag for text generate.
 	return sig
 }

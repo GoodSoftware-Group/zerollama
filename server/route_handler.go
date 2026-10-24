@@ -148,7 +148,11 @@ func routeSignalsFromBody(c *gin.Context, body []byte, surface autoroute.Surface
 		if err != nil {
 			return autoroute.Signals{}, err
 		}
-		return chatRouteSignals(c, req), nil
+		sig := chatRouteSignals(c, req)
+		// /api/chat and /v1/chat/completions route ahead of the runtime proxy. Dry runs
+		// use this same builder, so they must admit sidecar models the live path can serve.
+		sig.BeforeRuntimeProxy = true
+		return sig, nil
 	}
 
 	var req api.GenerateRequest
@@ -158,7 +162,11 @@ func routeSignalsFromBody(c *gin.Context, body []byte, surface autoroute.Surface
 	if surface == autoroute.SurfaceImage || surface == autoroute.SurfaceImageEdit {
 		c.Set(middleware.CtxKeyRouteSurface, string(surface))
 	}
-	return generateRouteSignals(c, &req), nil
+	sig := generateRouteSignals(c, &req)
+	if sig.Surface.IsText() {
+		sig.BeforeRuntimeProxy = true
+	}
+	return sig, nil
 }
 
 // parseRouteChat accepts native /api/chat bodies and OpenAI chat-completions bodies
@@ -172,11 +180,7 @@ func parseRouteChat(body []byte) (*api.ChatRequest, error) {
 	var oreq openai.ChatCompletionRequest
 	oerr := json.Unmarshal(body, &oreq)
 	if oerr == nil && openAIChatNeedsConversion(body, oreq) {
-		req, err := openai.FromChatRequest(oreq)
-		if err != nil {
-			return nil, err
-		}
-		return req, nil
+		return fromOpenAIForRoute(oreq)
 	}
 	var native api.ChatRequest
 	nativeErr := json.Unmarshal(body, &native)
@@ -184,9 +188,24 @@ func parseRouteChat(body []byte) (*api.ChatRequest, error) {
 		return &native, nil
 	}
 	if oerr == nil {
-		return openai.FromChatRequest(oreq)
+		return fromOpenAIForRoute(oreq)
 	}
 	return nil, errors.Join(nativeErr, oerr)
+}
+
+// fromOpenAIForRoute converts an OpenAI chat body into routing signals.
+// n>1, store:true and an unsupported service_tier are handler 400s; they do not change
+// which model can serve the request. Clearing them here lets route-ahead still rewrite
+// the model before the proxy. The original body is what the handler validates.
+func fromOpenAIForRoute(oreq openai.ChatCompletionRequest) (*api.ChatRequest, error) {
+	if oreq.N != nil && *oreq.N > 1 {
+		oreq.N = nil
+	}
+	if oreq.Store != nil && *oreq.Store {
+		oreq.Store = nil
+	}
+	oreq.ServiceTier = ""
+	return openai.FromChatRequest(oreq)
 }
 
 // openAIChatNeedsConversion detects fields the native ChatRequest unmarshal would ignore.

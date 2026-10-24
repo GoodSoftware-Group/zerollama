@@ -222,6 +222,9 @@ func stampRouterHeaders(c *gin.Context, dec *RouterDecision) {
 		if sug.Model != "" {
 			c.Header("X-Zerollama-Route-Suggest-Model", sug.Model)
 		}
+		if len(sug.Missing) > 0 {
+			c.Header("X-Zerollama-Route-Suggest-Missing", strings.Join(sug.Missing, ","))
+		}
 	}
 	if dec.Fallback {
 		c.Header("X-Zerollama-Router-Fallback", "true")

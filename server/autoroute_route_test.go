@@ -250,6 +250,68 @@ func TestGenerateRouteSignalsSurface(t *testing.T) {
 	if sig.Surface != autoroute.SurfaceGenerate || sig.PromptTokens != 1000 || sig.ReplyTokens != 64 {
 		t.Fatalf("text sig = %+v", sig)
 	}
+	if sig.BeforeRuntimeProxy {
+		t.Fatal("generateRouteSignals is also used after the runtime proxy and must not admit sidecar models")
+	}
+}
+
+func TestRouteSignalsFromBodySetsProxyEligibility(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(NewRecorder())
+
+	chat, err := routeSignalsFromBody(c, []byte(`{"messages":[{"role":"user","content":"hi"}]}`), autoroute.SurfaceChat)
+	if err != nil || chat.Surface != autoroute.SurfaceChat || !chat.BeforeRuntimeProxy {
+		t.Fatalf("chat dry-run: %+v %v", chat, err)
+	}
+	gen, err := routeSignalsFromBody(c, []byte(`{"prompt":"hi"}`), autoroute.SurfaceGenerate)
+	if err != nil || gen.Surface != autoroute.SurfaceGenerate || !gen.BeforeRuntimeProxy {
+		t.Fatalf("generate dry-run: %+v %v", gen, err)
+	}
+	img, err := routeSignalsFromBody(c, []byte(`{"prompt":"cat","width":64}`), "")
+	if err != nil || img.Surface != autoroute.SurfaceImage || img.BeforeRuntimeProxy {
+		t.Fatalf("image generate is not a route-ahead text path: %+v %v", img, err)
+	}
+}
+
+func TestParseRouteChatIgnoresHandlerRejects(t *testing.T) {
+	// n>1, store and service_tier 400 at the handler. Routing still has to see tools,
+	// tool_choice and max_tokens so route-ahead runs before the proxy.
+	body := []byte(`{
+		"model":"auto","n":2,"store":true,"service_tier":"flex","max_tokens":32,
+		"prompt_cache_key":"sess-1",
+		"functions":[{"name":"get_weather","parameters":{"type":"object","properties":{}}}],
+		"messages":[{"role":"user","content":"hi"}]
+	}`)
+	req, err := parseRouteChat(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Tools) != 1 || req.Tools[0].Function.Name != "get_weather" {
+		t.Fatalf("tools = %#v", req.Tools)
+	}
+	sig := chatRouteSignals(ginContext(t), req)
+	if !sig.HasTools || sig.ReplyTokens != 32 || sig.SessionKey != "key:sess-1" {
+		t.Fatalf("sig = %+v", sig)
+	}
+
+	none := []byte(`{
+		"n":4,"tool_choice":"none",
+		"functions":[{"name":"get_weather","parameters":{"type":"object","properties":{}}}],
+		"messages":[{"role":"user","content":"hi"}]
+	}`)
+	req, err = parseRouteChat(none)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Tools) != 0 {
+		t.Fatalf("tool_choice none kept tools: %#v", req.Tools)
+	}
+}
+
+func ginContext(t *testing.T) *gin.Context {
+	t.Helper()
+	c, _ := gin.CreateTestContext(NewRecorder())
+	return c
 }
 
 func TestChatRouteSignals(t *testing.T) {
@@ -266,6 +328,9 @@ func TestChatRouteSignals(t *testing.T) {
 	sig := chatRouteSignals(c, req)
 	if !sig.HasImages || !sig.HasAudio || !sig.WantsThink || sig.Text != "and listen" {
 		t.Fatalf("sig = %+v", sig)
+	}
+	if sig.BeforeRuntimeProxy {
+		t.Fatal("chatRouteSignals is also used after the runtime proxy and must not admit sidecar models")
 	}
 
 	req.ThinkFromAlias = true
