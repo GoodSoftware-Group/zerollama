@@ -4,8 +4,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-REPO_SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
-sys.path.insert(0, str(REPO_SCRIPTS))
+REPO_VIDEO = Path(__file__).resolve().parents[2] / "scripts" / "video"
+sys.path.insert(0, str(REPO_VIDEO))
 
 from wan_torch_compat import (  # noqa: E402
     _path_may_shadow_cudnn,

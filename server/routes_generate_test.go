@@ -1069,25 +1069,26 @@ func TestGenerate(t *testing.T) {
 		}
 	})
 
-	t.Run("missing capabilities suffix", func(t *testing.T) {
+	t.Run("suffix without insert uses WrapFIM", func(t *testing.T) {
+		// Prompt-only templates ignore .Suffix for capability checks; WrapFIM still
+		// infills. Require insert only when the template itself implements FIM.
+		noStream := false
 		w := createRequest(t, s.GenerateHandler, api.GenerateRequest{
 			Model:  "test",
 			Prompt: "def add(",
 			Suffix: "    return c",
+			Stream: &noStream,
 		})
-
-		if w.Code != http.StatusBadRequest {
-			t.Errorf("expected status 400, got %d", w.Code)
-		}
-
-		if diff := cmp.Diff(w.Body.String(), `{"error":"registry.ollama.ai/library/test:latest does not support insert"}`); diff != "" {
-			t.Errorf("mismatch (-got +want):\n%s", diff)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected status 200 (WrapFIM path), got %d %s", w.Code, w.Body.String())
 		}
 	})
 
 	t.Run("load model", func(t *testing.T) {
+		noStream := false
 		w := createRequest(t, s.GenerateHandler, api.GenerateRequest{
-			Model: "test",
+			Model:  "test",
+			Stream: &noStream,
 		})
 
 		if w.Code != http.StatusOK {

@@ -20,6 +20,7 @@ def test_api_generate_accepts_json_body():
     )
     eng = MagicMock()
     eng.health.return_value = {"status": "ok"}
+    eng.resolve_num_ctx_for_request.return_value = 2048
     eng.generate.return_value = GenerateResult(
         content="pong", request_id="t1", llama={}
     )

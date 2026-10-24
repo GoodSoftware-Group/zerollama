@@ -1143,7 +1143,8 @@ class InferenceEngine:
             return self._server
         if self._server is not None and not self._server.is_running():
             crash = getattr(self._server, "_exit_code", None)
-            if crash not in (None, 0):
+            # Only treat real int exit codes as crashes (MagicMock attrs are truthy).
+            if isinstance(crash, int) and crash != 0:
                 from runtime.infer_trace import infer_trace
 
                 infer_trace(

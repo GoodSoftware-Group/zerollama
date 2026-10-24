@@ -862,6 +862,17 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		Stream: streaming,
 	})
 
+	// WHY before beginChatStream: once the stream commits HTTP 200, capability 400s
+	// can only ride as NDJSON error chunks (looks like success to many clients).
+	if err := m.CheckCapabilities(caps...); err != nil {
+		if errors.Is(err, errCapabilityCompletion) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": textSurfaceWrongModalityMessage(m, req.Model, "generate")})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	// WHY before scheduleRunner: cold MLX loads can exceed client read timeouts;
 	// keepalives must cover WaitUntilRunning, not only post-ready prefill.
 	var streamKeepalive *chatStreamSession
