@@ -380,8 +380,10 @@ func TestGenerateChat(t *testing.T) {
 	})
 
 	t.Run("load model", func(t *testing.T) {
+		noStream := false
 		w := createRequest(t, s.ChatHandler, api.ChatRequest{
-			Model: "test",
+			Model:  "test",
+			Stream: &noStream,
 		})
 
 		if w.Code != http.StatusOK {
@@ -2228,6 +2230,8 @@ func TestGenerateWithImages(t *testing.T) {
 		"llama.embedding_length":        uint32(4096),
 		"llama.attention.head_count":    uint32(32),
 		"llama.attention.head_count_kv": uint32(8),
+		// SGLang #32914: image requests require vision capability.
+		"llama.vision.block_count":      uint32(1),
 		"tokenizer.ggml.tokens":         []string{""},
 		"tokenizer.ggml.scores":         []float32{0},
 		"tokenizer.ggml.token_type":     []int32{0},

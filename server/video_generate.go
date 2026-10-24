@@ -497,6 +497,9 @@ func (s *Server) videoJobStatusJSON(ctx context.Context, id string) ([]byte, err
 	if isDeferredTrainingJobID(id) {
 		return s.deferredTrainingJobStatusJSON(ctx, id)
 	}
+	if s == nil || s.training == nil {
+		return nil, errors.New("training client unavailable")
+	}
 	b, err := s.training.JobTrainingStatusJSON(ctx, id)
 	if err != nil {
 		return nil, err

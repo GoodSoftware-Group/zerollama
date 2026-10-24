@@ -17,6 +17,8 @@ from runtime.worker.libllama_ctypes import (
 
 def test_save_slot_cache_disk_writes_file(tmp_path, monkeypatch):
     monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE_ROOT", str(tmp_path))
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE", "1")
+    monkeypatch.setenv("ZEROLLAMA_LLAMA_CACHE_DISK", "1")
     model_hash = build_model_hash(target_model_path="/m.gguf")
     lib = MagicMock()
     lib.llama_get_memory.return_value = ctypes.c_void_p(0x42)
@@ -68,6 +70,7 @@ def test_complete_disk_restore_skips_clear(monkeypatch, tmp_path):
 
     session = MagicMock(spec=LlamaLoadedSession)
     session.n_seq_max = 2
+    session.kv_unified = False
     session._ctx = ctypes.c_void_p(0x1000)
     session._model = MagicMock()
     session._vocab = MagicMock()
@@ -116,7 +119,7 @@ def test_complete_disk_restore_skips_clear(monkeypatch, tmp_path):
                                 with patch.object(
                                     session,
                                     "_resolve_decode_current_pos",
-                                    side_effect=[0, 20],
+                                    side_effect=[0, 20, 20, 20],
                                 ):
                                     out = LlamaLoadedSession.complete(
                                         session,
@@ -144,6 +147,7 @@ def test_complete_cache_prompt_false_skips_disk_restore(monkeypatch, tmp_path):
 
     session = MagicMock(spec=LlamaLoadedSession)
     session.n_seq_max = 2
+    session.kv_unified = False
     session._ctx = ctypes.c_void_p(0x1000)
     session._model = MagicMock()
     session._vocab = MagicMock()

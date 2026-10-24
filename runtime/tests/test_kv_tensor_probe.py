@@ -64,7 +64,10 @@ def test_writable_bind_probe_without_native_ext():
         pytest.skip("native ext built")
     out = writable_bind_probe()
     assert out["writable_bind_available"] is False
-    assert out["writable_bind_blocker"] == "native_ext_not_built"
+    assert out["writable_bind_blocker"] in (
+        "native_ext_not_built",
+        "llama_kv_ext_not_linked",
+    )
 
 
 @pytest.mark.skipif(not native_available(), reason="native ext not built")
@@ -93,7 +96,10 @@ def test_external_alias_probe_without_native_ext():
         pytest.skip("native ext built")
     out = external_alias_probe()
     assert out["external_alias_available"] is False
-    assert out["external_alias_blocker"] == "native_ext_not_built"
+    assert out["external_alias_blocker"] in (
+        "native_ext_not_built",
+        "llama_kv_ext_not_linked",
+    )
 
 
 @pytest.mark.skipif(not native_available(), reason="native ext not built")

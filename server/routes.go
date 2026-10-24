@@ -444,7 +444,8 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 	}
 
 	if err := model.CheckCapabilities(caps...); err != nil {
-		return nil, nil, nil, nil, func() {}, fmt.Errorf("%s %w", name, err)
+		// Return the model so callers can build modality-aware 400s (embedding vs chat).
+		return nil, model, nil, nil, func() {}, fmt.Errorf("%s %w", name, err)
 	}
 
 	// Deprecated runner override option; ignore if present.
@@ -3796,6 +3797,17 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	}
 	ensureQoSDefaults(req.Options, chatHints)
 	schedCtx := ctxWithMLXScheduleHints(c.Request.Context(), chatHints)
+
+	// WHY before beginChatStream: once the stream commits HTTP 200, capability 400s
+	// can only ride as NDJSON error chunks (looks like success to many clients).
+	if err := m.CheckCapabilities(caps...); err != nil {
+		if errors.Is(err, errCapabilityCompletion) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": textSurfaceWrongModalityMessage(m, req.Model, "chat")})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	// DebugRenderOnly: render template without loading a runner. Must come before
 	// scheduleRunner so that debug chat requests never block on GPU scheduling.

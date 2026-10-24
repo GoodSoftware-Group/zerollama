@@ -274,8 +274,15 @@ func (b *blobDownload) run(ctx context.Context, requestURL *url.URL, opts *regis
 	if err != nil {
 		return err
 	}
-	if err := ssrf.ValidateURL(directURL); err != nil {
-		return fmt.Errorf("blob redirect: %w", err)
+	// Same-host redirects (and --insecure local registries) are allowed; SSRF
+	// still blocks cross-host jumps onto private networks.
+	skipSSRF := (opts != nil && opts.Insecure) ||
+		(directURL != nil && requestURL != nil &&
+			strings.EqualFold(directURL.Hostname(), requestURL.Hostname()))
+	if !skipSSRF {
+		if err := ssrf.ValidateURL(directURL); err != nil {
+			return fmt.Errorf("blob redirect: %w", err)
+		}
 	}
 
 	g, inner := errgroup.WithContext(ctx)
