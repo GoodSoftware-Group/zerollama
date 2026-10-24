@@ -335,8 +335,11 @@ func TestRouteHandlerNonChatSurfaces(t *testing.T) {
 	if code != http.StatusOK || !strings.HasPrefix(out["model"].(string), "embed-a") || out["surface"] != "embed" {
 		t.Fatalf("embed: %d %v", code, out)
 	}
+	// RANK pooling (llama.cpp enum 4) — ordinary mean-pool embedders cannot serve /v1/rerank.
+	// Create after the embed check: RANK models also CanEmbed, so both would trip pinned-surface ambiguity.
+	createRouteTestModelKV(t, s, "rerank-a", routePlainTemplate, ggml.KV{"llama.pooling_type": uint32(4)})
 	code, out = postRoute(t, s, `{"model":"auto","surface":"rerank","query":"q","documents":["a"]}`)
-	if code != http.StatusOK || !strings.HasPrefix(out["model"].(string), "embed-a") {
+	if code != http.StatusOK || !strings.HasPrefix(out["model"].(string), "rerank-a") {
 		t.Fatalf("rerank: %d %v", code, out)
 	}
 	for _, body := range []string{
