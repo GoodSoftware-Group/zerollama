@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"slices"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/llm"
+	"github.com/ollama/ollama/server/autoroute"
 )
 
 const defaultRouterActivation = 0.15
@@ -34,6 +37,27 @@ type RouterSpec struct {
 	Policies            []RouterPolicy    `yaml:"policies" json:"policies"`
 	Candidates          []RouterCandidate `yaml:"candidates" json:"candidates"`
 	KNN                 *RouterKNN        `yaml:"knn" json:"knn"`
+
+	// classifier: jev (AR4) — a local /v1/decisions model answers one choice question
+	// over Policies. Decider is the decisions model; DeciderTimeout bounds each call
+	// (default 150ms); OnDeciderError is "fallback" (default) or "fail".
+	Decider        string `yaml:"decider" json:"decider,omitempty"`
+	DeciderTimeout string `yaml:"decider_timeout" json:"decider_timeout,omitempty"`
+	OnDeciderError string `yaml:"on_decider_error" json:"on_decider_error,omitempty"`
+
+	// Multi-question jev (AR5, opt-in: only when Questions is non-empty). Answers drive a
+	// fit score over Candidates (strengths, difficulty bands, tiers) on top of the
+	// deterministic engine; see router_jev_multi.go and docs/auto-router.md §7.
+	Questions        []RouterQuestion `yaml:"questions" json:"questions,omitempty"`
+	Weights          *RouterWeights   `yaml:"weights" json:"weights,omitempty"`
+	EscalateBelow    float64          `yaml:"escalate_below" json:"escalate_below,omitempty"`         // default 0.55
+	EscalateAt       float64          `yaml:"escalate_at" json:"escalate_at,omitempty"`               // difficulty level (1-based); 0 = off
+	ActEscalateBelow float64          `yaml:"act_escalate_below" json:"act_escalate_below,omitempty"` // Laya act head; default 0.5
+
+	// AR8 cross-modal advisory: the choice question whose answer names the output modality
+	// (default "output_modality") and the calibrated probability needed to suggest (0.5).
+	ModalityQuestion string  `yaml:"modality_question" json:"modality_question,omitempty"`
+	SuggestThreshold float64 `yaml:"suggest_threshold" json:"suggest_threshold,omitempty"`
 }
 
 type RouterPolicy struct {
@@ -44,6 +68,12 @@ type RouterPolicy struct {
 type RouterCandidate struct {
 	Model  string   `yaml:"model" json:"model"`
 	Labels []string `yaml:"labels" json:"labels"`
+
+	// AR5 multi-question jev policy.
+	Tier          string              `yaml:"tier" json:"tier,omitempty"`                     // low | mid | high — escalation restricts to high
+	Strengths     map[string][]string `yaml:"strengths" json:"strengths,omitempty"`           // question id → choice labels this model is good at
+	MinDifficulty float64             `yaml:"min_difficulty" json:"min_difficulty,omitempty"` // 1-based difficulty level band
+	MaxDifficulty float64             `yaml:"max_difficulty" json:"max_difficulty,omitempty"`
 }
 
 type RouterDecision struct {
@@ -55,7 +85,26 @@ type RouterDecision struct {
 	Scores            []RouterLabelScore `json:"scores,omitempty"`
 	Neighbors         []RouterNeighbor   `json:"neighbors,omitempty"`
 	NearestSimilarity float64            `json:"nearest_similarity,omitempty"`
-	LatencyMs         int64              `json:"latency_ms"`
+	// Reason is a short why for the choice (warm, best-fit, only-candidate, surface-fallback).
+	Reason string `json:"reason,omitempty"`
+	// Auto carries the full deterministic decision (filters + ranking) for implicit "auto".
+	Auto *autoroute.Decision `json:"auto,omitempty"`
+	// Decider / Calibrated describe a classifier: jev decision.
+	Decider    string `json:"decider,omitempty"`
+	Calibrated *bool  `json:"calibrated,omitempty"`
+	// Escalated / Signals describe a multi-question jev decision (AR5): whether the pick
+	// was restricted to tier: high, and the summarised answers.
+	Escalated bool           `json:"escalated,omitempty"`
+	Signals   map[string]any `json:"signals,omitempty"`
+	// Sticky / Cached mark a reused pick (AR6); StickyBreak says why a conversation's
+	// remembered model could not be kept this turn.
+	Sticky      bool   `json:"sticky,omitempty"`
+	Cached      bool   `json:"cached,omitempty"`
+	StickyBreak string `json:"sticky_break,omitempty"`
+	// Suggestion is the AR8 cross-modal advisory (chat turns that want image / speech /
+	// video / music). Advisory only — the chat request is still served as text.
+	Suggestion *ModalitySuggestion `json:"suggestion,omitempty"`
+	LatencyMs  int64               `json:"latency_ms"`
 }
 
 type RouterLabelScore struct {
@@ -67,17 +116,52 @@ type RouterLabelScore struct {
 	Active         bool    `json:"active"`
 }
 
+// MarshalJSON writes a non-finite log_prob (a label the classifier never scored, or a
+// probability rounded to 0 by a jev decider) as null. WHY: encoding/json rejects ±Inf/NaN,
+// and the failure surfaced as a 200 with an empty body on /v1/route (findings Finding 15).
+func (s RouterLabelScore) MarshalJSON() ([]byte, error) {
+	// Same field order as the struct tags, so finite values encode exactly as before.
+	out := struct {
+		Label          string   `json:"label"`
+		LogProb        *float64 `json:"log_prob"`
+		RelevanceScore float64  `json:"relevance_score,omitempty"`
+		Softmax        float64  `json:"softmax"`
+		NumTokens      int      `json:"num_tokens"`
+		Active         bool     `json:"active"`
+	}{Label: s.Label, RelevanceScore: s.RelevanceScore, Softmax: s.Softmax, NumTokens: s.NumTokens, Active: s.Active}
+	if !math.IsInf(s.LogProb, 0) && !math.IsNaN(s.LogProb) {
+		out.LogProb = &s.LogProb
+	}
+	return json.Marshal(out)
+}
+
 type routerScoreFn func(ctx context.Context, classifier, prompt string, candidates []string, lengthNorm bool) ([]llm.CandidateScore, error)
 
 type routerEmbedFn func(ctx context.Context, model, text string) ([]float32, error)
 
 type routerRerankFn func(ctx context.Context, model, query string, docs []string) ([]llm.RerankHit, error)
 
+// routerJevFn asks decider one Jev choice question (body is a complete /v1/decisions
+// request) and returns the chosen label, per-label probabilities, and whether the decider
+// reports them as calibrated.
+type routerJevFn func(ctx context.Context, decider string, body []byte) (choice string, probs map[string]float64, calibrated bool, err error)
+
+// routerBackends bundles the model calls a router tier may make.
+type routerBackends struct {
+	score  routerScoreFn
+	embed  routerEmbedFn
+	rerank routerRerankFn
+	jev    routerJevFn
+}
+
 var (
 	routerFileMu    sync.Mutex
 	routerFilePath  string
 	routerFileMod   time.Time
 	routerFileCache *RouterFile
+
+	routerFileErrPath string // last invalid router.yaml logged (path + mtime)
+	routerFileErrMod  time.Time
 )
 
 func loadRouterFile() (*RouterFile, error) {
@@ -103,7 +187,14 @@ func loadRouterFile() (*RouterFile, error) {
 	}
 	var file RouterFile
 	if err := yaml.Unmarshal(raw, &file); err != nil {
-		return nil, fmt.Errorf("router config: %w", err)
+		err = fmt.Errorf("router config %s: %w", path, err)
+		// WHY log once per file version: a syntax error makes every router vanish (lookups
+		// treat the name as a plain model), and this runs on every routed request.
+		if routerFileErrPath != path || !st.ModTime().Equal(routerFileErrMod) {
+			slog.Warn("router.yaml invalid; routers disabled until fixed", "error", err)
+			routerFileErrPath, routerFileErrMod = path, st.ModTime()
+		}
+		return nil, err
 	}
 	if file.Routers == nil {
 		file.Routers = map[string]RouterSpec{}
@@ -195,6 +286,11 @@ func buildRouterPrompt(spec RouterSpec, user string) string {
 }
 
 func decideRouter(ctx context.Context, name string, spec RouterSpec, user string, score routerScoreFn, embed routerEmbedFn, rerank routerRerankFn) (RouterDecision, error) {
+	return decideRouterWith(ctx, name, spec, user, routerBackends{score: score, embed: embed, rerank: rerank})
+}
+
+func decideRouterWith(ctx context.Context, name string, spec RouterSpec, user string, be routerBackends) (RouterDecision, error) {
+	score, embed, rerank := be.score, be.embed, be.rerank
 	start := time.Now()
 	dec := RouterDecision{
 		Router:     name,
@@ -233,6 +329,9 @@ func decideRouter(ctx context.Context, name string, spec RouterSpec, user string
 	}
 	if routerIsRerank(spec) {
 		return decideRouterRerank(ctx, name, spec, user, rerank, &dec, fallback, finish)
+	}
+	if routerIsJev(spec) {
+		return decideRouterJev(ctx, spec, user, be.jev, &dec, fallback, finish)
 	}
 
 	thresh := spec.ActivationThreshold

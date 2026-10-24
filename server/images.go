@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ollama/ollama/api"
@@ -229,29 +230,88 @@ func ggmlFloatGenerationDefault(v any) (float64, bool) {
 }
 
 // Capabilities returns the capabilities that the model supports
+// ggufCapabilityFlags are the GGUF keys Capabilities reads from the model file.
+type ggufCapabilityFlags struct {
+	embedding, decision, vision, audio bool
+	rerank                             bool // pooling_type == RANK (llama.cpp enum 4)
+}
+
+type ggufCapabilityKey struct {
+	path        string
+	size, mtime int64
+}
+
+// ggufCapabilityCache memoises ggufCapabilityFlagsFor.
+//
+// WHY: Capabilities runs on every scheduled request (CheckCapabilities) and gguf.Open
+// reads the whole KV section — 150k vocab strings included — just to test four keys:
+// ~17.5 ms per call for qwen3:8b, ~6.5 ms for Laya (docs/auto-router-findings.md
+// Finding 22). Size + mtime re-validate, so a rewritten file is read again.
+var ggufCapabilityCache struct {
+	sync.Mutex
+	m map[ggufCapabilityKey]ggufCapabilityFlags
+}
+
+const ggufCapabilityCacheMax = 256
+
+func ggufCapabilityFlagsFor(path string) (ggufCapabilityFlags, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return ggufCapabilityFlags{}, err
+	}
+	key := ggufCapabilityKey{path, st.Size(), st.ModTime().UnixNano()}
+	ggufCapabilityCache.Lock()
+	flags, ok := ggufCapabilityCache.m[key]
+	ggufCapabilityCache.Unlock()
+	if ok {
+		return flags, nil
+	}
+
+	f, err := gguf.Open(path)
+	if err != nil {
+		return ggufCapabilityFlags{}, err
+	}
+	defer f.Close()
+	dt := f.KeyValue("decision.type")
+	pool := f.KeyValue("pooling_type")
+	flags = ggufCapabilityFlags{
+		embedding: pool.Valid(),
+		rerank:    pool.Valid() && pool.Uint() == 4, // llama.cpp pooling.TypeRANK
+		decision:  dt.Valid() && strings.TrimSpace(dt.String()) != "",
+		vision:    f.KeyValue("vision.block_count").Valid(),
+		audio:     f.KeyValue("audio.block_count").Valid(),
+	}
+
+	ggufCapabilityCache.Lock()
+	if ggufCapabilityCache.m == nil || len(ggufCapabilityCache.m) >= ggufCapabilityCacheMax {
+		ggufCapabilityCache.m = make(map[ggufCapabilityKey]ggufCapabilityFlags)
+	}
+	ggufCapabilityCache.m[key] = flags
+	ggufCapabilityCache.Unlock()
+	return flags, nil
+}
+
 func (m *Model) Capabilities() []model.Capability {
 	capabilities := []model.Capability{}
 
 	if m.ModelPath != "" {
-		f, err := gguf.Open(m.ModelPath)
+		flags, err := ggufCapabilityFlagsFor(m.ModelPath)
 		if err == nil {
-			defer f.Close()
-
-			if f.KeyValue("pooling_type").Valid() {
+			if flags.embedding {
 				capabilities = append(capabilities, model.CapabilityEmbedding)
 			} else {
 				// If no embedding is specified, we assume the model supports completion
 				capabilities = append(capabilities, model.CapabilityCompletion)
 			}
 			// Clef (and other joint-head) GGUFs advertise {arch}.decision.type.
-			if dt := f.KeyValue("decision.type"); dt.Valid() && strings.TrimSpace(dt.String()) != "" {
+			if flags.decision {
 				capabilities = append(capabilities, model.CapabilityDecision)
 			}
-			if f.KeyValue("vision.block_count").Valid() {
+			if flags.vision {
 				capabilities = append(capabilities, model.CapabilityVision)
 				capabilities = append(capabilities, model.CapabilityVideo)
 			}
-			if f.KeyValue("audio.block_count").Valid() {
+			if flags.audio {
 				capabilities = append(capabilities, model.CapabilityAudio)
 			}
 		} else {

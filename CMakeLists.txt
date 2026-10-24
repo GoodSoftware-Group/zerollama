@@ -41,6 +41,11 @@ set(GGML_LLAMAFILE ON)
 set(GGML_CUDA_PEER_MAX_BATCH_SIZE 128)
 set(GGML_CUDA_GRAPHS ON)
 set(GGML_CUDA_FA ON)
+# b11351: ggml-cuda / ggml-hip FlashAttention instance lists require GGML_CUDA_FA_QUANTS.
+# Upstream defines it in ggml/CMakeLists.txt, which this build skips (it adds ggml/src
+# directly), so mirror the upstream default here or CUDA / HIP configure fails.
+set(GGML_CUDA_FA_QUANTS "q4_0-q4_0;q8_0-q8_0;f16-f16;bf16-bf16" CACHE STRING
+    "ggml: FlashAttention K-V quant combinations to compile (comma/semicolon list or 'all')")
 set(GGML_CUDA_COMPRESSION_MODE default)
 
 if((CMAKE_OSX_ARCHITECTURES AND NOT CMAKE_OSX_ARCHITECTURES MATCHES "arm64")

@@ -5925,14 +5925,17 @@ void server_routes::init_routes() {
             ctx_server.laya_weights = std::move(weights);
         }
 
-        json results = json::array();
-        for (const auto & in : inputs) {
-            laya_decision_result out;
+        // One batched encode for every question in the request, then the CPU head per input.
+        std::vector<laya_decision_result> outs;
+        {
             std::string err;
-            if (!laya_decide(lctx, *ctx_server.laya_weights, in, out, err)) {
+            if (!laya_decide_batch(lctx, *ctx_server.laya_weights, inputs, outs, err)) {
                 res->error(format_error_response(err, ERROR_TYPE_SERVER));
                 return res;
             }
+        }
+        json results = json::array();
+        for (const auto & out : outs) {
             results.push_back({
                 {"logits",   out.logits},
                 {"act",      out.act},

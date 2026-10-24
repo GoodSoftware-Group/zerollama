@@ -1089,7 +1089,8 @@ func TestResolveRunModel_UsesSignInHookForCloudModel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
-			fmt.Fprint(w, `{"models":[]}`)
+			// Picker reflects live inventory only (no phantom cloud recommendations).
+			fmt.Fprint(w, `{"models":[{"name":"glm-5:cloud","model":"glm-5:cloud","remote_model":"glm-5","details":{}}]}`)
 		case "/api/status":
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"error":"not found"}`)
@@ -1713,7 +1714,8 @@ func TestLaunchIntegration_EditorConfigureMultiAllFailuresKeepsExistingAndSkipsL
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/tags":
-			fmt.Fprint(w, `{"models":[]}`)
+			// Inventory must be non-empty for the configure picker to open.
+			fmt.Fprint(w, `{"models":[{"name":"llama3.2:latest","model":"llama3.2:latest","details":{}}]}`)
 		case "/api/show":
 			var req apiShowRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
@@ -1721,6 +1723,8 @@ func TestLaunchIntegration_EditorConfigureMultiAllFailuresKeepsExistingAndSkipsL
 			case "missing-local-a", "missing-local-b":
 				w.WriteHeader(http.StatusNotFound)
 				fmt.Fprint(w, `{"error":"model not found"}`)
+			case "llama3.2", "llama3.2:latest":
+				fmt.Fprint(w, `{"modelfile":"FROM llama3.2"}`)
 			default:
 				http.NotFound(w, r)
 			}

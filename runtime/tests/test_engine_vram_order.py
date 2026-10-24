@@ -40,6 +40,8 @@ def test_vram_check_runs_after_stop_server(engine, tmp_path: Path):
 
     replacement = MagicMock()
     replacement.is_running.return_value = False
+    # Avoid MagicMock _exit_code truthiness re-triggering crash reload/stop.
+    replacement._exit_code = None
 
     def stop_tracked():
         order.append("stop")

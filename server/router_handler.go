@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/llm"
+	"github.com/ollama/ollama/server/autoroute"
 	"github.com/ollama/ollama/types/model"
 )
 
@@ -34,6 +36,9 @@ func (s *Server) scoreRouterPolicies(ctx context.Context, classifier, prompt str
 		Prompt:          prompt,
 		Candidates:      candidates,
 		LengthNormalize: lengthNorm,
+		// WHY: a label outside the scorer's top-128 next tokens is negligible, not an
+		// error; strict scoring failed the whole call and sent the router to its fallback.
+		AllowMissing: true,
 	})
 	if err != nil {
 		return nil, err
@@ -41,6 +46,8 @@ func (s *Server) scoreRouterPolicies(ctx context.Context, classifier, prompt str
 	return resp.Candidates, nil
 }
 
+// RouterDecideHandler serves POST /api/router/decide — the LA11 dry run ({router, prompt}).
+// The prompt is treated as a plain chat turn; /v1/route accepts full request bodies.
 func (s *Server) RouterDecideHandler(c *gin.Context) {
 	var req routerDecideRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -56,35 +63,148 @@ func (s *Server) RouterDecideHandler(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "router and prompt are required"})
 		return
 	}
-	spec, ok := lookupRouter(name)
-	if !ok {
+	sig := autoroute.Signals{
+		Surface:            autoroute.SurfaceChat,
+		Text:               prompt,
+		PromptTokens:       estimateTokens(len(prompt)),
+		BeforeRuntimeProxy: true, // match live /api/chat and /v1/chat/completions route-ahead
+	}
+	dec, isRouter, err := s.resolveRouter(c.Request.Context(), name, sig)
+	if !isRouter {
 		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("router %q not found", name)})
 		return
 	}
-	dec, err := decideRouter(c.Request.Context(), name, spec, prompt, s.scoreRouterPolicies, s.embedRouterText, s.rerankRouterDocs)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		writeRouterError(c, dec, err)
 		return
 	}
 	c.JSON(http.StatusOK, dec)
 }
 
-func (s *Server) applyRouterRewrite(ctx context.Context, modelName, prompt string) (string, *RouterDecision, error) {
+// resolveRouter answers "which model would this router pick for sig" without side effects.
+// isRouter is false when name is neither a router.yaml router nor the implicit "auto", in
+// which case the caller treats name as an ordinary model. On error dec may still be
+// non-nil and carry the filtered candidates (implicit "auto"), so callers can explain.
+//
+// WHY one function: the in-band rewrite, /v1/route and /api/router/decide must agree —
+// a dry run that differs from what chat actually does is worse than none.
+func (s *Server) resolveRouter(ctx context.Context, name string, sig autoroute.Signals) (dec *RouterDecision, isRouter bool, err error) {
+	return s.resolveRouterMem(ctx, name, sig, false)
+}
+
+// resolveRouterUncached is the routing decision itself, without sticky / cache memory.
+func (s *Server) resolveRouterUncached(ctx context.Context, name string, sig autoroute.Signals) (dec *RouterDecision, isRouter bool, err error) {
+	if spec, ok := lookupRouter(name); ok {
+		if !sig.Surface.IsText() && sig.Surface != autoroute.SurfaceImage && sig.Surface != autoroute.SurfaceImageEdit {
+			d, err := s.decideRouterNonText(ctx, name, spec, sig)
+			return d, true, err
+		}
+		if routerIsJev(spec) && len(spec.Questions) > 0 && sig.Surface.IsText() {
+			d, err := s.decideRouterJevMulti(ctx, name, spec, sig)
+			if errors.Is(err, errDeciderUnavailable) && !deciderFailsClosed(spec) {
+				fd, ferr := s.decideRouterNonText(ctx, name, spec, sig)
+				if fd != nil && ferr == nil {
+					fd.Reason, fd.Classifier = "decider-fallback", "jev"
+					if d != nil {
+						fd.Decider = d.Decider
+					}
+				}
+				return fd, true, ferr
+			}
+			return d, true, err
+		}
+		d, err := decideRouterWith(ctx, name, spec, sig.Text, routerBackends{
+			score: s.scoreRouterPolicies, embed: s.embedRouterText, rerank: s.rerankRouterDocs, jev: s.askJevDecider,
+		})
+		if errors.Is(err, errDeciderUnavailable) && !deciderFailsClosed(spec) {
+			// Fail open (AR4): no router fallback configured, so pick deterministically
+			// among the router's own candidates rather than 503 because the decider is cold.
+			fd, ferr := s.decideRouterNonText(ctx, name, spec, sig)
+			if fd != nil && ferr == nil {
+				fd.Reason, fd.Decider = "decider-fallback", d.Decider
+			}
+			return fd, true, ferr
+		}
+		if err != nil {
+			return nil, true, err
+		}
+		if d.Candidate == "" {
+			return nil, true, fmt.Errorf("router %q produced empty candidate", name)
+		}
+		if err := enforceRouterSurface(&d, spec, sig); err != nil {
+			return &d, true, err
+		}
+		return &d, true, nil
+	}
+	if isImplicitAutoName(name) {
+		d, err := s.decideAuto(ctx, name, sig, nil)
+		return d, true, err
+	}
+	return nil, false, nil
+}
+
+// decideRouterNonText resolves a router.yaml router on a non-text surface (speech, video,
+// embed, decisions, …). WHY not the classifier: LA11 policies label chat intents; scoring a
+// TTS input or an embedding batch against them is meaningless. Instead the router's
+// embedder / reranker pins embed / rerank, and other surfaces pick deterministically among
+// the router's own candidates and fallback.
+func (s *Server) decideRouterNonText(ctx context.Context, name string, spec RouterSpec, sig autoroute.Signals) (*RouterDecision, error) {
+	pin := ""
+	switch sig.Surface {
+	case autoroute.SurfaceEmbed:
+		pin = spec.Embedder
+	case autoroute.SurfaceRerank:
+		pin = spec.Reranker
+	}
+	allow := map[string]bool{}
+	add := func(n string) {
+		if n = strings.TrimSpace(n); n != "" {
+			allow[model.ParseName(n).DisplayShortest()] = true
+		}
+	}
+	if pin != "" {
+		add(pin)
+	} else {
+		for _, c := range spec.Candidates {
+			add(c.Model)
+		}
+		add(spec.Fallback)
+	}
+	dec, err := s.decideAuto(ctx, name, sig, allow)
+	if dec != nil && err == nil && pin != "" {
+		dec.Reason = "pinned"
+	}
+	return dec, err
+}
+
+// applyRouterRewrite resolves a router name to a concrete model in-band. router.yaml
+// routers (LA11) run their classifier and are then checked against the request's surface
+// and capabilities; the reserved name "auto" without a router.yaml entry uses the built-in
+// deterministic router (docs/auto-router.md AR1). Other names pass through unchanged.
+func (s *Server) applyRouterRewrite(ctx context.Context, modelName string, sig autoroute.Signals) (string, *RouterDecision, error) {
 	if !envconfig.RouterRewrite() {
 		return modelName, nil, nil
 	}
-	spec, ok := lookupRouter(modelName)
-	if !ok {
+	dec, isRouter, err := s.resolveRouterMem(ctx, modelName, sig, true)
+	if !isRouter {
 		return modelName, nil, nil
 	}
-	dec, err := decideRouter(ctx, modelName, spec, prompt, s.scoreRouterPolicies, s.embedRouterText, s.rerankRouterDocs)
 	if err != nil {
+		metricsRouteError(modelName, sig.Surface)
 		return "", nil, err
 	}
-	if dec.Candidate == "" {
-		return "", nil, fmt.Errorf("router %q produced empty candidate", modelName)
+	metricsRouteDecision(dec, sig.Surface)
+	return dec.Candidate, dec, nil
+}
+
+// writeRouterError writes a 503 for a failed dry run, including the filtered candidates
+// when the deterministic router produced them.
+func writeRouterError(c *gin.Context, dec *RouterDecision, err error) {
+	body := gin.H{"error": err.Error()}
+	if dec != nil && dec.Auto != nil && len(dec.Auto.Rejected) > 0 {
+		body["filtered"] = dec.Auto.Rejected
 	}
-	return dec.Candidate, &dec, nil
+	c.AbortWithStatusJSON(http.StatusServiceUnavailable, body)
 }
 
 func stampRouterHeaders(c *gin.Context, dec *RouterDecision) {
@@ -93,8 +213,24 @@ func stampRouterHeaders(c *gin.Context, dec *RouterDecision) {
 	}
 	c.Header("X-Zerollama-Router", dec.Router)
 	c.Header("X-Zerollama-Router-Chosen", dec.Candidate)
+	if dec.StickyBreak != "" {
+		c.Header("X-Zerollama-Router-Sticky-Break", dec.StickyBreak)
+	}
+	if sug := dec.Suggestion; sug != nil {
+		c.Header("X-Zerollama-Route-Suggest", sug.Modality)
+		c.Header("X-Zerollama-Route-Suggest-Endpoint", sug.Endpoint)
+		if sug.Model != "" {
+			c.Header("X-Zerollama-Route-Suggest-Model", sug.Model)
+		}
+		if len(sug.Missing) > 0 {
+			c.Header("X-Zerollama-Route-Suggest-Missing", strings.Join(sug.Missing, ","))
+		}
+	}
 	if dec.Fallback {
 		c.Header("X-Zerollama-Router-Fallback", "true")
+	}
+	if dec.Reason != "" {
+		c.Header("X-Zerollama-Router-Reason", dec.Reason)
 	}
 }
 

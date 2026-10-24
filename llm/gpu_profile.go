@@ -339,8 +339,40 @@ func primaryGPUIdentity(gpus []ml.DeviceInfo) (name string, vramGB float64) {
 	return name, vramGB
 }
 
+// nvidiaSMIIdentity caches nvidiaSMIGPUIdentity for the process.
+//
+// WHY: primaryGPUIdentity falls back to nvidia-smi whenever it gets no devices, and the
+// num_ctx clamp builds its load profile with nil devices on every scheduled request. On
+// an NVIDIA node that spawned nvidia-smi per request; elsewhere the failed PATH lookup
+// alone cost ~35 ms on WSL (23 /mnt/c PATH entries) — a third of a Laya router decision
+// (docs/auto-router-findings.md). The GPU's name and size do not change while we run, so
+// a hit is kept for the process; a miss is retried after nvidiaSMIRetry so one slow probe
+// during startup does not disable profile matching until restart.
+var nvidiaSMIIdentity struct {
+	sync.Mutex
+	name   string
+	vramGB float64
+	ok     bool
+	at     time.Time
+}
+
+const nvidiaSMIRetry = time.Minute
+
 // nvidiaSMIGPUIdentity returns the first GPU name + VRAM GiB from nvidia-smi.
 func nvidiaSMIGPUIdentity() (name string, vramGB float64) {
+	c := &nvidiaSMIIdentity
+	c.Lock()
+	defer c.Unlock()
+	if c.ok || (!c.at.IsZero() && time.Since(c.at) < nvidiaSMIRetry) {
+		return c.name, c.vramGB
+	}
+	c.name, c.vramGB = nvidiaSMIGPUIdentityUncached()
+	c.ok, c.at = c.name != "" || c.vramGB > 0, time.Now()
+	return c.name, c.vramGB
+}
+
+// nvidiaSMIGPUIdentityUncached runs nvidia-smi; a var so tests can count probes.
+var nvidiaSMIGPUIdentityUncached = func() (name string, vramGB float64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits")

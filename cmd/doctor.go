@@ -738,6 +738,12 @@ func doctorGoAPIProbeURLs() []string {
 	seen := map[string]bool{}
 	var urls []string
 	urls = doctorAddUniqueURL(urls, seen, doctorOllamaHost())
+	// Explicit OLLAMA_HOST: only probe that base. Falling through to :11434 made
+	// "unreachable" tests (and operators pointing at a lab port) silently report
+	// production identity when something else was listening.
+	if strings.TrimSpace(os.Getenv("OLLAMA_HOST")) != "" {
+		return urls
+	}
 	for _, hostport := range []string{
 		"127.0.0.1:11434",
 		"127.0.0.1:8080",

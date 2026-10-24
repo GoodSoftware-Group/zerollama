@@ -39,8 +39,9 @@ def test_autotune_status_requires_calibrate(monkeypatch, tmp_path):
     monkeypatch.setenv("ZEROLLAMA_RUNTIME_CHECK_GPU_VRAM", "0")
     monkeypatch.setenv("ZEROLLAMA_RUNTIME_VRAM_AUTOTUNE_PERSIST", "1")
     st = vram_estimate_autotune_status()
-    assert st["enabled"] is False
-    assert st["probe_calibrate_required"] is False
+    # Explicit AUTOTUNE=1 keeps enabled; calibrate off surfaces as required.
+    assert st["enabled"] is True
+    assert st["probe_calibrate_required"] is True
 
 
 def test_autotune_factor_source_session_and_catalog(monkeypatch, tmp_path):

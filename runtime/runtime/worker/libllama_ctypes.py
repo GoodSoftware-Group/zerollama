@@ -735,6 +735,9 @@ class LlamaLoadedSession:
     ``request_id`` every HTTP call).
     """
 
+    # Class attrs so MagicMock(spec=LlamaLoadedSession) allows kv_unified reads.
+    kv_unified: bool = False
+
     def __init__(
         self,
         model_path: Path,

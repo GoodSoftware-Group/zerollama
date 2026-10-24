@@ -52,7 +52,17 @@ func TestAcquireReleaseVideoExclusive(t *testing.T) {
 	if !s.videoExclusiveActive() {
 		t.Fatal("expected active after acquire")
 	}
-	hold, ok := s.sched.mlxGate.fulfillmentActive(time.Now())
+	// acquire is async (beginVideoExclusiveHold runs in a goroutine).
+	var hold fulfillmentHold
+	var ok bool
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		hold, ok = s.sched.mlxGate.fulfillmentActive(time.Now())
+		if ok && hold.mode.Exclusive() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if !ok || !hold.mode.Exclusive() {
 		t.Fatalf("expected exclusive fulfillment hold, got ok=%v hold=%+v", ok, hold)
 	}
@@ -64,8 +74,8 @@ func TestAcquireReleaseVideoExclusive(t *testing.T) {
 	s.acquireVideoExclusiveGPU(context.Background(), "job-a")
 
 	s.releaseVideoExclusiveGPU("job-a")
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && s.videoExclusiveActive() {
+	releaseDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(releaseDeadline) && s.videoExclusiveActive() {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if s.videoExclusiveActive() {

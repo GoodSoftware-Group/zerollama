@@ -57,6 +57,34 @@ components:
       description: '`true` when the router used its fallback candidate.'
       schema:
         type: string
+    ZerollamaRouterStickyBreak:
+      description: 'Set when the conversation''s remembered model failed a hard filter this turn and the request re-routed ("<model>: <reason>").'
+      schema:
+        type: string
+    ZerollamaRouteSuggest:
+      description: AR8 — this chat turn looks like it wants another modality (image | speech | video | music). Advisory only.
+      schema:
+        type: string
+    ZerollamaRouteSuggestEndpoint:
+      description: Endpoint for the suggested modality.
+      schema:
+        type: string
+    ZerollamaRouteSuggestModel:
+      description: Local model that endpoint would route to, when one can serve it.
+      schema:
+        type: string
+    ZerollamaRouteSuggestMissing:
+      description: >
+        Comma-separated fields the client must add before sending the suggested request.
+        Music suggestions set this to `input` (lyrics); the chat text is only a caption.
+      schema:
+        type: string
+    ZerollamaRouterReason:
+      description: >
+        Short reason for the router's choice — `warm`, `best-fit`, `only-candidate`
+        (implicit `auto`) or `surface-fallback` (router.yaml pick could not serve the request).
+      schema:
+        type: string
   schemas:
     ModelOptions:
       type: object
@@ -1942,8 +1970,218 @@ components:
             $ref: "#/components/schemas/RouterNeighbor"
         nearest_similarity:
           type: number
+        reason:
+          type: string
+          description: warm | best-fit | only-candidate | pinned | escalated | sticky | cached | surface-fallback | decider-fallback (empty for plain LA11 picks)
+        auto:
+          $ref: "#/components/schemas/AutoRouteDecision"
+        decider:
+          type: string
+          description: '`classifier: jev` — the /v1/decisions model that answered the route question.'
+        calibrated:
+          type: boolean
+          description: '`classifier: jev` — whether the decider reported calibrated probabilities (uncalibrated ⇒ argmax only).'
+        escalated:
+          type: boolean
+          description: 'Multi-question jev (AR5) — pick restricted to `tier: high` (unsure, hard, reasoning, or Laya act head).'
+        signals:
+          type: object
+          additionalProperties: true
+          description: Multi-question jev answers summarised per question id, plus `calibrated`, `escalate_reasons`, `escalation_unavailable`.
+        suggestion:
+          $ref: "#/components/schemas/ModalitySuggestion"
+        sticky:
+          type: boolean
+          description: Reused the conversation's remembered model (AR6; text surfaces).
+        cached:
+          type: boolean
+          description: Reused the pick for an identical recent request (60s decision cache).
+        sticky_break:
+          type: string
+          description: 'Why the conversation''s remembered model could not be kept this turn ("<model>: <reason>").'
         latency_ms:
           type: integer
+    ModalitySuggestion:
+      type: object
+      description: >
+        AR8 cross-modal advisory on chat turns that ask for an image, speech, video or music.
+        The chat request is still served as text; clients may send `body` to `endpoint`.
+      properties:
+        modality:
+          type: string
+          enum: [image, speech, video, music]
+        source:
+          type: string
+          enum: [jev, heuristic]
+        probability:
+          type: number
+          description: Decider probability (jev source only).
+        endpoint:
+          type: string
+          description: e.g. /v1/images/generations, /v1/audio/speech, /v1/videos, /v1/audio/generations
+        model:
+          type: string
+          description: Local model the target surface would route to (omitted when none can serve it).
+        unavailable:
+          type: string
+          description: Why no local model can serve the suggested surface.
+        body:
+          type: object
+          additionalProperties: true
+          description: >
+            Request for `endpoint`. Speech reads back the previous assistant reply.
+            Music sets `instructions` (caption) only; see `incomplete` and `missing`.
+        incomplete:
+          type: boolean
+          description: True when `body` is not ready to send. Music is missing lyrics.
+        missing:
+          type: array
+          items:
+            type: string
+          description: Fields the client must supply. Music lists `input` (lyrics).
+    AutoRouteDecision:
+      type: object
+      description: Deterministic auto-router detail (implicit `auto`) — filters and ranking.
+      properties:
+        surface:
+          type: string
+          enum: [chat, generate, image, image_edit]
+        model:
+          type: string
+        reason:
+          type: string
+        ranked:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouteRanked"
+        filtered:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouteRejection"
+    RouteRanked:
+      type: object
+      properties:
+        model:
+          type: string
+        score:
+          type: number
+        warm:
+          type: boolean
+        needs_eviction:
+          type: boolean
+        reasons:
+          type: array
+          items:
+            type: string
+    RouteRejection:
+      type: object
+      properties:
+        model:
+          type: string
+        reason:
+          type: string
+          description: 'e.g. "missing capability: tools", "context 4096 < needed 9216", "cannot load now: loads paused"'
+    RouteRequest:
+      type: object
+      description: >
+        The request you are about to send (native `/api/chat`, OpenAI chat-completions, or
+        `/api/generate` shape) plus routing fields. Surface is inferred when omitted:
+        `messages` ⇒ chat, `width`/`height` ⇒ image, otherwise generate.
+      additionalProperties: true
+      properties:
+        router:
+          type: string
+          description: Router name (`auto` or a router.yaml entry). Defaults to `model`.
+        model:
+          type: string
+        surface:
+          type: string
+          enum: [chat, generate, image, image_edit, video_gen, speech, music, transcribe, embed, rerank, decisions]
+          description: >
+            Inferred for chat / generate / image when omitted; required for the others, whose body
+            is that endpoint's normal request (e.g. speech: input + voice; decisions: state + questions).
+    RouteResponse:
+      allOf:
+        - $ref: "#/components/schemas/RouterDecision"
+        - type: object
+          properties:
+            surface:
+              type: string
+            model:
+              type: string
+              description: Chosen model (same as `candidate`).
+    RouteErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        filtered:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouteRejection"
+    RouterInventoryCandidate:
+      type: object
+      properties:
+        name:
+          type: string
+        id:
+          type: string
+        digest:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        backends:
+          type: object
+          additionalProperties:
+            type: string
+        format:
+          type: string
+        family:
+          type: string
+        context_length:
+          type: integer
+        size:
+          type: integer
+        runtime_inference:
+          type: boolean
+        warm:
+          type: boolean
+        can_load:
+          type: boolean
+        needs_eviction:
+          type: boolean
+        excluded:
+          type: string
+        detail:
+          type: string
+        tok_per_sec:
+          type: number
+        gen_sec:
+          type: number
+    RouterInventoryResponse:
+      type: object
+      properties:
+        auto_router:
+          type: boolean
+        candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouterInventoryCandidate"
+        failed:
+          type: object
+          additionalProperties:
+            type: string
+        router_config_error:
+          type: string
+          description: Set when router.yaml fails to parse — every router.yaml router is disabled until it is fixed.
+        routers:
+          type: object
+          description: router.yaml routers by name — classifier, decider, fallback, question count and candidates (tier, strengths, difficulty bands, labels).
+          additionalProperties:
+            type: object
+            additionalProperties: true
     RouterCorpusEntry:
       type: object
       required: [text, labels]
@@ -3217,6 +3455,18 @@ paths:
               $ref: "#/components/headers/ZerollamaRouterChosen"
             X-Zerollama-Router-Fallback:
               $ref: "#/components/headers/ZerollamaRouterFallback"
+            X-Zerollama-Router-Reason:
+              $ref: "#/components/headers/ZerollamaRouterReason"
+            X-Zerollama-Router-Sticky-Break:
+              $ref: "#/components/headers/ZerollamaRouterStickyBreak"
+            X-Zerollama-Route-Suggest:
+              $ref: "#/components/headers/ZerollamaRouteSuggest"
+            X-Zerollama-Route-Suggest-Endpoint:
+              $ref: "#/components/headers/ZerollamaRouteSuggestEndpoint"
+            X-Zerollama-Route-Suggest-Model:
+              $ref: "#/components/headers/ZerollamaRouteSuggestModel"
+            X-Zerollama-Route-Suggest-Missing:
+              $ref: "#/components/headers/ZerollamaRouteSuggestMissing"
           content:
             application/json:
               schema:
@@ -3436,6 +3686,18 @@ paths:
               $ref: "#/components/headers/ZerollamaRouterChosen"
             X-Zerollama-Router-Fallback:
               $ref: "#/components/headers/ZerollamaRouterFallback"
+            X-Zerollama-Router-Reason:
+              $ref: "#/components/headers/ZerollamaRouterReason"
+            X-Zerollama-Router-Sticky-Break:
+              $ref: "#/components/headers/ZerollamaRouterStickyBreak"
+            X-Zerollama-Route-Suggest:
+              $ref: "#/components/headers/ZerollamaRouteSuggest"
+            X-Zerollama-Route-Suggest-Endpoint:
+              $ref: "#/components/headers/ZerollamaRouteSuggestEndpoint"
+            X-Zerollama-Route-Suggest-Model:
+              $ref: "#/components/headers/ZerollamaRouteSuggestModel"
+            X-Zerollama-Route-Suggest-Missing:
+              $ref: "#/components/headers/ZerollamaRouteSuggestMissing"
           content:
             application/json:
               schema:
@@ -3730,6 +3992,68 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InferenceError"
+  /v1/route:
+    post:
+      summary: Dry-run the auto-router
+      description: >
+        Returns the model a router (`auto` or a router.yaml entry) would pick for this exact
+        request, with filtered candidates and ranking, without running inference. Same logic
+        as the in-band rewrite on chat/generate/images (docs/auto-router.md).
+      operationId: route
+      x-codeSamples:
+        - lang: bash
+          label: Route a tools request
+          source: |
+            curl http://localhost:11434/v1/route -d '{
+              "model": "auto",
+              "messages": [{"role": "user", "content": "weather in Paris?"}],
+              "tools": [{"type": "function", "function": {"name": "get_weather"}}]
+            }'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RouteRequest"
+      responses:
+        "200":
+          description: Chosen model and why
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouteResponse"
+        "400":
+          description: Missing router/model, bad body, or unsupported surface
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "404":
+          description: Name is not a router
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "503":
+          description: No candidate can serve the request (`filtered` lists why)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouteErrorResponse"
+  /api/router/inventory:
+    get:
+      summary: Auto-router candidate inventory
+      description: >
+        Local models as the auto-router sees them — memoised capabilities, context length,
+        bench perf and live residency — plus models that could not be read. Never loads.
+      operationId: routerInventory
+      responses:
+        "200":
+          description: Candidates and failures
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouterInventoryResponse"
   /api/router/corpus:
     get:
       summary: KNN corpus counts

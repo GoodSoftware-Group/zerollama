@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ollama/ollama/api"
@@ -214,7 +216,7 @@ func proxyOpenJevDecisions(ctx context.Context, base, modelName string, req api.
 	}
 	base = strings.TrimSuffix(base, "/")
 	tokenizeFn := func(text string) ([]int, error) {
-		return openJevTokenize(ctx, base, text)
+		return openJevTokenizeCached(ctx, base, modelName, text)
 	}
 	slots, err := llm.BuildOpenJevSlotSpecs(req.Questions, tokenizeFn)
 	if err != nil {
@@ -338,6 +340,44 @@ func openJevApplyOptions(payload map[string]any, opts map[string]any) {
 	if v, ok := opts["max_tokens"]; ok {
 		payload["max_tokens"] = v
 	}
+}
+
+// openJevTokKey scopes cached token ids to one sidecar and model name, so pointing the
+// URL at another server or model never reuses another tokenizer's ids.
+type openJevTokKey struct{ base, model, text string }
+
+// openJevTokCache memoises option / marker tokenization for proxyOpenJevDecisions.
+//
+// WHY: the slot and gather builders tokenize every option (and each question marker)
+// with one HTTP call apiece, twice per request, and those strings are label text that
+// repeats across requests — the same per-call /tokenize cost fixed for Laya and System
+// One (docs/auto-router-findings.md Finding 25). Bounded; reset on overflow.
+var openJevTokCache struct {
+	sync.Mutex
+	m map[openJevTokKey][]int
+}
+
+const openJevTokCacheMax = 4096
+
+func openJevTokenizeCached(ctx context.Context, base, modelName, content string) ([]int, error) {
+	key := openJevTokKey{base, modelName, content}
+	openJevTokCache.Lock()
+	ids, ok := openJevTokCache.m[key]
+	openJevTokCache.Unlock()
+	if ok {
+		return slices.Clone(ids), nil
+	}
+	ids, err := openJevTokenize(ctx, base, content)
+	if err != nil {
+		return nil, err
+	}
+	openJevTokCache.Lock()
+	if openJevTokCache.m == nil || len(openJevTokCache.m) >= openJevTokCacheMax {
+		openJevTokCache.m = make(map[openJevTokKey][]int)
+	}
+	openJevTokCache.m[key] = slices.Clone(ids)
+	openJevTokCache.Unlock()
+	return ids, nil
 }
 
 func openJevTokenize(ctx context.Context, base, content string) ([]int, error) {

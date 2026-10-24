@@ -15,6 +15,7 @@ import (
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/middleware"
 	"github.com/ollama/ollama/openai"
+	"github.com/ollama/ollama/server/autoroute"
 	"github.com/ollama/ollama/server/modality"
 	"github.com/ollama/ollama/types/errtypes"
 	"github.com/ollama/ollama/types/model"
@@ -34,6 +35,21 @@ func (s *Server) TranscriptionHandler(c *gin.Context) {
 	if err := json.Unmarshal(body, &chatReq); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	if served, err := applyModelAlias(c, chatReq.Model); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else if routed, rerr := s.routeForSurface(c, served, autoroute.Signals{Surface: autoroute.SurfaceTranscribe, HasAudio: true}); rerr != nil {
+		writeRouterError(c, rerr.dec, rerr.err)
+		return
+	} else if routed != chatReq.Model {
+		// Rewrite the body too: non-whisper models fall through to ChatHandler with it.
+		chatReq.Model = routed
+		if rewritten, err := replaceJSONModelField(body, routed); err == nil {
+			body = rewritten
+			c.Request.Body = io.NopCloser(bytes.NewReader(body))
+		}
 	}
 
 	modelRef, err := parseAndValidateModelRef(chatReq.Model)

@@ -123,8 +123,13 @@ func (s *llamaServerRunner) layaTokenizer(ctx context.Context) (LayaTokenizer, e
 	return &layaServerTokenizer{s: s, cls: cls, sep: sep, mask: mask, maskTok: maskTok}, nil
 }
 
+// Encode memoises per runner. WHY: PackQuestions encodes the head, every option and
+// the state once per question (~28 /tokenize round trips for a 4-question router), and
+// router questions never change, so after the first request only the new state is sent.
 func (t *layaServerTokenizer) Encode(text string) ([]int, error) {
-	return t.s.Tokenize(context.Background(), text)
+	return t.s.layaTokCache.tokenize(text, func() ([]int, error) {
+		return t.s.Tokenize(context.Background(), text)
+	})
 }
 
 func (t *layaServerTokenizer) MaskToken() string { return t.maskTok }

@@ -103,6 +103,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Contrastive-LM (CLM)](./clm.md) — **why** native Go heads + llama-server embeds (no Torch serve); optional `ZEROLLAMA_CLM_URL` fallback.
 * [DiffusionGemma (llama.cpp)](./diffusion-gemma-llama-cpp.md) — **why** sibling PR `#24427` (not prod `b10615`); LA16 Go pack; DG8/DG9 opt-in calibrated choice/score/noul. [findings](./diffusion-gemma-llama-cpp-findings.md) · [readout design](./diffusion-gemma-readout-design.md).
 * [GLiNER.cpp (entity extract)](./gliner-cpp.md) — **why** sibling ONNX (not Torch/Ray, not decisions); dual `/v1/extract` + `/v1/gliner`. [findings](./gliner-cpp-findings.md).
+* [Auto-router (`model: "auto"`)](./auto-router.md) — **why** deterministic capability + residency dispatch first, Jev decisions only for difficulty / cross-modal intent; `/v1/route`, sticky routing, eval gate. [findings](./auto-router-findings.md).
 * [GLiNER2.5-Decide (triage Decider)](./gliner-decide.md) — **why** Fastino encoder ≠ NER extract; dual `/v1/decisions` + `/v1/gliner-decide`. [findings](./gliner-decide-findings.md).
 * [Fleet scheduling (multi-node)](./fleet-scheduling.md) — **why** a management node above per-node schedulers; warm-model routing; filter-then-score (F7); anti-patterns (scatter-gather, long quotes).
 * [Fleet management operator guide](./fleet-management.md) — **why** F3 is thin (poll + assign, no remote load); `zerollama fleet serve`; API, env, agent pattern.

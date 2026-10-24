@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -202,41 +203,73 @@ func readCLMF32(path, name string) ([]float32, []uint64, error) {
 	return out, tensor.Shape, nil
 }
 
-func (m clmMLP) project(x []float32, act string, residual bool) []float32 {
-	h := m.inp.forward(x)
-	clmActivate(h, act)
+// projectBatch runs every row of xs through the MLP one layer at a time.
+func (m clmMLP) projectBatch(xs [][]float32, act string, residual bool) [][]float32 {
+	hs := m.inp.forwardBatch(xs)
+	for _, h := range hs {
+		clmActivate(h, act)
+	}
 	for i, lin := range m.hidden {
-		z := lin.forward(h)
-		if len(m.norms) > i {
-			clmLayerNorm(z, m.norms[i], m.normB[i])
-		}
-		clmActivate(z, act)
-		if residual {
-			for j := range h {
-				h[j] += z[j]
+		zs := lin.forwardBatch(hs)
+		for r, z := range zs {
+			if len(m.norms) > i {
+				clmLayerNorm(z, m.norms[i], m.normB[i])
 			}
-		} else {
-			h = z
+			clmActivate(z, act)
+			if residual {
+				for j := range hs[r] {
+					hs[r][j] += z[j]
+				}
+			} else {
+				hs[r] = z
+			}
 		}
 	}
-	return m.out.forward(h)
+	return m.out.forwardBatch(hs)
 }
 
-func (l clmLinear) forward(x []float32) []float32 {
-	if len(x) != l.in {
-		panic(fmt.Sprintf("clm linear: in=%d got %d", l.in, len(x)))
-	}
-	y := make([]float32, l.out)
-	// y[o] = bias[o] + sum_i x[i]*W[o,i]
-	for o := 0; o < l.out; o++ {
-		s := l.b[o]
-		row := l.w[o*l.in : (o+1)*l.in]
-		for i := 0; i < l.in; i++ {
-			s += x[i] * row[i]
+// clmParallelMinMACs is the work below which threading costs more than it saves.
+const clmParallelMinMACs = 1 << 18
+
+// forwardBatch computes y[r][o] = bias[o] + sum_i xs[r][i]*W[o,i] for every row r.
+//
+// WHY batched + threaded: the heads used to project one text at a time with a scalar
+// loop on one core — 10–50 ms per decision for 1 state + 5 actions (width 512–2048),
+// growing with every action (docs/auto-router-findings.md Finding 25). Output rows
+// are split across goroutines and each weight row is reused for every input while it
+// is still in cache, so W streams from memory once per call instead of once per text.
+func (l clmLinear) forwardBatch(xs [][]float32) [][]float32 {
+	ys := make([][]float32, len(xs))
+	for r, x := range xs {
+		if len(x) != l.in {
+			panic(fmt.Sprintf("clm linear: in=%d got %d", l.in, len(x)))
 		}
-		y[o] = s
+		ys[r] = make([]float32, l.out)
 	}
-	return y
+	rows := func(lo, hi int) {
+		for o := lo; o < hi; o++ {
+			w := l.w[o*l.in : (o+1)*l.in]
+			for r, x := range xs {
+				ys[r][o] = l.b[o] + clmDot(x, w)
+			}
+		}
+	}
+	workers := min(runtime.GOMAXPROCS(0), l.out/16)
+	if workers <= 1 || l.out*l.in*len(xs) < clmParallelMinMACs {
+		rows(0, l.out)
+		return ys
+	}
+	var wg sync.WaitGroup
+	chunk := (l.out + workers - 1) / workers
+	for lo := 0; lo < l.out; lo += chunk {
+		wg.Add(1)
+		go func(lo, hi int) {
+			defer wg.Done()
+			rows(lo, hi)
+		}(lo, min(lo+chunk, l.out))
+	}
+	wg.Wait()
+	return ys
 }
 
 func clmActivate(x []float32, act string) {
@@ -294,35 +327,37 @@ func clmL2Normalize(x []float32) {
 
 // ProjectStates runs the state head and L2-normalizes rows.
 func (h *CLMHeads) ProjectStates(embs [][]float32) [][]float32 {
-	out := make([][]float32, len(embs))
-	for i, e := range embs {
-		p := h.state.project(e, h.Act, h.Resid)
+	out := h.state.projectBatch(embs, h.Act, h.Resid)
+	for _, p := range out {
 		clmL2Normalize(p)
-		out[i] = p
 	}
 	return out
 }
 
 // ProjectActions runs the action head and L2-normalizes rows.
 func (h *CLMHeads) ProjectActions(embs [][]float32) [][]float32 {
-	out := make([][]float32, len(embs))
-	for i, e := range embs {
-		p := h.action.project(e, h.Act, h.Resid)
+	out := h.action.projectBatch(embs, h.Act, h.Resid)
+	for _, p := range out {
 		clmL2Normalize(p)
-		out[i] = p
 	}
 	return out
 }
 
-// Dot returns sum_i a[i]*b[i].
+// clmDot returns sum_i a[i]*b[i]. Four partial sums break the add dependency chain
+// (~4x on one core); the result differs from a single running sum only by rounding.
 func clmDot(a, b []float32) float32 {
-	var s float32
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
+	n := min(len(a), len(b))
+	a, b = a[:n], b[:n]
+	var s0, s1, s2, s3 float32
+	i := 0
+	for ; i+4 <= n; i += 4 {
+		s0 += a[i] * b[i]
+		s1 += a[i+1] * b[i+1]
+		s2 += a[i+2] * b[i+2]
+		s3 += a[i+3] * b[i+3]
 	}
-	for i := 0; i < n; i++ {
-		s += a[i] * b[i]
+	for ; i < n; i++ {
+		s0 += a[i] * b[i]
 	}
-	return s
+	return (s0 + s1) + (s2 + s3)
 }

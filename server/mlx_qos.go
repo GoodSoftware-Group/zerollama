@@ -388,6 +388,7 @@ func zerollamaVersionCapabilities() map[string]any {
 		"runner_paths":          zerollamaVersionRunnerPaths(),
 		"runtime_config":        true,
 		"can_load":              true,
+		"auto_router":           autoRouterVersionCapability(),
 		"metrics":               true,
 		"admission_retry_after": true,
 		"error_timings":         true,

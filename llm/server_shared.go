@@ -15,6 +15,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ollama/ollama/api"
@@ -99,9 +100,19 @@ func LoadModel(model string, maxArraySize int) (*ggml.GGML, error) {
 }
 
 // LoadModelMetadata reads GGUF headers without tokenizer vocab bodies or a full tensor weight walk.
+//
+// The result is cached per file and shared between callers: treat it as read-only.
 func LoadModelMetadata(model string) (*ggml.GGML, error) {
-	if _, err := os.Stat(model); err != nil {
+	st, err := os.Stat(model)
+	if err != nil {
 		return nil, err
+	}
+	key := metadataKey{model, st.Size(), st.ModTime().UnixNano()}
+	metadataCache.Lock()
+	cached, ok := metadataCache.m[key]
+	metadataCache.Unlock()
+	if ok {
+		return cached, nil
 	}
 
 	f, err := os.Open(model)
@@ -110,8 +121,40 @@ func LoadModelMetadata(model string) (*ggml.GGML, error) {
 	}
 	defer f.Close()
 
-	return ggml.DecodeMetadata(f)
+	g, err := ggml.DecodeMetadata(f)
+	if err != nil {
+		return nil, err
+	}
+	metadataCache.Lock()
+	if metadataCache.m == nil || len(metadataCache.m) >= metadataCacheMax {
+		metadataCache.m = make(map[metadataKey]*ggml.GGML)
+	}
+	metadataCache.m[key] = g
+	metadataCache.Unlock()
+	return g, nil
 }
+
+// metadataKey re-validates by size + mtime so a rewritten file (LM Studio repair, an
+// external --link GGUF) is decoded again; content-addressed blobs never change.
+type metadataKey struct {
+	path  string
+	size  int64
+	mtime int64
+}
+
+// metadataCache memoises LoadModelMetadata.
+//
+// WHY: every scheduled request decodes the GGUF header at least twice (num_ctx cap to
+// n_ctx_train, then the VRAM clamp). Skipping a 150k-entry vocab string by string costs
+// ~7.5 ms per decode for qwen3:8b (~2.5 ms for Laya) — ~15 ms of every warm chat request
+// (docs/auto-router-findings.md Finding 22). Metadata-only decodes drop large arrays, so
+// entries are small.
+var metadataCache struct {
+	sync.Mutex
+	m map[metadataKey]*ggml.GGML
+}
+
+const metadataCacheMax = 256
 
 func useOllamaEngine(f *ggml.GGML) bool {
 	if !envconfig.GgmlRunnerLinked() {

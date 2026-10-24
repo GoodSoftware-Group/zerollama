@@ -29,7 +29,10 @@ def test_health_vram_budget_from_config_model(cfg_root, tmp_path: Path):
             body = eng.health()
     assert body["llama_server"] is False
     assert body["llama_backend"] == "subprocess"
-    assert body["vram_estimate"] == est
+    # health() attaches topology metadata onto the estimate dict.
+    for k, v in est.items():
+        assert body["vram_estimate"][k] == v
+    assert "topology" in body["vram_estimate"]
     assert body["vram_budget"]["fits"] is True
     assert body["vram_budget"]["kv_cache_bytes"] == 2 * 1024**3
     assert body["admission"]["vram_load_fits"] is True
