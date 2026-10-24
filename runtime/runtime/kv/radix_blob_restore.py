@@ -31,9 +31,11 @@ def find_blob_restore_plan(
     target_slot: int,
     model_hash: str,
     cache_salt: str | None = None,
+    lora_name: str | None = None,
     seq_pos: int | None = None,
     effective_window: int | None = None,
     load_tier_filter: Any = None,
+    mm_features: Any = None,
 ) -> BlobRestorePlan | None:
     """Plan cold restore when live Radix donor is absent but a blob digest exists."""
     from runtime.kv.lmcache_blob import lmcache_blobs_enabled
@@ -46,7 +48,9 @@ def find_blob_restore_plan(
     # Warm catch-up still prefers live seq_cp; blob restore is cold-slot oriented.
     if target_pos > 0:
         return None
-    scope = build_model_scope(model_hash=model_hash, cache_salt=cache_salt)
+    scope = build_model_scope(
+        model_hash=model_hash, cache_salt=cache_salt, lora_name=lora_name
+    )
     pool = get_prefix_block_pool(model_scope=scope)
     found = pool.find_blob_prefix(
         tokens,
@@ -54,6 +58,7 @@ def find_blob_restore_plan(
         max_tokens=len(tokens),
         min_matched=1,
         load_tier_filter=load_tier_filter,
+        mm_features=mm_features,
     )
     if found is None:
         return None

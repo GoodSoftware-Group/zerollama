@@ -6,7 +6,7 @@
 
 **Local tree:** `../vllm` (Mac: `~/Sites/inference/vllm`). Sibling map + weekly pull ritual: [upstream-siblings.md](./upstream-siblings.md).
 
-**Last checked:** 2026-08-20 — tip `f8e0602713` on `main`. Prior scan: 2026-07-28 (`118bcde44`). Next weekly: `git pull` in `../vllm`, then triage bring/watch/skip into this doc (and the table in [upstream-siblings.md](./upstream-siblings.md)).
+**Last checked:** 2026-10-24 — tip `e9acf48614` on `main`. Prior scans: 2026-09-23 (`f9ad9dd6b4`), 2026-08-20 (`f8e0602713`), 2026-07-28 (`118bcde44`). Next weekly: `git pull` in `../vllm`, then triage bring/watch/skip into this doc (and the table in [upstream-siblings.md](./upstream-siblings.md)).
 
 ---
 
@@ -37,14 +37,19 @@
 | **Zero-output prefix-cache metrics** | `_stream_done_metrics` + non-stream `OllamaGenerateResponse` metrics | vLLM #48668: keep cache read/creation on done chunks when `eval_count=0` |
 | **Retention default → block-aligned** | `prefix_cache_retention_interval()` unset → `0` | vLLM #52216: SWA checkpoints at block boundaries only unless YAML/env sets `N>0` |
 | **Skip covered MM payload** | `defer_vision_encode` (ollama-engine + ggml llamarunner) + session prefix strip on llama-server IPC | vLLM #52041: stub GridTHW vision spans, match input-cache by hash, hydrate ViT/mtmd only on the uncached tail; llama-server strips covered `multimodal_data` for Qwen3-VL and other padded-inject families |
+| **Tagged prefix extra keys + LoRA** | `prefix_block_hash.model_scope_key` + `options.lora` | vLLM #51899/#59335: `cache_salt` and `lora` are tagged `\0name\0value` extras so salts cannot collide with other keys |
+| **EAGLE SWA junction store** | `swa_reachable_store_mask(shared_prefix_blocks=…)` | vLLM #62206: keep the last hash-matched prefix block (junction-1) even when it sits outside the current SWA tail |
+| **Prompt-end SWA checkpoint** | `swa_reachable_store_mask(prompt_end_blocks=…)` | vLLM #59146 analog: when retention is `0`, still federate the last full prompt block for resume |
+| **Per-block MM extras** | `MmFeature` + `iter_prefix_blocks(mm_features=…)` | vLLM #51899 `_gen_mm_extra_hash_keys`: image/video spans (`identifier`, relative offset) participate in the prefix hash so placeholder tokens cannot false-hit |
+| **Explicit EAGLE last-block drop** | `eagle_block_drop_active` + `LayerGroupSpec.is_eagle_group` | vLLM #61455: drop last prefix block only for EAGLE/MTP (not `draft-simple`/`dflash`); tag coordinator groups (fallback: all groups); SWA store keeps `draft_n_max-1` extra tokens |
 
 ---
 
-## Watch (Aug 2026 rescan)
+## Watch (Oct 2026 rescan)
 
 | vLLM PR | Topic | Zerollama stance |
 |---------|-------|------------------|
-| **#50507** | Partial-tail prefix reuse with `hash_block_size` < physical block | **Defer** — needs physical KV pages + COW / OffloadingConnector scheduler; block pool stays 512-token aligned |
+| **#50507** / **#54736** | Partial-tail prefix reuse with `hash_block_size` < physical block | **Defer** — needs physical KV pages + COW / OffloadingConnector scheduler; block pool stays 512-token aligned |
 | **#50493** | Kimi-K3 DCP partial prefix hit | **Skip** — model-specific distributed checkpoint path |
 
 ---
@@ -108,6 +113,8 @@ Rebuild llama-server after pull so the HTTP route exists: `./scripts/build/build
   "options": {
     "prompt_cache_key": "agent-thread-42",
     "cache_salt": "tenant-org-9",
+    "lora": "adapter-a",
+    "mm_features": [{"identifier": "img-sha", "offset": 12, "length": 64}],
     "eliza": { "conversationId": "thread-42", "cacheSalt": "tenant-org-9" }
   }
 }

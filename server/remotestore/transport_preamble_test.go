@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -98,5 +99,19 @@ func TestReaderAfterHTTPPreamble(t *testing.T) {
 	}
 	if line != "HTTP/1.1 200 OK\r\n" {
 		t.Fatalf("line=%q", line)
+	}
+
+	// "HTTP/1." without version digit+space must not match.
+	br2 := bufio.NewReader(bytes.NewReader([]byte("xxxHTTP/1.xFOOHTTP/1.0 204 No Content\r\n\r\n")))
+	out2, skipped2, err := readerAfterHTTPPreamble(br2, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipped2 < 3 {
+		t.Fatalf("skipped2=%d", skipped2)
+	}
+	line2, _ := out2.ReadString('\n')
+	if !strings.HasPrefix(line2, "HTTP/1.0 204") {
+		t.Fatalf("line2=%q", line2)
 	}
 }

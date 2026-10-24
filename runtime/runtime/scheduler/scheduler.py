@@ -39,6 +39,10 @@ class Request:
     prompt_cache_key: str | None = None
     # vLLM cache_salt — tenant isolation for slot hash + in-process owner key.
     cache_salt: str | None = None
+    # vLLM #59335 — LoRA identity in prefix-block scope (tagged extra key).
+    lora_name: str | None = None
+    # vLLM #51899 — per-block multimodal extras (identifier + token span).
+    mm_features: tuple[Any, ...] = ()
     # options.zerollama.session_parent / session_group — Radix donor preference.
     session_parent: str | None = None
     session_group: str | None = None

@@ -49,10 +49,12 @@ def find_radix_share_plan(
     target_slot: int,
     model_hash: str,
     cache_salt: str | None = None,
+    lora_name: str | None = None,
     seq_pos: int | None = None,
     effective_window: int | None = None,
     prefer_session_key: str | None = None,
     prefer_session_group: str | None = None,
+    mm_features: Any = None,
 ) -> RadixSharePlan | None:
     """Plan donor→target KV seed for cold slots or warm catch-up behind donor.
 
@@ -70,7 +72,9 @@ def find_radix_share_plan(
     if target_slot < 0 or not tokens or not model_hash:
         return None
     target_pos = max(0, int(seq_pos or 0))
-    scope = build_model_scope(model_hash=model_hash, cache_salt=cache_salt)
+    scope = build_model_scope(
+        model_hash=model_hash, cache_salt=cache_salt, lora_name=lora_name
+    )
     pool = get_prefix_block_pool(model_scope=scope)
 
     if target_pos > 0:
@@ -79,6 +83,7 @@ def find_radix_share_plan(
             scope=scope,
             target_slot=target_slot,
             seq_pos=target_pos,
+            mm_features=mm_features,
         ):
             return None
 
@@ -91,6 +96,7 @@ def find_radix_share_plan(
         min_matched=target_pos,
         prefer_session_key=prefer_session_key,
         prefer_session_group=prefer_session_group,
+        mm_features=mm_features,
     )
     if found is None:
         return None

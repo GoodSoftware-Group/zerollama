@@ -14,6 +14,8 @@ from runtime.kv_cache_spec import (
     PrefixCacheRequest,
     classify_gguf_prefix_cache,
     draft_speculative_active,
+    eagle_block_drop_active,
+    eagle_extra_retained_tokens,
     effective_prefix_window,
     resolve_kv_cache_spec,
 )
@@ -82,6 +84,14 @@ def test_disabled_spec_never_caches():
 def test_draft_speculative_active():
     assert draft_speculative_active("none") is False
     assert draft_speculative_active("eagle3") is True
+    assert draft_speculative_active("dflash") is True
+    assert draft_speculative_active("draft-simple") is True
+    assert eagle_block_drop_active("eagle3") is True
+    assert eagle_block_drop_active("mtp") is True
+    assert eagle_block_drop_active("draft-simple") is False
+    assert eagle_block_drop_active("dflash") is False
+    assert eagle_extra_retained_tokens("mtp", 16) == 15
+    assert eagle_extra_retained_tokens("draft-simple", 16) == 0
 
 
 def test_resolve_kv_cache_spec_draft_allows_ram_not_disk(monkeypatch: pytest.MonkeyPatch):
@@ -94,6 +104,25 @@ def test_resolve_kv_cache_spec_draft_allows_ram_not_disk(monkeypatch: pytest.Mon
     req = PrefixCacheRequest(prompt_cache_key="sess", seq_pos=4096, prompt_tokens=32)
     assert spec.cache_prompt_allowed(req) is True
     assert spec.resume_pos(req) == 3584  # drop last 512-token block
+    assert spec.coordinator is not None
+    assert spec.coordinator.eagle_group_count >= 0
+
+
+def test_independent_draft_does_not_drop_last_block(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE", raising=False)
+    spec = resolve_kv_cache_spec(spec_method="draft-simple")
+    assert spec.speculative_draft is True
+    assert spec.allow_disk_persist is False
+    assert spec.drop_last_block_on_resume is False
+    req = PrefixCacheRequest(prompt_cache_key="sess", seq_pos=4096, prompt_tokens=32)
+    assert spec.resume_pos(req) == 4096
+
+
+def test_mtp_extra_retained_tokens(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE", raising=False)
+    spec = resolve_kv_cache_spec(spec_method="mtp", draft_n_max=16)
+    assert spec.extra_retained_tokens == 15
+    assert spec.drop_last_block_on_resume is True
 
 
 def test_drop_last_prefix_block():

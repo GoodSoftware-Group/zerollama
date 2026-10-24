@@ -129,6 +129,18 @@ Doc: [t10-grpo.md](docs/t10-grpo.md) · [findings](docs/t10-grpo-findings.md). S
 
 **T11 recipes:** CSV/JSONL/TXT → `{prompt,response}` (stdlib); PDF/DOCX optional. Python CLI + `zerollama train recipe` (same engine). **Why not Studio:** operators need ingest without a visual node editor. Doc: [t11-recipes.md](docs/t11-recipes.md). Smoke: `./scripts/training/t11_recipes_smoke.sh`.
 
+### L3 EAGLE last-block drop is method-tagged (vLLM #61455)
+
+Only EAGLE/MTP speculative methods drop the last prefix block on resume. Independent `draft-simple` / `dflash` still disable disk blobs but keep a full RAM prefix hit. Hybrid coordinator groups get `is_eagle_group` (all groups until GGUF draft-layer names exist). MTP `draft_n_max` widens the SWA store tail by `n-1` tokens.
+
+### L3 prefix hashes include multimodal spans (vLLM #51899)
+
+Per-block extras `("mm", identifier, offset_in_block)` go into the prefix hash chain. Same placeholder tokens with different images miss. `options.mm_features` / `options.zerollama.mm_hashes` on admit.
+
+### L3 prefix hashes tag `cache_salt` and LoRA (vLLM #51899/#59335)
+
+Prefix-block pool scopes now use tagged extras (`cache_salt`, `lora`) instead of a raw `\0salt` suffix, so tenant salt cannot collide with another extra. `options.lora` / `options.zerollama.lora` isolate adapter KV. SWA store keeps the EAGLE shared-prefix junction block (#62206) and the last full prompt block when retention is 0 (#59146 analog).
+
 ### Embed llama-server `-ub` matches `num_ctx`
 
 Chat default `NumBatch=512` was passed as `-b/-ub` on embeddings, so BERT/nomic/gemma 400’d past ~512 tokens while `-c` was already 2k–8k. Raise embed ubatch to the parallel context window (same as ggml).

@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -153,6 +154,7 @@ class PrefixBlockPool:
         limit: int,
         block_size: int | None = None,
         load_tier_filter: TierFilter | None = None,
+        mm_features: Sequence[Any] | None = None,
     ) -> tuple[list[_PrefixChainBlock], int]:
         bs = max(1, int(block_size or prefix_cache_block_size()))
         tier = lmcache_tier()
@@ -162,7 +164,11 @@ class PrefixBlockPool:
         lmcache_hits = 0
         with self._lock:
             for _idx, _start, end, _parent, bh in iter_prefix_blocks(
-                tokens, block_size=bs, scope=scope, max_tokens=limit
+                tokens,
+                block_size=bs,
+                scope=scope,
+                max_tokens=limit,
+                mm_features=mm_features,
             ):
                 entry = self._blocks.get(bh)
                 if entry is None and allow_lmcache:
@@ -192,6 +198,7 @@ class PrefixBlockPool:
         seq_pos: int | None,
         block_size: int | None = None,
         load_tier_filter: TierFilter | None = None,
+        mm_features: Sequence[Any] | None = None,
     ) -> PrefixBlockMatch:
         bs = max(1, int(block_size or prefix_cache_block_size()))
         limit = len(tokens)
@@ -206,6 +213,7 @@ class PrefixBlockPool:
             limit=limit,
             block_size=bs,
             load_tier_filter=load_tier_filter,
+            mm_features=mm_features,
         )
         matched = chain[-1].token_end if chain else 0
         blocks = len(chain)
@@ -215,7 +223,11 @@ class PrefixBlockPool:
             with self._lock:
                 idx = 0
                 for _idx, _start, end, _parent, bh in iter_prefix_blocks(
-                    tokens, block_size=bs, scope=scope, max_tokens=limit
+                    tokens,
+                    block_size=bs,
+                    scope=scope,
+                    max_tokens=limit,
+                    mm_features=mm_features,
                 ):
                     if idx >= len(chain):
                         break
@@ -252,6 +264,7 @@ class PrefixBlockPool:
         target_slot: int,
         seq_pos: int,
         block_size: int | None = None,
+        mm_features: Sequence[Any] | None = None,
     ) -> bool:
         """True when block metadata for ``tokens[:seq_pos]`` includes ``target_slot``.
 
@@ -266,7 +279,11 @@ class PrefixBlockPool:
         if limit <= 0:
             return False
         chain, _ = self._build_prefix_chain(
-            tokens, scope=scope, limit=limit, block_size=bs
+            tokens,
+            scope=scope,
+            limit=limit,
+            block_size=bs,
+            mm_features=mm_features,
         )
         if not chain:
             return False
@@ -370,6 +387,7 @@ class PrefixBlockPool:
         prefer_session_key: str | None = None,
         prefer_session_group: str | None = None,
         load_tier_filter: TierFilter | None = None,
+        mm_features: Sequence[Any] | None = None,
     ) -> tuple[int, int, int] | None:
         """Return ``(donor_slot, matched_tokens, matched_blocks)`` for cross-slot seed.
 
@@ -387,6 +405,7 @@ class PrefixBlockPool:
             limit=limit,
             block_size=block_size,
             load_tier_filter=load_tier_filter,
+            mm_features=mm_features,
         )
         with self._lock:
             slot_meta = self._slot_session_meta_locked()
@@ -409,6 +428,7 @@ class PrefixBlockPool:
         min_matched: int = 0,
         block_size: int | None = None,
         load_tier_filter: TierFilter | None = None,
+        mm_features: Sequence[Any] | None = None,
     ) -> PrefixBlobMatch | None:
         """Longest contiguous prefix that has a federated ``blob_digest`` (L3-R7).
 
@@ -431,7 +451,11 @@ class PrefixBlockPool:
         best: PrefixBlobMatch | None = None
         with self._lock:
             for idx, _start, end, _parent, bh in iter_prefix_blocks(
-                tokens, block_size=bs, scope=scope, max_tokens=limit
+                tokens,
+                block_size=bs,
+                scope=scope,
+                max_tokens=limit,
+                mm_features=mm_features,
             ):
                 entry = self._blocks.get(bh)
                 if entry is None:
@@ -468,6 +492,7 @@ class PrefixBlockPool:
         session_group: str | None = None,
         finalize_blob: bool | None = None,
         store_block_mask: list[bool] | None = None,
+        mm_features: Sequence[Any] | None = None,
     ) -> RegisterPrefixResult:
         """Register full prefix blocks; optionally defer blob publish (vLLM #48596).
 
@@ -499,7 +524,11 @@ class PrefixBlockPool:
 
         with self._lock:
             for _idx, _start, end, parent, bh in iter_prefix_blocks(
-                tokens, block_size=bs, scope=scope, max_tokens=seq_pos
+                tokens,
+                block_size=bs,
+                scope=scope,
+                max_tokens=seq_pos,
+                mm_features=mm_features,
             ):
                 if store_block_mask is not None:
                     if _idx >= len(store_block_mask) or not store_block_mask[_idx]:
@@ -857,5 +886,12 @@ def build_model_scope(
     *,
     model_hash: str,
     cache_salt: str | None = None,
+    lora_name: str | None = None,
+    extra_keys: Sequence[tuple[str, str]] | None = None,
 ) -> str:
-    return model_scope_key(model_hash=model_hash, cache_salt=cache_salt)
+    return model_scope_key(
+        model_hash=model_hash,
+        cache_salt=cache_salt,
+        lora_name=lora_name,
+        extra_keys=extra_keys,
+    )

@@ -84,6 +84,8 @@ def test_draft_speculative_active():
     assert draft_speculative_active("ngram") is False
     assert draft_speculative_active("eagle3") is True
     assert draft_speculative_active("mtp") is True
+    assert draft_speculative_active("dflash") is True
+    assert draft_speculative_active("draft-simple") is True
 
 
 def test_resolve_policy_draft_drop_last_block_not_disk(monkeypatch: pytest.MonkeyPatch):
@@ -94,7 +96,18 @@ def test_resolve_policy_draft_drop_last_block_not_disk(monkeypatch: pytest.Monke
     assert policy.allow_disk_persist is False
     assert policy.drop_last_block_on_resume is True
     assert "disk_disabled_draft_speculative" in policy.notes
+    assert "drop_last_block_on_resume_eagle" in policy.notes
     assert "drop_last_block_on_resume_draft_speculative" in policy.notes
+
+
+def test_resolve_policy_independent_draft_no_eagle_drop(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ZEROLLAMA_LLAMA_CACHE", raising=False)
+    policy = resolve_prefix_cache_policy(spec_method="draft-simple")
+    assert policy.allow_disk_persist is False
+    assert policy.drop_last_block_on_resume is False
+    dflash = resolve_prefix_cache_policy(spec_method="dflash")
+    assert dflash.allow_disk_persist is False
+    assert dflash.drop_last_block_on_resume is False
 
 
 def test_swa_cache_prompt_allowed_hybrid_enforces_window():

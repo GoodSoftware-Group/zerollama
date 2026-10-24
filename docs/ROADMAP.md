@@ -346,6 +346,14 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 
 **vLLM borrowings — spike closed (Jun 2026).** GGUF-first runtime only; no HTTP-to-vLLM.
 
+**Flare borrowings — policy watch (Oct 2026).** [NVIDIA/flare-local-inference](https://github.com/NVIDIA/flare-local-inference) is SM120/SM121 research (PyTorch prep → Rust Helios + FlashInfer). **Do not** vendor. Rematch **agent cache / capacity** ideas into L3 only — guide [flare-borrowings.md](./flare-borrowings.md).
+
+| Flare ID | Goal | Status |
+|----------|------|--------|
+| **FL1** | Turn-boundary prefix checkpoints under memory pressure (skip retention when no backing) | **Next** — rematch `prefix_cache_policy` / retention; measure tool-heavy 5080 chats |
+| **FL2** | Operator KV-limit mental model (`memory` / `context` / `concurrency`) mapped to existing env/YAML | **Next** — docs/[runtime-env.md](./runtime-env.md); no Helios flag port |
+| **FL3** | Host vs GPU prefix-reuse metrics polish when disk/LMCache contributes | **Next** — usage/log fields; not Flare Prometheus names |
+
 | Taken | Deferred (non-goals) |
 |-------|---------------------|
 | SWA/hybrid prefix retention policy | Full RadixAttention ref-count block DAG across requests |
@@ -842,6 +850,7 @@ Mixing “port Qwen-Image to MLX” with “agent needs ControlNet” hid the re
 | **Per-GPU llama flags + MTP autoconfig** | Borrowings **L1**; Phase **13** | Tuned batch/parallel/draft on stock cache types—first measurable tok/s win |
 | **Long-ctx KV quant kernels** | Borrowings **L2** (Done) | TurboQuant / QJL / Polar — opt-in VRAM via `FORK=1` / `AUTO_VRAM`; default tok/s stays L1; **next:** RotorQuant A/B on 5080 |
 | **Prefix cache → llama slots** | Borrowings **L3**; Phase **15** v1b | **Why:** dynamic slots discard KV each turn; stable keys → pinned `id_slot` + `cache_prompt` skip repeat prefill on agent threads. **Jun 2026:** vLLM-inspired SWA/draft-spec policy; subprocess `seq_pos` tracking; decode graph invalidate via in-process native API + subprocess `POST /cuda-graph/invalidate`. Doc: [gpu-profiles-l3.md](./gpu-profiles-l3.md), [decode-graph-invalidation.md](./decode-graph-invalidation.md). |
+| **Flare agent-cache policy rematch** | Borrowings **FL1–FL3** | NVIDIA Flare (SM120 research): turn-boundary checkpoints, KV-limit mental model, host×GPU reuse metrics — **ideas only**, no Helios/FlashInfer. Doc: [flare-borrowings.md](./flare-borrowings.md). |
 | Inference vs training **priority / idle policy** | Training **T6**, inference **Phase 11** | One GPU, many clients—documented target is queued work + policy, not “implicitly fair” |
 | **Train → GGUF → serve** + efficient SFT | Training **T7–T8** | Close Unsloth-style deploy loop; packing/templates before kernel chase — **T7/T8 Done** |
 | Optional Unsloth-inspired stock Trainer / GRPO | Training **T9–T10** | Polish unified PEFT/`Trainer` path; GRPO on same backend — no Studio AGPL, no second backend |

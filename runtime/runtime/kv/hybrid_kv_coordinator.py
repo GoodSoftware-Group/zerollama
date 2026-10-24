@@ -13,7 +13,7 @@ coordinated retention gate for L3 ``cache_prompt`` / resume (not a block pool).
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from runtime.gguf_estimate import GgufArchHints
@@ -29,6 +29,7 @@ class LayerGroupSpec:
     kind: LayerGroupKind
     layer_indices: tuple[int, ...]
     window: int | None
+    is_eagle_group: bool = False
 
     def to_health(self) -> dict[str, Any]:
         return {
@@ -36,6 +37,7 @@ class LayerGroupSpec:
             "layers": list(self.layer_indices),
             "layer_count": len(self.layer_indices),
             "window": self.window,
+            "is_eagle_group": self.is_eagle_group,
         }
 
 
@@ -59,6 +61,10 @@ class HybridKVCacheCoordinator:
         return sum(
             len(g.layer_indices) for g in self.layer_groups if g.kind == "sliding_window"
         )
+
+    @property
+    def eagle_group_count(self) -> int:
+        return sum(1 for g in self.layer_groups if g.is_eagle_group)
 
     def allows_cache_prompt(
         self,
@@ -118,6 +124,7 @@ class HybridKVCacheCoordinator:
             "swa_effective_window": self.swa_effective_window,
             "full_layer_count": self.full_layer_count,
             "swa_layer_count": self.swa_layer_count,
+            "eagle_group_count": self.eagle_group_count,
             "retention_interval": self.retention_interval,
             "layer_groups": [g.to_health() for g in self.layer_groups],
         }
@@ -183,8 +190,14 @@ def build_hybrid_kv_coordinator(
     num_ctx: int | None,
     *,
     retention_interval: int | None = None,
+    eagle_drop: bool = False,
 ) -> HybridKVCacheCoordinator:
     groups = build_layer_groups(arch, num_ctx)
+    if eagle_drop and groups:
+        # vLLM #61455: tag groups that contain draft layers. Without GGUF
+        # ``is_draft`` names, fall back to flagging every group (same as vLLM
+        # when ``use_eagle`` and no group is annotated).
+        groups = tuple(replace(g, is_eagle_group=True) for g in groups)
     layers = int(arch.scalar.get("block_count") or 0)
     kind = classify_coordinator_kind(groups)
     swa_window = _min_swa_window(groups)

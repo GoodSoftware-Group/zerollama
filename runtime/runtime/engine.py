@@ -502,6 +502,7 @@ class InferenceEngine:
             gguf=file_path,
             num_ctx=resolved_ctx,
             spec_method=self.config.speculative.method,
+            draft_n_max=getattr(self.config.speculative, "draft_n_max", None),
         )
         return apply_cache_level_to_policy(policy, cache_level)
 
@@ -596,6 +597,8 @@ class InferenceEngine:
             cache_salt=req.cache_salt,
             subprocess=subprocess,
             load_tier_filter=getattr(req, "load_tier_filter", None),
+            lora_name=getattr(req, "lora_name", None),
+            mm_features=getattr(req, "mm_features", None),
         )
         block_pool = prefix_block_pool_snapshot(
             prompt_token_ids=req.prompt_tokens,
@@ -604,6 +607,8 @@ class InferenceEngine:
             seq_pos=seq_pos,
             resume=resume,
             load_tier_filter=getattr(req, "load_tier_filter", None),
+            lora_name=getattr(req, "lora_name", None),
+            mm_features=getattr(req, "mm_features", None),
         )
         inv_reason = decode_graph_invalidation_reason(
             allow=allow,
@@ -739,10 +744,12 @@ class InferenceEngine:
             target_slot=int(req.kv_slot),
             model_hash=model_hash,
             cache_salt=req.cache_salt,
+            lora_name=getattr(req, "lora_name", None),
             seq_pos=seq_pos,
             effective_window=spec.effective_window,
             prefer_session_key=getattr(req, "session_parent", None),
             prefer_session_group=getattr(req, "session_group", None),
+            mm_features=getattr(req, "mm_features", None),
         )
         if plan is None:
             # L3-R7: no live donor — try federated slot blob restore.
@@ -864,9 +871,11 @@ class InferenceEngine:
             target_slot=int(req.kv_slot),
             model_hash=model_hash,
             cache_salt=req.cache_salt,
+            lora_name=getattr(req, "lora_name", None),
             seq_pos=seq_pos,
             effective_window=effective_window,
             load_tier_filter=getattr(req, "load_tier_filter", None),
+            mm_features=getattr(req, "mm_features", None),
         )
         if blob_plan is None:
             return allow, resume_pos, None
@@ -1827,7 +1836,11 @@ class InferenceEngine:
         seq_pos = self._completion_seq_pos(req, result)
         if seq_pos <= 0:
             return
-        scope = build_model_scope(model_hash=model_hash, cache_salt=req.cache_salt)
+        scope = build_model_scope(
+            model_hash=model_hash,
+            cache_salt=req.cache_salt,
+            lora_name=getattr(req, "lora_name", None),
+        )
         blob_path: str | None = None
         slot = self._id_slot_for_request(req)
         if slot >= 0:
@@ -1854,12 +1867,18 @@ class InferenceEngine:
                 num_blocks = seq_pos // max(1, bs)
                 retention = getattr(spec, "retention_interval", None)
                 draft = bool(getattr(spec, "drop_last_block_on_resume", False))
+                extra = int(getattr(spec, "extra_retained_tokens", 0) or 0)
+                admit_hit = int(getattr(req, "cached_tokens_at_admit", 0) or 0)
+                prompt_end = min(seq_pos, len(req.prompt_tokens))
                 store_mask = swa_reachable_store_mask(
                     num_blocks,
                     block_size=bs,
                     sliding_window=int(window),
                     retention_interval=retention,
                     draft_extra=draft,
+                    shared_prefix_blocks=admit_hit // max(1, bs),
+                    prompt_end_blocks=prompt_end // max(1, bs),
+                    extra_retained_tokens=extra,
                 )
 
         # Auto finalize: publish only when slot blob exists (defer otherwise).
@@ -1873,6 +1892,7 @@ class InferenceEngine:
             session_group=getattr(req, "session_group", None),
             finalize_blob=None,
             store_block_mask=store_mask,
+            mm_features=getattr(req, "mm_features", None),
         )
         if (
             not reg.blob_finalized
@@ -2661,6 +2681,8 @@ class InferenceEngine:
             cache_pin_from_options,
             extract_cache_level,
             extract_cache_reset,
+            extract_lora_name,
+            extract_mm_features,
             extract_kv_load_tiers,
             extract_session_group,
             extract_session_parent,
@@ -2683,6 +2705,8 @@ class InferenceEngine:
             vram_num_ctx_meta=clamp_meta or None,
             prompt_cache_key=prompt_cache_key,
             cache_salt=cache_salt,
+            lora_name=extract_lora_name(options),
+            mm_features=extract_mm_features(options),
             session_parent=extract_session_parent(options),
             session_group=extract_session_group(options),
             cache_reset=extract_cache_reset(options),
@@ -3320,6 +3344,8 @@ class InferenceEngine:
             cache_pin_from_options,
             extract_cache_level,
             extract_cache_reset,
+            extract_lora_name,
+            extract_mm_features,
             extract_kv_load_tiers,
             extract_session_group,
             extract_session_parent,
@@ -3388,6 +3414,8 @@ class InferenceEngine:
                 vram_options=vram_opts,
                 prompt_cache_key=cache_key,
                 cache_salt=cache_salt,
+                lora_name=extract_lora_name(batch_opts),
+                mm_features=extract_mm_features(batch_opts),
                 session_parent=extract_session_parent(batch_opts),
                 session_group=extract_session_group(batch_opts),
                 cache_reset=extract_cache_reset(batch_opts),
@@ -3528,6 +3556,8 @@ class InferenceEngine:
             cache_pin_from_options,
             extract_cache_level,
             extract_cache_reset,
+            extract_lora_name,
+            extract_mm_features,
             extract_kv_load_tiers,
             extract_session_group,
             extract_session_parent,
@@ -3594,6 +3624,8 @@ class InferenceEngine:
                 vram_options=vram_opts,
                 prompt_cache_key=cache_key,
                 cache_salt=cache_salt,
+                lora_name=extract_lora_name(batch_opts),
+                mm_features=extract_mm_features(batch_opts),
                 session_parent=extract_session_parent(batch_opts),
                 session_group=extract_session_group(batch_opts),
                 cache_reset=extract_cache_reset(batch_opts),

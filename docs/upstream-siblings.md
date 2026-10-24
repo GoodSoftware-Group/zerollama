@@ -22,6 +22,7 @@
 | **Wan2GP** | `../Wan2GP` (CT: `/root/Wan2GP`) | [deepbeepmeep/Wan2GP](https://github.com/deepbeepmeep/Wan2GP) | [wangp-borrowings.md](./wangp-borrowings.md) (`mmgp` VRAM) | As needed (video VRAM / zoo watch) |
 | **DeepGEMM** (optional) | `../DeepGEMM` | [deepseek-ai/DeepGEMM](https://github.com/deepseek-ai/DeepGEMM) | [deepgemm-borrowings.md](./deepgemm-borrowings.md) — grouped GEMM / SF layout / MoE-fuse ideas for ggml; **do not** vendor; **skip** Ascend port ([DeepGEMM-Ascend](https://github.com/deepseek-ai/DeepGEMM-Ascend)) | As needed (CUDA GEMM research only) |
 | **DeepInfer** (optional) | `../DeepInfer` (astra: `/mnt/ssd2/src/DeepInfer`) | [deepseek-ai/DeepInfer](https://github.com/deepseek-ai/DeepInfer) | [deepinfer-borrowings.md](./deepinfer-borrowings.md) · [deepinfer-ladder.md](./deepinfer-ladder.md) (**DI0–DI8**, **M29**) — schedule / MTP-varlen / YOCO ideas; **do not** vendor; **SM100-only** serve | As needed (serving-policy research) |
+| **Flare** (optional) | `../flare-local-inference` | [NVIDIA/flare-local-inference](https://github.com/NVIDIA/flare-local-inference) | [flare-borrowings.md](./flare-borrowings.md) — agent turn-boundary checkpoints / KV-limit mental model / host×GPU reuse metrics; **do not** vendor Helios/Ignition/FlashInfer | As needed (L3 policy rematch; SM120 research) |
 | **h3.c** | `../h3.c` | [antirez/h3.c](https://github.com/antirez/h3.c) | Metal MiniMax-H3 **C rematch** for [video-c.md](./video-c.md) (`--family h3`); not the product runner | As needed (H3 parity) |
 | **minimax-h3-mlx** | `../minimax-h3-mlx` | [mrbizarro/minimax-h3-mlx](https://github.com/mrbizarro/minimax-h3-mlx) | MLX MiniMax-H3 **Python rematch oracle** (packing, AdaLN cache, TE layer-50, VAEs) for video-c Darwin | As needed (H3 parity / dumps) |
 | **ClipProj-MiniMax-H3** | `~/.zerollama/third_party/h3/clipproj/` | [NicoLab28/ClipProj-MiniMax-H3](https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3) | TE projection matrices (4B/8B → `[seq,5120]`); [h3-clipproj.md](./h3-clipproj.md) | Optional (Darwin TE shrink) |
@@ -56,7 +57,7 @@ Other checkouts under the same parent (`ggml/`, `shard/`, rotorquant labs, …) 
 
 | Upstream | Tip / tag noted | Date | Notes |
 |----------|-----------------|------|-------|
-| vLLM `main` | `f8e0602713` | 2026-08-20 | **Brought:** #50321 partial LMCache tier load, #48668 zero-output cache metrics, #52216 retention default `0`, #52041 defer ViT on input-cache hit; **watch:** #50507 — [vllm-borrowings.md](./vllm-borrowings.md) |
+| vLLM `main` | `e9acf48614` | 2026-10-24 | **Brought:** #51899 extras+MM hashes, #59335 LoRA, #62206 junction, #59146 prompt-end, #61455 EAGLE group tags; **watch:** #50507/#54736 — [vllm-borrowings.md](./vllm-borrowings.md) |
 | vLLM `main` (prior) | `118bcde44` | 2026-07-28 | **Brought:** #48123 tier filter, #48596/#49671 defer blob finalize, #48535 cache creation tokens, #48911 SWA store filter |
 | SGLang `main` | `f2eebd5533` | 2026-09-23 | **Bring next:** #37320 (alpha RGB + tool media order), #37967 (whole-request media budget); **watch:** #39120 / #38735 / #34488 — [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) |
 | SGLang `main` (prior) | `896acc8860` | 2026-08-21 | **Brought:** #32914 / #34892 / #31957 / #33898 |
@@ -65,6 +66,7 @@ Other checkouts under the same parent (`ggml/`, `shard/`, rotorquant labs, …) 
 | Wan2GP `main` | `7e45fe7e2110` | 2026-08-11 | **Brought:** `mmgp==3.7.12` attach for 16g TI2V — [wangp-borrowings.md](./wangp-borrowings.md) |
 | mlx-serve | README / `pld_index.zig` | 2026-08-24 | **Brought:** PLD + spec gates — [mlx-serve-borrowings.md](./mlx-serve-borrowings.md) |
 | Ollama `main` | `e3cddc3e` (latest tag **v0.40.0**; tip **v0.40.1-rc0**; llama.cpp **b11351**; MLX **`a59cc231`**) | 2026-10-07 | Product-first ladders L0–L6 — [upstream-ollama-diff.md](./upstream-ollama-diff.md#cherry-pick-status-oct-2026-c1737589--v0401-rc0--e3cddc3e); prior Sep tip `c1737589` |
+| Flare `main` | README + core-design / CLI / API skim (no local tip) | 2026-10-23 | **Bring next:** FL1–FL3 (turn-boundary checkpoints, KV-limit docs, host×GPU reuse metrics) — [flare-borrowings.md](./flare-borrowings.md); **do not** vendor Helios |
 
 ---
 

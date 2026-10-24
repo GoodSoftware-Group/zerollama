@@ -19,22 +19,27 @@ import (
 )
 
 const (
-	// parallelWorkers caps concurrent chunk downloads.
-	parallelWorkers = 4
 	// stallTimeout aborts a chunk read that stops making progress.
 	stallTimeout = 60 * time.Second
 	// peerCooldown skips a dead peer briefly before retrying.
 	peerCooldown = 30 * time.Second
 	// chunkMaxRetries per Range window.
 	chunkMaxRetries = 4
+	// preambleSafeRange is the max Range size that wedged peers serve without
+	// prepending junk (see transport_preamble.go). Larger ranges short-body EOF.
+	preambleSafeRange int64 = 512
 )
 
 // Tunables (vars so tests can shrink windows without multi-MiB fixtures).
 var (
+	// parallelWorkers caps concurrent chunk downloads.
+	parallelWorkers = 4
 	// parallelChunkSize is the Range-GET window for large blob fetches.
 	parallelChunkSize int64 = 64 << 20 // 64 MiB
 	// parallelMinSize triggers parallel Range-GET instead of a single stream.
 	parallelMinSize int64 = 64 << 20
+	// preambleSkipWorkers is used when the peer needs 512-byte safe ranges.
+	preambleSkipWorkers = 16
 )
 
 // TestingSetParallelSizes shrinks Range-GET windows for unit tests. Restore with the returned func.
@@ -62,14 +67,39 @@ func (r *Resolver) downloadParallel(ctx context.Context, base, digest, dest stri
 		}
 	}()
 
-	if size <= 0 || size < parallelMinSize {
+	// Prefer TCP for parallel ranges (RDMA path is whole-blob oriented in v1).
+	tcp := NewTCPTransport(r.Auth)
+	// Probe before building the chunk client so keep-alive matches peer mode.
+	tcp.Client = &http.Client{Timeout: 2 * time.Minute}
+	r.probePreambleBug(ctx, tcp, base, digest, size)
+	tcp.Client = r.chunkHTTPClient()
+
+	via, retries, err = r.downloadParallelChunks(ctx, tcp, base, digest, partial, dest, size, cap)
+	// Large-range short-body peers may only fail once workers run; latch + retry safe.
+	if err != nil && isShortBodyEOF(err) && preferPreambleSkip.CompareAndSwap(false, true) {
+		slog.Warn("remotestore peer short-bodied large Range GET; retrying with preamble-safe ranges",
+			"server", base, "digest", digest, "error", err)
+		_ = os.Remove(partial)
+		tcp.Client = r.chunkHTTPClient()
+		via, retries, err = r.downloadParallelChunks(ctx, tcp, base, digest, partial, dest, size, cap)
+	}
+	return via, retries, err
+}
+
+func (r *Resolver) downloadParallelChunks(ctx context.Context, tcp *TCPTransport, base, digest, partial, dest string, size int64, cap Capability) (via string, retries int, err error) {
+	chunkSize := parallelChunkSize
+	workers := parallelWorkers
+	if preferPreambleSkip.Load() {
+		chunkSize = preambleSafeRange
+		workers = preambleSkipWorkers
+		slog.Warn("remotestore peer needs preamble-safe ranges",
+			"server", base, "digest", digest, "range", chunkSize, "workers", workers)
+	}
+
+	if size <= 0 || (size < parallelMinSize && !preferPreambleSkip.Load()) {
 		via, err = r.downloadSingle(ctx, base, digest, partial, dest, cap)
 		return via, retries, err
 	}
-
-	// Prefer TCP for parallel ranges (RDMA path is whole-blob oriented in v1).
-	tcp := NewTCPTransport(r.Auth)
-	tcp.Client = r.chunkHTTPClient()
 
 	f, err := os.OpenFile(partial, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -83,23 +113,25 @@ func (r *Resolver) downloadParallel(ctx context.Context, base, digest, dest stri
 	type chunk struct {
 		off, len int64
 	}
-	var chunks []chunk
-	for off := int64(0); off < size; off += parallelChunkSize {
-		n := parallelChunkSize
-		if off+n > size {
-			n = size - off
-		}
-		chunks = append(chunks, chunk{off: off, len: n})
-	}
-
-	jobs := make(chan chunk, len(chunks))
-	for _, c := range chunks {
-		jobs <- c
-	}
-	close(jobs)
-
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Stream jobs — preamble-safe mode can be ~fileSize/512 entries.
+	jobs := make(chan chunk, workers*4)
+	go func() {
+		defer close(jobs)
+		for off := int64(0); off < size; off += chunkSize {
+			n := chunkSize
+			if off+n > size {
+				n = size - off
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case jobs <- chunk{off: off, len: n}:
+			}
+		}
+	}()
 
 	var (
 		wg       sync.WaitGroup
@@ -107,10 +139,6 @@ func (r *Resolver) downloadParallel(ctx context.Context, base, digest, dest stri
 		first    error
 		retryCnt atomic.Int64
 	)
-	workers := parallelWorkers
-	if workers > len(chunks) {
-		workers = len(chunks)
-	}
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
@@ -161,6 +189,45 @@ func (r *Resolver) downloadParallel(ctx context.Context, base, digest, dest stri
 	via = "tcp"
 	err = finalizePartialFile(partial, dest, digest)
 	return via, retries, err
+}
+
+// probePreambleBug issues a Range GET larger than preambleSafeRange so we latch
+// preferPreambleSkip on malformed status or short body before big parallel windows.
+func (r *Resolver) probePreambleBug(ctx context.Context, tcp *TCPTransport, base, digest string, size int64) {
+	if preferPreambleSkip.Load() {
+		return
+	}
+	probeLen := int64(4096)
+	if size > 0 && size < probeLen {
+		probeLen = size
+	}
+	if probeLen <= preambleSafeRange {
+		return // cannot distinguish; safe ranges are the whole object
+	}
+	rc, n, err := tcp.FetchChunk(ctx, base, digest, 0, probeLen)
+	if err != nil {
+		// malformed HTTP path latches inside FetchChunk
+		return
+	}
+	nw, rerr := io.Copy(io.Discard, rc)
+	_ = rc.Close()
+	if rerr != nil || nw != probeLen || (n > 0 && nw != n) {
+		if preferPreambleSkip.CompareAndSwap(false, true) {
+			slog.Warn("remotestore peer short-bodies Range GET; enabling preamble-safe ranges",
+				"server", base, "digest", digest, "want", probeLen, "got", nw, "read_err", rerr)
+		}
+	}
+}
+
+func isShortBodyEOF(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "unexpected EOF") || strings.Contains(s, "chunk short write")
 }
 
 func (r *Resolver) downloadSingle(ctx context.Context, base, digest, partial, dest string, cap Capability) (string, error) {
@@ -230,15 +297,19 @@ func (r *Resolver) chunkHTTPClient() *http.Client {
 	if base.Transport != nil {
 		tr = base.Transport
 	}
-	// Clone so parallel Range workers do not share a polluted keep-alive conn
-	// when a peer mis-frames a prior response.
+	// Clone so we can tune keep-alives without mutating DefaultTransport.
 	if ht, ok := tr.(*http.Transport); ok {
 		tr = ht.Clone()
 	} else {
 		tr = &http.Transport{Proxy: http.ProxyFromEnvironment}
 	}
 	if ht, ok := tr.(*http.Transport); ok {
-		ht.DisableKeepAlives = true
+		// Wedged peers: 512-byte ranges are well-framed — keep-alive is required
+		// for throughput. Healthy peers: disable to avoid rare misframe pollution.
+		ht.DisableKeepAlives = !preferPreambleSkip.Load()
+		if preferPreambleSkip.Load() {
+			ht.MaxIdleConnsPerHost = preambleSkipWorkers
+		}
 	}
 	return &http.Client{
 		Transport:     tr,

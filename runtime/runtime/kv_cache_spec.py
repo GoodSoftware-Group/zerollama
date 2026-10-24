@@ -74,6 +74,7 @@ class KVCacheSpec:
     disk_ttl_ms: int
     speculative_draft: bool
     drop_last_block_on_resume: bool = False
+    extra_retained_tokens: int = 0
     retention_interval: int | None = None
     coordinator: HybridKVCacheCoordinator | None = None
     notes: tuple[str, ...] = ()
@@ -198,6 +199,7 @@ class KVCacheSpec:
             "disk_ttl_ms": self.disk_ttl_ms,
             "speculative_draft": self.speculative_draft,
             "drop_last_block_on_resume": self.drop_last_block_on_resume,
+            "extra_retained_tokens": self.extra_retained_tokens,
             "retention_interval": self.retention_interval,
             "prefix_cache_block_size": prefix_cache_block_size(),
             "notes": list(self.notes),
@@ -246,9 +248,34 @@ def effective_prefix_window(arch: GgufArchHints, num_ctx: int | None) -> int | N
 
 
 def draft_speculative_active(spec_method: str) -> bool:
-    """Draft-based spec decode (eagle/mtp/dflash) — unsafe for disk slot blobs."""
+    """Independent or EAGLE/MTP draft model — unsafe for disk slot blobs."""
     llama_type = resolve_method(spec_method or "none")
+    if llama_type == "dflash":
+        return True
     return llama_type.startswith("draft")
+
+
+def eagle_block_drop_active(spec_method: str) -> bool:
+    """True when last-block drop is required (vLLM ``use_eagle_block_drop``).
+
+    EAGLE/MTP write prefill-lookahead tokens into the last KV block. Independent
+    draft models (``draft-simple``, ``dflash``) do not, so they keep full prefix
+    hits. vLLM #61455 tags groups that actually contain draft layers; without
+    GGUF draft-layer names we still apply this method-level split.
+    """
+    llama_type = resolve_method(spec_method or "none")
+    if llama_type in ("draft-eagle3", "eagle3", "draft-mtp", "mtp"):
+        return True
+    return llama_type.startswith("draft-eagle") or llama_type.startswith("draft-mtp")
+
+
+def eagle_extra_retained_tokens(
+    spec_method: str, draft_n_max: int | None = None
+) -> int:
+    """SWA extra tail tokens for multi-token MTP lookahead (vLLM #61455)."""
+    if not eagle_block_drop_active(spec_method):
+        return 0
+    return max(0, int(draft_n_max or 0) - 1)
 
 
 def _disk_ttl_for_kind(kind: KVCacheKind) -> int:
@@ -264,6 +291,7 @@ def resolve_kv_cache_spec(
     gguf: Path | None = None,
     num_ctx: int | None = None,
     spec_method: str = "none",
+    draft_n_max: int | None = None,
 ) -> KVCacheSpec:
     """Resolve the KV cache spec for a model + speculative configuration."""
     if not llama_cache_enabled():
@@ -287,16 +315,25 @@ def resolve_kv_cache_spec(
     kind = classify_gguf_prefix_cache(arch)
     window = effective_prefix_window(arch, num_ctx)
     spec_draft = draft_speculative_active(spec_method)
+    eagle_drop = eagle_block_drop_active(spec_method)
+    extra_retained = eagle_extra_retained_tokens(spec_method, draft_n_max)
     retention = prefix_cache_retention_interval()
     coordinator = build_hybrid_kv_coordinator(
         arch,
         num_ctx,
         retention_interval=retention,
+        eagle_drop=eagle_drop,
     )
     notes: list[str] = []
     if spec_draft:
         notes.append("disk_disabled_draft_speculative")
+    if eagle_drop:
+        notes.append("drop_last_block_on_resume_eagle")
         notes.append("drop_last_block_on_resume_draft_speculative")
+        if coordinator.eagle_group_count:
+            notes.append(f"eagle_groups={coordinator.eagle_group_count}")
+    if extra_retained:
+        notes.append(f"eagle_extra_retained_tokens={extra_retained}")
     if kind in ("sliding_window", "hybrid"):
         notes.append(f"swa_kind={kind}")
         if window is not None:
@@ -315,7 +352,8 @@ def resolve_kv_cache_spec(
         allow_disk_persist=not spec_draft,
         disk_ttl_ms=_disk_ttl_for_kind(kind),
         speculative_draft=spec_draft,
-        drop_last_block_on_resume=spec_draft,
+        drop_last_block_on_resume=eagle_drop,
+        extra_retained_tokens=extra_retained,
         retention_interval=coordinator.retention_interval,
         coordinator=coordinator,
         notes=tuple(notes),

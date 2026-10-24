@@ -22,9 +22,14 @@ var preferPreambleSkip atomic.Bool
 // TestingResetPreambleSkip clears the process-wide preamble-skip latch (tests).
 func TestingResetPreambleSkip() { preferPreambleSkip.Store(false) }
 
+// TestingPreambleSkipEnabled reports whether preamble-safe mode is latched.
+func TestingPreambleSkipEnabled() bool { return preferPreambleSkip.Load() }
+
 func (t *TCPTransport) FetchChunk(ctx context.Context, baseURL, digest string, offset, length int64) (io.ReadCloser, int64, error) {
 	digest = normalizeDigest(digest)
-	if preferPreambleSkip.Load() {
+	// Ranges ≤512 are correctly framed even on wedged peers — use std Client
+	// (keep-alive). Only larger GETs need the raw preamble-skip dial path.
+	if preferPreambleSkip.Load() && (length <= 0 || length > preambleSafeRange) {
 		return t.fetchChunkSkipPreamble(ctx, baseURL, digest, offset, length)
 	}
 	url := strings.TrimRight(baseURL, "/") + "/v1/blob/" + digest
@@ -41,9 +46,14 @@ func (t *TCPTransport) FetchChunk(ctx context.Context, baseURL, digest string, o
 	resp, err := t.client().Do(req)
 	if err != nil {
 		if strings.Contains(err.Error(), "malformed HTTP status") {
-			preferPreambleSkip.Store(true)
-			slog.Warn("remotestore peer prepends bytes before HTTP status; enabling preamble-skip",
-				"server", baseURL, "digest", digest)
+			if preferPreambleSkip.CompareAndSwap(false, true) {
+				slog.Warn("remotestore peer prepends bytes before HTTP status; enabling preamble-safe ranges",
+					"server", baseURL, "digest", digest)
+			}
+			if length > 0 && length <= preambleSafeRange {
+				// Probe-sized range should not need skip; still try once.
+				return t.fetchChunkSkipPreamble(ctx, baseURL, digest, offset, length)
+			}
 			return t.fetchChunkSkipPreamble(ctx, baseURL, digest, offset, length)
 		}
 		return nil, 0, annotateMalformedHTTP(err)
@@ -171,12 +181,14 @@ func (b *preambleBody) Close() error {
 	return err
 }
 
-// readerAfterHTTPPreamble discards up to maxSkip bytes until "HTTP/1." then
-// returns a reader positioned at that status line.
+// readerAfterHTTPPreamble discards up to maxSkip bytes until a real status
+// line ("HTTP/1.0 " / "HTTP/1.1 "), then returns a reader positioned there.
 func readerAfterHTTPPreamble(br *bufio.Reader, maxSkip int64) (*bufio.Reader, int64, error) {
+	// Require the space after the version so random "HTTP/1." in GGUF junk
+	// is less likely to false-match.
 	const needle = "HTTP/1."
-	peek, err := br.Peek(len(needle))
-	if err == nil && bytes.Equal(peek, []byte(needle)) {
+	peek, err := br.Peek(9)
+	if err == nil && len(peek) >= 9 && bytes.HasPrefix(peek, []byte(needle)) && (peek[7] == '0' || peek[7] == '1') && peek[8] == ' ' {
 		return br, 0, nil
 	}
 
@@ -189,13 +201,12 @@ func readerAfterHTTPPreamble(br *bufio.Reader, maxSkip int64) (*bufio.Reader, in
 		}
 		skipped++
 		window = append(window, b)
-		if len(window) > len(needle) {
+		if len(window) > 9 {
 			window = window[1:]
 		}
-		if string(window) == needle {
-			// Re-prefix the needle we consumed; remainder stays in br.
-			merged := io.MultiReader(bytes.NewReader([]byte(needle)), br)
-			return bufio.NewReaderSize(merged, 256<<10), skipped - int64(len(needle)), nil
+		if len(window) == 9 && bytes.HasPrefix(window, []byte(needle)) && (window[7] == '0' || window[7] == '1') && window[8] == ' ' {
+			merged := io.MultiReader(bytes.NewReader(append([]byte(nil), window...)), br)
+			return bufio.NewReaderSize(merged, 256<<10), skipped - 9, nil
 		}
 	}
 	return nil, skipped, fmt.Errorf("no HTTP status within %d leading bytes", maxSkip)

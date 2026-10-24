@@ -38,6 +38,7 @@ class PrefixCachePolicy:
     disk_ttl_ms: int
     speculative_draft: bool
     drop_last_block_on_resume: bool = False
+    extra_retained_tokens: int = 0
     retention_interval: int | None = None
     notes: tuple[str, ...] = ()
 
@@ -51,6 +52,7 @@ class PrefixCachePolicy:
             disk_ttl_ms=spec.disk_ttl_ms,
             speculative_draft=spec.speculative_draft,
             drop_last_block_on_resume=spec.drop_last_block_on_resume,
+            extra_retained_tokens=spec.extra_retained_tokens,
             retention_interval=spec.retention_interval,
             notes=spec.notes,
         )
@@ -64,6 +66,7 @@ class PrefixCachePolicy:
             disk_ttl_ms=self.disk_ttl_ms,
             speculative_draft=self.speculative_draft,
             drop_last_block_on_resume=self.drop_last_block_on_resume,
+            extra_retained_tokens=self.extra_retained_tokens,
             retention_interval=self.retention_interval,
             notes=self.notes,
         )
@@ -94,10 +97,16 @@ def resolve_prefix_cache_policy(
     gguf: Path | None = None,
     num_ctx: int | None = None,
     spec_method: str = "none",
+    draft_n_max: int | None = None,
 ) -> PrefixCachePolicy:
     """Policy for RAM cache_prompt and disk slot persistence."""
     return PrefixCachePolicy.from_spec(
-        resolve_kv_cache_spec(gguf=gguf, num_ctx=num_ctx, spec_method=spec_method)
+        resolve_kv_cache_spec(
+            gguf=gguf,
+            num_ctx=num_ctx,
+            spec_method=spec_method,
+            draft_n_max=draft_n_max,
+        )
     )
 
 
@@ -126,6 +135,8 @@ def _apply_prefix_block_pool(
     cache_salt: str | None,
     seq_pos: int | None,
     load_tier_filter: Any = None,
+    lora_name: str | None = None,
+    mm_features: Any = None,
 ) -> tuple[bool, int | None, str | None]:
     """Hash-chain verification for pinned prefix reuse (optional env)."""
     from runtime.kv.prefix_block_pool import (
@@ -142,13 +153,16 @@ def _apply_prefix_block_pool(
     if verify_pos is None or verify_pos <= 0:
         return allow, resume, None
 
-    scope = build_model_scope(model_hash=model_hash, cache_salt=cache_salt)
+    scope = build_model_scope(
+        model_hash=model_hash, cache_salt=cache_salt, lora_name=lora_name
+    )
     pool = get_prefix_block_pool(model_scope=scope)
     match = pool.lookup_longest_prefix(
         prompt_token_ids,
         scope=scope,
         seq_pos=verify_pos,
         load_tier_filter=load_tier_filter,
+        mm_features=mm_features,
     )
     from runtime.kv_cache_spec import prefix_cache_block_size
 
@@ -177,6 +191,8 @@ def prefix_block_pool_snapshot(
     seq_pos: int | None,
     resume: int | None,
     load_tier_filter: Any = None,
+    lora_name: str | None = None,
+    mm_features: Any = None,
 ) -> dict[str, Any] | None:
     """Operator/trace snapshot of hash-chain prefix verification."""
     from runtime.kv.prefix_block_pool import (
@@ -192,12 +208,15 @@ def prefix_block_pool_snapshot(
     verify_pos = resume if resume is not None else seq_pos
     if verify_pos is None or verify_pos <= 0:
         return {"enabled": True, "skipped": "cold_start"}
-    scope = build_model_scope(model_hash=model_hash, cache_salt=cache_salt)
+    scope = build_model_scope(
+        model_hash=model_hash, cache_salt=cache_salt, lora_name=lora_name
+    )
     match = get_prefix_block_pool(model_scope=scope).lookup_longest_prefix(
         prompt_token_ids,
         scope=scope,
         seq_pos=verify_pos,
         load_tier_filter=load_tier_filter,
+        mm_features=mm_features,
     )
     from runtime.kv_cache_spec import prefix_cache_block_size
 
@@ -225,6 +244,8 @@ def prefix_cache_decision(
     cache_salt: str | None = None,
     subprocess: bool = False,
     load_tier_filter: Any = None,
+    lora_name: str | None = None,
+    mm_features: Any = None,
 ) -> tuple[bool, int | None, str | None]:
     """Return ``(cache_prompt, resume_pos, deny_reason)`` for one admission.
 
@@ -260,6 +281,8 @@ def prefix_cache_decision(
         cache_salt=cache_salt,
         seq_pos=seq_pos,
         load_tier_filter=load_tier_filter,
+        lora_name=lora_name,
+        mm_features=mm_features,
     )
 
 

@@ -10,6 +10,8 @@ import pytest
 from runtime.cache_bridge import (
     DEFAULT_CACHE_TTLS,
     build_model_hash,
+    extract_lora_name,
+    extract_mm_features,
     cache_health,
     cache_pin_from_options,
     default_slot_ttl_ms,
@@ -90,6 +92,28 @@ def test_cache_pin_from_options_with_salt():
     )
     assert salt == "org-9"
     assert slot == derive_slot_id("sess-1", 8, cache_salt="org-9")
+
+
+def test_extract_mm_features_from_options():
+    feats = extract_mm_features(
+        {
+            "zerollama": {
+                "mm_features": [{"identifier": "img-1", "offset": 4, "length": 8}]
+            }
+        }
+    )
+    assert len(feats) == 1
+    assert feats[0].identifier == "img-1"
+    assert feats[0].offset == 4
+    hashes = extract_mm_features({"mm_hashes": ["abc"]})
+    assert hashes[0].identifier == "abc"
+    assert hashes[0].length == 0
+
+
+def test_extract_lora_name_from_options():
+    assert extract_lora_name({"lora": "adapter-a"}) == "adapter-a"
+    assert extract_lora_name({"zerollama": {"lora": "adapter-b"}}) == "adapter-b"
+    assert extract_lora_name({}) is None
 
 
 def test_derive_slot_id_stable_and_bounded():

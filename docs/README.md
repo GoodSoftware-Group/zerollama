@@ -49,6 +49,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Cross-slot Radix prefix share](./radix-prefix-share.md) — **why** L3 one-slot-per-key leaves duplicate prefills for shared system prompts; donor KV seed + v2 milestones (warm catch-up, ref-count metadata, Redis LMCache, hybrid SWA gate); vendor `POST /kv/seq-copy`; live smoke; **[product gaps](./radix-prefix-share.md#product-gaps)** (v2 vs full RadixAttention).
 * [Decode graph invalidation](./decode-graph-invalidation.md) — **why** L3 slot clears must break ggml CUDA graphs; epoch + native invalidate + `POST /cuda-graph/invalidate` for subprocess llama-server.
 * [vLLM borrowings (L3)](./vllm-borrowings.md) — **why** slot-level prefix cache vs vLLM block pool; taken vs deferred; env + `cache_salt` / drop-last-block / SWA retention / subprocess graph clear.
+* [Flare borrowings](./flare-borrowings.md) — **why** NVIDIA Flare (Helios/Ignition) is not a serve path; bring agent turn-boundary checkpoints / KV-limit mental model / host×GPU reuse metrics into L3 (FL1–FL3).
 * [Upstream sibling checkouts](./upstream-siblings.md) — **why** weekly pull map (`../vllm`, `../LocalAI`, …); agent entry [AGENTS.md](../AGENTS.md).
 * [Video parity matrix](./video-parity.md) — **why** reference workloads for native vs SGLang.
 * [H3 CUDA (Wan2GP product + native research)](./h3-cuda-port.md) — `/v1/videos` `h3-wan2gp` tags; antirez `h3_gpu.h` research track; astra SSD layout vs CT 1564 RAM wall.

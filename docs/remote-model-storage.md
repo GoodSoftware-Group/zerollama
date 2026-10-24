@@ -83,7 +83,7 @@ export ZEROLLAMA_STORAGE_SECRET='long-random-shared-secret'
 
 **Why not `storage pull` for this:** `pull` asks the *storage host* to download from a registry. `run` is the client-side direction (storage → laptop/GPU box → chat).
 
-**If fetch dies with `malformed HTTP status code`:** the storage peer is prepended blob bytes before `HTTP/1.1` on Range/GET (often after an aborted multi-MiB transfer). Current clients auto-skip that preamble (extra wire bytes). Still restart/upgrade `zerollama storage serve` on the peer so GET sets `Content-Type: application/octet-stream` and does not preset `Content-Length` before `ServeFile`.
+**If fetch dies with `malformed HTTP status code` / `unexpected EOF`:** the storage peer is mis-framing Range/GET (junk before `HTTP/1.1`, body short by that junk on large ranges). Current clients detect this and fall back to 512-byte ranges (slower). Restart/upgrade `zerollama storage serve` on the peer so GET sets `Content-Type: application/octet-stream` and does not preset `Content-Length` before `ServeFile`.
 
 ### Inference node
 

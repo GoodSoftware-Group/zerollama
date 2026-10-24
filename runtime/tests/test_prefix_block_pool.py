@@ -11,7 +11,13 @@ from runtime.kv.lmcache_tier import (
     lmcache_tier,
     reset_lmcache_tier_for_tests,
 )
-from runtime.kv.prefix_block_hash import iter_prefix_blocks, model_scope_key, prefix_block_hash
+from runtime.kv.prefix_block_hash import (
+    MmFeature,
+    iter_prefix_blocks,
+    mm_extra_keys_for_block,
+    model_scope_key,
+    prefix_block_hash,
+)
 from runtime.kv.prefix_block_pool import (
     build_model_scope,
     get_prefix_block_pool,
@@ -243,4 +249,65 @@ def test_best_donor_picks_longest_chain(monkeypatch: pytest.MonkeyPatch):
     assert plan is not None
     assert plan.source_slot == 2
     assert plan.copy_tokens == 1024
+
+
+def test_model_scope_tags_cache_salt_and_lora():
+    plain = model_scope_key(model_hash="mh")
+    salted = model_scope_key(model_hash="mh", cache_salt="tenant")
+    lora = model_scope_key(model_hash="mh", cache_salt="tenant", lora_name="adapter-a")
+    assert salted != plain
+    assert salted != "mh\0tenant"
+    assert salted == "mh\0cache_salt\0tenant"
+    assert lora == "mh\0cache_salt\0tenant\0lora\0adapter-a"
+    other = model_scope_key(model_hash="mh", extra_keys=[("cache_salt", "tenant")])
+    assert other == salted
+
+
+def test_lora_scope_isolates_prefix_lookup(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_PREFIX_BLOCK_POOL", "1")
+    tokens = _tokens(512)
+    base = build_model_scope(model_hash="mh", cache_salt="t")
+    with_lora = build_model_scope(model_hash="mh", cache_salt="t", lora_name="a1")
+    get_prefix_block_pool(model_scope=base).register_prefix(
+        tokens, scope=base, seq_pos=512, session_key="s", slot_id=1
+    )
+    miss = get_prefix_block_pool(model_scope=with_lora).lookup_longest_prefix(
+        tokens, scope=with_lora, seq_pos=512
+    )
+    assert miss.matched_blocks == 0
+
+
+def test_mm_extra_keys_are_relative_to_block():
+    feats = (MmFeature("img-a", offset=10, length=8),)
+    assert mm_extra_keys_for_block(feats, 0, 8) == ()
+    assert mm_extra_keys_for_block(feats, 8, 16) == (("mm", "img-a", 2),)
+
+
+def test_mm_features_isolate_prefix_lookup(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ZEROLLAMA_PREFIX_BLOCK_POOL", "1")
+    scope = build_model_scope(model_hash="vl")
+    pool = get_prefix_block_pool(model_scope=scope)
+    tokens = _tokens(16)
+    img_a = (MmFeature("img-a", offset=0, length=8),)
+    img_b = (MmFeature("img-b", offset=0, length=8),)
+    monkeypatch.setenv("ZEROLLAMA_PREFIX_CACHE_BLOCK_SIZE", "8")
+    pool.register_prefix(
+        tokens,
+        scope=scope,
+        seq_pos=16,
+        session_key="s",
+        slot_id=1,
+        block_size=8,
+        mm_features=img_a,
+    )
+    hit = pool.lookup_longest_prefix(
+        tokens, scope=scope, seq_pos=16, block_size=8, mm_features=img_a
+    )
+    miss = pool.lookup_longest_prefix(
+        tokens, scope=scope, seq_pos=16, block_size=8, mm_features=img_b
+    )
+    text = pool.lookup_longest_prefix(tokens, scope=scope, seq_pos=16, block_size=8)
+    assert hit.matched_blocks == 2
+    assert miss.matched_blocks == 0
+    assert text.matched_blocks == 0
 

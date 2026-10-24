@@ -24,6 +24,7 @@ On the Mac lab host (`~/Sites/inference/zerollama`):
 | Vanilla Ollama diff | `../ollama-upstream` → [docs/upstream-ollama-diff.md](./docs/upstream-ollama-diff.md) |
 | DeepGEMM (optional; CUDA ideas only) | `../DeepGEMM` → [docs/deepgemm-borrowings.md](./docs/deepgemm-borrowings.md) · [findings](./docs/deepgemm-borrowings-findings.md) — **do not** vendor; skip Ascend / Mega MoE EP; host unit `./scripts/phase/deepgemm_borrowings_unit.sh` |
 | DeepInfer (optional; SM100 engine; ideas only) | `../DeepInfer` (astra: `/mnt/ssd2/src/DeepInfer`) → [docs/deepinfer-borrowings.md](./docs/deepinfer-borrowings.md) · ladder [docs/deepinfer-ladder.md](./docs/deepinfer-ladder.md) (**DI0–DI8**, ROADMAP **M29**) — **do not** vendor; skip FlashMLA/DeepEP wheels |
+| Flare (optional; L3 policy ideas only) | `../flare-local-inference` → [docs/flare-borrowings.md](./docs/flare-borrowings.md) — **do not** vendor Helios/Ignition/FlashInfer; SM120 agent-cache rematch |
 
 ## Do not touch
 

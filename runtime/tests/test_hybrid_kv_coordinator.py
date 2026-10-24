@@ -85,3 +85,13 @@ def test_resolve_kv_cache_spec_always_attaches_coordinator(
     assert spec.coordinator.kind == "standard"
     health = spec.to_health()
     assert health["hybrid_coordinator"]["kind"] == "standard"
+
+
+def test_eagle_drop_tags_all_groups_without_draft_layer_names():
+    arch = GgufArchHints(
+        scalar={"block_count": 4},
+        sliding_window_per_layer=(0, 2048, 0, 2048),
+    )
+    coord = build_hybrid_kv_coordinator(arch, 8192, eagle_drop=True)
+    assert coord.eagle_group_count == len(coord.layer_groups)
+    assert all(g.is_eagle_group for g in coord.layer_groups)

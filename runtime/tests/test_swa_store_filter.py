@@ -67,3 +67,46 @@ def test_swa_reachable_store_mask_dense_when_window_covers_all():
     assert (
         swa_reachable_store_mask(2, block_size=512, sliding_window=2048) is None
     )
+
+
+def test_swa_store_keeps_eagle_shared_prefix_junction():
+    # Tail is last 3 of 8 with draft_extra; junction-1 of 3 shared blocks is index 2.
+    mask = swa_reachable_store_mask(
+        8,
+        block_size=512,
+        sliding_window=1024,
+        draft_extra=True,
+        shared_prefix_blocks=3,
+    )
+    assert mask is not None
+    assert mask[2] is True
+    assert mask[5:] == [True, True, True]
+    assert mask[0] is False
+    assert mask[1] is False
+
+
+def test_swa_store_extra_retained_tokens_widens_tail():
+    # window 1024 → 2 blocks; +512 extra → 3-block tail
+    mask = swa_reachable_store_mask(
+        8,
+        block_size=512,
+        sliding_window=1024,
+        extra_retained_tokens=512,
+    )
+    assert mask is not None
+    assert mask[5:] == [True, True, True]
+    assert mask[4] is False
+
+
+def test_swa_store_keeps_prompt_end_when_retention_zero():
+    mask = swa_reachable_store_mask(
+        8,
+        block_size=512,
+        sliding_window=1024,
+        retention_interval=0,
+        prompt_end_blocks=4,
+    )
+    assert mask is not None
+    assert mask[3] is True
+    assert mask[6:] == [True, True]
+    assert mask[4] is False

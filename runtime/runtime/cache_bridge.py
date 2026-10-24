@@ -342,6 +342,40 @@ def extract_cache_salt(provider_options: Any) -> str | None:
     return env or None
 
 
+def extract_mm_features(provider_options: Any) -> tuple[Any, ...]:
+    """Multimodal spans for prefix-block extras (vLLM ``mm_features`` analog)."""
+    from runtime.kv.prefix_block_hash import parse_mm_features
+
+    if not isinstance(provider_options, dict):
+        return ()
+    z = provider_options.get("zerollama")
+    raw = None
+    if isinstance(z, dict):
+        raw = z.get("mm_features")
+        if raw is None:
+            raw = z.get("mm_hashes")
+    if raw is None:
+        raw = provider_options.get("mm_features")
+    if raw is None:
+        raw = provider_options.get("mm_hashes")
+    return parse_mm_features(raw)
+
+
+def extract_lora_name(provider_options: Any) -> str | None:
+    """Adapter identity for L3 prefix hashes (vLLM #59335 LoRA extra key)."""
+    if not isinstance(provider_options, dict):
+        return None
+    z = provider_options.get("zerollama")
+    if isinstance(z, dict):
+        raw = z.get("lora")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    raw = provider_options.get("lora")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
 def prefix_cache_hash_material(
     prompt_cache_key: str,
     cache_salt: str | None = None,

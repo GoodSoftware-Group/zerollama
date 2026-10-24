@@ -565,7 +565,10 @@ def _finalize_lmcache_blob_after_disk_save(
         if not prefix_block_pool_enabled():
             return
         salt = getattr(kv_bind_req, "cache_salt", None) if kv_bind_req else None
-        scope = build_model_scope(model_hash=model_hash, cache_salt=salt)
+        lora = getattr(kv_bind_req, "lora_name", None) if kv_bind_req else None
+        scope = build_model_scope(
+            model_hash=model_hash, cache_salt=salt, lora_name=lora
+        )
         path = str(slot_cache_file_path(model_hash, seq_id, 0))
         get_prefix_block_pool(model_scope=scope).finalize_slot_blob(
             scope=scope, slot_id=int(seq_id), blob_path=path
