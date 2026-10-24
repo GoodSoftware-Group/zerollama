@@ -44,6 +44,15 @@ func modelExcludedFromRuntimeDefault(m *Model) bool {
 	if m.CheckCapabilities(model.CapabilityCompletion) != nil {
 		return true
 	}
+	// Laya Decider GGUFs (arch=laya) always need ggml llama-server --decisions.
+	if strings.EqualFold(m.Config.ModelFamily, "laya") {
+		return true
+	}
+	for _, arch := range m.Config.ModelFamilies {
+		if strings.EqualFold(arch, "laya") || strings.EqualFold(arch, "LayaForDecision") {
+			return true
+		}
+	}
 	for _, cap := range append([]model.Capability{
 		model.CapabilityEmbedding,
 		model.CapabilityVision,
@@ -52,6 +61,8 @@ func modelExcludedFromRuntimeDefault(m *Model) bool {
 		model.CapabilityVideoGen,
 		model.CapabilityAudio,
 		model.CapabilitySpeech,
+		// System One Decider / score models need ggml llama-server, not the Python chat runtime.
+		model.CapabilityDecision,
 	}, capabilitiesRequiringLegacyRunner()...) {
 		if m.CheckCapabilities(cap) == nil {
 			return true

@@ -27,6 +27,9 @@ func TestVersionHandler(t *testing.T) {
 	if body["version"] == nil || body["version"] == "" {
 		t.Fatalf("version=%v", body["version"])
 	}
+	if body["ollama_compat"] != version.OllamaCompat {
+		t.Fatalf("ollama_compat=%v want %s", body["ollama_compat"], version.OllamaCompat)
+	}
 	if edge, ok := body["edge_build"].(bool); !ok || edge {
 		t.Fatalf("edge_build=%v want false", body["edge_build"])
 	}

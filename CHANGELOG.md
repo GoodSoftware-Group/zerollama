@@ -139,7 +139,7 @@ Chat default `NumBatch=512` was passed as `-b/-ub` on embeddings, so BERT/nomic/
 
 ### Registry User-Agent is semver, not git describe
 
-`registry.ollama.ai` 412s `ollama/<git-hash>` (and ancient `0.0.x`). Default `version.Version` is **0.40.2**. Build scripts ldflag **`version.Commit`** from `git describe` and leave **Version** as semver. Runtime `Semver()` still falls back if an old `-X Version=cdf3c93` binary is used. `GET /api/version` exposes `"git"`. Hugging Face GGUFs stay `zerollama pull huggingface://…` (LA8).
+`registry.ollama.ai` 412s `ollama/<git-hash>` (and ancient / too-old clients). Gallery stamp is **`version.OllamaCompat`** (default `Version`; currently **0.40.10**); build scripts ldflag **`version.Commit`** from `git describe` only. `Semver()` falls back to `OllamaCompat` if `-X Version=<sha>`. `GET /api/version` exposes `"version"`, `"ollama_compat"`, `"git"`. Bump ritual: `.cursor/rules/ollama-compat-version.mdc`. Hugging Face GGUFs stay `zerollama pull huggingface://…` (LA8).
 
 ### Keep sole integrated GPU (Vulkan/ROCm APU)
 

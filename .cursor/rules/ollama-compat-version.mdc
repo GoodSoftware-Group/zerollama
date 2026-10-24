@@ -1,0 +1,45 @@
+---
+description: Keep version.OllamaCompat stamped to upstream Ollama for registry pulls
+alwaysApply: true
+---
+
+# Ollama compatibility version (registry User-Agent)
+
+Zerollama is an Ollama fork. **`registry.ollama.ai` gates model pulls on `User-Agent: ollama/<semver>`** (HTTP **412** for git hashes, ancient `0.0.x`, or too-old clients). New gallery families (decision / System One, some embeddings, …) can require a *current* upstream stamp even when our fork tip has not caught every release.
+
+## Source of truth
+
+| Stamp | Where | Sent to registry? |
+|-------|--------|-------------------|
+| **`version.OllamaCompat`** | [`version/version.go`](../../version/version.go) | **Yes** — `version.HTTPUserAgent()` → `ollama/<OllamaCompat>` |
+| **`version.Version`** | same file; defaults to `OllamaCompat` | Yes (via `Semver()`); also `GET /api/version` `"version"` |
+| **`version.Commit`** | `-ldflags` git describe | **No** — operators only (`/api/version` `"git"`, `zerollama -v`) |
+
+Also advertised as **`ollama_compat`** on `GET /api/version`.
+
+## When to bump
+
+Bump **`OllamaCompat`** (and keep default `Version = OllamaCompat`) when:
+
+1. Syncing / merging from **`../ollama-upstream`** or an upstream release tag, **or**
+2. Gallery pulls start returning **412** “requires a newer version of Ollama”, **or**
+3. Weekly Ollama sibling check notes a newer **release** tag than our stamp ([docs/upstream-siblings.md](../../docs/upstream-siblings.md))
+
+Prefer the latest upstream **release** tag (`v0.40.10` → `"0.40.10"`), not an rc, unless we intentionally need that client gate.
+
+## Do not
+
+- Ldflag **`Version`** / **`OllamaCompat`** to a git SHA or `git describe` (use **`Commit`**)
+- Assume product roadmap version == registry stamp without checking `OllamaCompat`
+- “Fix” 412 by pointing operators only at ollama.com/download — bump the stamp and redeploy
+
+## Checklist after bump
+
+```bash
+go test ./version/ ./server/ -count=1 -run 'Version|OllamaCompat|Semver'
+# rebuild + deploy serve, then:
+curl -sS "$OLLAMA_HOST/api/version"   # version + ollama_compat
+zerollama pull <gallery-tag>          # no 412
+```
+
+Update the Ollama row in [docs/upstream-siblings.md](../../docs/upstream-siblings.md) **Last checked** when the bump comes from an upstream sync.

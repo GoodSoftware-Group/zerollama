@@ -2,6 +2,10 @@
 
 Short map for Cursor / coding agents. Deep environment detail lives in `.cursor/rules/zerollama-bootstrap.mdc` and production ports in `.cursor/rules/ollama-default-port.mdc`.
 
+## Ollama gallery compatibility stamp
+
+**`version.OllamaCompat`** in [`version/version.go`](./version/version.go) is the semver we send to `registry.ollama.ai` (`User-Agent: ollama/<OllamaCompat>`). Bump it when syncing upstream Ollama or when pulls 412 for “newer version”. Git identity stays in **`version.Commit`** only. Agent rule: [`.cursor/rules/ollama-compat-version.mdc`](./.cursor/rules/ollama-compat-version.mdc).
+
 ## Sibling upstream trees (weekly pull)
 
 Canonical paths and the weekly ritual: **[docs/upstream-siblings.md](./docs/upstream-siblings.md)**.

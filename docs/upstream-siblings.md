@@ -47,7 +47,8 @@ Other checkouts under the same parent (`ggml/`, `shard/`, rotorquant labs, …) 
    git log --oneline OLD..HEAD -- 'vllm/v1/core/kv_cache*' 'vllm/distributed/kv*' 'vllm/v1/kv_cache*'
    ```
 3. **Triage** into bring / watch / skip (same buckets as the last vLLM scan). Update the borrowings doc **Last checked** line + tip SHA.
-4. **Do not** start production servers on `:11434` / `:8081` while scanning — lab ports only if you need a smoke.
+4. **Ollama compat stamp (when touching `../ollama-upstream` or gallery 412s):** compare latest upstream **release** tag to [`version.OllamaCompat`](../version/version.go). If newer, bump `OllamaCompat` (keep default `Version = OllamaCompat`), run `go test ./version/`, redeploy serve. Registry UA is `ollama/<OllamaCompat>` — see `.cursor/rules/ollama-compat-version.mdc`.
+5. **Do not** start production servers on `:11434` / `:8081` while scanning — lab ports only if you need a smoke.
 
 ---
 

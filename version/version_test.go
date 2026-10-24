@@ -6,7 +6,7 @@ import (
 )
 
 func TestLooksLikeOllamaSemver(t *testing.T) {
-	ok := []string{"0.40.2", "0.30.11", "0.6.5", "0.40.2-rc1", "1.0"}
+	ok := []string{"0.40.2", "0.30.11", "0.6.5", "0.40.2-rc1", "1.0", OllamaCompat}
 	for _, s := range ok {
 		if !looksLikeOllamaSemver(s) {
 			t.Errorf("looksLikeOllamaSemver(%q) = false, want true", s)
@@ -24,12 +24,13 @@ func TestSemverFallsBackFromGitHash(t *testing.T) {
 	old := Version
 	t.Cleanup(func() { Version = old })
 	Version = "cdf3c93"
-	if got := Semver(); got != "0.40.2" {
-		t.Fatalf("Semver() = %q, want 0.40.2", got)
+	if got := Semver(); got != OllamaCompat {
+		t.Fatalf("Semver() = %q, want OllamaCompat %q", got, OllamaCompat)
 	}
 	ua := HTTPUserAgent()
-	if !strings.HasPrefix(ua, "ollama/0.40.2 ") {
-		t.Fatalf("HTTPUserAgent() = %q, want ollama/0.40.2 prefix", ua)
+	wantPrefix := "ollama/" + OllamaCompat + " "
+	if !strings.HasPrefix(ua, wantPrefix) {
+		t.Fatalf("HTTPUserAgent() = %q, want prefix %q", ua, wantPrefix)
 	}
 	if strings.Contains(ua, "cdf3c93") {
 		t.Fatalf("User-Agent leaked git hash: %q", ua)
@@ -42,5 +43,15 @@ func TestSemverKeepsExplicit(t *testing.T) {
 	Version = "0.40.2"
 	if got := Semver(); got != "0.40.2" {
 		t.Fatalf("Semver() = %q, want 0.40.2", got)
+	}
+}
+
+func TestOllamaCompatIsGallerySafe(t *testing.T) {
+	if !looksLikeOllamaSemver(OllamaCompat) {
+		t.Fatalf("OllamaCompat %q is not a gallery-safe semver", OllamaCompat)
+	}
+	if Version != OllamaCompat && looksLikeOllamaSemver(Version) {
+		// Default package init: Version tracks OllamaCompat until ldflags.
+		t.Logf("Version=%q OllamaCompat=%q (ldflag override OK if semver)", Version, OllamaCompat)
 	}
 }

@@ -68,8 +68,8 @@ func rendererForName(name string) Renderer {
 	case "qwen3-vl-thinking":
 		renderer := &Qwen3VLRenderer{isThinking: true, useImgTags: RenderImgTags}
 		return renderer
-	case "qwen3.5", "tev1":
-		// tev1/nimble decision models reuse the Qwen3.5 chat template for Rows scoring.
+	case "qwen3.5", "tev1", "d3", "nimble", "kev", "pplx-decider":
+		// System One / gallery decision tags reuse the Qwen3.5 chat template for Rows scoring.
 		renderer := &Qwen35Renderer{isThinking: true, emitEmptyThinkOnNoThink: true, useImgTags: RenderImgTags}
 		return renderer
 	case "qwen3.8":

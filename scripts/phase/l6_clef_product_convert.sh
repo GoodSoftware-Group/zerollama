@@ -17,6 +17,8 @@ OUT="${CLEF_CONVERT_OUT:-/root/models/clef-flash-gguf/clef-flash-ollama-q8_0.ggu
 OUTTYPE="${CLEF_CONVERT_OUTTYPE:-q8_0}"
 MMPROJ="${CLEF_CONVERT_MMPROJ:-1}"
 MMPROJ_OUT="${CLEF_CONVERT_MMPROJ_OUT:-$(dirname "${OUT}")/mmproj-clef-flash-f16.gguf}"
+# Post-write asserts need tip gguf-py (convert.py injects this; bare python3 does not).
+export PYTHONPATH="${LLAMA_CPP}/gguf-py${PYTHONPATH:+:${PYTHONPATH}}"
 
 if [[ ! -d "${SRC}" ]]; then
   echo "error: missing HF tree ${SRC}" >&2

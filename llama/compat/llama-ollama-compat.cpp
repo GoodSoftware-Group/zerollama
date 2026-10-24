@@ -3223,6 +3223,11 @@ bool translate_metadata(const llama_model_loader * ml,
             add_skip_prefix(ml, "strands.");
             // Published Strands GGUFs may also carry an unused bert-style cls.* head.
             add_skip_prefix(ml, "cls.");
+        } else if (std::strcmp(dtype, "laya") != 0) {
+            // Gallery System One packs (kev, nimble, tev1, pplx-decider, …) may
+            // ship unused bert-style cls.* while the qwen35 weight map does not.
+            // Skipping keeps done_getting_tensors aligned (kev: 429 file / 427 map).
+            add_skip_prefix(ml, "cls.");
         }
     }
     // embeddinggemma must run before gemma3: it switches arch_name to

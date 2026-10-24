@@ -38,29 +38,52 @@ func modelUsesSystemOneScore(m *Model) bool {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(m.Config.Renderer)) {
-	case "tev1", "clef", "strands", "qwen3.5", "qwen35", "qwen3.8", "qwen38":
-		// Nimble/Tev1 create uses qwen3.5 renderer + decision capability.
+	case "tev1", "clef", "strands", "d3", "qwen3.5", "qwen35", "qwen3.8", "qwen38":
+		// Gallery / create tags often use qwen3.5 or d3 renderer + decision capability.
 		return true
 	}
 	fam := strings.ToLower(m.Config.ModelFamily)
-	if strings.Contains(fam, "clef") || strings.Contains(fam, "tev1") ||
-		strings.Contains(fam, "nimble") || strings.Contains(fam, "strands") {
+	if systemOneFamilyHint(fam) {
 		return true
 	}
 	for _, f := range m.Config.ModelFamilies {
-		fl := strings.ToLower(f)
-		if strings.Contains(fl, "clef") || strings.Contains(fl, "tev1") ||
-			strings.Contains(fl, "nimble") || strings.Contains(fl, "strands") {
+		if systemOneFamilyHint(strings.ToLower(f)) {
 			return true
 		}
 	}
-	// Synth / convert grafts may omit RENDERER while still setting decision.type.
-	if dtype := ggufDecisionType(m); dtype == "clef" || dtype == "tev1" || dtype == "strands" {
+	// Gallery GGUFs set {arch}.decision.type; RENDERER may be omitted (nimble/kev/…).
+	if encoding := systemOneEncodingFromDecisionType(ggufDecisionType(m)); encoding != "" {
 		return true
 	}
 	// Bare CAPABILITY decision without a score-capable renderer/family must not
 	// steal the Laya Decider path — schedule Decider (or 501) instead.
 	return false
+}
+
+// systemOneFamilyHint matches Modelfile / config family strings for score-path models.
+func systemOneFamilyHint(fam string) bool {
+	for _, needle := range []string{"clef", "tev1", "nimble", "strands", "kev", "pplx", "d3"} {
+		if strings.Contains(fam, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// systemOneEncodingFromDecisionType maps GGUF {arch}.decision.type → Compile encoding.
+// Empty means "not a System One score model" (e.g. laya uses the Decider path).
+func systemOneEncodingFromDecisionType(dtype string) string {
+	switch strings.ToLower(strings.TrimSpace(dtype)) {
+	case "clef":
+		return "clef"
+	case "strands":
+		return "strands"
+	case "tev1", "nimble", "kev", "pplx-decider", "vllm-d3", "d3":
+		// Rows / shared-prefix score encodings share the tev1 prompt compiler.
+		return "tev1"
+	default:
+		return ""
+	}
 }
 
 func ggufDecisionType(m *Model) string {
@@ -101,6 +124,8 @@ func decisionScoreEncoding(m *Model) string {
 	switch r := strings.ToLower(strings.TrimSpace(m.Config.Renderer)); r {
 	case "tev1", "clef", "strands":
 		return r
+	case "d3":
+		return "tev1"
 	}
 	fam := strings.ToLower(m.Config.ModelFamily)
 	if strings.Contains(fam, "clef") {
@@ -109,11 +134,12 @@ func decisionScoreEncoding(m *Model) string {
 	if strings.Contains(fam, "strands") {
 		return "strands"
 	}
-	if strings.Contains(fam, "tev1") || strings.Contains(fam, "nimble") {
+	if strings.Contains(fam, "tev1") || strings.Contains(fam, "nimble") ||
+		strings.Contains(fam, "kev") || strings.Contains(fam, "pplx") || strings.Contains(fam, "d3") {
 		return "tev1"
 	}
-	if dtype := ggufDecisionType(m); dtype == "clef" || dtype == "tev1" || dtype == "strands" {
-		return dtype
+	if enc := systemOneEncodingFromDecisionType(ggufDecisionType(m)); enc != "" {
+		return enc
 	}
 	return ""
 }
