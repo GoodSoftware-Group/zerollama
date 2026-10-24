@@ -263,7 +263,18 @@ func (s *Server) prewarmJevDeciders() {
 		if !routerIsJev(spec) || decider == "" {
 			continue
 		}
-		body, err := buildJevRouteBody(decider, spec, "warm-up")
+		var (
+			body []byte
+			err  error
+		)
+		// Multi-question routers (classifier: jev + Questions, e.g. smart) have no
+		// Policies — buildJevRouteBody would emit empty choice criteria and
+		// parseDecisionsCall would reject before the decider loads.
+		if len(spec.Questions) > 0 {
+			body, err = buildJevMultiBody(decider, spec.Questions, "warm-up")
+		} else {
+			body, err = buildJevRouteBody(decider, spec, "warm-up")
+		}
 		if err != nil {
 			continue
 		}

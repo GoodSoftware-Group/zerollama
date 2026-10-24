@@ -76,7 +76,13 @@ func (s *Server) resolveRouterRemembered(ctx context.Context, name string, sig a
 
 	stickyBreak := ""
 	if !sig.Fresh {
-		if hint, ok := stickyMemory().Get(stickyKey); ok {
+		lookup := stickyMemory().Peek
+		cacheLookup := routeCache.Peek
+		if write {
+			lookup = stickyMemory().Get
+			cacheLookup = routeCache.Get
+		}
+		if hint, ok := lookup(stickyKey); ok {
 			if dec, reason := s.validateRouteHint(ctx, name, sig, hint); dec != nil {
 				dec.Sticky, dec.Reason = true, "sticky"
 				dec.LatencyMs = time.Since(start).Milliseconds()
@@ -87,7 +93,7 @@ func (s *Server) resolveRouterRemembered(ctx context.Context, name string, sig a
 					stickyMemory().Forget(stickyKey)
 				}
 			}
-		} else if hint, ok := routeCache.Get(cacheKey); ok {
+		} else if hint, ok := cacheLookup(cacheKey); ok {
 			if dec, _ := s.validateRouteHint(ctx, name, sig, hint); dec != nil {
 				dec.Cached, dec.Reason = true, "cached"
 				dec.LatencyMs = time.Since(start).Milliseconds()
@@ -120,8 +126,10 @@ func (s *Server) validateRouteHint(ctx context.Context, name string, sig autorou
 	if err != nil {
 		return nil, err.Error()
 	}
+	want := model.ParseName(hint).DisplayShortest()
 	for _, c := range cands {
-		if c.Name != hint {
+		// Normalize untagged router.yaml hints (coder) against inventory names (coder:latest).
+		if model.ParseName(c.Name).DisplayShortest() != want {
 			continue
 		}
 		if reason, ok := autoroute.Validate(c, sig, s.routeAvailability(ctx, sig)); !ok {

@@ -256,10 +256,11 @@ func estimateTokens(bytes int) int { return bytes / 4 }
 
 func chatRouteSignals(c *gin.Context, req *api.ChatRequest) autoroute.Signals {
 	sig := autoroute.Signals{
-		Surface:  autoroute.SurfaceChat,
-		Text:     lastUserMessageText(req.Messages),
-		HasVideo: modality.ChatRequestHasVideoPayload(req),
-		HasTools: len(req.Tools) > 0,
+		Surface:            autoroute.SurfaceChat,
+		Text:               lastUserMessageText(req.Messages),
+		HasVideo:           modality.ChatRequestHasVideoPayload(req),
+		HasTools:           len(req.Tools) > 0,
+		BeforeRuntimeProxy: true, // live chat routes ahead of the runtime proxy
 	}
 	n := 0
 	for _, msg := range req.Messages {
@@ -319,5 +320,9 @@ func generateRouteSignals(c *gin.Context, req *api.GenerateRequest) autoroute.Si
 		sig.SessionKey = "key:" + k
 	}
 	sig.Fresh = routeFresh(req.Options)
+	// Live /api/generate text routes ahead of the runtime proxy; image surfaces do not.
+	if sig.Surface == autoroute.SurfaceGenerate {
+		sig.BeforeRuntimeProxy = true
+	}
 	return sig
 }

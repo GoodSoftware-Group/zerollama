@@ -36,6 +36,17 @@ func NewMemory(ttl time.Duration, max int) *Memory {
 
 // Get returns the remembered model and refreshes its TTL (sliding expiry).
 func (m *Memory) Get(key string) (string, bool) {
+	return m.lookup(key, true)
+}
+
+// Peek returns the remembered model without refreshing TTL or LRU order.
+// WHY: dry runs (/v1/route, /api/router/decide) must report what the next request would
+// do without keeping sticky/cache entries alive through probing alone.
+func (m *Memory) Peek(key string) (string, bool) {
+	return m.lookup(key, false)
+}
+
+func (m *Memory) lookup(key string, refresh bool) (string, bool) {
 	if m == nil || key == "" {
 		return "", false
 	}
@@ -52,8 +63,10 @@ func (m *Memory) Get(key string) (string, bool) {
 		delete(m.items, key)
 		return "", false
 	}
-	e.expires = now.Add(m.ttl)
-	m.ll.MoveToFront(el)
+	if refresh {
+		e.expires = now.Add(m.ttl)
+		m.ll.MoveToFront(el)
+	}
 	return e.model, true
 }
 

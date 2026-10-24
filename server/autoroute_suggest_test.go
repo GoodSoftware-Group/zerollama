@@ -123,6 +123,9 @@ routers:
 	if !strings.Contains(musicCaption(dec), "something to study to") {
 		t.Fatalf("music body = %v", dec.Suggestion.Body)
 	}
+	if input, _ := dec.Suggestion.Body["input"].(string); !strings.Contains(input, "something to study to") {
+		t.Fatalf("music lyrics (input) missing: %v", dec.Suggestion.Body)
+	}
 
 	// Turn 2 is sticky (decider batch skipped) — the modality question alone is still asked.
 	before := asked.Load()

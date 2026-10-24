@@ -31,6 +31,22 @@ func TestMemoryTTLSlidesAndExpires(t *testing.T) {
 	}
 }
 
+func TestMemoryPeekDoesNotRefreshTTL(t *testing.T) {
+	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	m := NewMemory(10*time.Minute, 8)
+	m.now = func() time.Time { return now }
+
+	m.Put("conv", "qwen")
+	now = now.Add(9 * time.Minute)
+	if got, ok := m.Peek("conv"); !ok || got != "qwen" {
+		t.Fatalf("peek within ttl: %q %v", got, ok)
+	}
+	now = now.Add(2 * time.Minute) // 11m after put; Get would have slid, Peek must not
+	if _, ok := m.Peek("conv"); ok {
+		t.Fatal("peek must not refresh TTL")
+	}
+}
+
 func TestMemoryLRUAndForget(t *testing.T) {
 	m := NewMemory(time.Hour, 2)
 	m.Put("a", "1")

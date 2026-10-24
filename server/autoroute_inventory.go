@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 
 	"github.com/ollama/ollama/manifest"
@@ -37,7 +38,7 @@ func loadRouteCandidate(ref autoroute.Ref) (autoroute.Candidate, error) {
 	if isLayaDecisionModel(m) {
 		caps = []model.Capability{model.CapabilityDecision}
 	}
-	return autoroute.Candidate{
+	c := autoroute.Candidate{
 		Capabilities:     caps,
 		Backends:         maps.Clone(m.Config.ModalityBackends),
 		Format:           m.Config.ModelFormat,
@@ -46,7 +47,24 @@ func loadRouteCandidate(ref autoroute.Ref) (autoroute.Candidate, error) {
 		SchedKey:         schedulerModelKey(m),
 		RuntimeInference: modelUsesRuntimeInference(m),
 		Voices:           routeVoices(m, caps),
-	}, nil
+		CanRerank:        modelCanRerank(m),
+	}
+	if m.ModelPath != "" {
+		c.ModelFile = m.ModelPath
+		if st, err := os.Stat(m.ModelPath); err == nil {
+			c.FileSize, c.FileMtime = st.Size(), st.ModTime().UnixNano()
+		}
+	}
+	return c, nil
+}
+
+// modelCanRerank reports RANK pooling — the same gate llama-server uses for /v1/rerank.
+func modelCanRerank(m *Model) bool {
+	if m == nil || m.ModelPath == "" {
+		return false
+	}
+	flags, err := ggufCapabilityFlagsFor(m.ModelPath)
+	return err == nil && flags.rerank
 }
 
 // routeCandidates walks local manifests and returns the memoised candidate list.

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ollama/ollama/types/model"
 )
@@ -58,6 +59,47 @@ func TestInventoryMemoisesByDigest(t *testing.T) {
 	inv.Refresh(refs)
 	if n := l.calls.Load(); n != 3 {
 		t.Fatalf("changed digest: loads = %d, want 3", n)
+	}
+}
+
+func TestInventoryReloadsWhenLinkedFileChanges(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model.gguf")
+	if err := os.WriteFile(path, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := &countingLoader{fn: func(ref Ref) (Candidate, error) {
+		cur, err := os.Stat(path)
+		if err != nil {
+			return Candidate{}, err
+		}
+		return Candidate{
+			Capabilities: []model.Capability{model.CapabilityCompletion},
+			ModelFile:    path,
+			FileSize:     cur.Size(),
+			FileMtime:    cur.ModTime().UnixNano(),
+		}, nil
+	}}
+	inv := NewInventory(l.load)
+	refs := []Ref{{Name: "linked", Digest: "same"}}
+	if _, failed := inv.Refresh(refs); len(failed) != 0 {
+		t.Fatalf("failed = %v", failed)
+	}
+	if n := l.calls.Load(); n != 1 {
+		t.Fatalf("loads = %d", n)
+	}
+	inv.Refresh(refs)
+	if n := l.calls.Load(); n != 1 {
+		t.Fatalf("unchanged file reloaded: %d", n)
+	}
+	// Rewrite in place (create --link target); digest stays the same.
+	time.Sleep(10 * time.Millisecond) // ensure mtime advances on coarse filesystems
+	if err := os.WriteFile(path, []byte("v2-longer"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv.Refresh(refs)
+	if n := l.calls.Load(); n != 2 {
+		t.Fatalf("linked file change: loads = %d, want 2", n)
 	}
 }
 

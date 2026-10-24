@@ -284,6 +284,33 @@ func TestDecidePinnedEmbedRefusesAmbiguity(t *testing.T) {
 	if !errors.Is(err, ErrAmbiguousPinned) || !strings.Contains(err.Error(), "bge, nomic") {
 		t.Fatalf("err = %v, want ErrAmbiguousPinned listing both", err)
 	}
+
+	// Cooldown must not hide a second eligible embedder — that would silently switch
+	// embedding spaces when the other model becomes available again.
+	oneCooling := func(c Candidate) Availability {
+		if c.Name == "bge" {
+			return Availability{CanLoad: false, Detail: "load cooldown"}
+		}
+		return Availability{CanLoad: true}
+	}
+	_, err = Decide([]Candidate{cand("nomic", 1, emb), cand("bge", 1, emb)}, Signals{Surface: SurfaceEmbed}, oneCooling)
+	if !errors.Is(err, ErrAmbiguousPinned) {
+		t.Fatalf("ambiguous before availability: err = %v", err)
+	}
+}
+
+func TestDecideRerankRequiresRankPooling(t *testing.T) {
+	emb := cand("nomic", 1, []model.Capability{model.CapabilityEmbedding})
+	rerank := cand("bge-reranker", 1, []model.Capability{model.CapabilityEmbedding})
+	rerank.CanRerank = true
+	_, err := Decide([]Candidate{emb}, Signals{Surface: SurfaceRerank}, allCold)
+	if !errors.Is(err, ErrNoCandidate) {
+		t.Fatalf("ordinary embedder: err = %v", err)
+	}
+	d, err := Decide([]Candidate{emb, rerank}, Signals{Surface: SurfaceRerank}, allCold)
+	if err != nil || d.Model != "bge-reranker" {
+		t.Fatalf("got %q err %v", d.Model, err)
+	}
 }
 
 func TestDecideCheckAndBonusHooks(t *testing.T) {

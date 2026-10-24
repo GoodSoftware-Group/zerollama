@@ -163,21 +163,63 @@ func routeSignalsFromBody(c *gin.Context, body []byte, surface autoroute.Surface
 
 // parseRouteChat accepts native /api/chat bodies and OpenAI chat-completions bodies
 // (content-part arrays, image_url, input_audio) so signals match what the handler sees.
+//
+// WHY prefer the OpenAI binder when OpenAI-only fields are present: a string-content
+// /v1/chat/completions body also unmarshals into api.ChatRequest, which would drop
+// functions, tool_choice, max_tokens and prompt_cache_key and mis-route (non-tool model
+// for legacy functions, or tools required despite tool_choice:"none").
 func parseRouteChat(body []byte) (*api.ChatRequest, error) {
+	var oreq openai.ChatCompletionRequest
+	oerr := json.Unmarshal(body, &oreq)
+	if oerr == nil && openAIChatNeedsConversion(body, oreq) {
+		req, err := openai.FromChatRequest(oreq)
+		if err != nil {
+			return nil, err
+		}
+		return req, nil
+	}
 	var native api.ChatRequest
 	nativeErr := json.Unmarshal(body, &native)
 	if nativeErr == nil {
 		return &native, nil
 	}
-	var oreq openai.ChatCompletionRequest
-	if err := json.Unmarshal(body, &oreq); err != nil {
-		return nil, errors.Join(nativeErr, err)
+	if oerr == nil {
+		return openai.FromChatRequest(oreq)
 	}
-	req, err := openai.FromChatRequest(oreq)
-	if err != nil {
-		return nil, err
+	return nil, errors.Join(nativeErr, oerr)
+}
+
+// openAIChatNeedsConversion detects fields the native ChatRequest unmarshal would ignore.
+func openAIChatNeedsConversion(body []byte, oreq openai.ChatCompletionRequest) bool {
+	if len(oreq.Functions) > 0 || oreq.ToolChoice != nil || oreq.FunctionCall != nil {
+		return true
 	}
-	return req, nil
+	if oreq.MaxTokens != nil || oreq.MaxCompletionTokens != nil {
+		return true
+	}
+	if oreq.PromptCacheKey != nil || oreq.SessionID != nil {
+		return true
+	}
+	// Content-part arrays / image_url / input_audio only exist on the OpenAI Message type.
+	var probe struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if json.Unmarshal(body, &probe) != nil {
+		return false
+	}
+	for _, m := range probe.Messages {
+		var shape struct {
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(m, &shape) != nil || len(shape.Content) == 0 {
+			continue
+		}
+		trim := bytes.TrimSpace(shape.Content)
+		if len(trim) > 0 && trim[0] == '[' {
+			return true
+		}
+	}
+	return false
 }
 
 // routeInventoryRow is one candidate with its live availability (GET /api/router/inventory).

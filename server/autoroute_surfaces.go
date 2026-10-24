@@ -58,7 +58,8 @@ func (s *Server) routeAheadMiddleware(surface autoroute.Surface) gin.HandlerFunc
 			c.Next() // malformed body: let the handler produce its usual 400
 			return
 		}
-		sig.BeforeRuntimeProxy = true
+		// BeforeRuntimeProxy is set inside routeSignalsFromBody for chat/generate so dry
+		// runs (/v1/route) match live route-ahead eligibility for runtime-sidecar models.
 		dec, _, err := s.resolveRouterMem(c.Request.Context(), served, sig, true)
 		if err != nil {
 			metricsRouteError(served, sig.Surface)

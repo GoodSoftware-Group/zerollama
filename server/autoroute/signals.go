@@ -161,6 +161,9 @@ func (s Signals) surfaceMismatch(c Candidate) (string, bool) {
 		if slices.Contains(c.Capabilities, model.CapabilityDecision) {
 			return "decision model cannot serve " + string(s.Surface), true
 		}
+		if s.Surface == SurfaceRerank && !c.CanRerank {
+			return "embedding model lacks RANK pooling (rerank unsupported)", true
+		}
 	}
 	return "", false
 }

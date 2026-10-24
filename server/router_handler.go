@@ -63,7 +63,12 @@ func (s *Server) RouterDecideHandler(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "router and prompt are required"})
 		return
 	}
-	sig := autoroute.Signals{Surface: autoroute.SurfaceChat, Text: prompt, PromptTokens: estimateTokens(len(prompt))}
+	sig := autoroute.Signals{
+		Surface:            autoroute.SurfaceChat,
+		Text:               prompt,
+		PromptTokens:       estimateTokens(len(prompt)),
+		BeforeRuntimeProxy: true, // match live /api/chat and /v1/chat/completions route-ahead
+	}
 	dec, isRouter, err := s.resolveRouter(c.Request.Context(), name, sig)
 	if !isRouter {
 		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("router %q not found", name)})

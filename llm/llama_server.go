@@ -3445,17 +3445,26 @@ func (s *llamaServerRunner) tokenize(ctx context.Context, content any, addSpecia
 	return result.Tokens, nil
 }
 
-// tokenizeCacheMax bounds a tokenizeCache; callers memoise label / question text (a
-// few hundred strings), so a full reset on overflow only costs one cold request.
-const tokenizeCacheMax = 4096
+// tokenizeCacheMax bounds entry count; tokenizeCacheMaxBytes bounds retained key+value
+// bytes. Callers memoise label / question text (a few hundred short strings), so a full
+// reset on overflow only costs one cold request.
+const (
+	tokenizeCacheMax      = 4096
+	tokenizeCacheMaxBytes = 1 << 20 // 1 MiB
+	// tokenizeCacheSkipBytes: do not retain texts this long. Laya packing encodes the
+	// per-request state through the same cache as static question text; unbounded state
+	// retention would keep gigabytes of distinct documents for the runner's lifetime.
+	tokenizeCacheSkipBytes = 4096
+)
 
 // tokenizeCache memoises text → token ids for one loaded model. llama-server /tokenize
 // takes one text per call (an array content is concatenated, not batched), so repeated
 // label text otherwise costs one HTTP round trip per use. Keep one cache per tokenize
 // mode (parse_special etc.): the key is the text alone.
 type tokenizeCache struct {
-	mu sync.Mutex
-	m  map[string][]int
+	mu    sync.Mutex
+	m     map[string][]int
+	bytes int
 }
 
 // tokenize returns the cached ids for text or calls fetch and caches its result.
@@ -3471,11 +3480,17 @@ func (c *tokenizeCache) tokenize(text string, fetch func() ([]int, error)) ([]in
 	if err != nil {
 		return nil, err
 	}
+	if len(text) > tokenizeCacheSkipBytes {
+		return ids, nil
+	}
+	entryBytes := len(text) + 8*len(ids)
 	c.mu.Lock()
-	if c.m == nil || len(c.m) >= tokenizeCacheMax {
+	if c.m == nil || len(c.m) >= tokenizeCacheMax || c.bytes+entryBytes > tokenizeCacheMaxBytes {
 		c.m = make(map[string][]int)
+		c.bytes = 0
 	}
 	c.m[text] = slices.Clone(ids)
+	c.bytes += entryBytes
 	c.mu.Unlock()
 	return ids, nil
 }

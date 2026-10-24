@@ -8,6 +8,7 @@ package autoroute
 
 import (
 	"errors"
+	"os"
 	"slices"
 	"sort"
 	"sync"
@@ -34,6 +35,13 @@ type Candidate struct {
 	SchedKey         string   `json:"-"`                           // scheduler loaded-map / cooldown key (often a blob path)
 	RuntimeInference bool     `json:"runtime_inference,omitempty"` // model is configured for the Python runtime sidecar
 	Voices           []string `json:"voices,omitempty"`            // speech: configured voice ids (empty = backend accepts any)
+	CanRerank        bool     `json:"can_rerank,omitempty"`        // RANK pooling — required for /v1/rerank
+
+	// ModelFile identity for create --link invalidation: a rewritten GGUF keeps the
+	// manifest digest, so Refresh compares size+mtime before reusing a row.
+	ModelFile string `json:"-"`
+	FileSize  int64  `json:"-"`
+	FileMtime int64  `json:"-"` // UnixNano
 }
 
 // Has reports whether c has every capability in want.
@@ -116,7 +124,7 @@ func (inv *Inventory) Refresh(refs []Ref) ([]Candidate, map[string]error) {
 	var stale []Ref
 	for _, ref := range refs {
 		seen[ref.Name] = struct{}{}
-		if r, ok := inv.rows[ref.Name]; ok && r.digest == ref.Digest {
+		if r, ok := inv.rows[ref.Name]; ok && r.digest == ref.Digest && fileIdentityMatches(r.cand) {
 			continue
 		}
 		stale = append(stale, ref)
@@ -166,4 +174,18 @@ func (inv *Inventory) Refresh(refs []Ref) ([]Candidate, map[string]error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, failed
+}
+
+// fileIdentityMatches reports whether c's recorded ModelFile still has the same size and
+// mtime. Empty ModelFile (non-GGUF / cloud skip) always matches. A create --link target
+// rewritten in place keeps the manifest digest but must reload capabilities/context.
+func fileIdentityMatches(c Candidate) bool {
+	if c.ModelFile == "" {
+		return true
+	}
+	st, err := os.Stat(c.ModelFile)
+	if err != nil {
+		return false
+	}
+	return st.Size() == c.FileSize && st.ModTime().UnixNano() == c.FileMtime
 }

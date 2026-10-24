@@ -82,6 +82,21 @@ func Decide(cands []Candidate, sig Signals, avail AvailabilityFunc) (Decision, e
 	dec := Decision{Surface: sig.Surface}
 	kept, rejected := filterCandidates(cands, sig)
 
+	// WHY before availability: pinned surfaces (embed / rerank) must not silently switch
+	// models when one of several capability-eligible candidates is briefly cooling down.
+	// Vector spaces and rerank scores are incompatible across models — uniqueness is a
+	// property of the inventory, not of transient load state.
+	if sig.Surface.Pinned() && len(kept) > 1 {
+		names := make([]string, len(kept))
+		for i, c := range kept {
+			names[i] = c.Name
+		}
+		sort.Strings(names)
+		dec.Rejected = rejected
+		return dec, fmt.Errorf("%w: %s (%s) — pin one with a router.yaml embedder/reranker or name the model",
+			ErrAmbiguousPinned, sig.Surface, strings.Join(names, ", "))
+	}
+
 	type entry struct {
 		c Candidate
 		a Availability
@@ -108,15 +123,6 @@ func Decide(cands []Candidate, sig Signals, avail AvailabilityFunc) (Decision, e
 	dec.Rejected = rejected
 	if len(live) == 0 {
 		return dec, fmt.Errorf("%w (%s)", ErrNoCandidate, summarize(rejected))
-	}
-	if sig.Surface.Pinned() && len(live) > 1 {
-		names := make([]string, len(live))
-		for i, e := range live {
-			names[i] = e.c.Name
-		}
-		sort.Strings(names)
-		return dec, fmt.Errorf("%w: %s (%s) — pin one with a router.yaml embedder/reranker or name the model",
-			ErrAmbiguousPinned, sig.Surface, strings.Join(names, ", "))
 	}
 
 	w := DefaultWeights

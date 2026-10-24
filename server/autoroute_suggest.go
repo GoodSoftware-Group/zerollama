@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/openai"
 	"github.com/ollama/ollama/server/autoroute"
 )
 
@@ -69,7 +70,7 @@ func (s *Server) attachSuggestion(ctx context.Context, name string, sig autorout
 		return
 	}
 	sug := &ModalitySuggestion{Modality: modality, Source: source, Probability: prob, Endpoint: target.endpoint}
-	tsig := autoroute.Signals{Surface: target.surface, Text: sig.Text}
+	tsig := suggestRouteSignals(modality, target.surface, sig)
 	if d, err := s.decideAuto(ctx, implicitAutoRouter, tsig, nil); err == nil && d != nil {
 		sug.Model = d.Candidate
 	} else if err != nil {
@@ -79,6 +80,20 @@ func (s *Server) attachSuggestion(ctx context.Context, name string, sig autorout
 	dec.Suggestion = sug
 	if write {
 		metricsRouteSuggest(modality, source)
+	}
+}
+
+// suggestRouteSignals builds target-surface signals with the same validators the live
+// handlers use (video admission, music/speech backends), so a suggested model is one the
+// client can actually submit.
+func suggestRouteSignals(modality string, surface autoroute.Surface, sig autoroute.Signals) autoroute.Signals {
+	switch modality {
+	case autoroute.ModalityVideo:
+		return videoRouteSignals(openai.VideoCreateRequest{Prompt: sig.Text})
+	case autoroute.ModalitySpeech, autoroute.ModalityMusic:
+		return speechRouteSignals(openai.SpeechCreateRequest{Input: sig.Text}, surface)
+	default:
+		return autoroute.Signals{Surface: surface, Text: sig.Text}
 	}
 }
 
@@ -169,7 +184,11 @@ func suggestionBody(modality, model string, sig autoroute.Signals) map[string]an
 		}
 		body["input"] = input
 	case autoroute.ModalityMusic:
-		body["instructions"] = sig.Text // Music 3 caption; lyrics (input) left to the client
+		// /v1/audio/generations requires nonempty input (lyrics); Music 3 also uses
+		// instructions as the caption. Mirror the chat text into both so the body is
+		// ready to send (client can still edit lyrics).
+		body["instructions"] = sig.Text
+		body["input"] = sig.Text
 	}
 	return body
 }

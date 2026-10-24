@@ -231,7 +231,10 @@ func ggmlFloatGenerationDefault(v any) (float64, bool) {
 
 // Capabilities returns the capabilities that the model supports
 // ggufCapabilityFlags are the GGUF keys Capabilities reads from the model file.
-type ggufCapabilityFlags struct{ embedding, decision, vision, audio bool }
+type ggufCapabilityFlags struct {
+	embedding, decision, vision, audio bool
+	rerank                             bool // pooling_type == RANK (llama.cpp enum 4)
+}
 
 type ggufCapabilityKey struct {
 	path        string
@@ -270,8 +273,10 @@ func ggufCapabilityFlagsFor(path string) (ggufCapabilityFlags, error) {
 	}
 	defer f.Close()
 	dt := f.KeyValue("decision.type")
+	pool := f.KeyValue("pooling_type")
 	flags = ggufCapabilityFlags{
-		embedding: f.KeyValue("pooling_type").Valid(),
+		embedding: pool.Valid(),
+		rerank:    pool.Valid() && pool.Uint() == 4, // llama.cpp pooling.TypeRANK
 		decision:  dt.Valid() && strings.TrimSpace(dt.String()) != "",
 		vision:    f.KeyValue("vision.block_count").Valid(),
 		audio:     f.KeyValue("audio.block_count").Valid(),
