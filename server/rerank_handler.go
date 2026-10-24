@@ -11,6 +11,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/llm"
+	"github.com/ollama/ollama/server/autoroute"
 	"github.com/ollama/ollama/types/model"
 )
 
@@ -45,6 +46,13 @@ func (s *Server) RerankHandler(c *gin.Context) {
 		return
 	} else {
 		req.Model = served
+	}
+
+	if routed, rerr := s.routeForSurface(c, req.Model, autoroute.Signals{Surface: autoroute.SurfaceRerank, Text: req.Query}); rerr != nil {
+		writeRouterError(c, rerr.dec, rerr.err)
+		return
+	} else {
+		req.Model = routed
 	}
 
 	modelRef, err := parseAndValidateModelRef(req.Model)

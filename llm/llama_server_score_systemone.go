@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/ollama/ollama/api"
 )
 
@@ -27,6 +29,49 @@ var scoreFloorLogit = float32(math.Log(math.SmallestNonzeroFloat32))
 
 type scoreRowTokens struct {
 	tokens, candidates []int
+}
+
+// scoreRowFetch holds the raw tokenizations scoreSystemOne validates for one row.
+type scoreRowFetch struct {
+	prompt          []int
+	joined, literal [][]int
+}
+
+// scoreTokenizeParallel bounds concurrent /tokenize calls per scoring request.
+const scoreTokenizeParallel = 8
+
+// fetchScoreRowTokens tokenizes every row prompt, prompt+candidate and candidate.
+//
+// WHY parallel + cached: each row costs 1 + 2×candidates /tokenize calls (53 for a
+// 26-option row), and they ran one after another. The prompt-dependent ones run
+// concurrently; candidate-only tokenization depends on the label alone and is cached
+// per runner. Validation stays sequential in scoreSystemOne, so errors are unchanged.
+func (s *llamaServerRunner) fetchScoreRowTokens(ctx context.Context, rows []ScoreRow) ([]scoreRowFetch, error) {
+	parseSpecial, ordinary := true, false
+	out := make([]scoreRowFetch, len(rows))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(scoreTokenizeParallel)
+	for i, row := range rows {
+		out[i].joined = make([][]int, len(row.Candidates))
+		out[i].literal = make([][]int, len(row.Candidates))
+		g.Go(func() (err error) {
+			out[i].prompt, err = s.tokenize(gctx, row.Prompt, false, &parseSpecial)
+			return err
+		})
+		for j, candidate := range row.Candidates {
+			g.Go(func() (err error) {
+				out[i].joined[j], err = s.tokenize(gctx, row.Prompt+candidate, false, &parseSpecial)
+				return err
+			})
+			g.Go(func() (err error) {
+				out[i].literal[j], err = s.scoreLiteralTokCache.tokenize(candidate, func() ([]int, error) {
+					return s.tokenize(gctx, candidate, false, &ordinary)
+				})
+				return err
+			})
+		}
+	}
+	return out, g.Wait()
 }
 
 func (s *llamaServerRunner) scoreSystemOne(ctx context.Context, input ScoreRequest) (ScoreResponse, error) {
@@ -59,15 +104,17 @@ func (s *llamaServerRunner) scoreSystemOne(ctx context.Context, input ScoreReque
 	}
 
 	rows := make([]scoreRowTokens, len(input.Rows))
-	parseSpecial, ordinary := true, false
 	for i, row := range input.Rows {
 		if len(row.Candidates) < 1 || len(row.Candidates) > 26 {
 			return badRequest("prompt %d requires 1–26 candidates", i)
 		}
-		tokens, err := s.tokenize(ctx, row.Prompt, false, &parseSpecial)
-		if err != nil {
-			return result, err
-		}
+	}
+	fetched, err := s.fetchScoreRowTokens(ctx, input.Rows)
+	if err != nil {
+		return result, err
+	}
+	for i, row := range input.Rows {
+		tokens := fetched[i].prompt
 		if len(tokens) == 0 || len(tokens) > input.MaxTokens {
 			return badRequest("prompt %d has %d tokens; expected 1–%d (input is never truncated)", i, len(tokens), input.MaxTokens)
 		}
@@ -78,15 +125,8 @@ func (s *llamaServerRunner) scoreSystemOne(ctx context.Context, input ScoreReque
 		}
 		rows[i].tokens = tokens
 		result.InputTokens += len(tokens)
-		for _, candidate := range row.Candidates {
-			joined, err := s.tokenize(ctx, row.Prompt+candidate, false, &parseSpecial)
-			if err != nil {
-				return result, err
-			}
-			literal, err := s.tokenize(ctx, candidate, false, &ordinary)
-			if err != nil {
-				return result, err
-			}
+		for j, candidate := range row.Candidates {
+			joined, literal := fetched[i].joined[j], fetched[i].literal[j]
 			if len(joined) != len(tokens)+1 || !slices.Equal(joined[:len(tokens)], tokens) || len(literal) != 1 || literal[0] != joined[len(tokens)] {
 				return badRequest("candidate %q must append exactly one ordinary token to prompt %d", candidate, i)
 			}

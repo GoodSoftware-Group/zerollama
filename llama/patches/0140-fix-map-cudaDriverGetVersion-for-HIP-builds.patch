@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Thu, 15 Oct 2026 16:08:19 +1000
+Subject: [PATCH] fix: map cudaDriverGetVersion for HIP builds
+
+Patch 0015 (Ollama GPU discovery, b9509 port) calls cudaDriverGetVersion in
+ggml_cuda_init; vendors/hip.h never mapped it, so every ROCm build failed with
+'use of undeclared identifier cudaDriverGetVersion'. Found building ggml-hip
+for gfx1100 (RX 7900 XTX).
+---
+ ggml/src/ggml-cuda/vendors/hip.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/ggml/src/ggml-cuda/vendors/hip.h b/ggml/src/ggml-cuda/vendors/hip.h
+index da7e3da0b..13fcdec9f 100644
+--- a/ggml/src/ggml-cuda/vendors/hip.h
++++ b/ggml/src/ggml-cuda/vendors/hip.h
+@@ -56,6 +56,7 @@
+ #define cudaDeviceGetPCIBusId hipDeviceGetPCIBusId
+ #define cudaDeviceProp hipDeviceProp_t
+ #define cudaDeviceSynchronize hipDeviceSynchronize
++#define cudaDriverGetVersion hipDriverGetVersion
+ #define cudaError_t hipError_t
+ #define cudaErrorMemoryAllocation hipErrorOutOfMemory
+ #define cudaErrorPeerAccessAlreadyEnabled hipErrorPeerAccessAlreadyEnabled
+-- 
+2.43.0
+

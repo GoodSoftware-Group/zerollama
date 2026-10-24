@@ -19,6 +19,10 @@ type ScoreRequest struct {
 	Candidates           []string `json:"candidates,omitempty"`
 	LengthNormalize      bool     `json:"length_normalize,omitempty"`
 	IncludeTokenLogprobs bool     `json:"include_token_logprobs,omitempty"`
+	// AllowMissing (in-process callers only, e.g. the LA11 router) scores a candidate
+	// whose token falls outside llama-server's top logprobs as -Inf (Truncated) instead
+	// of failing the whole request. -Inf is not valid JSON, so /api/score never sets it.
+	AllowMissing bool `json:"-"`
 
 	// System One — see decision.Compile and upstream llm/score.go.
 	PointerRows   []ScorePointerRow `json:"pointer_rows,omitempty"`
@@ -68,6 +72,8 @@ type CandidateScore struct {
 	LengthNormalizedLogProb float64        `json:"length_normalized_log_prob,omitempty"`
 	NumTokens               int            `json:"num_tokens"`
 	Tokens                  []TokenLogprob `json:"tokens,omitempty"`
+	// Truncated: a token fell outside the top logprobs (AllowMissing); LogProb is -Inf.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // ScoreResponse is returned by POST /api/score or System One scoring.

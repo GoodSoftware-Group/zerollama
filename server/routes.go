@@ -49,6 +49,7 @@ import (
 	"github.com/ollama/ollama/middleware"
 	"github.com/ollama/ollama/model/parsers"
 	"github.com/ollama/ollama/model/renderers"
+	"github.com/ollama/ollama/server/autoroute"
 	"github.com/ollama/ollama/server/internal/client/ollama"
 	"github.com/ollama/ollama/server/internal/registry"
 	"github.com/ollama/ollama/server/modality"
@@ -599,7 +600,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		req.Model = served
 	}
 
-	if routed, dec, err := s.applyRouterRewrite(c.Request.Context(), req.Model, req.Prompt); err != nil {
+	if routed, dec, err := s.applyRouterRewrite(c.Request.Context(), req.Model, generateRouteSignals(c, &req)); err != nil {
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
 	} else if dec != nil {
@@ -1331,6 +1332,13 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 		req.Model = served
 	}
 
+	if routed, rerr := s.routeForSurface(c, req.Model, autoroute.Signals{Surface: autoroute.SurfaceEmbed}); rerr != nil {
+		writeRouterError(c, rerr.dec, rerr.err)
+		return
+	} else {
+		req.Model = routed
+	}
+
 	modelRef, err := parseAndValidateModelRef(req.Model)
 	if err != nil {
 		writeModelRefParseError(c, err, http.StatusNotFound, fmt.Sprintf("model '%s' not found", req.Model))
@@ -1689,6 +1697,13 @@ func (s *Server) EmbeddingsHandler(c *gin.Context) {
 		return
 	} else {
 		req.Model = served
+	}
+
+	if routed, rerr := s.routeForSurface(c, req.Model, autoroute.Signals{Surface: autoroute.SurfaceEmbed}); rerr != nil {
+		writeRouterError(c, rerr.dec, rerr.err)
+		return
+	} else {
+		req.Model = routed
 	}
 
 	modelRef, err := parseAndValidateModelRef(req.Model)
@@ -2484,6 +2499,9 @@ func (s *Server) ListHandler(c *gin.Context) {
 	// Host-aware CTX for zerollama ls (after digests/catalog merge).
 	s.enrichListHostContexts(c.Request.Context(), models)
 
+	if c.GetBool(middleware.CtxKeyListVirtualRouters) {
+		models = append(models, virtualRouterModels(models)...)
+	}
 	c.JSON(http.StatusOK, api.ListResponse{Models: models})
 }
 
@@ -2811,8 +2829,8 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	// llama-server discovery shim for Odysseus/Hermes (n_ctx / parallel); not slot restore.
 	r.GET("/slots", s.SlotsHandler)
 	r.GET("/api/image/workflows", s.ImageWorkflowsHandler)
-	r.POST("/api/generate", s.withInferenceRequestLogging("/api/generate", s.hostMemGuard(), s.assignmentTokenMiddleware(), s.runtimeGenerateProxy(), s.GenerateHandler)...)
-	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.hostMemGuard(), s.assignmentTokenMiddleware(), s.openaiRemoteChatProxy(), s.runtimeChatProxy(), s.ChatHandler)...)
+	r.POST("/api/generate", s.withInferenceRequestLogging("/api/generate", s.hostMemGuard(), s.assignmentTokenMiddleware(), s.routeAheadMiddleware(""), s.runtimeGenerateProxy(), s.GenerateHandler)...)
+	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.hostMemGuard(), s.assignmentTokenMiddleware(), s.routeAheadMiddleware(autoroute.SurfaceChat), s.openaiRemoteChatProxy(), s.runtimeChatProxy(), s.ChatHandler)...)
 	r.POST("/api/embed", s.EmbedHandler)
 	r.POST("/api/embeddings", s.EmbeddingsHandler)
 	r.GET("/api/aliases", s.AliasesHandler)
@@ -2829,18 +2847,20 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/v1/gliner", s.GlinerHandler)
 	r.POST("/v1/gliner-decide", s.GlinerDecideHandler)
 	r.POST("/api/router/decide", s.RouterDecideHandler)
+	r.GET("/api/router/inventory", s.RouterInventoryHandler)
+	r.POST("/v1/route", s.RouteHandler)
 	r.GET("/api/router/corpus", s.RouterCorpusHandler)
 	r.POST("/api/router/corpus", s.RouterCorpusHandler)
 
 	// Inference (OpenAI compatibility)
 	// TODO(cloud-stage-a): apply Modelfile overlay deltas for local models with cloud
 	// parents on v1 request families while preserving this explicit :cloud passthrough.
-	r.POST("/v1/chat/completions", s.withInferenceRequestLogging("/v1/chat/completions", s.hostMemGuard(), cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), s.runtimeV1ChatCompletionsProxy(), s.openaiRemoteChatCompletionsProxy(), s.sglangChatCompletionsProxy(), middleware.ChatMiddleware(lookupThinking), s.ChatHandler)...)
+	r.POST("/v1/chat/completions", s.withInferenceRequestLogging("/v1/chat/completions", s.hostMemGuard(), cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), s.routeAheadMiddleware(autoroute.SurfaceChat), s.runtimeV1ChatCompletionsProxy(), s.openaiRemoteChatCompletionsProxy(), s.sglangChatCompletionsProxy(), middleware.ChatMiddleware(lookupThinking), s.ChatHandler)...)
 	r.POST("/v1/chat/completions/batch", s.withInferenceRequestLogging("/v1/chat/completions/batch", s.runtimeV1ChatCompletionsBatchProxy())...)
 	r.POST("/v1/completions", s.withInferenceRequestLogging("/v1/completions", s.hostMemGuard(), cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.CompletionsMiddleware(), s.GenerateHandler)...)
 	r.POST("/v1/embeddings", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.EmbeddingsMiddleware(), s.EmbedHandler)
 	r.GET("/v1/models", middleware.ListMiddleware(), s.ListHandler)
-	r.GET("/v1/models/:model", s.maybeProxyElizaV1ModelGet(), middleware.RetrieveMiddleware(), s.ShowHandler)
+	r.GET("/v1/models/:model", s.maybeProxyElizaV1ModelGet(), s.virtualRouterModelGet(), middleware.RetrieveMiddleware(), s.ShowHandler)
 	r.POST("/v1/responses", s.withInferenceRequestLogging("/v1/responses", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.ResponsesMiddleware(lookupThinking), s.ChatHandler)...)
 	// OpenAI-compatible image generation endpoints
 	r.POST("/v1/images/generations", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.ImageGenerationsMiddleware(), s.GenerateHandler)
@@ -3162,6 +3182,9 @@ func Serve(listeners ...net.Listener) error {
 	}()
 
 	s.sched.Run(schedCtx)
+	// classifier: jev routers: load their deciders now so the first routed request does
+	// not spend its decider_timeout on a cold load (docs/auto-router.md AR4).
+	go s.prewarmJevDeciders()
 
 	// register the experimental webp decoder
 	// so webp images can be used in multimodal inputs
@@ -3544,7 +3567,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		req.Model = served
 	}
 
-	if routed, dec, err := s.applyRouterRewrite(c.Request.Context(), req.Model, lastUserMessageText(req.Messages)); err != nil {
+	if routed, dec, err := s.applyRouterRewrite(c.Request.Context(), req.Model, chatRouteSignals(c, &req)); err != nil {
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
 	} else if dec != nil {

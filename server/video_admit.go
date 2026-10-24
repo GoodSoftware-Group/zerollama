@@ -7,6 +7,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime"
@@ -124,6 +125,66 @@ func wanOMPThreads() int {
 		n = 4
 	}
 	return n
+}
+
+// videoBackendErr rejects video_generation backends the handler cannot run.
+// WHY shared: the auto-router filters video_gen candidates with the same rule the
+// handler enforces (docs/auto-router.md §6.5), so a routed request never 400s here.
+func videoBackendErr(backend string) error {
+	switch backend {
+	case model.BackendWan, model.BackendLTX, model.BackendH3:
+		return nil
+	case model.BackendRIFE:
+		return errors.New("video_generation backend \"rife\" is reserved but not implemented yet")
+	default:
+		return fmt.Errorf("video_generation backend must be %q, %q, or %q (got %q)", model.BackendWan, model.BackendLTX, model.BackendH3, backend)
+	}
+}
+
+// validateVideoPlan checks keyframe support and platform for a resolved backend + profile.
+// All failures are client errors (400). Pure apart from reading GOOS.
+func validateVideoPlan(backend string, cfg model.VideoGenerationConfig, opts map[string]any, keyframeLabels []string) error {
+	if backend == model.BackendWan {
+		if err := validateWanKeyframes(cfg.Profile, keyframeLabels); err != nil {
+			return err
+		}
+	}
+	// Darwin ltx-mlx I2V: first still is --image. LTX-2.5 Wan2GP: start/end stills (image_start/image_end).
+	// LTXV 0.9.8 Wan2GP distilled remains T2V-only.
+	if backend == model.BackendLTX && len(keyframeLabels) > 0 && !isLtxMLXJob(cfg) && !isLtx25Profile(cfg.Profile) {
+		return errors.New("ltx Wan2GP LTXV distilled T2V does not support keyframes; use ltx2.5-22b-distilled for start/end control")
+	}
+	if backend == model.BackendLTX && isLtxMLXJob(cfg) {
+		if err := errLtxMLXUnsupportedPlatform(); err != nil {
+			return err
+		}
+		if err := validateLtxMLXLastFrame(opts, keyframeLabels); err != nil {
+			return err
+		}
+	}
+	if backend == model.BackendH3 && len(keyframeLabels) > 0 {
+		return errors.New("h3 T2VA does not support keyframes yet")
+	}
+	return nil
+}
+
+// admitVideoHostRAM applies the host-RAM floor for backend + profile (503 class on failure).
+// Read-only: it probes meminfo and never stages anything, so the auto-router can call it as
+// a dry run before choosing a video_gen candidate. GPU placement stays in the Python job
+// (scripts/video/cuda_device.py best_fit) — this only answers "can this host start it now".
+func admitVideoHostRAM(backend string, cfg model.VideoGenerationConfig) error {
+	switch {
+	case backend == model.BackendLTX && !isLtxMLXJob(cfg):
+		return admitLtxHostRAM(cfg)
+	case backend == model.BackendH3:
+		if isH3Wan2GPJob(cfg) {
+			return admitH3HostRAM(cfg)
+		}
+		// Darwin video-cli H3: host DiT+VAE — no Wan 16g GPU/RAM admit.
+		return nil
+	default:
+		return admitWanHostRAM(cfg, planWanHost(cfg))
+	}
 }
 
 // admitH3HostRAM rejects Wan2GP MiniMax-H3 jobs that cannot stage DiT+TE without thrashing.

@@ -2,6 +2,7 @@
 
 #include "llama.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,9 @@ struct laya_head_layer {
     laya_linear ffn_down;
 };
 
+// GPU copy of the head's transformer layers (opaque; see server-laya.cpp).
+struct laya_head_gpu;
+
 struct laya_head_weights {
     int n_embd        = 0;
     int n_head        = 1;
@@ -44,6 +48,9 @@ struct laya_head_weights {
 
     laya_linear act_fc1;
     laya_linear act_fc2;
+    // Set by laya_head_load when a GPU backend is available and LLAMA_LAYA_HEAD != "cpu":
+    // laya_decide_batch then runs the head layers there for every input in one graph.
+    std::shared_ptr<laya_head_gpu> gpu;
 };
 
 struct laya_decision_input {
@@ -72,6 +79,21 @@ bool laya_encode_embeddings(
         std::string & err);
 
 // Apply decision head on per-token embeddings H[t].
+// Encode several inputs in as few llama_process calls as the seq / ubatch budget allows.
+bool laya_encode_embeddings_batch(
+        llama_context * ctx,
+        const std::vector<laya_decision_input> & inputs,
+        std::vector<std::vector<float>> & embd_out,
+        std::string & err);
+
+// Batched encode + head for every input of one /v1/decisions request.
+bool laya_decide_batch(
+        llama_context * ctx,
+        const laya_head_weights & w,
+        const std::vector<laya_decision_input> & inputs,
+        std::vector<laya_decision_result> & out,
+        std::string & err);
+
 bool laya_head_apply(
         const laya_head_weights & w,
         const float * H,

@@ -24,6 +24,7 @@ import (
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/middleware"
 	"github.com/ollama/ollama/openai"
+	"github.com/ollama/ollama/server/autoroute"
 	"github.com/ollama/ollama/server/modality"
 	"github.com/ollama/ollama/types/model"
 	"github.com/ollama/ollama/x/trainingworker"
@@ -56,6 +57,19 @@ func (s *Server) queueMusic3(c *gin.Context, req openai.SpeechCreateRequest) {
 	if s.training == nil {
 		c.JSON(http.StatusServiceUnavailable, openai.NewError(http.StatusServiceUnavailable, "music generation requires ZEROLLAMA_GPU_JOBS=true (embedded GPU job worker; alias OLLAMA_TRAINING)"))
 		return
+	}
+
+	if served, err := applyModelAlias(c, req.Model); err != nil {
+		c.JSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+		return
+	} else {
+		req.Model = served
+	}
+	if routed, rerr := s.routeForSurface(c, req.Model, speechRouteSignals(req, autoroute.SurfaceMusic)); rerr != nil {
+		writeRouterError(c, rerr.dec, rerr.err)
+		return
+	} else {
+		req.Model = routed
 	}
 
 	modelRef, err := parseAndValidateModelRef(req.Model)

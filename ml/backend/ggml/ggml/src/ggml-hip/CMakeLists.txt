@@ -72,6 +72,10 @@ list(APPEND GGML_SOURCES_ROCM ${SRCS})
 
 ggml_cuda_fattn_vec_instances(${CMAKE_CURRENT_SOURCE_DIR}/../ggml-cuda SRCS)
 list(APPEND GGML_SOURCES_ROCM ${SRCS})
+# zerollama: TBQ fattn-vec instances (not in ggml_cuda_fattn_vec_instances FA_TYPES),
+# same as ggml-cuda/CMakeLists.txt — fattn dispatch references them on HIP too.
+file(GLOB SRCS_TBQ "../ggml-cuda/template-instances/fattn-vec*tbq*.cu")
+list(APPEND GGML_SOURCES_ROCM ${SRCS_TBQ})
 
 ggml_add_backend_library(ggml-hip
                          ${GGML_HEADERS_ROCM}

@@ -333,8 +333,12 @@ func TestRoutes(t *testing.T) {
 					t.Fatalf("failed to unmarshal response body: %v", err)
 				}
 
-				if len(modelList.Data) != 1 || modelList.Data[0].Id != "test-model:latest" || modelList.Data[0].OwnedBy != "library" {
-					t.Errorf("expected model 'test-model:latest' owned by 'library', got %v", modelList.Data)
+				// Virtual router entries (implicit "auto", AR2) follow the real models.
+				if len(modelList.Data) != 2 || modelList.Data[0].Id != "test-model:latest" || modelList.Data[0].OwnedBy != "library" {
+					t.Errorf("expected model 'test-model:latest' owned by 'library' then auto, got %v", modelList.Data)
+				}
+				if len(modelList.Data) == 2 && modelList.Data[1].Id != "auto" {
+					t.Errorf("expected virtual auto router last, got %v", modelList.Data[1])
 				}
 			},
 		},

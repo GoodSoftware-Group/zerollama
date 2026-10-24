@@ -418,8 +418,14 @@ func (w *EmbedWriter) Write(data []byte) (int, error) {
 	return w.writeResponse(data)
 }
 
+// CtxKeyListVirtualRouters asks ListHandler to append router names (e.g. "auto") as
+// virtual models. Set only by ListMiddleware (/v1/models): OpenAI pickers should offer
+// "auto", but /api/tags feeds bench/launch/ls, which must only see real models.
+const CtxKeyListVirtualRouters = "zerollama.list.virtual_routers"
+
 func ListMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		c.Set(CtxKeyListVirtualRouters, true)
 		w := &ListWriter{
 			BaseWriter: BaseWriter{ResponseWriter: c.Writer},
 		}
@@ -830,6 +836,7 @@ func ImageGenerationsMiddleware() gin.HandlerFunc {
 			BaseWriter: BaseWriter{ResponseWriter: c.Writer},
 		}
 
+		c.Set(CtxKeyRouteSurface, "image")
 		c.Writer = w
 		c.Next()
 	}
@@ -881,6 +888,7 @@ func ImageEditsMiddleware() gin.HandlerFunc {
 			BaseWriter: BaseWriter{ResponseWriter: c.Writer},
 		}
 
+		c.Set(CtxKeyRouteSurface, "image_edit")
 		c.Writer = w
 		c.Next()
 	}
@@ -900,6 +908,12 @@ const CtxKeySpeechRequest = "ollama.speech.request"
 
 // CtxKeyVideoCreateRequest holds a validated [openai.VideoCreateRequest] for VideoCreateHandler.
 const CtxKeyVideoCreateRequest = "ollama.video.create.request"
+
+// CtxKeyRouteSurface tells GenerateHandler which surface a converted request came from
+// ("image" | "image_edit"). WHY: image middlewares rewrite the body into a plain
+// GenerateRequest, so the auto-router could not otherwise tell an image prompt from text
+// and might resolve a router name to a chat model (docs/auto-router.md §6.3).
+const CtxKeyRouteSurface = "zerollama.route.surface"
 
 // TranscriptionWriter collects streamed chat responses and outputs a transcription response.
 type TranscriptionWriter struct {
