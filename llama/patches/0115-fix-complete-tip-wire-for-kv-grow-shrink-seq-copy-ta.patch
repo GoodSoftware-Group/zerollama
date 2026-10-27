@@ -1,0 +1,150 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:38:11 -0700
+Subject: [PATCH] fix: complete tip wire for kv grow/shrink/seq-copy task types
+
+Add missing SERVER_TASK_TYPE_* enum values and HTTP routes after the
+b11870 server-task enum drift broke patch 0108 reject fallback.
+---
+ src/llama-vocab.cpp               |  2 ++
+ src/llama-vocab.cpp.rej           | 16 ----------------
+ tools/server/server-context.h     |  4 ++++
+ tools/server/server-context.h.rej | 10 ----------
+ tools/server/server-task.h        |  4 ++++
+ tools/server/server-task.h.rej    | 10 ----------
+ tools/server/server.cpp           |  4 ++++
+ tools/server/server.cpp.rej       | 10 ----------
+ 8 files changed, 14 insertions(+), 46 deletions(-)
+ delete mode 100644 src/llama-vocab.cpp.rej
+ delete mode 100644 tools/server/server-context.h.rej
+ delete mode 100644 tools/server/server-task.h.rej
+ delete mode 100644 tools/server/server.cpp.rej
+
+diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
+index c653d1524..a5f9c2232 100644
+--- a/src/llama-vocab.cpp
++++ b/src/llama-vocab.cpp
+@@ -165,6 +165,8 @@ struct llm_tokenizer_spm_session {
+     llm_tokenizer_spm_session(const llama_vocab & vocab) : vocab(vocab) {}
+ 
+     void tokenize(const std::string & text, std::vector<llama_token> & output) {
++        unicode_pretok_blob pretok_blob;
++        bool use_blob = false;
+         // split string into utf8 chars
+         int index = 0;
+         size_t offs = 0;
+diff --git a/src/llama-vocab.cpp.rej b/src/llama-vocab.cpp.rej
+deleted file mode 100644
+index 69afeb513..000000000
+--- a/src/llama-vocab.cpp.rej
++++ /dev/null
+@@ -1,16 +0,0 @@
+-diff a/src/llama-vocab.cpp b/src/llama-vocab.cpp	(rejected hunks)
+-@@ -953,7 +953,13 @@ struct llm_tokenizer_bpe_session {
+- 
+-     virtual void tokenize(const std::string & text, std::vector<llama_token> & output) {
+-         int final_prev_index = -1;
+--        const auto word_collection = unicode_regex_split(text, tokenizer.regex_exprs, tokenizer.byte_encode);
+-+        unicode_pretok_blob pretok_blob;
+-+        const bool use_blob = unicode_regex_split_try_blob(
+-+                text, tokenizer.regex_exprs, tokenizer.byte_encode, pretok_blob);
+-+        std::vector<std::string> word_collection;
+-+        if (!use_blob) {
+-+            word_collection = unicode_regex_split(text, tokenizer.regex_exprs, tokenizer.byte_encode);
+-+        }
+- 
+-         symbols_final.clear();
+-         auto tok_pre = vocab.get_pre_type();
+diff --git a/tools/server/server-context.h b/tools/server/server-context.h
+index ddb4a396a..6fd610902 100644
+--- a/tools/server/server-context.h
++++ b/tools/server/server-context.h
+@@ -155,6 +155,10 @@ private:
+     std::unique_ptr<server_res_generator> handle_slots_save(const server_http_req & req, int id_slot);
+     std::unique_ptr<server_res_generator> handle_slots_restore(const server_http_req & req, int id_slot);
+     std::unique_ptr<server_res_generator> handle_slots_erase(const server_http_req &, int id_slot);
++    std::unique_ptr<server_res_generator> handle_kv_seq_copy(const server_http_req & req);
++    std::unique_ptr<server_res_generator> handle_kv_grow(const server_http_req & req);
++    std::unique_ptr<server_res_generator> handle_kv_shrink(const server_http_req & req);
++    std::unique_ptr<server_res_generator> handle_cuda_graph_invalidate(const server_http_req & req);
+     std::unique_ptr<server_res_generator> handle_embeddings_impl(const server_http_req & req, task_response_type res_type);
+     std::unique_ptr<server_res_generator> handle_rerank_impl(const server_http_req & req);
+     std::unique_ptr<server_res_generator> handle_count_tokens(const server_http_req & req, task_response_type res_type);
+diff --git a/tools/server/server-context.h.rej b/tools/server/server-context.h.rej
+deleted file mode 100644
+index eb2c0f729..000000000
+--- a/tools/server/server-context.h.rej
++++ /dev/null
+@@ -1,10 +0,0 @@
+-diff a/tools/server/server-context.h b/tools/server/server-context.h	(rejected hunks)
+-@@ -171,6 +173,8 @@ private:
+-     std::unique_ptr<server_res_generator> handle_slots_restore(const server_http_req & req, int id_slot);
+-     std::unique_ptr<server_res_generator> handle_slots_erase(const server_http_req &, int id_slot);
+-     std::unique_ptr<server_res_generator> handle_kv_seq_copy(const server_http_req & req);
+-+    std::unique_ptr<server_res_generator> handle_kv_grow(const server_http_req & req);
+-+    std::unique_ptr<server_res_generator> handle_kv_shrink(const server_http_req & req);
+-     std::unique_ptr<server_res_generator> handle_cuda_graph_invalidate(const server_http_req & req);
+-     std::unique_ptr<server_res_generator> handle_embeddings_impl(const server_http_req & req, task_response_type res_type);
+-     std::unique_ptr<server_res_generator> handle_count_tokens(const server_http_req & req, task_response_type res_type);
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index a19a2f566..ac23f3b25 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -28,6 +28,10 @@ enum server_task_type {
+     SERVER_TASK_TYPE_SLOT_SAVE,
+     SERVER_TASK_TYPE_SLOT_RESTORE,
+     SERVER_TASK_TYPE_SLOT_ERASE,
++    SERVER_TASK_TYPE_SLOT_SEQ_COPY,
++    SERVER_TASK_TYPE_CUDA_GRAPH_INVALIDATE,
++    SERVER_TASK_TYPE_KV_GROW,
++    SERVER_TASK_TYPE_KV_SHRINK,
+     SERVER_TASK_TYPE_GET_LORA,
+     SERVER_TASK_TYPE_SET_LORA,
+     SERVER_TASK_TYPE_TTS,
+diff --git a/tools/server/server-task.h.rej b/tools/server/server-task.h.rej
+deleted file mode 100644
+index 5a09ded73..000000000
+--- a/tools/server/server-task.h.rej
++++ /dev/null
+@@ -1,10 +0,0 @@
+-diff a/tools/server/server-task.h b/tools/server/server-task.h	(rejected hunks)
+-@@ -27,6 +27,8 @@ enum server_task_type {
+-     SERVER_TASK_TYPE_SLOT_ERASE,
+-     SERVER_TASK_TYPE_SLOT_SEQ_COPY,
+-     SERVER_TASK_TYPE_CUDA_GRAPH_INVALIDATE,
+-+    SERVER_TASK_TYPE_KV_GROW,
+-+    SERVER_TASK_TYPE_KV_SHRINK,
+-     SERVER_TASK_TYPE_GET_LORA,
+-     SERVER_TASK_TYPE_SET_LORA,
+- };
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index 4306e6475..5db6ad85e 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -219,6 +219,10 @@ static void server_register_routes(server_http_context & ctx_http, server_routes
+     // Save & load slots
+     ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
+     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));
++    ctx_http.post("/kv/seq-copy",              ex_wrapper(routes.post_kv_seq_copy));
++    ctx_http.post("/kv/grow",                  ex_wrapper(routes.post_kv_grow));
++    ctx_http.post("/kv/shrink",                ex_wrapper(routes.post_kv_shrink));
++    ctx_http.post("/cuda-graph/invalidate",    ex_wrapper(routes.post_cuda_graph_invalidate));
+ 
+     // Google Cloud Platform (Vertex AI) compat
+     ctx_http.register_gcp_compat();
+diff --git a/tools/server/server.cpp.rej b/tools/server/server.cpp.rej
+deleted file mode 100644
+index 0bda4c26d..000000000
+--- a/tools/server/server.cpp.rej
++++ /dev/null
+@@ -1,10 +0,0 @@
+-diff a/tools/server/server.cpp b/tools/server/server.cpp	(rejected hunks)
+-@@ -333,6 +333,8 @@ int llama_server(common_params & params, int argc, char ** argv) {
+-     ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
+-     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));
+-     ctx_http.post("/kv/seq-copy",              ex_wrapper(routes.post_kv_seq_copy));
+-+    ctx_http.post("/kv/grow",                  ex_wrapper(routes.post_kv_grow));
+-+    ctx_http.post("/kv/shrink",                ex_wrapper(routes.post_kv_shrink));
+-     ctx_http.post("/cuda-graph/invalidate",    ex_wrapper(routes.post_cuda_graph_invalidate));
+- 
+-     // resumable streaming: a child binds the local session factories, the router binds

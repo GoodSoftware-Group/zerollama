@@ -9,7 +9,7 @@ Subject: [PATCH] ggml-metal: guard waitUntilSignaledValue for older targets
  1 file changed, 30 insertions(+), 1 deletion(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 6b0ec1a0c..d4544be2b 100644
+index d6ee883c5..46d2d94fe 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
 @@ -1512,7 +1512,36 @@ void ggml_metal_device_event_free(ggml_metal_device_t dev, ggml_metal_event_t ev

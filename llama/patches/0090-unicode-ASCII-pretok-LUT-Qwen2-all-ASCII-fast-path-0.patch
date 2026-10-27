@@ -11,7 +11,7 @@ the all-ASCII path for A/B. See docs/faster-bpe-tokenize.md (M15d / 0110).
  1 file changed, 188 insertions(+), 4 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index 48c00185c..9e5a10705 100644
+index 3a53a7d4f..b9c250d30 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
 @@ -4,6 +4,7 @@
@@ -22,7 +22,7 @@ index 48c00185c..9e5a10705 100644
  #include <cstdint>
  #include <map>
  #include <regex>
-@@ -270,6 +271,180 @@ static inline size_t unicode_consume_digits(const std::vector<uint32_t> & cpts,
+@@ -292,6 +293,180 @@ static inline size_t unicode_consume_digits(const std::vector<uint32_t> & cpts,
      return pos;
  }
  
@@ -203,7 +203,7 @@ index 48c00185c..9e5a10705 100644
  // GPT2 system regex:  's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
  static std::vector<size_t> unicode_regex_split_custom_gpt2(const std::vector<uint32_t> & cpts, const std::vector<size_t> & offsets) {
      std::vector<size_t> bpe_offsets; // store the offset of each word
-@@ -288,7 +463,7 @@ static std::vector<size_t> unicode_regex_split_custom_gpt2(const std::vector<uin
+@@ -310,7 +485,7 @@ static std::vector<size_t> unicode_regex_split_custom_gpt2(const std::vector<uin
          };
  
          auto _get_flags = [&] (const size_t pos) -> unicode_cpt_flags {
@@ -212,7 +212,7 @@ index 48c00185c..9e5a10705 100644
          };
  
          size_t _prev_end = offset_ini;
-@@ -400,7 +575,7 @@ static std::vector<size_t> unicode_regex_split_custom_llama3(const std::vector<u
+@@ -422,7 +597,7 @@ static std::vector<size_t> unicode_regex_split_custom_llama3(const std::vector<u
          };
  
          auto _get_flags = [&] (const size_t pos) -> unicode_cpt_flags {
@@ -221,7 +221,7 @@ index 48c00185c..9e5a10705 100644
          };
  
          size_t _prev_end = offset_ini;
-@@ -525,10 +700,13 @@ static std::vector<size_t> unicode_regex_split_custom_llama3(const std::vector<u
+@@ -694,10 +869,13 @@ static std::vector<size_t> unicode_regex_split_custom_k2_horizon(const std::stri
      return bpe_offsets;
  }
  
@@ -236,7 +236,7 @@ index 48c00185c..9e5a10705 100644
  
      size_t start = 0;
      for (auto offset : offsets) {
-@@ -537,13 +715,19 @@ static std::vector<size_t> unicode_regex_split_custom_qwen2(const std::vector<ui
+@@ -706,13 +884,19 @@ static std::vector<size_t> unicode_regex_split_custom_qwen2(const std::vector<ui
          assert(offset_end <= cpts.size());
          start = offset_end;
  

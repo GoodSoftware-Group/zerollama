@@ -1,18 +1,19 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: nobody <>
-Date: Fri, 17 Jul 2026 10:00:41 -0700
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:34:54 -0700
 Subject: [PATCH] ggml-metal: fix null-pipeline crash for F16 src1 mul_mat
- (upstream #25648)
 
 ---
- ggml/src/ggml-metal/ggml-metal-ops.cpp | 15 +++++++++++++++
- 1 file changed, 15 insertions(+)
+ ggml/src/ggml-metal/ggml-metal-ops.cpp     | 14 ++++++++++++++
+ ggml/src/ggml-metal/ggml-metal-ops.cpp.rej |  9 +++++++++
+ 2 files changed, 23 insertions(+)
+ create mode 100644 ggml/src/ggml-metal/ggml-metal-ops.cpp.rej
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index 497011c5f..2c272dc52 100644
+index def73dc54..90b0c01b6 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -2420,6 +2420,16 @@ int ggml_metal_op_pool_2d(ggml_metal_op_t ctx, int idx) {
+@@ -2591,6 +2591,16 @@ static int ggml_metal_op_mul_mat_mv(ggml_metal_op_t ctx, int idx) {
      return 1;
  }
  
@@ -29,7 +30,7 @@ index 497011c5f..2c272dc52 100644
  int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
      ggml_tensor * op = ctx->node(idx);
  
-@@ -2533,6 +2543,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+@@ -2708,6 +2718,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
          };
  
          auto pipeline = ggml_metal_library_get_pipeline_mul_mv_ext(lib, op, nsg, nxpsg, r1ptg);
@@ -37,7 +38,7 @@ index 497011c5f..2c272dc52 100644
  
          ggml_metal_kargs_mul_mv_ext args = {
              /*.ne00  =*/ ne00,
-@@ -2575,6 +2586,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+@@ -2750,6 +2761,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
          //}
  
          auto pipeline = ggml_metal_library_get_pipeline_mul_mm(lib, op);
@@ -45,15 +46,7 @@ index 497011c5f..2c272dc52 100644
  
          ggml_metal_kargs_mul_mm args = {
              /*.ne00 =*/ ne00,
-@@ -2610,6 +2622,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
-         ggml_metal_encoder_dispatch_threadgroups(enc, ((ne11 + nr1 - 1) / nr1), ((ne01 + nr0 - 1) / nr0), ne12 * ne13, 32, nsg, 1);
-     } else {
-         auto pipeline = ggml_metal_library_get_pipeline_mul_mv(lib, op);
-+        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
- 
-         const int nr0 = pipeline.nr0;
-         const int nr1 = pipeline.nr1;
-@@ -2817,6 +2830,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
+@@ -2930,6 +2942,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
  
          {
              auto pipeline = ggml_metal_library_get_pipeline_mul_mm_id(lib, op);
@@ -61,7 +54,7 @@ index 497011c5f..2c272dc52 100644
  
              ggml_metal_kargs_mul_mm_id args = {
                  /*.ne00  =*/ ne00,
-@@ -2854,6 +2868,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
+@@ -2969,6 +2982,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
          }
      } else {
          auto pipeline = ggml_metal_library_get_pipeline_mul_mv_id(lib, op);
@@ -69,3 +62,18 @@ index 497011c5f..2c272dc52 100644
  
          const int nr0 = pipeline.nr0;
          const int nr1 = pipeline.nr1;
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp.rej b/ggml/src/ggml-metal/ggml-metal-ops.cpp.rej
+new file mode 100644
+index 000000000..4fa6e6325
+--- /dev/null
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp.rej
+@@ -0,0 +1,9 @@
++diff a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp	(rejected hunks)
++@@ -2610,6 +2622,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
++         ggml_metal_encoder_dispatch_threadgroups(enc, ((ne11 + nr1 - 1) / nr1), ((ne01 + nr0 - 1) / nr0), ne12 * ne13, 32, nsg, 1);
++     } else {
++         auto pipeline = ggml_metal_library_get_pipeline_mul_mv(lib, op);
+++        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
++ 
++         const int nr0 = pipeline.nr0;
++         const int nr1 = pipeline.nr1;

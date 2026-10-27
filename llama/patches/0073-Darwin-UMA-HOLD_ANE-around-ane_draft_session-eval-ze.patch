@@ -1,37 +1,47 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: zerollama <zerollama@local>
-Date: Fri, 24 Jul 2026 18:59:05 -0700
+Date: Sat, 24 Oct 2026 20:34:58 -0700
 Subject: [PATCH] Darwin UMA HOLD_ANE around ane_draft_session eval (zerollama
- M23).
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
-Admission only: lease ANE while in-process draft eval runs. Independent of
-HOLD_GPU (Metal decode ∥ ANE draft). Resolve uma_* via dlsym(RTLD_DEFAULT)
-into libllama's single libuma glue (M22) — do not static-link libuma into
-llama-common (duplicate g_client).
 ---
- common/CMakeLists.txt       |  8 +++++++
+ common/CMakeLists.txt.rej   | 28 +++++++++++--------------
  common/ane_draft_session.mm | 42 ++++++++++++++++++++++++++++++++++++-
- 2 files changed, 49 insertions(+), 1 deletion(-)
+ 2 files changed, 53 insertions(+), 17 deletions(-)
 
-diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
-index c59d186b6..804c1f173 100644
---- a/common/CMakeLists.txt
-+++ b/common/CMakeLists.txt
-@@ -225,3 +225,11 @@ else()
-         message(STATUS "llama-common: ANE draft session stub (missing ${_ZEROLLAMA_ANE_BRIDGE})")
-     endif()
- endif()
-+
-+# zerollama M23: HOLD_ANE around ane_draft_session eval via dlsym→libllama uma.
-+# Do not link libuma into common (duplicate g_client vs M22 llama link).
-+if (ZEROLLAMA_UMA)
-+    target_compile_definitions(${TARGET} PRIVATE ZEROLLAMA_UMA=1)
-+    message(STATUS "llama-common: ZEROLLAMA_UMA HOLD_ANE for ane_draft_session (dlsym)")
-+endif()
-+
+diff --git a/common/CMakeLists.txt.rej b/common/CMakeLists.txt.rej
+index 7fd81b61e..b068dfc51 100644
+--- a/common/CMakeLists.txt.rej
++++ b/common/CMakeLists.txt.rej
+@@ -1,17 +1,13 @@
+ diff a/common/CMakeLists.txt b/common/CMakeLists.txt	(rejected hunks)
+-@@ -207,6 +207,15 @@ if (APPLE AND EXISTS "${_ZEROLLAMA_ANE_BRIDGE}")
+-         "-framework Foundation"
+-         "-framework IOSurface"
+-         "-framework Metal")
+-+    # Bare `libane_bridge.dylib` install name breaks dyld unless cwd/DYLD is set.
+-+    # Copy beside llama-server and rewrite to @rpath so L2 probes and serve work.
+-+    add_custom_command(TARGET ${TARGET} POST_BUILD
+-+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/bin"
+-+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+-+            "${_ZEROLLAMA_ANE_BRIDGE}" "${CMAKE_BINARY_DIR}/bin/libane_bridge.dylib"
+-+        COMMAND install_name_tool -change libane_bridge.dylib @rpath/libane_bridge.dylib
+-+            "$<TARGET_FILE:${TARGET}>"
+-+        COMMENT "ANE: stage libane_bridge + @rpath install name")
+-     message(STATUS "llama-common: ANE draft session enabled (${_ZEROLLAMA_ANE_BRIDGE})")
+- else()
+-     target_sources(${TARGET} PRIVATE
++@@ -225,3 +225,11 @@ else()
++         message(STATUS "llama-common: ANE draft session stub (missing ${_ZEROLLAMA_ANE_BRIDGE})")
++     endif()
++ endif()
+++
+++# zerollama M23: HOLD_ANE around ane_draft_session eval via dlsym→libllama uma.
+++# Do not link libuma into common (duplicate g_client vs M22 llama link).
+++if (ZEROLLAMA_UMA)
+++    target_compile_definitions(${TARGET} PRIVATE ZEROLLAMA_UMA=1)
+++    message(STATUS "llama-common: ZEROLLAMA_UMA HOLD_ANE for ane_draft_session (dlsym)")
+++endif()
+++
 diff --git a/common/ane_draft_session.mm b/common/ane_draft_session.mm
 index 2215d5c23..ec550263f 100644
 --- a/common/ane_draft_session.mm

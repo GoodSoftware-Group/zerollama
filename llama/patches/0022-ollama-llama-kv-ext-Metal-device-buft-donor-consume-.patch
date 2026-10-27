@@ -46,7 +46,7 @@ index c95415fcb..b4c879861 100644
  #endif
  
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 3216744aa..02f8777ad 100644
+index 9c74fa5cc..01b44b910 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -306,36 +306,63 @@ llama_kv_cache::llama_kv_cache(

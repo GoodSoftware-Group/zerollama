@@ -10,10 +10,10 @@ Patch 0027 used these macros without defining them; Mac CGO builds failed.
  1 file changed, 9 insertions(+)
 
 diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
-index 6f9b4ba57..aee1be384 100644
+index dc1f7329d..94a07577a 100644
 --- a/ggml/include/ggml.h
 +++ b/ggml/include/ggml.h
-@@ -3022,6 +3022,15 @@ extern "C" {
+@@ -3061,6 +3061,15 @@ extern "C" {
  #        define GGML_RESTRICT restrict
  #    endif
  #endif

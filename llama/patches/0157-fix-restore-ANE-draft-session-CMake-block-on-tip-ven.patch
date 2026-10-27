@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sun, 25 Oct 2026 13:49:51 -0700
+Subject: [PATCH] fix: restore ANE draft session CMake block on tip vendor
+
+Lost in tip rebase: Darwin libane_bridge session sources + stub path and
+M23 ZEROLLAMA_UMA HOLD_ANE define. Matches b11351 common/CMakeLists.
+---
+ common/CMakeLists.txt | 46 +++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 46 insertions(+)
+
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index 779e5532b..1817c7de4 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -189,6 +189,52 @@ endif()
+ 
+ target_link_libraries(${TARGET} PUBLIC llama Threads::Threads)
+ 
++# B1: in-process ANE draft session (Darwin + libane_bridge only).
++set(_ZEROLLAMA_ANE_REPO "$ENV{HOME}/Sites/inference/ane")
++if (DEFINED ENV{ANE_REPO})
++    set(_ZEROLLAMA_ANE_REPO "$ENV{ANE_REPO}")
++endif()
++set(_ZEROLLAMA_ANE_BRIDGE "${_ZEROLLAMA_ANE_REPO}/bridge/libane_bridge.dylib")
++
++if (APPLE AND EXISTS "${_ZEROLLAMA_ANE_BRIDGE}")
++    target_sources(${TARGET} PRIVATE
++        ane_draft_session.mm
++        ane_draft_session.h
++        ane_iosurface_map.h)
++    target_compile_definitions(${TARGET} PRIVATE LLAMA_ANE_DRAFT_SESSION=1)
++    target_include_directories(${TARGET} PRIVATE "${_ZEROLLAMA_ANE_REPO}/bridge")
++    target_link_directories(${TARGET} PRIVATE "${_ZEROLLAMA_ANE_REPO}/bridge")
++    target_link_libraries(${TARGET} PRIVATE
++        ane_bridge
++        "-framework Foundation"
++        "-framework IOSurface"
++        "-framework Metal")
++    # Bare `libane_bridge.dylib` install name breaks dyld unless cwd/DYLD is set.
++    # Copy beside llama-server and rewrite to @rpath so L2 probes and serve work.
++    add_custom_command(TARGET ${TARGET} POST_BUILD
++        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/bin"
++        COMMAND ${CMAKE_COMMAND} -E copy_if_different
++            "${_ZEROLLAMA_ANE_BRIDGE}" "${CMAKE_BINARY_DIR}/bin/libane_bridge.dylib"
++        COMMAND install_name_tool -change libane_bridge.dylib @rpath/libane_bridge.dylib
++            "$<TARGET_FILE:${TARGET}>"
++        COMMENT "ANE: stage libane_bridge + @rpath install name")
++    message(STATUS "llama-common: ANE draft session enabled (${_ZEROLLAMA_ANE_BRIDGE})")
++else()
++    target_sources(${TARGET} PRIVATE
++        ane_draft_session_stub.cpp
++        ane_draft_session.h)
++    if (APPLE)
++        message(STATUS "llama-common: ANE draft session stub (missing ${_ZEROLLAMA_ANE_BRIDGE})")
++    endif()
++endif()
++
++# zerollama M23: HOLD_ANE around ane_draft_session eval via dlsym→libllama uma.
++# Do not link libuma into common (duplicate g_client vs M22 llama link).
++if (ZEROLLAMA_UMA)
++    target_compile_definitions(${TARGET} PRIVATE ZEROLLAMA_UMA=1)
++    message(STATUS "llama-common: ZEROLLAMA_UMA HOLD_ANE for ane_draft_session (dlsym)")
++endif()
++
+ if (CMAKE_SYSTEM_NAME MATCHES "AIX")
+     # AIX's flock() function comes from libbsd.a
+     target_link_libraries(${TARGET} PRIVATE -lbsd)

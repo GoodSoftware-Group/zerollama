@@ -1,14 +1,10 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Odilitime <janesmith@airmail.cc>
-Date: Tue, 14 Jul 2026 02:31:57 -0700
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:34:51 -0700
 Subject: [PATCH] Metal SET_ROWS for TBQ KV + CPU type_traits; TBQ4 flash-attn
- dequant.
 
-Unblocks Apple L2 fork profiles (tbq4_0/tbq3_0) on unified ggml-org pin
-after SET_ROWS abort on Metal-preallocated cache tensors. Stage ane bridge
-@rpath for lab probes without DYLD_LIBRARY_PATH.
 ---
- common/CMakeLists.txt                         |   9 +
+ common/CMakeLists.txt.rej                     |  50 ++---
  ggml/src/ggml-cpu/ggml-cpu.c                  |  12 ++
  ggml/src/ggml-cpu/quants.c                    |  78 +++++++
  ggml/src/ggml-cpu/quants.h                    |  10 +
@@ -16,31 +12,67 @@ after SET_ROWS abort on Metal-preallocated cache tensors. Stage ane bridge
  .../eliza-shipped/tbq_set_rows.metal          | 204 ++++++++++++++++++
  ggml/src/ggml-metal/ggml-metal-device.m       |   3 +
  src/llama-graph.cpp                           |   9 +-
- 8 files changed, 323 insertions(+), 3 deletions(-)
+ 8 files changed, 330 insertions(+), 37 deletions(-)
  create mode 100644 ggml/src/ggml-metal/eliza-shipped/tbq_set_rows.metal
 
-diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
-index 5542dd7dd..c59d186b6 100644
---- a/common/CMakeLists.txt
-+++ b/common/CMakeLists.txt
-@@ -207,6 +207,15 @@ if (APPLE AND EXISTS "${_ZEROLLAMA_ANE_BRIDGE}")
-         "-framework Foundation"
-         "-framework IOSurface"
-         "-framework Metal")
-+    # Bare `libane_bridge.dylib` install name breaks dyld unless cwd/DYLD is set.
-+    # Copy beside llama-server and rewrite to @rpath so L2 probes and serve work.
-+    add_custom_command(TARGET ${TARGET} POST_BUILD
-+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/bin"
-+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-+            "${_ZEROLLAMA_ANE_BRIDGE}" "${CMAKE_BINARY_DIR}/bin/libane_bridge.dylib"
-+        COMMAND install_name_tool -change libane_bridge.dylib @rpath/libane_bridge.dylib
-+            "$<TARGET_FILE:${TARGET}>"
-+        COMMENT "ANE: stage libane_bridge + @rpath install name")
-     message(STATUS "llama-common: ANE draft session enabled (${_ZEROLLAMA_ANE_BRIDGE})")
- else()
-     target_sources(${TARGET} PRIVATE
+diff --git a/common/CMakeLists.txt.rej b/common/CMakeLists.txt.rej
+index d3adbb781..7fd81b61e 100644
+--- a/common/CMakeLists.txt.rej
++++ b/common/CMakeLists.txt.rej
+@@ -1,35 +1,17 @@
+ diff a/common/CMakeLists.txt b/common/CMakeLists.txt	(rejected hunks)
+-@@ -184,3 +186,33 @@ if (LLAMA_LLGUIDANCE)
+- endif()
+- 
+- target_link_libraries(${TARGET} PUBLIC llama Threads::Threads)
+-+
+-+# B1: in-process ANE draft session (Darwin + libane_bridge only).
+-+set(_ZEROLLAMA_ANE_REPO "$ENV{HOME}/Sites/inference/ane")
+-+if (DEFINED ENV{ANE_REPO})
+-+    set(_ZEROLLAMA_ANE_REPO "$ENV{ANE_REPO}")
+-+endif()
+-+set(_ZEROLLAMA_ANE_BRIDGE "${_ZEROLLAMA_ANE_REPO}/bridge/libane_bridge.dylib")
+-+
+-+if (APPLE AND EXISTS "${_ZEROLLAMA_ANE_BRIDGE}")
+-+    target_sources(${TARGET} PRIVATE
+-+        ane_draft_session.mm
+-+        ane_draft_session.h
+-+        ane_iosurface_map.h)
+-+    target_compile_definitions(${TARGET} PRIVATE LLAMA_ANE_DRAFT_SESSION=1)
+-+    target_include_directories(${TARGET} PRIVATE "${_ZEROLLAMA_ANE_REPO}/bridge")
+-+    target_link_directories(${TARGET} PRIVATE "${_ZEROLLAMA_ANE_REPO}/bridge")
+-+    target_link_libraries(${TARGET} PRIVATE
+-+        ane_bridge
+-+        "-framework Foundation"
+-+        "-framework IOSurface"
+-+        "-framework Metal")
+-+    message(STATUS "llama-common: ANE draft session enabled (${_ZEROLLAMA_ANE_BRIDGE})")
+-+else()
+-+    target_sources(${TARGET} PRIVATE
+-+        ane_draft_session_stub.cpp
+-+        ane_draft_session.h)
+-+    if (APPLE)
+-+        message(STATUS "llama-common: ANE draft session stub (missing ${_ZEROLLAMA_ANE_BRIDGE})")
+-+    endif()
+-+endif()
++@@ -207,6 +207,15 @@ if (APPLE AND EXISTS "${_ZEROLLAMA_ANE_BRIDGE}")
++         "-framework Foundation"
++         "-framework IOSurface"
++         "-framework Metal")
+++    # Bare `libane_bridge.dylib` install name breaks dyld unless cwd/DYLD is set.
+++    # Copy beside llama-server and rewrite to @rpath so L2 probes and serve work.
+++    add_custom_command(TARGET ${TARGET} POST_BUILD
+++        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/bin"
+++        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+++            "${_ZEROLLAMA_ANE_BRIDGE}" "${CMAKE_BINARY_DIR}/bin/libane_bridge.dylib"
+++        COMMAND install_name_tool -change libane_bridge.dylib @rpath/libane_bridge.dylib
+++            "$<TARGET_FILE:${TARGET}>"
+++        COMMENT "ANE: stage libane_bridge + @rpath install name")
++     message(STATUS "llama-common: ANE draft session enabled (${_ZEROLLAMA_ANE_BRIDGE})")
++ else()
++     target_sources(${TARGET} PRIVATE
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index 8620c6c7a..c5ac00893 100644
+index 53d39d249..ab3b6e4cd 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -410,6 +410,18 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
@@ -187,10 +219,10 @@ index 93ea7eeff..964da7c4b 100644
  void ggml_vec_dot_iq2_xxs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
  void ggml_vec_dot_iq2_xs_q8_K (int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
 diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
-index 259cb031f..75b0d94bf 100644
+index 2a1bab265..7c3b60444 100644
 --- a/ggml/src/ggml-metal/CMakeLists.txt
 +++ b/ggml/src/ggml-metal/CMakeLists.txt
-@@ -226,6 +226,7 @@ else()
+@@ -228,6 +228,7 @@ else()
          ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/turbo3_tcq.metal
          ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl.metal
          ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl_set_rows.metal
@@ -409,10 +441,10 @@ index 000000000..1a3bf1210
 +template [[host_name("kernel_set_rows_f32_i64_tbq4_0")]] kernel set_rows_tbq4_t kernel_set_rows_tbq<long, block_tbq4_0, quantize_tbq4_0>;
 +template [[host_name("kernel_set_rows_f32_i32_tbq4_0")]] kernel set_rows_tbq4_t kernel_set_rows_tbq<int,  block_tbq4_0, quantize_tbq4_0>;
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index a75323b21..b0773c31d 100644
+index 48a1a7ad2..1c1e266e2 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -2029,6 +2029,9 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -2031,6 +2031,9 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                      case GGML_TYPE_Q5_0:
                      case GGML_TYPE_Q5_1:
                      case GGML_TYPE_IQ4_NL:
@@ -423,10 +455,10 @@ index a75323b21..b0773c31d 100644
                          return true;
                      default:
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index f4f6c06a4..64730d0ea 100644
+index fd8d8197e..e64aaecfd 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
-@@ -2682,13 +2682,16 @@ ggml_tensor * llm_graph_context::build_attn_mha(
+@@ -3015,13 +3015,16 @@ ggml_tensor * llm_graph_context::build_attn_mha(
              cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
          } else {
          // Fallback: dequantize exotic K-cache types for flash-attn

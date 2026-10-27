@@ -1,0 +1,107 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:50:04 -0700
+Subject: [PATCH] fix: point vocab at src/unicode.h and graft tip NFC helpers
+
+llama-vocab was including common/unicode.h (streaming UTF-8 helpers).
+Pretok APIs live in src/unicode.*; tip NFC needs canonical_* statics
+that the b11351 pretok graft omitted.
+---
+ src/llama-vocab.cpp |  2 +-
+ src/unicode.cpp     | 61 ++++++++++++++++++++++++++++++++++++++-------
+ 2 files changed, 53 insertions(+), 10 deletions(-)
+
+diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
+index de62fb112..9269222c8 100644
+--- a/src/llama-vocab.cpp
++++ b/src/llama-vocab.cpp
+@@ -5,7 +5,7 @@
+ #include "llama-impl.h"
+ #include "llama-model-loader.h"
+ 
+-#include "../common/unicode.h"
++#include "unicode.h"
+ 
+ #include <algorithm>
+ #include <cassert>
+diff --git a/src/unicode.cpp b/src/unicode.cpp
+index 6467d9ac3..4b53d44ab 100644
+--- a/src/unicode.cpp
++++ b/src/unicode.cpp
+@@ -2651,17 +2651,47 @@ uint32_t unicode_tolower(uint32_t cpt) {
+ }
+ 
+ 
+-static std::vector<int> unicode_cpt_to_byte_map() {
+-    std::vector<int> map;
+-    for (int ch = 0; ch < 256; ++ch) {
+-        size_t offset = 0;
+-        const uint32_t cpt = unicode_cpt_from_utf8(unicode_byte_to_utf8(ch), offset);
+-        if (cpt >= map.size()) {
+-            map.resize(cpt + 1, -1);
++static uint8_t unicode_canonical_class(uint32_t cpt) {
++    const auto it = unicode_combining_class.find(cpt);
++    return it == unicode_combining_class.end() ? 0 : it->second;
++}
++
++static void unicode_canonical_decompose(uint32_t cpt, std::vector<uint32_t> & result, std::vector<uint32_t> & pending) {
++    pending.push_back(cpt);
++    while (!pending.empty()) {
++        cpt = pending.back();
++        pending.pop_back();
++        // Hangul syllables use algorithmic decomposition (UAX #15).
++        if (cpt >= 0xAC00 && cpt < 0xAC00 + 11172) {
++            const uint32_t index = cpt - 0xAC00;
++            result.push_back(0x1100 + index / 588);
++            result.push_back(0x1161 + (index % 588) / 28);
++            if (index % 28) {
++                result.push_back(0x11A7 + index % 28);
++            }
++            continue;
+         }
+-        map[cpt] = ch;
++        const auto it = unicode_decomposition.find(cpt);
++        if (it == unicode_decomposition.end()) {
++            result.push_back(cpt);
++            continue;
++        }
++        if (it->second.second) {
++            pending.push_back(it->second.second);
++        }
++        pending.push_back(it->second.first);
+     }
+-    return map;
++}
++
++static uint32_t unicode_canonical_compose(uint32_t first, uint32_t second) {
++    if (first >= 0x1100 && first < 0x1100 + 19 && second >= 0x1161 && second < 0x1161 + 21) {
++        return 0xAC00 + ((first - 0x1100) * 21 + second - 0x1161) * 28;
++    }
++    if (first >= 0xAC00 && first < 0xAC00 + 11172 && (first - 0xAC00) % 28 == 0 && second > 0x11A7 && second < 0x11A7 + 28) {
++        return first + second - 0x11A7;
++    }
++    const auto it = unicode_composition.find((uint64_t(first) << 32) | second);
++    return it == unicode_composition.end() ? 0 : it->second;
+ }
+ 
+ std::vector<uint32_t> unicode_cpts_normalize_nfc(const std::vector<uint32_t> & cpts) {
+@@ -2707,6 +2737,19 @@ std::vector<uint32_t> unicode_cpts_normalize_nfc(const std::vector<uint32_t> & c
+     return result;
+ }
+ 
++static std::vector<int> unicode_cpt_to_byte_map() {
++    std::vector<int> map;
++    for (int ch = 0; ch < 256; ++ch) {
++        size_t offset = 0;
++        const uint32_t cpt = unicode_cpt_from_utf8(unicode_byte_to_utf8(ch), offset);
++        if (cpt >= map.size()) {
++            map.resize(cpt + 1, -1);
++        }
++        map[cpt] = ch;
++    }
++    return map;
++}
++
+ uint8_t unicode_cpt_to_byte(uint32_t cpt) {
+     static const std::vector<int> map = unicode_cpt_to_byte_map();
+     if (cpt >= map.size() || map[cpt] < 0) {

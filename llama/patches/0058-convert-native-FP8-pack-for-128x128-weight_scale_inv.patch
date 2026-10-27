@@ -1,21 +1,20 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: zerollama <zerollama@local>
-Date: Tue, 14 Jul 2026 20:47:17 -0700
+Date: Sat, 24 Oct 2026 20:34:53 -0700
 Subject: [PATCH] convert: native FP8 pack for 128x128 weight_scale_inv
 
-Expand HF block scales onto GGML 32-wide blocks when block_size[-1]%32==0
-so --fp8-native skips full F16 dequant for DeepSeek-style FP8.
 ---
- conversion/base.py     | 33 +++++++++++++++--
+ conversion/base.py     | 32 ++++++++++++++--
+ conversion/base.py.rej | 53 ++++----------------------
  convert_hf_to_gguf.py  |  3 +-
  gguf-py/gguf/quants.py | 84 ++++++++++++++++++++++++++++++++++--------
- 3 files changed, 100 insertions(+), 20 deletions(-)
+ 4 files changed, 106 insertions(+), 66 deletions(-)
 
 diff --git a/conversion/base.py b/conversion/base.py
-index ff4c8aa2d..7275c7724 100644
+index 6fd2e225e..de6df9347 100644
 --- a/conversion/base.py
 +++ b/conversion/base.py
-@@ -179,6 +179,7 @@ class ModelBase:
+@@ -180,6 +180,7 @@ class ModelBase:
          self._fp8_dequantized: set[str] = set()
          self._fp8_native_tensors: set[str] = set()
          self._fp8_native_scales: dict[str, Callable[[], Tensor]] = dict()
@@ -23,7 +22,7 @@ index ff4c8aa2d..7275c7724 100644
          if self._fp8_native and self._fp8_as_q8:
              logger.warning("--fp8-native overrides --fp8-as-q8")
              self._fp8_as_q8 = False
-@@ -466,17 +467,28 @@ class ModelBase:
+@@ -486,17 +487,28 @@ class ModelBase:
                              is_fp8_e4m3 = w().dtype == torch.float8_e4m3fn
                          except Exception:
                              is_fp8_e4m3 = False
@@ -55,15 +54,7 @@ index ff4c8aa2d..7275c7724 100644
                                  )
                              self.model_tensors[weight_name] = lambda w=w, s=s, bs=block_size: dequant_simple(w(), s(), bs)
                              tensors_to_remove.append(name)
-@@ -624,6 +636,7 @@ class ModelBase:
-                             # Keep E4M3 bytes; absorb per-tensor/per-row scale at pack time.
-                             self._fp8_native_tensors.add(weight_name)
-                             self._fp8_native_scales[weight_name] = s
-+                            self._fp8_native_block_sizes[weight_name] = None
-                             tensors_to_remove.append(name)
-                         else:
-                             is_fp8_weight = False
-@@ -814,6 +827,18 @@ class ModelBase:
+@@ -939,6 +951,18 @@ class ModelBase:
          scale_t = LazyTorchTensor.to_eager(self._fp8_native_scales[name]())
          scale = scale_t.detach().float().cpu().numpy()
          qs = data_torch.view(torch.uint8).cpu().numpy()
@@ -82,7 +73,7 @@ index ff4c8aa2d..7275c7724 100644
          # Per-row scale: (out_features,) or (out_features, 1); else scalar / broadcast.
          if scale.ndim >= 1 and scale.size == qs.shape[0]:
              scale_arg = scale.reshape(qs.shape[0])
-@@ -822,7 +847,7 @@ class ModelBase:
+@@ -947,7 +971,7 @@ class ModelBase:
          else:
              raise ValueError(
                  f"{name}: unsupported FP8 scale shape {scale.shape} for --fp8-native "
@@ -91,8 +82,68 @@ index ff4c8aa2d..7275c7724 100644
              )
          return gguf.quants.FP8_E4M3.pack_e4m3_with_scale(qs, scale_arg)
  
+diff --git a/conversion/base.py.rej b/conversion/base.py.rej
+index ebff5c42f..227f74a80 100644
+--- a/conversion/base.py.rej
++++ b/conversion/base.py.rej
+@@ -1,48 +1,9 @@
+ diff a/conversion/base.py b/conversion/base.py	(rejected hunks)
+-@@ -536,7 +536,9 @@ class ModelBase:
+-                 if quant_format == "float-quantized" or quant_format == "int-quantized" or quant_format == "naive-quantized":
+-                     block_size = weight_config.get("block_structure", None)
+-                     strategy = weight_config.get("strategy")
+--                    assert strategy == "channel" or strategy == "block"
+-+                    # WHY tensor: compressed-tensors FP8 e2e (e.g. nm-testing TinyLlama) uses
+-+                    # per-tensor weight_scale + F8_E4M3 — same pack path as ModelOpt.
+-+                    assert strategy in ("channel", "block", "tensor")
+-                     assert weight_config.get("group_size") is None  # didn't find a model using this yet
+-                     is_fp8 = (
+-                         quant_format == "float-quantized"
+-@@ -548,10 +550,32 @@ class ModelBase:
+-                             weight_name = name.removesuffix("_scale")
+-                             w = self.model_tensors[weight_name]
+-                             s = self.model_tensors[name]
+--                            self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), block_size)
+-+                            is_native_fp8 = False
+-+                            try:
+-+                                is_native_fp8 = w().dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+-+                            except Exception:
+-+                                is_native_fp8 = False
+-+                            can_native = False
+-+                            if self._fp8_native and is_fp8 and is_native_fp8:
+-+                                if strategy in ("tensor", "channel") and block_size is None:
+-+                                    can_native = True
+-+                                elif block_size is not None:
+-+                                    bs = tuple(int(x) for x in block_size)
+-+                                    can_native = bool(bs) and (bs[-1] % 32 == 0)
+-+                            if can_native:
+-+                                self._fp8_native_tensors.add(weight_name)
+-+                                self._fp8_native_scales[weight_name] = s
+-+                                self._fp8_native_block_sizes[weight_name] = (
+-+                                    None if block_size is None else tuple(int(x) for x in block_size)
+-+                                )
+-+                                tensors_to_remove.append(name)
+-+                            else:
+-+                                self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), block_size)
+-+                                tensors_to_remove.append(name)
+-+                                if self._fp8_as_q8 and is_fp8:
+-+                                    self._fp8_dequantized.add(weight_name)
+-+                        if name.endswith(".input_scale"):
++@@ -624,6 +636,7 @@ class ModelBase:
++                             # Keep E4M3 bytes; absorb per-tensor/per-row scale at pack time.
++                             self._fp8_native_tensors.add(weight_name)
++                             self._fp8_native_scales[weight_name] = s
+++                            self._fp8_native_block_sizes[weight_name] = None
+                              tensors_to_remove.append(name)
+--                            if self._fp8_as_q8 and is_fp8:
+--                                self._fp8_dequantized.add(weight_name)
+-                 elif quant_format == "pack-quantized":
+-                     assert weight_config.get("strategy") == "group"
+-                     assert weight_config.get("type", "int") == "int"
++                         else:
++                             is_fp8_weight = False
 diff --git a/convert_hf_to_gguf.py b/convert_hf_to_gguf.py
-index 6e10e5e26..8932d1021 100755
+index 54d5147fb..0bd5badf4 100755
 --- a/convert_hf_to_gguf.py
 +++ b/convert_hf_to_gguf.py
 @@ -159,7 +159,8 @@ def parse_args() -> argparse.Namespace:
@@ -106,10 +157,10 @@ index 6e10e5e26..8932d1021 100755
  
      parser.add_argument(
 diff --git a/gguf-py/gguf/quants.py b/gguf-py/gguf/quants.py
-index a5d85ac95..c26b516cf 100644
+index 828fbc064..f1aad16e6 100644
 --- a/gguf-py/gguf/quants.py
 +++ b/gguf-py/gguf/quants.py
-@@ -837,12 +837,64 @@ class FP8_E4M3(__Quant, qtype=GGMLQuantizationType.FP8_E4M3):
+@@ -890,12 +890,64 @@ class FP8_E4M3(__Quant, qtype=GGMLQuantizationType.FP8_E4M3):
          vals = cls.e4m3_to_fp32(qs)
          return d * vals
  
@@ -176,7 +227,7 @@ index a5d85ac95..c26b516cf 100644
          Returns uint8 array shaped (rows, (cols/32)*34) for GGUFWriter.
          """
          qs = np.asarray(qs, dtype=np.uint8)
-@@ -854,22 +906,24 @@ class FP8_E4M3(__Quant, qtype=GGMLQuantizationType.FP8_E4M3):
+@@ -907,22 +959,24 @@ class FP8_E4M3(__Quant, qtype=GGMLQuantizationType.FP8_E4M3):
              raise ValueError(f"FP8_E4M3 pack requires cols % 32 == 0, got {cols}")
          n_blocks_per_row = cols // 32
          scale_arr = np.asarray(scale, dtype=np.float32)

@@ -12,7 +12,7 @@ buffer synchronizeResource APIs).
  1 file changed, 9 insertions(+), 1 deletion(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-context.m b/ggml/src/ggml-metal/ggml-metal-context.m
-index 613ecd35d..83b2ca609 100644
+index 58e54b7d6..e64ed79b3 100644
 --- a/ggml/src/ggml-metal/ggml-metal-context.m
 +++ b/ggml/src/ggml-metal/ggml-metal-context.m
 @@ -139,7 +139,15 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {

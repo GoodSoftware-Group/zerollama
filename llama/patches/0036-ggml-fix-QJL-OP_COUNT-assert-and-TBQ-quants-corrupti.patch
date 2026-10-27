@@ -1,32 +1,38 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: zerollama-vendor <zerollama@local>
-Date: Thu, 30 Jul 2026 17:56:23 -0700
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:34:49 -0700
 Subject: [PATCH] ggml: fix QJL OP_COUNT assert and TBQ quants corruption
 
 ---
- ggml/include/ggml-rpc.h |  2 +-
- ggml/src/ggml-quants.c  | 76 +++--------------------------------------
- ggml/src/ggml.c         |  8 +++--
- 3 files changed, 11 insertions(+), 75 deletions(-)
+ ggml/include/ggml-rpc.h.rej | 10 +++++
+ ggml/src/ggml-quants.c      | 76 ++-----------------------------------
+ ggml/src/ggml.c             |  4 ++
+ ggml/src/ggml.c.rej         | 19 ++++++++++
+ 4 files changed, 37 insertions(+), 72 deletions(-)
+ create mode 100644 ggml/include/ggml-rpc.h.rej
+ create mode 100644 ggml/src/ggml.c.rej
 
-diff --git a/ggml/include/ggml-rpc.h b/ggml/include/ggml-rpc.h
-index 1f8cb7906..bc2c0eb65 100644
---- a/ggml/include/ggml-rpc.h
-+++ b/ggml/include/ggml-rpc.h
-@@ -11,7 +11,7 @@ extern "C" {
- #define RPC_PROTO_PATCH_VERSION    0
- 
- #ifdef  __cplusplus
--static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
-+static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
- #endif
- 
- #define GGML_RPC_MAX_SERVERS       16
+diff --git a/ggml/include/ggml-rpc.h.rej b/ggml/include/ggml-rpc.h.rej
+new file mode 100644
+index 000000000..32b89f104
+--- /dev/null
++++ b/ggml/include/ggml-rpc.h.rej
+@@ -0,0 +1,10 @@
++diff a/ggml/include/ggml-rpc.h b/ggml/include/ggml-rpc.h	(rejected hunks)
++@@ -11,7 +11,7 @@ extern "C" {
++ #define RPC_PROTO_PATCH_VERSION    0
++ 
++ #ifdef  __cplusplus
++-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
+++static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
++ #endif
++ 
++ #define GGML_RPC_MAX_SERVERS       16
 diff --git a/ggml/src/ggml-quants.c b/ggml/src/ggml-quants.c
-index 22a5b5b9c..23431d654 100644
+index 97acd3e64..61bf00336 100644
 --- a/ggml/src/ggml-quants.c
 +++ b/ggml/src/ggml-quants.c
-@@ -2763,6 +2763,10 @@ static inline void tbq_decode_rotated_4(const block_tbq4_0 * x, float * y) {
+@@ -2764,6 +2764,10 @@ static inline void tbq_decode_rotated_4(const block_tbq4_0 * x, float * y) {
          memset(y, 0, QK_TBQ * sizeof(float));
          return;
      }
@@ -37,7 +43,7 @@ index 22a5b5b9c..23431d654 100644
  
  void quantize_row_tbq3_0_ref(const float * GGML_RESTRICT x, block_tbq3_0 * GGML_RESTRICT y, int64_t k) {
      assert(k % QK_TBQ == 0);
-@@ -2898,20 +2902,6 @@ void quantize_row_tbq4_k_ref(const float * GGML_RESTRICT x, block_tbq4_k * GGML_
+@@ -2899,20 +2903,6 @@ void quantize_row_tbq4_k_ref(const float * GGML_RESTRICT x, block_tbq4_k * GGML_
      }
  }
  
@@ -58,7 +64,7 @@ index 22a5b5b9c..23431d654 100644
  size_t quantize_tbq3_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
      (void) quant_weights;
      const size_t row_size = ggml_row_size(GGML_TYPE_TBQ3_0, n_per_row);
-@@ -3379,64 +3369,6 @@ size_t quantize_q4_polar(const float * GGML_RESTRICT src, void * GGML_RESTRICT d
+@@ -3380,64 +3370,6 @@ size_t quantize_q4_polar(const float * GGML_RESTRICT src, void * GGML_RESTRICT d
  }
  
  
@@ -124,19 +130,10 @@ index 22a5b5b9c..23431d654 100644
  
  void dequantize_row_iq2_xxs(const block_iq2_xxs * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index 935369822..2c5aa0d30 100644
+index 6515c2076..c9016bb63 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
-@@ -1166,7 +1166,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
-     "GLU",
- };
- 
--static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
-+static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
- 
- static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
-     "none",
-@@ -1249,6 +1249,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+@@ -1258,6 +1258,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
  
      "flash_attn_ext(x)",
      "flash_attn_back(x)",
@@ -147,12 +144,28 @@ index 935369822..2c5aa0d30 100644
      "ssm_conv(x)",
      "ssm_scan(x)",
      "win_part(x)",
-@@ -1281,7 +1285,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
-     "glu(x)",
- };
- 
--static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
-+static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
- 
- static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
- 
+diff --git a/ggml/src/ggml.c.rej b/ggml/src/ggml.c.rej
+new file mode 100644
+index 000000000..6219dd222
+--- /dev/null
++++ b/ggml/src/ggml.c.rej
+@@ -0,0 +1,19 @@
++diff a/ggml/src/ggml.c b/ggml/src/ggml.c	(rejected hunks)
++@@ -1166,7 +1166,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
++     "GLU",
++ };
++ 
++-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+++static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
++ 
++ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
++     "none",
++@@ -1281,7 +1285,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
++     "glu(x)",
++ };
++ 
++-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+++static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
++ 
++ static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
++ 

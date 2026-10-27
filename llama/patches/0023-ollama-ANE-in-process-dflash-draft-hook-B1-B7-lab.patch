@@ -11731,10 +11731,10 @@ index 000000000..8c0735b77
 +    return IOSurfaceLookup(surfaceID);
 +}
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 4f04db0ee..51e1058a8 100644
+index d5a66a499..cf71ff02e 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -16,6 +16,7 @@
+@@ -17,6 +17,7 @@
  #include <cinttypes>
  #include <cmath>
  #include <cstring>
@@ -11742,7 +11742,7 @@ index 4f04db0ee..51e1058a8 100644
  #include <limits>
  #include <stdexcept>
  #include <string>
-@@ -1249,6 +1250,41 @@ void llama_context::set_nextn_layer_offset(int32_t offset) {
+@@ -1375,6 +1376,41 @@ void llama_context::set_nextn_layer_offset(int32_t offset) {
      cparams.nextn_layer_offset = offset;
  }
  
@@ -11784,7 +11784,7 @@ index 4f04db0ee..51e1058a8 100644
  void llama_context::set_causal_attn(bool value) {
      LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
  
-@@ -4068,6 +4104,28 @@ float * llama_get_embeddings_layer_inp(llama_context * ctx, uint32_t lid) {
+@@ -4309,6 +4345,28 @@ float * llama_get_embeddings_layer_inp(llama_context * ctx, uint32_t lid) {
      return ctx->get_embeddings_layer_inp(lid);
  }
  
@@ -11814,10 +11814,10 @@ index 4f04db0ee..51e1058a8 100644
      return ctx->set_sampler(seq_id, smpl);
  }
 diff --git a/src/llama-context.h b/src/llama-context.h
-index 95b722628..4d20f1af6 100644
+index 6938fb103..13dc46275 100644
 --- a/src/llama-context.h
 +++ b/src/llama-context.h
-@@ -119,6 +119,12 @@ struct llama_context {
+@@ -121,6 +121,12 @@ struct llama_context {
      void set_embeddings_nextn(bool value, bool masked);
      void set_embeddings_layer_inp(uint32_t lid, bool enable);
      void set_nextn_layer_offset(int32_t offset);
@@ -11831,10 +11831,10 @@ index 95b722628..4d20f1af6 100644
      void set_warmup(bool value);
  
 diff --git a/src/llama-ext.h b/src/llama-ext.h
-index 92a759b7a..f28df96b7 100644
+index 933cb8013..2f834b2a6 100644
 --- a/src/llama-ext.h
 +++ b/src/llama-ext.h
-@@ -122,6 +122,27 @@ LLAMA_API llama_context * llama_get_ctx_other(struct llama_context * ctx);
+@@ -147,6 +147,27 @@ LLAMA_API llama_context * llama_get_ctx_other(struct llama_context * ctx);
  
  LLAMA_API int32_t llama_model_dflash_selector_top_k(const struct llama_model * model);
  

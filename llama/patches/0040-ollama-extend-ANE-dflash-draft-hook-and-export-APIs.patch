@@ -1,16 +1,18 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: nobody <>
-Date: Fri, 17 Jul 2026 09:49:18 -0700
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:34:49 -0700
 Subject: [PATCH] ollama: extend ANE dflash draft hook and export APIs
 
 ---
  common/ane_draft_hook.cpp   | 369 ++++++++++++++++++++++++++++++++++--
  common/ane_draft_hook.h     |  14 ++
  common/ane_draft_session.mm |  74 ++++++--
- common/speculative.cpp      |  53 +++++-
+ common/speculative.cpp      |  13 ++
+ common/speculative.cpp.rej  |  57 ++++++
  src/llama-context.cpp       |  20 ++
  src/llama-ext.h             |  83 ++++++++
- 6 files changed, 578 insertions(+), 35 deletions(-)
+ 7 files changed, 598 insertions(+), 32 deletions(-)
+ create mode 100644 common/speculative.cpp.rej
 
 diff --git a/common/ane_draft_hook.cpp b/common/ane_draft_hook.cpp
 index 849963b64..07a24ba07 100644
@@ -716,7 +718,7 @@ index 3cf6f5038..2215d5c23 100644
          memcpy(g_session.lastDflashQ, q, (size_t) qn * sizeof(float));
      }
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index 5c36c9ca5..db06f5c0e 100644
+index 4305ac6ac..72457709a 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
 @@ -1,5 +1,7 @@
@@ -727,30 +729,7 @@ index 5c36c9ca5..db06f5c0e 100644
  #include "common.h"
  #include "ggml.h"
  #include "ggml-cpp.h"
-@@ -253,6 +255,22 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
- 
-             throw std::runtime_error("the draft model number of sequences is incompatible with the speculative n_seq");
-         }
-+
-+        common_ane_draft_log_init(type, llama_model_n_embd(llama_get_model(ctx_dft)));
-+
-+        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
-+        if (dflash || common_ane_draft_enabled()) {
-+            common_ane_draft_bind_target_ctx(ctx_tgt);
-+            llama_set_embeddings_pre_norm(ctx_tgt, true);
-+        }
-+
-+        // Why pre-norm: ANE handoff reads llama_get_embeddings_pre_norm_ith (see ane_draft_hook.cpp).
-+        if (common_ane_draft_enabled()) {
-+            llama_set_embeddings_pre_norm(ctx_dft, true);
-+            if (common_ane_draft_get_drive_mode() != COMMON_ANE_DRAFT_DRIVE_OFF) {
-+                llama_set_embeddings(ctx_dft, true);
-+            }
-+        }
-     }
- 
-     void begin(llama_seq_id /*seq_id*/, const llama_tokens & /*prompt*/) override {
-@@ -294,6 +312,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+@@ -338,6 +340,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
              return true;
          }
  
@@ -760,7 +739,7 @@ index 5c36c9ca5..db06f5c0e 100644
          const int ret = llama_process(ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch.get());
  
          if (ret != 0) {
-@@ -308,6 +329,8 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+@@ -352,6 +357,8 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
      void draft(common_speculative_draft_params_vec & dparams) override {
          auto & ctx_dft = params.ctx_dft;
  
@@ -769,7 +748,7 @@ index 5c36c9ca5..db06f5c0e 100644
          batch.clear();
  
          // keep track of which sequences are still drafting
-@@ -334,6 +357,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+@@ -391,6 +398,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
              return;
          }
  
@@ -779,40 +758,7 @@ index 5c36c9ca5..db06f5c0e 100644
          int i = 0;
  
          while (n_drafting > 0) {
-@@ -359,11 +385,29 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
-                             common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
-                 }
- 
--                // add drafted token for each sequence
--                const llama_token id = cur_p->data[0].id;
-+                llama_token id = cur_p->data[0].id;
-+                float pick_p = cur_p->data[0].p;
-+
-+                // B7: optional ANE tied-embed argmax replaces Metal sampler token (lab).
-+                const common_ane_draft_drive_mode drive = common_ane_draft_get_drive_mode();
-+                if (drive != COMMON_ANE_DRAFT_DRIVE_OFF) {
-+                    llama_token ane_id = 0;
-+                    float ane_p = 0.f;
-+                    float hidden_cos = 0.f;
-+                    if (common_ane_draft_try_drive_token(ctx_dft, i_batch - 1, &ane_id, &ane_p, &hidden_cos)) {
-+                        if (drive == COMMON_ANE_DRAFT_DRIVE_SHADOW) {
-+                            LOG_INF("%s: B7 shadow step=%d seq=%d ane_tok=%d metal_tok=%d match=%d hidden_cos=%.4f\n",
-+                                    __func__, i, (int) seq_id, (int) ane_id, (int) id, ane_id == id ? 1 : 0, hidden_cos);
-+                        } else {
-+                            id = ane_id;
-+                            pick_p = ane_p;
-+                            LOG_DBG("%s: B7 force seq=%d ane_tok=%d\n", __func__, (int) seq_id, (int) ane_id);
-+                        }
-+                    }
-+                }
- 
-                 // only collect very high-confidence draft tokens
--                if (cur_p->data[0].p < params.p_min) {
-+                if (pick_p < params.p_min) {
-                     drafting[seq_id] = false;
-                     n_drafting--;
- 
-@@ -398,6 +442,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+@@ -459,6 +469,9 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
                  break;
              }
  
@@ -822,11 +768,74 @@ index 5c36c9ca5..db06f5c0e 100644
              ++i;
          }
  
+diff --git a/common/speculative.cpp.rej b/common/speculative.cpp.rej
+new file mode 100644
+index 000000000..c4f733886
+--- /dev/null
++++ b/common/speculative.cpp.rej
+@@ -0,0 +1,57 @@
++diff a/common/speculative.cpp b/common/speculative.cpp	(rejected hunks)
++@@ -253,6 +255,22 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
++ 
++             throw std::runtime_error("the draft model number of sequences is incompatible with the speculative n_seq");
++         }
+++
+++        common_ane_draft_log_init(type, llama_model_n_embd(llama_get_model(ctx_dft)));
+++
+++        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
+++        if (dflash || common_ane_draft_enabled()) {
+++            common_ane_draft_bind_target_ctx(ctx_tgt);
+++            llama_set_embeddings_pre_norm(ctx_tgt, true);
+++        }
+++
+++        // Why pre-norm: ANE handoff reads llama_get_embeddings_pre_norm_ith (see ane_draft_hook.cpp).
+++        if (common_ane_draft_enabled()) {
+++            llama_set_embeddings_pre_norm(ctx_dft, true);
+++            if (common_ane_draft_get_drive_mode() != COMMON_ANE_DRAFT_DRIVE_OFF) {
+++                llama_set_embeddings(ctx_dft, true);
+++            }
+++        }
++     }
++ 
++     void begin(llama_seq_id /*seq_id*/, const llama_tokens & /*prompt*/) override {
++@@ -359,11 +385,29 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
++                             common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
++                 }
++ 
++-                // add drafted token for each sequence
++-                const llama_token id = cur_p->data[0].id;
+++                llama_token id = cur_p->data[0].id;
+++                float pick_p = cur_p->data[0].p;
+++
+++                // B7: optional ANE tied-embed argmax replaces Metal sampler token (lab).
+++                const common_ane_draft_drive_mode drive = common_ane_draft_get_drive_mode();
+++                if (drive != COMMON_ANE_DRAFT_DRIVE_OFF) {
+++                    llama_token ane_id = 0;
+++                    float ane_p = 0.f;
+++                    float hidden_cos = 0.f;
+++                    if (common_ane_draft_try_drive_token(ctx_dft, i_batch - 1, &ane_id, &ane_p, &hidden_cos)) {
+++                        if (drive == COMMON_ANE_DRAFT_DRIVE_SHADOW) {
+++                            LOG_INF("%s: B7 shadow step=%d seq=%d ane_tok=%d metal_tok=%d match=%d hidden_cos=%.4f\n",
+++                                    __func__, i, (int) seq_id, (int) ane_id, (int) id, ane_id == id ? 1 : 0, hidden_cos);
+++                        } else {
+++                            id = ane_id;
+++                            pick_p = ane_p;
+++                            LOG_DBG("%s: B7 force seq=%d ane_tok=%d\n", __func__, (int) seq_id, (int) ane_id);
+++                        }
+++                    }
+++                }
++ 
++                 // only collect very high-confidence draft tokens
++-                if (cur_p->data[0].p < params.p_min) {
+++                if (pick_p < params.p_min) {
++                     drafting[seq_id] = false;
++                     n_drafting--;
++ 
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 46c66d1c9..2d267d9a7 100644
+index a5b80c766..55369beb1 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -4085,6 +4085,26 @@ void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
+@@ -4326,6 +4326,26 @@ void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
      ctx->set_nextn_layer_offset(offset);
  }
  
@@ -854,10 +863,10 @@ index 46c66d1c9..2d267d9a7 100644
      if (!ctx) {
          return nullptr;
 diff --git a/src/llama-ext.h b/src/llama-ext.h
-index f28df96b7..d50b2e218 100644
+index 2f834b2a6..8ba9d610c 100644
 --- a/src/llama-ext.h
 +++ b/src/llama-ext.h
-@@ -148,6 +148,89 @@ LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_mode
+@@ -173,6 +173,89 @@ LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_mode
  // returns the number of extracted layers from target model
  LLAMA_API uint32_t        llama_model_target_layer_ids_n(const struct llama_model * model);
  

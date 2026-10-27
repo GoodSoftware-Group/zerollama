@@ -15,10 +15,10 @@ GGML_METAL_EMBED_LIBRARY source so Darwin embed builds get both codecs.
  create mode 100644 ggml/src/ggml-metal/eliza-shipped/polar_set_rows.metal
 
 diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
-index 75b0d94bf..3e017707f 100644
+index 7c3b60444..aaa0b4518 100644
 --- a/ggml/src/ggml-metal/CMakeLists.txt
 +++ b/ggml/src/ggml-metal/CMakeLists.txt
-@@ -227,6 +227,7 @@ else()
+@@ -229,6 +229,7 @@ else()
          ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl.metal
          ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/qjl_set_rows.metal
          ${CMAKE_CURRENT_SOURCE_DIR}/eliza-shipped/tbq_set_rows.metal
@@ -200,10 +200,10 @@ index 3699edabe..a637839ca 100644
 +template [[host_name("kernel_set_rows_f32_i32_qjl1_256")]] kernel void kernel_set_rows_qjl1_256_t<int>(
          constant ggml_metal_kargs_set_rows &, device const void *, device const void *, device void *, uint3, uint);
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index f9f593631..355260d8a 100644
+index e098176a4..a7fbb6890 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -2105,6 +2105,7 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -2107,6 +2107,7 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                      case GGML_TYPE_TBQ3_0:
                      case GGML_TYPE_TBQ4_0:
                      case GGML_TYPE_QJL1_256:

@@ -1,0 +1,163 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:53:08 -0700
+Subject: [PATCH] fix: restore BPE process_word lambda + use_id_pairs on tip
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Tip NEMOTRON/SOPRANO/MMBERT pretok kept; Gigatoken pretok cache and
+id-pair merge path restored from b11351 after broken for→lambda port.
+---
+ src/llama-vocab.cpp | 89 +++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 70 insertions(+), 19 deletions(-)
+
+diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
+index 9269222c8..ca6b2b3ef 100644
+--- a/src/llama-vocab.cpp
++++ b/src/llama-vocab.cpp
+@@ -988,7 +988,7 @@ struct llm_tokenizer_bpe_session {
+ 
+         std::vector<std::string> word_collection;
+         if (tok_pre == LLAMA_VOCAB_PRE_TYPE_NEMOTRON_3_5_EMBD) {
+-            static const std::string zwnj = "â";
++            static const std::string zwnj = "\xe2\x80\x8c";
+             std::string normalized_text = text;
+             replace_all(normalized_text, "[" + zwnj, "[");
+             replace_all(normalized_text, "<" + zwnj, "<");
+@@ -1004,11 +1004,14 @@ struct llm_tokenizer_bpe_session {
+                     space = true;
+                 } else {
+                     // Unicode full lowercase expands LATIN CAPITAL LETTER I WITH DOT ABOVE.
+-                    normalized_text += cpt == 0x0130 ? "iÌ" : unicode_cpt_to_utf8(unicode_tolower(cpt));
++                    normalized_text += cpt == 0x0130 ? "i\xcc\x87" : unicode_cpt_to_utf8(unicode_tolower(cpt));
+                     space = false;
+                 }
+             }
+             word_collection = unicode_regex_split(normalized_text, tokenizer.regex_exprs, tokenizer.byte_encode);
++        } else if (tok_pre == LLAMA_VOCAB_PRE_TYPE_MMBERT) {
++            // Metaspace rewrite below needs string words — keep string pretok.
++            word_collection = unicode_regex_split(text, tokenizer.regex_exprs, tokenizer.byte_encode);
+         } else {
+             use_blob = unicode_regex_split_try_blob(
+                     text, tokenizer.regex_exprs, tokenizer.byte_encode, pretok_blob);
+@@ -1017,8 +1020,19 @@ struct llm_tokenizer_bpe_session {
+             }
+         }
+ 
+-
+         symbols_final.clear();
++        const bool use_id_pairs = vocab.has_bpe_id_pairs();
++        // WHY (0120): init pretok cache once per session, not per tokenize() call.
++        // tokenizer_st_partition invokes session.tokenize() once per text fragment between
++        // specials; re-assign(4096) + cold cache each fragment made mixed/chat megaprompts
++        // ~2.6× slower with cache ON than NO_PRETOK_CACHE (see findings). Session is
++        // constructed once per llama_tokenize, so cross-fragment reuse is correct and
++        // still has no cross-request lifecycle.
++        if (!pretok_cache_ready) {
++            const bool want_cache = use_id_pairs && (getenv("LLAMA_BPE_NO_PRETOK_CACHE") == nullptr);
++            pretok_cache.init(want_cache);
++            pretok_cache_ready = true;
++        }
+ 
+         if (tok_pre == LLAMA_VOCAB_PRE_TYPE_MMBERT) {
+             // Metaspace pre-tokenizer: a text starts with an escaped space, and each escaped space starts a new word
+@@ -1043,38 +1057,74 @@ struct llm_tokenizer_bpe_session {
+             word_collection = std::move(words);
+         }
+ 
+-        for (const auto & word : word_collection) {
++        auto process_word = [&](const char * wdata, size_t wsize) {
++            // Cache hit: skip merge entirely. Append one symbol per cached id.
++            if (use_id_pairs) {
++                llama_token cached_ids[llm_bpe_pretok_cache::MAX_IDS];
++                int cached_n = 0;
++                if (pretok_cache.lookup(wdata, wsize, cached_ids, cached_n)) {
++                    for (int ci = 0; ci < cached_n; ++ci) {
++                        llm_symbol sym;
++                        sym.text = wdata;
++                        sym.n = wsize;
++                        sym.prev = final_prev_index;
++                        sym.next = -1;
++                        sym.id = cached_ids[ci];
++                        if (final_prev_index != -1) {
++                            symbols_final[final_prev_index].next = symbols_final.size();
++                        }
++                        symbols_final.emplace_back(sym);
++                        final_prev_index = (int) symbols_final.size() - 1;
++                    }
++                    return;
++                }
++            }
++
+             work_queue = llm_bigram_bpe::queue();
+             symbols.clear();
+ 
+             int index = 0;
+             size_t offset = 0;
+ 
+-            //if (vocab.tokenizer_ignore_merges && vocab.token_to_id.find(word) != vocab.token_to_id.end()) {
+-            if (vocab.get_ignore_merges() && vocab.text_to_token(word) != LLAMA_TOKEN_NULL) {
+-                symbols.emplace_back(llm_symbol{-1, -1, word.c_str(), word.size()});
+-                offset = word.size();
+-            } else if ((tok_pre == LLAMA_VOCAB_PRE_TYPE_GEMMA4 || tok_pre == LLAMA_VOCAB_PRE_TYPE_MMBERT) && word.find_first_not_of('\n') == std::string::npos) {
+-                // fix for gemma 4, ref: https://github.com/ggml-org/llama.cpp/pull/21343
+-                auto tok = vocab.text_to_token(word);
+-                if (tok != LLAMA_TOKEN_NULL) {
+-                    symbols.emplace_back(llm_symbol{-1, -1, word.c_str(), word.size()});
+-                    offset = word.size();
++            if (vocab.get_ignore_merges()) {
++                const std::string word_tmp(wdata, wsize);
++                const llama_token wid = vocab.text_to_token(word_tmp);
++                if (wid != LLAMA_TOKEN_NULL) {
++                    symbols.emplace_back(llm_symbol{-1, -1, wdata, wsize, wid});
++                    offset = wsize;
++                }
++            } else if (tok_pre == LLAMA_VOCAB_PRE_TYPE_GEMMA4 || tok_pre == LLAMA_VOCAB_PRE_TYPE_MMBERT) {
++                // Match std::string::find_first_not_of('\n') == npos (true for empty too).
++                bool all_nl = true;
++                for (size_t i = 0; i < wsize; ++i) {
++                    if (wdata[i] != '\n') {
++                        all_nl = false;
++                        break;
++                    }
++                }
++                if (all_nl) {
++                    // fix for gemma 4, ref: https://github.com/ggml-org/llama.cpp/pull/21343
++                    const std::string word_tmp(wdata, wsize);
++                    auto tok = vocab.text_to_token(word_tmp);
++                    if (tok != LLAMA_TOKEN_NULL) {
++                        symbols.emplace_back(llm_symbol{-1, -1, wdata, wsize, tok});
++                        offset = wsize;
++                    }
+                 }
+             }
+ 
+-            while (offset < word.size()) {
++            while (offset < wsize) {
+                 llm_symbol sym;
+-                size_t char_len = std::min(word.size() - offset, (size_t) unicode_len_utf8(word[offset]));
+-                sym.text = word.c_str() + offset;
++                size_t char_len = std::min(wsize - offset, (size_t) unicode_len_utf8(wdata[offset]));
++                sym.text = wdata + offset;
+                 sym.n = char_len;
+                 offset += sym.n;
+                 sym.prev = index - 1;
+-                sym.next = offset == word.size() ? -1 : index + 1;
++                sym.next = offset == wsize ? -1 : index + 1;
+                 // Map UTF-8 char -> token id once via packed piece table (no std::string).
+                 // WHY piece4 not text_to_token: per-char string map dominated Qwen megaprompts
+                 // and erased the merge speedup (see docs/faster-bpe-tokenize-findings.md).
+-                // `word` is already byte-remapped when tokenizer.byte_encode is true.
++                // Word bytes are already remapped when tokenizer.byte_encode is true.
+                 // Miss => NULL, byte-fallback at emit.
+                 if (use_id_pairs) {
+                     sym.id = vocab.find_bpe_piece4(sym.text, sym.n);
+@@ -1215,6 +1265,7 @@ struct llm_tokenizer_bpe_session {
+         }
+     }
+ 
++
+ private:
+     // Legacy string-keyed merge when id-pair table is unavailable.
+     // WHY keep: LLAMA_BPE_FORCE_LEGACY identity A/B and any vocab that failed to build

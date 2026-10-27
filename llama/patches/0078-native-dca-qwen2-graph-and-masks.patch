@@ -1,30 +1,23 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: zerollama <zerollama@local>
-Date: Tue, 28 Jul 2026 20:00:00 -0700
+Date: Sat, 24 Oct 2026 20:34:58 -0700
 Subject: [PATCH] native dca qwen2 graph and masks
 
-native dca qwen2 graph and masks
 ---
- src/llama-graph.cpp    | 249 +++++++++++++++++++++++++++++++++++++++++
- src/llama-graph.h      |  65 +++++++++++
- src/llama-kv-cache.cpp |  72 ++++++++++++
- src/llama-kv-cache.h   |   4 +
- src/models/qwen2.cpp   |  87 ++++++++++----
- 5 files changed, 454 insertions(+), 23 deletions(-)
+ src/llama-graph.cpp     | 248 ++++++++++++++++++++++++++++++++++++++++
+ src/llama-graph.cpp.rej |   9 ++
+ src/llama-graph.h       |  65 +++++++++++
+ src/llama-kv-cache.cpp  |  72 ++++++++++++
+ src/llama-kv-cache.h    |   4 +
+ src/models/qwen2.cpp    |  87 ++++++++++----
+ 6 files changed, 462 insertions(+), 23 deletions(-)
+ create mode 100644 src/llama-graph.cpp.rej
 
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index 64730d0ea..26874381e 100644
+index e64aaecfd..cf01aa35d 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
-@@ -4,6 +4,7 @@
- #include "llama-model.h"
- #include "llama-batch.h"
- #include "llama-cparams.h"
-+#include "llama-dca.h"
- #include "llama-sampler.h"
- 
- #include "llama-kv-cache.h"
-@@ -506,6 +507,69 @@ bool llm_graph_input_attn_kv::can_reuse(const llm_graph_params & params) {
+@@ -575,6 +575,69 @@ bool llm_graph_input_attn_kv::can_reuse(const llm_graph_params & params) {
      return res;
  }
  
@@ -94,7 +87,7 @@ index 64730d0ea..26874381e 100644
  void llm_graph_input_attn_k::set_input(const llama_ubatch * ubatch) {
      mctx->set_input_k_idxs(self_k_idxs, ubatch);
  
-@@ -2914,6 +2978,191 @@ llm_graph_input_attn_kv * llm_graph_context::build_attn_inp_kv() const {
+@@ -3259,6 +3322,191 @@ llm_graph_input_attn_kv * llm_graph_context::build_attn_inp_kv() const {
      return (llm_graph_input_attn_kv *) res->add_input(std::move(inp));
  }
  
@@ -286,11 +279,26 @@ index 64730d0ea..26874381e 100644
  ggml_tensor * llm_graph_context::build_attn(
          llm_graph_input_attn_kv * inp,
          ggml_tensor * wo,
+diff --git a/src/llama-graph.cpp.rej b/src/llama-graph.cpp.rej
+new file mode 100644
+index 000000000..bdcbb25e2
+--- /dev/null
++++ b/src/llama-graph.cpp.rej
+@@ -0,0 +1,9 @@
++diff a/src/llama-graph.cpp b/src/llama-graph.cpp	(rejected hunks)
++@@ -4,6 +4,7 @@
++ #include "llama-model.h"
++ #include "llama-batch.h"
++ #include "llama-cparams.h"
+++#include "llama-dca.h"
++ #include "llama-sampler.h"
++ 
++ #include "llama-kv-cache.h"
 diff --git a/src/llama-graph.h b/src/llama-graph.h
-index 3daa425bc..012ebfd6d 100644
+index f56a305e9..28934e521 100644
 --- a/src/llama-graph.h
 +++ b/src/llama-graph.h
-@@ -359,6 +359,53 @@ public:
+@@ -377,6 +377,53 @@ public:
      const llama_kv_cache_context * mctx;
  };
  
@@ -344,7 +352,7 @@ index 3daa425bc..012ebfd6d 100644
  // V-less input for the KV cache
  // ref: https://github.com/ggml-org/llama.cpp/pull/19067
  class llm_graph_input_attn_k : public llm_graph_input_i {
-@@ -1212,6 +1259,8 @@ struct llm_graph_context {
+@@ -1285,6 +1332,8 @@ struct llm_graph_context {
  
      llm_graph_input_attn_kv * build_attn_inp_kv() const;
  
@@ -353,7 +361,7 @@ index 3daa425bc..012ebfd6d 100644
      ggml_tensor * build_attn(
              llm_graph_input_attn_kv * inp,
              ggml_tensor * wo,
-@@ -1226,6 +1275,22 @@ struct llm_graph_context {
+@@ -1299,6 +1348,22 @@ struct llm_graph_context {
                    float   kq_scale,
                      int   il) const;
  
@@ -377,7 +385,7 @@ index 3daa425bc..012ebfd6d 100644
  
      ggml_tensor * build_attn(
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 66ddbf2a1..7b68036cd 100644
+index 20fe84f67..5812fb526 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -1,5 +1,6 @@
@@ -395,7 +403,7 @@ index 66ddbf2a1..7b68036cd 100644
  #include <unordered_map>
  #include <vector>
  
-@@ -2290,6 +2292,72 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
+@@ -2296,6 +2298,72 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
      //LLAMA_LOG_ERROR("%s: kq mask time: %0.3f ms\n", __func__, (t_end - t_start)/1000.0);
  }
  
@@ -468,7 +476,7 @@ index 66ddbf2a1..7b68036cd 100644
  void llama_kv_cache::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {
      const int64_t n_tokens = ubatch->n_tokens;
  
-@@ -3406,6 +3474,10 @@ void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ub
+@@ -3439,6 +3507,10 @@ void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ub
      kv->set_input_kq_mask(dst, ubatch, causal_attn);
  }
  
@@ -480,7 +488,7 @@ index 66ddbf2a1..7b68036cd 100644
      kv->set_input_pos_bucket(dst, ubatch);
  }
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index c4d715ac8..df40eb525 100644
+index 786f9406f..67582e65b 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
 @@ -245,6 +245,8 @@ public:
@@ -502,7 +510,7 @@ index c4d715ac8..df40eb525 100644
  
      void set_input_k_rot(ggml_tensor * dst) const;
 diff --git a/src/models/qwen2.cpp b/src/models/qwen2.cpp
-index e9c2ea80a..7c2d45e70 100644
+index d2cd8e22d..f8674f57b 100644
 --- a/src/models/qwen2.cpp
 +++ b/src/models/qwen2.cpp
 @@ -56,15 +56,23 @@ llama_model_qwen2::graph::graph(const llama_model & model, const llm_graph_param

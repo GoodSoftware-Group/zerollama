@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:48:11 -0700
+Subject: [PATCH] fix: include llama-dca.h from llama-graph.cpp on tip
+
+DCA helpers live in llama-dca.h; the include was lost when graph.cpp
+drifted during the b11870 rebase.
+---
+ src/llama-graph.cpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index cf01aa35d..be3f1d514 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -4,6 +4,7 @@
+ #include "llama-model.h"
+ #include "llama-moe-cache.h"
+ #include "llama-batch.h"
++#include "llama-dca.h"
+ #include "llama-cparams.h"
+ #include "llama-sampler.h"
+ 

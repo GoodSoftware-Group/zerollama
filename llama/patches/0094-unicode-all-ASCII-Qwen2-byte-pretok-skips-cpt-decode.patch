@@ -1,21 +1,15 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: zerollama <zerollama@local>
-Date: Thu, 30 Jul 2026 03:55:00 -0700
+Date: Sat, 24 Oct 2026 20:35:00 -0700
 Subject: [PATCH] unicode: all-ASCII Qwen2 byte pretok skips cpt decode (0114)
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
-When text is all <0x80 and the sole regex is Qwen2 custom, pretok on
-bytes and substr words — skip uint32 decode + cpt_byte_off. ~1.3x on
-mega_1mib_ascii vs NO_ASCII_PRETOK; identity held. See
-docs/faster-bpe-tokenize.md (M15d / 0114).
 ---
- src/unicode.cpp | 171 ++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 171 insertions(+)
+ src/unicode.cpp     | 165 ++++++++++++++++++++++++++++++++++++++++++++
+ src/unicode.cpp.rej |  54 +++------------
+ 2 files changed, 176 insertions(+), 43 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index 9e5a10705..3169cbf38 100644
+index b9c250d30..1f1c68154 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
 @@ -6,6 +6,7 @@
@@ -26,7 +20,7 @@ index 9e5a10705..3169cbf38 100644
  #include <map>
  #include <regex>
  #include <stdexcept>
-@@ -381,6 +382,14 @@ static void unicode_regex_split_qwen2_ascii_seg(
+@@ -403,6 +404,14 @@ static void unicode_regex_split_qwen2_ascii_seg(
              const bool next_letter = (pos + 1 < end) && (cls[cpts[pos + 1]] & 2);
              if ((c & 2) || next_letter) {
                  ++pos;
@@ -41,7 +35,7 @@ index 9e5a10705..3169cbf38 100644
                  while (pos < end && (cls[cpts[pos]] & 2)) {
                      ++pos;
                  }
-@@ -445,6 +454,162 @@ static void unicode_regex_split_qwen2_ascii_seg(
+@@ -467,6 +476,162 @@ static void unicode_regex_split_qwen2_ascii_seg(
      }
  }
  
@@ -204,16 +198,65 @@ index 9e5a10705..3169cbf38 100644
  // GPT2 system regex:  's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
  static std::vector<size_t> unicode_regex_split_custom_gpt2(const std::vector<uint32_t> & cpts, const std::vector<size_t> & offsets) {
      std::vector<size_t> bpe_offsets; // store the offset of each word
-@@ -1445,6 +1610,12 @@ bool unicode_cpt_is_han(uint32_t cpt) {
- }
- 
- std::vector<std::string> unicode_regex_split(const std::string & text, const std::vector<std::string> & regex_exprs, bool byte_encode) {
-+    // WHY (0114): Qwen2 all-ASCII — skip uint32 decode + cpt_byte_off entirely.
-+    if (unicode_want_ascii_pretok() && regex_exprs.size() == 1 && unicode_is_qwen2_regex_expr(regex_exprs[0]) &&
-+        unicode_bytes_are_ascii(text)) {
-+        return unicode_regex_split_qwen2_ascii_bytes(text, byte_encode);
-+    }
-+
-     // unicode categories
-     static const std::map<std::string, int> k_ucat_enum = {
-         { "\\p{N}", unicode_cpt_flags::NUMBER },
+diff --git a/src/unicode.cpp.rej b/src/unicode.cpp.rej
+index 70c722560..d7eb2dd25 100644
+--- a/src/unicode.cpp.rej
++++ b/src/unicode.cpp.rej
+@@ -1,46 +1,14 @@
+ diff a/src/unicode.cpp b/src/unicode.cpp	(rejected hunks)
+-@@ -1047,35 +1032,35 @@ static std::vector<size_t> unicode_regex_split_custom_newlines(const std::string
+-     return bpe_offsets;
++@@ -1445,6 +1610,12 @@ bool unicode_cpt_is_han(uint32_t cpt) {
+  }
+  
+--static std::vector<size_t> unicode_regex_split_custom(const std::string & text, const std::string & regex_expr, const std::vector<size_t> & offsets) {
+-+static std::vector<size_t> unicode_regex_split_custom(const std::vector<uint32_t> & cpts, const std::string & regex_expr, const std::vector<size_t> & offsets) {
+-     std::vector<size_t> bpe_offsets;
+- 
+-     if (regex_expr == "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)") {
+--        bpe_offsets = unicode_regex_split_custom_gpt2(text, offsets);
+-+        bpe_offsets = unicode_regex_split_custom_gpt2(cpts, offsets);
+-     } else if (
+-             regex_expr == "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+" ||
+-             regex_expr == "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+") {
+--        bpe_offsets = unicode_regex_split_custom_llama3(text, offsets);
+-+        bpe_offsets = unicode_regex_split_custom_llama3(cpts, offsets);
+-     } else if (
+-            regex_expr == "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+") {
+--        bpe_offsets = unicode_regex_split_custom_qwen2(text, offsets);
+-+        bpe_offsets = unicode_regex_split_custom_qwen2(cpts, offsets);
+-     } else if (
+-            regex_expr == "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+") {
+--        bpe_offsets = unicode_regex_split_custom_qwen35(text, offsets);
+-+        bpe_offsets = unicode_regex_split_custom_qwen35(cpts, offsets);
+-     } else if (regex_expr == "\\p{Han}+") {
+-         // K2's first pattern - handle all K2 patterns together
+--        bpe_offsets = unicode_regex_split_custom_kimi_k2(text, offsets);
+-+        bpe_offsets = unicode_regex_split_custom_kimi_k2(cpts, offsets);
+-     } else if (regex_expr == "\\p{AFMoE_digits}") {
+-         // AFMOE digit pattern - use custom implementation for proper splitting
+--        bpe_offsets = unicode_regex_split_custom_afmoe(text, offsets);
+-+        bpe_offsets = unicode_regex_split_custom_afmoe(cpts, offsets);
+-     } else if (regex_expr == "[^\\n]+|[\\n]+") {
+--        bpe_offsets = unicode_regex_split_custom_newlines(text, offsets);
+-+        bpe_offsets = unicode_regex_split_custom_newlines(cpts, offsets);
+-     } else if (regex_expr == "\\d{1,3}(?=(?:\\d{3})*\\b)") {
+-         // tiny_aya digit grouping pattern from tokenizer.json:
+-         //   {"type": "Split", "pattern": {"Regex": "\\d{1,3}(?=(?:\\d{3})*\\b)"}, "behavior": "Isolated"}
+-         // Splits digits into groups of 3 from the right (e.g., 1234567 -> 1, 234, 567)
+-         // TODO: Revisit this regex, in case there are any subtle tokenization differences with the original regex.
+--        bpe_offsets = unicode_regex_split_custom_afmoe(text, offsets);
+-+        bpe_offsets = unicode_regex_split_custom_afmoe(cpts, offsets);
+-     }
+- 
+-     return bpe_offsets;
++ std::vector<std::string> unicode_regex_split(const std::string & text, const std::vector<std::string> & regex_exprs, bool byte_encode) {
+++    // WHY (0114): Qwen2 all-ASCII — skip uint32 decode + cpt_byte_off entirely.
+++    if (unicode_want_ascii_pretok() && regex_exprs.size() == 1 && unicode_is_qwen2_regex_expr(regex_exprs[0]) &&
+++        unicode_bytes_are_ascii(text)) {
+++        return unicode_regex_split_qwen2_ascii_bytes(text, byte_encode);
+++    }
+++
++     // unicode categories
++     static const std::map<std::string, int> k_ucat_enum = {
++         { "\\p{N}", unicode_cpt_flags::NUMBER },

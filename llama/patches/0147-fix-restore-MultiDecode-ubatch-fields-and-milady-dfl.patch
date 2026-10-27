@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:47:14 -0700
+Subject: [PATCH] fix: restore MultiDecode ubatch fields and milady dflash
+ tensors
+
+Rejected 0126/0127 hunks left llama-batch.cpp referencing parent/node_id
+without data_t members; dflash-draft.cpp needs dflash_fc on llama_model.
+---
+ src/llama-batch.h | 6 ++++++
+ src/llama-model.h | 4 ++++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/src/llama-batch.h b/src/llama-batch.h
+index e1e43979b..a4ce29302 100644
+--- a/src/llama-batch.h
++++ b/src/llama-batch.h
+@@ -60,6 +60,9 @@ struct llama_ubatch {
+     int8_t       *  output;     // [n_tokens]         | i   | -
+     int8_t       *  type;       // [n_tokens]         | i   | -     (mixed ubatch only, 0 - token, 1 - embd)
+     int32_t      *  decision_order; // [n_tokens], NULL if no entry has one, see llama_batch_ext_set_decision_order()
++    int32_t      *  parent;           // [n_tokens] MultiDecode; NULL = off
++    int32_t      *  node_id;          // [n_tokens] MultiDecode MD1; NULL = off/synth
++    int32_t      *  parent_node_id;   // [n_tokens] MultiDecode MD1; NULL = off/synth
+ 
+     struct data_t {
+         std::vector<llama_token>    token;
+@@ -74,6 +77,9 @@ struct llama_ubatch {
+         std::vector<int8_t>         type;
+         std::vector<int32_t>        batch_idxs;  // original batch index for each token
+         std::vector<int32_t>        decision_order;
++        std::vector<int32_t>        parent;      // MultiDecode ancestor KQ mask
++        std::vector<int32_t>        node_id;
++        std::vector<int32_t>        parent_node_id;
+ 
+         std::vector<llama_seq_id> seq_id_data;
+     };
+diff --git a/src/llama-model.h b/src/llama-model.h
+index 93164f433..d203044ab 100644
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -799,6 +799,10 @@ struct llama_model {
+     struct ggml_tensor * dflash_selector_next   = nullptr;
+     struct ggml_tensor * dflash_selector_hidden = nullptr;
+ 
++    // milady dflash-draft
++    struct ggml_tensor * dflash_fc          = nullptr;
++    struct ggml_tensor * dflash_hidden_norm = nullptr;
++
+     struct ggml_tensor * lilicorr_token_proj          = nullptr;
+     struct ggml_tensor * lilicorr_token_proj_b        = nullptr;
+     struct ggml_tensor * lilicorr_token_proj_s        = nullptr;

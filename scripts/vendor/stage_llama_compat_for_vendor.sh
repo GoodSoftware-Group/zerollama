@@ -28,7 +28,16 @@ for f in \
     rm -f "${STAGE}/${f}"
     cp -f "${COMPAT_SRC}/${f}" "${STAGE}/${f}"
   else
-    ln -sf "${COMPAT_SRC}/${f}" "${STAGE}/${f}"
+    # Tracked form is repo-relative (../../../../llama/compat/…). When vendor/ is a
+    # symlink to an out-of-tree path (e.g. /mnt/ssd2/…), cmake resolves through the
+    # realpath and relative links break — use absolute then, and restore with
+    # `git -C vendor checkout -- src/ollama-compat` after the build.
+    rel="../../../../llama/compat/${f}"
+    if [[ -e "${STAGE}/${rel}" ]]; then
+      ln -sfn "${rel}" "${STAGE}/${f}"
+    else
+      ln -sfn "${COMPAT_SRC}/${f}" "${STAGE}/${f}"
+    fi
   fi
 done
 # Optional arch overlays (laguna etc.) ship with Go CGO only until upstream adds arch.

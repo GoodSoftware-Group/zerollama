@@ -50,10 +50,10 @@ index 824d386b0..bbe30e0f2 100644
 +                           uint32_t & hp_n_swa,
                       ggml_log_level   log_level);
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 2748c8904..e5f3e9aef 100644
+index d675e2eb1..56fcb29e8 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -2800,8 +2800,8 @@ private:
+@@ -3398,8 +3398,8 @@ private:
                      // Full-sequence copy (partial p1 triggers assert on KV backends).
                      common_context_seq_cp(ctx_tgt, id_src, id_dst, 0, -1);
                      if (ctx_dft) {

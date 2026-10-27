@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:47:51 -0700
+Subject: [PATCH] fix: include MultiDecode fields in llama_ubatch designated
+ inits
+
+Adding parent/node_id/parent_node_id before .data so designated
+initializers do not shift .data onto an int32_t* slot.
+---
+ src/llama-batch.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/llama-batch.cpp b/src/llama-batch.cpp
+index 688b52c6e..f69307fb4 100644
+--- a/src/llama-batch.cpp
++++ b/src/llama-batch.cpp
+@@ -573,6 +573,9 @@ llama_ubatch llama_batch_allocr::ubatch_reserve(uint32_t n_seq_tokens, uint32_t
+         /*.output       =*/ udata->output.data(),
+         /*.type         =*/ nullptr,
+         /*.decision_order =*/ nullptr,
++        /*.parent       =*/ nullptr,
++        /*.node_id      =*/ nullptr,
++        /*.parent_node_id=*/ nullptr,
+         /*.data         =*/ std::move(udata),
+     };
+ 
+@@ -1034,6 +1037,9 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
+         /*.output       =*/ udata->output.data(),
+         /*.type         =*/ mixed ? udata->type.data() : nullptr,
+         /*.decision_order =*/ udata->decision_order.empty() ? nullptr : udata->decision_order.data(),
++        /*.parent       =*/ parent_ptr,
++        /*.node_id      =*/ node_id_ptr,
++        /*.parent_node_id=*/ parent_node_id_ptr,
+         /*.data         =*/ std::move(udata),
+     };
+ 

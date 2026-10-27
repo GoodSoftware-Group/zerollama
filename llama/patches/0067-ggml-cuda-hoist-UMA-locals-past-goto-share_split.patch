@@ -1,19 +1,18 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: zerollama <zerollama@local>
-Date: Fri, 17 Jul 2026 13:10:37 -0700
+Date: Sat, 24 Oct 2026 20:34:55 -0700
 Subject: [PATCH] ggml-cuda: hoist UMA locals past goto share_split
 
-nvcc rejects goto that bypasses C++ initialization of uma_env/is_uma when
-NVML memory reporting jumps to share_split.
 ---
- ggml/src/ggml-cuda/ggml-cuda.cu | 12 +++++++++---
- 1 file changed, 9 insertions(+), 3 deletions(-)
+ ggml/src/ggml-cuda/ggml-cuda.cu     |  7 +++++
+ ggml/src/ggml-cuda/ggml-cuda.cu.rej | 40 ++++++++++-------------------
+ 2 files changed, 21 insertions(+), 26 deletions(-)
 
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index bcec03806..67a27d978 100644
+index f44d3074c..4d6b92b6e 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -5130,6 +5130,13 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
+@@ -5545,6 +5545,13 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
      std::lock_guard<std::mutex> lock(ctx->device_mutex);
  #endif
  
@@ -27,18 +26,50 @@ index bcec03806..67a27d978 100644
      ggml_cuda_set_device(ctx->device);
  
  #if defined(GGML_USE_HIP)
-@@ -5167,12 +5174,11 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
- // ref: https://github.com/ggml-org/llama.cpp/pull/17368
- #if defined(__linux__) && !defined(GGML_USE_HIP)
-     // Check if this is a UMA (Unified Memory Architecture) system
--    cudaDeviceProp prop;
-     CUDA_CHECK(cudaGetDeviceProperties(&prop, ggml_cuda_get_physical_device(ctx->device)));
- 
-     // Check if UMA is explicitly enabled via environment variable
--    bool uma_env = getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY") != nullptr;
--    bool is_uma = prop.integrated > 0 || uma_env;
-+    uma_env = getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY") != nullptr;
-+    is_uma = prop.integrated > 0 || uma_env;
- 
-     if (is_uma) {
-         // For UMA systems (like DGX Spark), use system memory info
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu.rej b/ggml/src/ggml-cuda/ggml-cuda.cu.rej
+index 11940765d..17b5e7c02 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu.rej
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu.rej
+@@ -1,28 +1,16 @@
+ diff a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu	(rejected hunks)
+-@@ -2462,6 +2463,14 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
+-         case GGML_OP_LIGHTNING_INDEXER:
+-             ggml_cuda_lightning_indexer(ctx, dst);
+-             break;
+-+#if defined(GGML_CUDA_FUSED_ATTN_QJL)
+-+        case GGML_OP_FUSED_ATTN_QJL_TBQ:
+-+            ggml_cuda_op_fused_attn_qjl_tbq(ctx, dst);
+-+            break;
+-+        case GGML_OP_ATTN_SCORE_QJL:
+-+            ggml_cuda_op_attn_score_qjl(ctx, dst);
+-+            break;
+-+#endif
+-         default:
+-             return false;
+-     }
+-@@ -5730,6 +5739,11 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+-             return true;
+-         case GGML_OP_LIGHTNING_INDEXER:
+-             return ggml_cuda_lightning_indexer_supported(dev_ctx->device, op);
+-+#if defined(GGML_CUDA_FUSED_ATTN_QJL)
+-+        case GGML_OP_FUSED_ATTN_QJL_TBQ:
+-+        case GGML_OP_ATTN_SCORE_QJL:
+-+            return true;
+-+#endif
++@@ -5167,12 +5174,11 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
++ // ref: https://github.com/ggml-org/llama.cpp/pull/17368
++ #if defined(__linux__) && !defined(GGML_USE_HIP)
++     // Check if this is a UMA (Unified Memory Architecture) system
++-    cudaDeviceProp prop;
++     CUDA_CHECK(cudaGetDeviceProperties(&prop, ggml_cuda_get_physical_device(ctx->device)));
+  
+-         default:
+-             return false;
++     // Check if UMA is explicitly enabled via environment variable
++-    bool uma_env = getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY") != nullptr;
++-    bool is_uma = prop.integrated > 0 || uma_env;
+++    uma_env = getenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY") != nullptr;
+++    is_uma = prop.integrated > 0 || uma_env;
++ 
++     if (is_uma) {
++         // For UMA systems (like DGX Spark), use system memory info

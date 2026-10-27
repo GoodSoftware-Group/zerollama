@@ -13,10 +13,10 @@ allow_media (default true) clones via keep_first; false = text-only clamp.
  4 files changed, 78 insertions(+), 17 deletions(-)
 
 diff --git a/tools/server/server-common.cpp b/tools/server/server-common.cpp
-index bda44bd80..6aa1dcdd5 100644
+index bf3aa90cc..099f5eb7a 100644
 --- a/tools/server/server-common.cpp
 +++ b/tools/server/server-common.cpp
-@@ -495,6 +495,39 @@ std::pair<const mtmd::input_chunk_ptr *, size_t> server_tokens::find_next_media_
+@@ -616,6 +616,39 @@ std::pair<const mtmd::input_chunk_ptr *, size_t> server_tokens::find_next_media_
      return { nullptr, 0 };
  }
  
@@ -57,10 +57,10 @@ index bda44bd80..6aa1dcdd5 100644
      if (tok == LLAMA_TOKEN_NULL) {
          throw std::runtime_error("Invalid token");
 diff --git a/tools/server/server-common.h b/tools/server/server-common.h
-index 56d2cc897..65d56453b 100644
+index b69dde764..c69d7a2c7 100644
 --- a/tools/server/server-common.h
 +++ b/tools/server/server-common.h
-@@ -222,6 +222,16 @@ public:
+@@ -244,6 +244,16 @@ public:
  
      bool empty() const { return tokens.empty(); }
  
@@ -78,10 +78,10 @@ index 56d2cc897..65d56453b 100644
          map_idx_to_media.clear();
          tokens.clear();
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 9bf101cac..c4dde824b 100644
+index 8e29fd197..4b2f5c848 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -2849,20 +2849,19 @@ private:
+@@ -3397,20 +3397,19 @@ private:
                  } break;
              case SERVER_TASK_TYPE_SLOT_SEQ_COPY:
                  {
@@ -106,7 +106,7 @@ index 9bf101cac..c4dde824b 100644
                      if (slot_dst->is_processing() || slot_src->is_processing()) {
                          SRV_DBG("requested slot is unavailable, defer seq-copy task, id_task = %d\n", task.id);
                          queue_tasks.defer(std::move(task));
-@@ -2873,6 +2872,16 @@ private:
+@@ -3421,6 +3420,16 @@ private:
                          break;
                      }
  
@@ -123,7 +123,7 @@ index 9bf101cac..c4dde824b 100644
                      // WHY match copy_state_to: p0/p1 = -1,-1. Using 0,-1 left dst KV empty
                      // on some backends after slot release → prompt.tokens lie + pos_min==-1 abort
                      // in pre_decode (ggml-org/llama.cpp#13833).
-@@ -2890,30 +2899,33 @@ private:
+@@ -3438,30 +3447,33 @@ private:
                              send_error(task, "seq-copy produced empty KV (source slot may lack cache)", ERROR_TYPE_INVALID_REQUEST);
                              break;
                          }
@@ -169,7 +169,7 @@ index 9bf101cac..c4dde824b 100644
                      res->n_tokens_copied = n_copy;
                      queue_results.send(std::move(res));
                  } break;
-@@ -5657,6 +5669,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_kv_seq_copy(const se
+@@ -6933,6 +6945,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_kv_seq_copy(const se
      const int id_src = body.at("src_slot");
      const int id_dst = body.at("dst_slot");
      const llama_pos pos_end = body.at("pos_end");
@@ -178,7 +178,7 @@ index 9bf101cac..c4dde824b 100644
      auto & rd = res->rd;
      {
          server_task task(SERVER_TASK_TYPE_SLOT_SEQ_COPY);
-@@ -5664,6 +5678,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_kv_seq_copy(const se
+@@ -6940,6 +6954,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_kv_seq_copy(const se
          task.slot_action.id_slot = id_dst;
          task.slot_action.id_slot_src = id_src;
          task.slot_action.pos_end = pos_end;
@@ -187,10 +187,10 @@ index 9bf101cac..c4dde824b 100644
      }
      auto result = rd.next(req.should_stop);
 diff --git a/tools/server/server-task.h b/tools/server/server-task.h
-index 14d6b2193..af2ea88ac 100644
+index ffc66cfb7..0ae7f1ec4 100644
 --- a/tools/server/server-task.h
 +++ b/tools/server/server-task.h
-@@ -169,6 +169,9 @@ struct server_task {
+@@ -182,6 +182,9 @@ struct server_task {
          int id_slot;
          int id_slot_src = -1;
          llama_pos pos_end = 0;

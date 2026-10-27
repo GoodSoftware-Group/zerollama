@@ -1,17 +1,17 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: zerollama-vendor <zerollama@local>
-Date: Thu, 30 Jul 2026 18:09:29 -0700
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:34:59 -0700
 Subject: [PATCH] llama-vocab: id-pair BPE merge (gigatoken lessons)
 
 ---
- src/llama-vocab.cpp     | 465 ++++++++++++++++++++++++++++++++++++----
+ src/llama-vocab.cpp     | 453 ++++++++++++++++++++++++++++++++++++----
  src/llama-vocab.cpp.rej |  46 ++++
  src/llama-vocab.h       |   8 +
- 3 files changed, 473 insertions(+), 46 deletions(-)
+ 3 files changed, 465 insertions(+), 42 deletions(-)
  create mode 100644 src/llama-vocab.cpp.rej
 
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index 586bafdd8..043e15a01 100644
+index 9c79ae509..a16c1578c 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
 @@ -13,6 +13,9 @@
@@ -237,37 +237,7 @@ index 586bafdd8..043e15a01 100644
  };
  
  struct llm_tokenizer_bpe : llm_tokenizer {
-@@ -622,6 +812,7 @@ struct llm_tokenizer_bpe_session {
- 
-         symbols_final.clear();
-         auto tok_pre = vocab.get_pre_type();
-+        const bool use_id_pairs = vocab.has_bpe_id_pairs();
- 
-         for (const auto & word : word_collection) {
-             work_queue = llm_bigram_bpe::queue();
-@@ -631,14 +822,17 @@ struct llm_tokenizer_bpe_session {
-             size_t offset = 0;
- 
-             //if (vocab.tokenizer_ignore_merges && vocab.token_to_id.find(word) != vocab.token_to_id.end()) {
--            if (vocab.get_ignore_merges() && vocab.text_to_token(word) != LLAMA_TOKEN_NULL) {
--                symbols.emplace_back(llm_symbol{-1, -1, word.c_str(), word.size()});
--                offset = word.size();
-+            if (vocab.get_ignore_merges()) {
-+                const llama_token wid = vocab.text_to_token(word);
-+                if (wid != LLAMA_TOKEN_NULL) {
-+                    symbols.emplace_back(llm_symbol{-1, -1, word.c_str(), word.size(), wid});
-+                    offset = word.size();
-+                }
-             } else if (tok_pre == LLAMA_VOCAB_PRE_TYPE_GEMMA4 && word.find_first_not_of('\n') == std::string::npos) {
-                 // fix for gemma 4, ref: https://github.com/ggml-org/llama.cpp/pull/21343
-                 auto tok = vocab.text_to_token(word);
-                 if (tok != LLAMA_TOKEN_NULL) {
--                    symbols.emplace_back(llm_symbol{-1, -1, word.c_str(), word.size()});
-+                    symbols.emplace_back(llm_symbol{-1, -1, word.c_str(), word.size(), tok});
-                     offset = word.size();
-                 }
-             }
-@@ -651,41 +845,57 @@ struct llm_tokenizer_bpe_session {
+@@ -726,41 +916,57 @@ struct llm_tokenizer_bpe_session {
                  offset += sym.n;
                  sym.prev = index - 1;
                  sym.next = offset == word.size() ? -1 : index + 1;
@@ -289,10 +259,10 @@ index 586bafdd8..043e15a01 100644
 -            // build token(s)
 -            while (!work_queue.empty()) {
 -                auto bigram = work_queue.pop_move();
--
+ 
 -                auto & left_symbol = symbols[bigram.left];
 -                auto & right_symbol = symbols[bigram.right];
- 
+-
 -                if (left_symbol.n == 0 || right_symbol.n == 0) {
 -                    continue;
 -                }
@@ -352,7 +322,7 @@ index 586bafdd8..043e15a01 100644
              }
  
              // add the finished tokens to the final list keeping correct order for next and prev
-@@ -711,6 +921,11 @@ struct llm_tokenizer_bpe_session {
+@@ -786,6 +992,11 @@ struct llm_tokenizer_bpe_session {
                      continue;
                  }
  
@@ -364,7 +334,7 @@ index 586bafdd8..043e15a01 100644
                  const std::string str = std::string(symbol.text, symbol.n);
                  const auto token = vocab.text_to_token(str);
  
-@@ -739,29 +954,167 @@ struct llm_tokenizer_bpe_session {
+@@ -816,29 +1027,167 @@ struct llm_tokenizer_bpe_session {
      }
  
  private:
@@ -446,8 +416,7 @@ index 586bafdd8..043e15a01 100644
 +            ranks[i] = INT_MAX;
 +            merged_ids[i] = LLAMA_TOKEN_NULL;
 +        }
- 
--        int rank_found = -1;
++
 +        auto refresh = [&](int i) {
 +            ranks[i] = INT_MAX;
 +            merged_ids[i] = LLAMA_TOKEN_NULL;
@@ -462,7 +431,8 @@ index 586bafdd8..043e15a01 100644
 +            ranks[i] = rank;
 +            merged_ids[i] = merged;
 +        };
-+
+ 
+-        int rank_found = -1;
 +        for (int i = 0; i < nsym; ++i) {
 +            if (symbols[i].n > 0 && symbols[i].next >= 0) {
 +                refresh(i);
@@ -489,7 +459,8 @@ index 586bafdd8..043e15a01 100644
 +                ranks[left] = INT_MAX;
 +                continue;
 +            }
-+
+ 
+-        rank_found = vocab.find_bpe_rank(left_token, right_token);
 +            symbols[left].n += symbols[right].n;
 +            symbols[left].id = merged_ids[left];
 +            symbols[right].n = 0;
@@ -500,16 +471,14 @@ index 586bafdd8..043e15a01 100644
 +            if (symbols[right].next >= 0) {
 +                symbols[symbols[right].next].prev = left;
 +            }
- 
--        rank_found = vocab.find_bpe_rank(left_token, right_token);
++
 +            refresh(left);
 +            if (symbols[left].prev >= 0) {
 +                refresh(symbols[left].prev);
 +            }
 +        }
 +    }
- 
--        if (rank_found < 0) {
++
 +    void add_new_bigram_id(int left, int right) {
 +        if (left == -1 || right == -1) {
 +            return;
@@ -520,18 +489,19 @@ index 586bafdd8..043e15a01 100644
 +            return;
 +        }
 +        if (symbols[left].n == 0 || symbols[right].n == 0) {
-             return;
-         }
- 
--        llm_bigram_bpe bigram;
-+        int rank_found = -1;
-+        llama_token merged = LLAMA_TOKEN_NULL;
-+        if (!vocab.find_bpe_id_pair(lid, rid, rank_found, merged)) {
 +            return;
 +        }
  
+-        if (rank_found < 0) {
++        int rank_found = -1;
++        llama_token merged = LLAMA_TOKEN_NULL;
++        if (!vocab.find_bpe_id_pair(lid, rid, rank_found, merged)) {
+             return;
+         }
+ 
+         llm_bigram_bpe bigram;
+-
 -        bigram.left  = left;
-+        llm_bigram_bpe bigram;
 +        bigram.left = left;
          bigram.right = right;
 -        bigram.text  = left_token + right_token;
@@ -545,7 +515,7 @@ index 586bafdd8..043e15a01 100644
          work_queue.push(bigram);
      }
  
-@@ -1852,6 +2205,8 @@ struct llama_vocab::impl {
+@@ -2146,6 +2495,8 @@ struct llama_vocab::impl {
          }
      };
      std::unordered_map<std::pair<std::string, std::string>, int, pair_hash> bpe_ranks;
@@ -554,7 +524,7 @@ index 586bafdd8..043e15a01 100644
  
      // set of all tokens that cause "end of generation"
      std::set<llama_token> special_eog_ids;
-@@ -4204,6 +4559,24 @@ int llama_vocab::find_bpe_rank(const std::string & token_left, const std::string
+@@ -4607,6 +4958,24 @@ int llama_vocab::find_bpe_rank(const std::string & token_left, const std::string
      return it->second;
  }
  
@@ -632,10 +602,10 @@ index 000000000..436a28c1c
 + 
 +     // determine the newline token: LLaMA "<0x0A>" == 10 == '\n', Falcon 193 == '\n'
 diff --git a/src/llama-vocab.h b/src/llama-vocab.h
-index 3fb061f0e..c08d69edc 100644
+index 14a90fbdb..6b880d92c 100644
 --- a/src/llama-vocab.h
 +++ b/src/llama-vocab.h
-@@ -160,6 +160,14 @@ struct llama_vocab {
+@@ -175,6 +175,14 @@ struct llama_vocab {
      int find_bpe_rank(const std::string & token_left, const std::string & token_right) const;
      std::vector<std::string> get_bpe_merges() const;
  

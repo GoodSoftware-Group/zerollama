@@ -15,10 +15,10 @@ native dca hparams and helpers
  create mode 100644 src/llama-dca.h
 
 diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
-index c507e2892..d8c33d512 100644
+index 45302dfc3..daf8b0f9d 100644
 --- a/src/llama-arch.cpp
 +++ b/src/llama-arch.cpp
-@@ -304,6 +304,9 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
+@@ -324,6 +324,9 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
      { LLM_KV_ATTENTION_COMPRESS_RATIOS,              "%s.attention.compress_ratios"              },
      { LLM_KV_ATTENTION_SHARED_KV_LAYERS,             "%s.attention.shared_kv_layers"             },
      { LLM_KV_ATTENTION_RECURRENT_LAYERS,             "%s.attention.recurrent_layers"             },
@@ -29,10 +29,10 @@ index c507e2892..d8c33d512 100644
      { LLM_KV_HYPER_CONNECTION_COUNT,                 "%s.hyper_connection.count"                 },
      { LLM_KV_HYPER_CONNECTION_SINKHORN_ITERATIONS,   "%s.hyper_connection.sinkhorn_iterations"   },
 diff --git a/src/llama-arch.h b/src/llama-arch.h
-index f22c7f8ba..c2332e5a7 100644
+index 9fc8ef438..b9a127dbd 100644
 --- a/src/llama-arch.h
 +++ b/src/llama-arch.h
-@@ -309,6 +309,10 @@ enum llm_kv {
+@@ -329,6 +329,10 @@ enum llm_kv {
      LLM_KV_ATTENTION_COMPRESS_RATIOS,
      LLM_KV_ATTENTION_SHARED_KV_LAYERS,
      LLM_KV_ATTENTION_RECURRENT_LAYERS,
@@ -44,10 +44,10 @@ index f22c7f8ba..c2332e5a7 100644
      LLM_KV_HYPER_CONNECTION_COUNT,
      LLM_KV_HYPER_CONNECTION_SINKHORN_ITERATIONS,
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 3221b6a26..0840cd361 100644
+index e5fc3b315..d247160e2 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -175,6 +175,13 @@ llama_context::llama_context(
+@@ -267,6 +267,13 @@ llama_context::llama_context(
          cparams.rope_freq_scale = 1.0f; // never scale if scaling type is none
      }
  
@@ -152,10 +152,10 @@ index 000000000..9977c962e
 +
 +} // namespace llama_dca
 diff --git a/src/llama-hparams.h b/src/llama-hparams.h
-index 2169c3974..7e5ec322b 100644
+index 087ffd2eb..8d774a2cc 100644
 --- a/src/llama-hparams.h
 +++ b/src/llama-hparams.h
-@@ -156,6 +156,19 @@ struct llama_hparams {
+@@ -169,6 +169,19 @@ struct llama_hparams {
      uint32_t n_ctx_orig_yarn;
      float    rope_yarn_log_mul = 0.0f;
  
@@ -176,10 +176,10 @@ index 2169c3974..7e5ec322b 100644
      float    yarn_attn_factor =  1.0f;
      float    yarn_beta_fast   = 32.0f;
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 622b62399..ecdc264b8 100644
+index e4f3e22d3..42d2f80d7 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -1433,6 +1433,31 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
+@@ -1520,6 +1520,31 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
      ml.get_key(LLM_KV_ROPE_SCALING_ATTN_FACTOR, hparams.rope_attn_factor, false);
      ml.get_key(LLM_KV_ROPE_SCALING_ALPHA,       hparams.rope_scaling_alpha, false);
  

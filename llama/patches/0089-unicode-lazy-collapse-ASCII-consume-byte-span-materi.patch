@@ -8,14 +8,14 @@ Skip text_collapsed when custom pretok matches; ASCII letter/digit consume
 (T01); materialize valid UTF-8 pretoks via original byte spans. Identity-safe.
 See docs/faster-bpe-tokenize.md (M15d / 0109).
 ---
- src/unicode.cpp | 161 ++++++++++++++++++++++++++++++++++++------------
- 1 file changed, 121 insertions(+), 40 deletions(-)
+ src/unicode.cpp | 163 ++++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 122 insertions(+), 41 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index 14cfebf78..48c00185c 100644
+index 500b52d31..3a53a7d4f 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
-@@ -210,6 +210,66 @@ static std::vector<std::string> unicode_byte_encoding_process(const std::vector<
+@@ -232,6 +232,66 @@ static std::vector<std::string> unicode_byte_encoding_process(const std::vector<
      return bpe_encoded_words;
  }
  
@@ -82,7 +82,7 @@ index 14cfebf78..48c00185c 100644
  // GPT2 system regex:  's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
  static std::vector<size_t> unicode_regex_split_custom_gpt2(const std::vector<uint32_t> & cpts, const std::vector<size_t> & offsets) {
      std::vector<size_t> bpe_offsets; // store the offset of each word
-@@ -274,18 +334,14 @@ static std::vector<size_t> unicode_regex_split_custom_gpt2(const std::vector<uin
+@@ -296,18 +356,14 @@ static std::vector<size_t> unicode_regex_split_custom_gpt2(const std::vector<uin
              // regex: <space>?\p{L}+
              if (flags2.is_letter) {
                  pos += (cpt == ' ');
@@ -103,7 +103,7 @@ index 14cfebf78..48c00185c 100644
                  _add_token(pos);
                  continue;
              }
-@@ -390,9 +446,7 @@ static std::vector<size_t> unicode_regex_split_custom_llama3(const std::vector<u
+@@ -412,9 +468,7 @@ static std::vector<size_t> unicode_regex_split_custom_llama3(const std::vector<u
              if (!(cpt == '\r' || cpt == '\n' || flags.is_number)) {
                  if (flags.is_letter || _get_flags(pos+1).is_letter) {  // one or more letters
                      pos++;
@@ -114,7 +114,7 @@ index 14cfebf78..48c00185c 100644
                      _add_token(pos);
                      continue;
                  }
-@@ -401,7 +455,13 @@ static std::vector<size_t> unicode_regex_split_custom_llama3(const std::vector<u
+@@ -423,7 +477,13 @@ static std::vector<size_t> unicode_regex_split_custom_llama3(const std::vector<u
              // regex: \p{N}{1,3}
              if (flags.is_number) {
                  size_t ini = pos;
@@ -129,7 +129,7 @@ index 14cfebf78..48c00185c 100644
                      if (++pos - ini >= 3 ) {
                          _add_token(pos);
                          ini = pos;
-@@ -529,9 +589,7 @@ static std::vector<size_t> unicode_regex_split_custom_qwen2(const std::vector<ui
+@@ -698,9 +758,7 @@ static std::vector<size_t> unicode_regex_split_custom_qwen2(const std::vector<ui
              if (!(cpt == '\r' || cpt == '\n' || flags.is_number)) {
                  if (flags.is_letter || _get_flags(pos+1).is_letter) {  // one or more letters
                      pos++;
@@ -140,7 +140,7 @@ index 14cfebf78..48c00185c 100644
                      _add_token(pos);
                      continue;
                  }
-@@ -657,9 +715,7 @@ static std::vector<size_t> unicode_regex_split_custom_qwen35(const std::vector<u
+@@ -826,9 +884,7 @@ static std::vector<size_t> unicode_regex_split_custom_qwen35(const std::vector<u
              if (!(cpt == '\r' || cpt == '\n' || flags.is_number)) {
                  if (flags.is_letter || flags.is_accent_mark || _get_flags(pos + 1).is_accent_mark || _get_flags(pos+1).is_letter) {
                      pos++;
@@ -151,7 +151,7 @@ index 14cfebf78..48c00185c 100644
                      _add_token(pos);
                      continue;
                  }
-@@ -1235,27 +1291,41 @@ std::vector<std::string> unicode_regex_split(const std::string & text, const std
+@@ -1507,27 +1563,41 @@ std::vector<std::string> unicode_regex_split(const std::string & text, const std
          { unicode_cpt_flags::SYMBOL,      "\\\x24\\\x2B\x3C-\x3E\x5E\x60\\\x7C\\\x7E" }, // $+<=>^`|~
      };
  
@@ -163,6 +163,7 @@ index 14cfebf78..48c00185c 100644
 -            if (std::string::npos != regex_expr.find(ucat.first)) {
 -                need_collapse = true;
 -                break;
+-            }
 +    // WHY (0109): decode once and keep byte offsets so valid UTF-8 pretoks can be
 +    // materialized with substr (no per-cpt utf8 rebuild). Invalid UTF-8 still uses
 +    // the FFFD rebuild path for identity with unicode_cpts_from_utf8.
@@ -181,7 +182,7 @@ index 14cfebf78..48c00185c 100644
 +                ++offset;
 +                cpts.push_back(0xFFFD);
 +                had_invalid_utf8 = true;
-             }
++            }
 +            cpt_byte_off.push_back(offset);
          }
      }
@@ -208,7 +209,7 @@ index 14cfebf78..48c00185c 100644
          for (size_t i = 0; i < cpts.size(); ++i) {
              // keep single-byte codepoints as is
              if (cpts[i] < 128) {
-@@ -1275,7 +1345,8 @@ std::vector<std::string> unicode_regex_split(const std::string & text, const std
+@@ -1547,7 +1617,8 @@ std::vector<std::string> unicode_regex_split(const std::string & text, const std
                  text_collapsed[i] = (char) 0xD0; // fallback
              }
          }
@@ -218,7 +219,7 @@ index 14cfebf78..48c00185c 100644
  
      std::vector<size_t> bpe_offsets = { cpts.size() };
  
-@@ -1302,6 +1373,7 @@ std::vector<std::string> unicode_regex_split(const std::string & text, const std
+@@ -1574,6 +1645,7 @@ std::vector<std::string> unicode_regex_split(const std::string & text, const std
              const auto cpts_regex = unicode_cpts_from_utf8(regex_expr);
  
              if (use_collapsed) {
@@ -226,7 +227,7 @@ index 14cfebf78..48c00185c 100644
                  // sanity-check that the original regex does not contain any non-ASCII characters
                  for (size_t i = 0; i < cpts_regex.size(); ++i) {
                      if (cpts_regex[i] >= 128) {
-@@ -1383,15 +1455,24 @@ std::vector<std::string> unicode_regex_split(const std::string & text, const std
+@@ -1655,15 +1727,24 @@ std::vector<std::string> unicode_regex_split(const std::string & text, const std
      bpe_words.reserve(bpe_offsets.size()); // reserve memory for the approximate size
  
      size_t start = 0;

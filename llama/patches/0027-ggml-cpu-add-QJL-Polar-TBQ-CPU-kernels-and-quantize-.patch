@@ -111,7 +111,7 @@ based on GGML_AVX2 / GGML_SYSTEM_ARCH settings.
  create mode 100644 ggml/src/polar_centroids.h
 
 diff --git a/ggml/src/ggml-cpu/CMakeLists.txt b/ggml/src/ggml-cpu/CMakeLists.txt
-index 71f55b490..57f375cff 100644
+index 8327c52e6..49715c312 100644
 --- a/ggml/src/ggml-cpu/CMakeLists.txt
 +++ b/ggml/src/ggml-cpu/CMakeLists.txt
 @@ -56,8 +56,58 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
@@ -4480,10 +4480,10 @@ index 000000000..051f9f4f0
 +    *s = (float)acc;
 +}
 diff --git a/ggml/src/ggml-quants.c b/ggml/src/ggml-quants.c
-index 55db802c0..22a5b5b9c 100644
+index 7750a72ce..97acd3e64 100644
 --- a/ggml/src/ggml-quants.c
 +++ b/ggml/src/ggml-quants.c
-@@ -2425,6 +2425,960 @@ size_t quantize_tq2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+@@ -2426,6 +2426,960 @@ size_t quantize_tq2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
      return nrow * row_size;
  }
  
@@ -5626,10 +5626,10 @@ index 000000000..a270ea5ea
 +    1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f,
 +};
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index a3607b18d..935369822 100644
+index 7cfac20a6..6515c2076 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
-@@ -953,42 +953,56 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
+@@ -961,42 +961,56 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
          .blck_size                = QK_TBQ,
          .type_size                = sizeof(block_tbq3_0),
          .is_quantized             = true,
@@ -5686,7 +5686,7 @@ index a3607b18d..935369822 100644
      },
  };
  
-@@ -8337,6 +8351,13 @@ size_t ggml_quantize_chunk(
+@@ -8423,6 +8437,13 @@ size_t ggml_quantize_chunk(
          case GGML_TYPE_Q6_K:    result = quantize_q6_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_TQ1_0:   result = quantize_tq1_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_TQ2_0:   result = quantize_tq2_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;

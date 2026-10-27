@@ -1,13 +1,13 @@
 # Unified llama.cpp vendor sync (ggml-org master + Ollama/zerollama patches).
 # Runtime sibling and in-process ggml share LLAMA_CPP_COMMIT.
 UPSTREAM=https://github.com/ggml-org/llama.cpp.git
-WORKDIR=vendor/llama-cpp-b11351
-FETCH_HEAD=b11351
+WORKDIR=vendor/llama-cpp-b11870
+FETCH_HEAD=b11870
 # Full git ref for checkout / rev-list (see repo-root LLAMA_CPP_COMMIT).
-# ggml-org tag b11351 (Ollama tip trail rung 5; supersedes b11232).
-FETCH_REF=631109b34da437a3c4a5ebd75091d677671392e3
+# ggml-org tag b11870 (tip chase from b11351) (Ollama tip trail rung 5; supersedes b11232).
+FETCH_REF=74bca3950054eed1795f525cb9cf06bfe796492d
 # build-info.cpp int field (release tag b11232).
-BUILD_NUMBER=11351
+BUILD_NUMBER=11870
 
 # WHY sync order matters: build-info.cpp only stamps FETCH_HEAD/BUILD_NUMBER via sed.
 # If rsync from vendor/ is skipped, binaries report the new pin while in-tree
@@ -59,9 +59,36 @@ ml/backend/ggml/ggml: $(WORKDIR)
 PATCHES=$(wildcard llama/patches/*.patch)
 PATCHED=$(join $(dir $(PATCHES)), $(addsuffix ed, $(addprefix ., $(notdir $(PATCHES)))))
 
-.PHONY: apply-patches
+# WHY: after a tip chase, vendor already has all patch commits. Re-running
+# `git am` on that HEAD add/add-conflicts on patch 0001. If HEAD matches
+# LLAMA_CPP_VENDOR_HEAD (or commit count == patch count), just stamp markers.
+.PHONY: apply-patches mark-patches-applied
 .NOTPARALLEL:
-apply-patches: $(PATCHED)
+apply-patches:
+	@vendor_head=$$(git -C $(WORKDIR) rev-parse HEAD 2>/dev/null || true); \
+	want_head=$$(tr -d '[:space:]' < LLAMA_CPP_VENDOR_HEAD 2>/dev/null || true); \
+	n_commits=$$(git -C $(WORKDIR) rev-list --count $(FETCH_REF)..HEAD 2>/dev/null || echo 0); \
+	n_patches=$$(ls llama/patches/*.patch 2>/dev/null | wc -l | tr -d ' '); \
+	if [ -n "$$want_head" ] && [ "$$vendor_head" = "$$want_head" ]; then \
+		echo ">>> vendor already at LLAMA_CPP_VENDOR_HEAD ($$want_head); stamping .patched markers"; \
+		$(MAKE) -f $(lastword $(MAKEFILE_LIST)) mark-patches-applied; \
+	elif [ "$$n_commits" = "$$n_patches" ] && [ "$$n_patches" != "0" ]; then \
+		echo ">>> vendor already has $$n_commits/$$n_patches patch commits; stamping .patched markers"; \
+		echo ">>> tip: echo \$$(git -C $(WORKDIR) rev-parse HEAD) > LLAMA_CPP_VENDOR_HEAD"; \
+		$(MAKE) -f $(lastword $(MAKEFILE_LIST)) mark-patches-applied; \
+	else \
+		$(MAKE) -f $(lastword $(MAKEFILE_LIST)) $(PATCHED); \
+	fi
+
+mark-patches-applied:
+	@# Marker names must match `llama/patches/.%.patched: llama/patches/%.patch`
+	@# i.e. `.0001-foo.patched` for `0001-foo.patch` (not `.0001-foo.patch.patched`).
+	@rm -f llama/patches/.*.patched
+	@for p in llama/patches/*.patch; do \
+		base=$$(basename "$$p" .patch); \
+		touch "llama/patches/.$${base}.patched"; \
+	done; \
+	echo ">>> stamped $$(ls llama/patches/.*.patched 2>/dev/null | wc -l | tr -d ' ') .patched markers"
 
 llama/patches/.%.patched: llama/patches/%.patch
 	@if git -c user.name=nobody -c 'user.email=<>' -C $(WORKDIR) am -3 $(realpath $<); then \

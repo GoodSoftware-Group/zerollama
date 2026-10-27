@@ -13,10 +13,10 @@ docs/faster-bpe-tokenize.md (M15d / 0117).
  1 file changed, 57 insertions(+), 5 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index fe2aa6efc..c94df799d 100644
+index ddd88d991..a14479093 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
-@@ -196,16 +196,68 @@ static std::unordered_map<std::string, uint8_t> unicode_utf8_to_byte_map() {
+@@ -218,16 +218,68 @@ static std::vector<int> unicode_cpt_to_byte_map() {
  }
  
  static std::vector<std::string> unicode_byte_encoding_process(const std::vector<std::string> & bpe_words) {

@@ -9,7 +9,7 @@ Subject: [PATCH] ollama: compat loader hook call sites (b9611)
  2 files changed, 29 insertions(+)
 
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 6cc0b2028..81d248bea 100644
+index a963f2480..cf63e744a 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -5,6 +5,7 @@
@@ -20,7 +20,7 @@ index 6cc0b2028..81d248bea 100644
  
  #include <algorithm>
  #include <array>
-@@ -574,6 +575,7 @@ llama_model_loader::llama_model_loader(
+@@ -577,6 +578,7 @@ llama_model_loader::llama_model_loader(
          }
  
          get_key(llm_kv(LLM_KV_GENERAL_ARCHITECTURE), arch_name, false);
@@ -28,7 +28,7 @@ index 6cc0b2028..81d248bea 100644
          llm_kv = LLM_KV(llm_arch_from_string(arch_name));
  
          files.emplace_back(new llama_file(fname.c_str(), "rb", use_direct_io));
-@@ -584,6 +586,9 @@ llama_model_loader::llama_model_loader(
+@@ -587,6 +589,9 @@ llama_model_loader::llama_model_loader(
          // so we build a unified tensors index for weights.
          for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
              std::string tensor_name = std::string(cur->name);
@@ -38,7 +38,7 @@ index 6cc0b2028..81d248bea 100644
              // make sure there is no duplicated tensor names
              if (weights_map.find(tensor_name) != weights_map.end()) {
                  throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
-@@ -650,6 +655,9 @@ llama_model_loader::llama_model_loader(
+@@ -653,6 +658,9 @@ llama_model_loader::llama_model_loader(
                  // Save tensors data offset info of the shard.
                  for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
                      std::string tensor_name = std::string(cur->name);
@@ -48,7 +48,7 @@ index 6cc0b2028..81d248bea 100644
                      // make sure there is no duplicated tensor names
                      if (weights_map.find(tensor_name) != weights_map.end()) {
                          throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
-@@ -701,6 +709,9 @@ llama_model_loader::llama_model_loader(
+@@ -704,6 +712,9 @@ llama_model_loader::llama_model_loader(
          // Save tensors data offset info of the main file.
          for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
              std::string tensor_name = std::string(cur->name);
@@ -58,7 +58,7 @@ index 6cc0b2028..81d248bea 100644
              // make sure there is no duplicated tensor names
              if (weights_map.find(tensor_name) != weights_map.end()) {
                  throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
-@@ -1635,6 +1646,7 @@ bool llama_model_loader::load_all_data(
+@@ -1704,6 +1715,7 @@ bool llama_model_loader::load_all_data(
          }
  
          size_t n_size = ggml_nbytes(cur);
@@ -67,7 +67,7 @@ index 6cc0b2028..81d248bea 100644
          const bool from_mapping = use_mmap || lazy.has(cur);
  
 diff --git a/tools/mtmd/clip.cpp b/tools/mtmd/clip.cpp
-index 50fb6c408..745389264 100644
+index 204b16f3e..1392be272 100644
 --- a/tools/mtmd/clip.cpp
 +++ b/tools/mtmd/clip.cpp
 @@ -10,6 +10,8 @@
@@ -79,7 +79,7 @@ index 50fb6c408..745389264 100644
  #include <algorithm>
  #include <cassert>
  #include <cmath>
-@@ -1199,6 +1201,11 @@ struct clip_model_loader {
+@@ -1273,6 +1275,11 @@ struct clip_model_loader {
  
          ctx_meta.reset(meta);
  
@@ -91,7 +91,7 @@ index 50fb6c408..745389264 100644
          const int n_tensors = gguf_get_n_tensors(ctx_gguf.get());
  
          // print gguf info
-@@ -3651,6 +3658,7 @@ struct clip_model_loader {
+@@ -4000,6 +4007,7 @@ struct clip_model_loader {
                      auto it_off = tensor_offset.find(t->name);
                      GGML_ASSERT(it_off != tensor_offset.end() && "no offset for tensor");
                      const size_t offset = it_off->second;
@@ -99,7 +99,7 @@ index 50fb6c408..745389264 100644
                      fin.seekg(offset, std::ios::beg);
                      if (!fin) {
                          throw std::runtime_error(string_format("%s: failed to seek for tensor %s\n", __func__, t->name));
-@@ -5976,6 +5984,15 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
+@@ -6574,6 +6582,15 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
  }
  
  int clip_n_mmproj_embd(const struct clip_ctx * ctx) {

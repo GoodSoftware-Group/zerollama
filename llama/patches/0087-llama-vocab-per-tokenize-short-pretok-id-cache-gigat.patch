@@ -1,23 +1,15 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: zerollama <zerollama@local>
-Date: Thu, 30 Jul 2026 02:50:00 -0700
+Date: Sat, 24 Oct 2026 20:34:59 -0700
 Subject: [PATCH] llama-vocab: per-tokenize short pretok id cache (gigatoken
- T25/T26)
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
-Memoize short pretokens (4–15 bytes) to ≤4 result token ids within a single
-llama_tokenize call. WHY: after id-pair merge (0106), repeated identifiers in
-agent/code megaprompts still re-merge from scratch; miss path is unchanged
-(identity-safe). Skip 1–3B pretoks and <3-symbol words (probe tax > savings).
-LLAMA_BPE_NO_PRETOK_CACHE=1 disables for A/B. See docs/faster-bpe-tokenize.md (M15d).
 ---
- src/llama-vocab.cpp | 152 ++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 152 insertions(+)
+ src/llama-vocab.cpp     | 126 ++++++++++++++++++++++++++++++++++++++++
+ src/llama-vocab.cpp.rej |  72 ++++++++++-------------
+ 2 files changed, 157 insertions(+), 41 deletions(-)
 
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index 043e15a01..988bfe307 100644
+index a16c1578c..01ed1b2fc 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
 @@ -450,6 +450,110 @@ struct llm_bpe_piece4_table {
@@ -131,42 +123,7 @@ index 043e15a01..988bfe307 100644
  struct llm_bigram_bpe {
      struct comparator {
          bool operator()(const llm_bigram_bpe & l, const llm_bigram_bpe & r) const {
-@@ -813,8 +917,34 @@ struct llm_tokenizer_bpe_session {
-         symbols_final.clear();
-         auto tok_pre = vocab.get_pre_type();
-         const bool use_id_pairs = vocab.has_bpe_id_pairs();
-+        // WHY per-call init: session is constructed once per llama_tokenize; cache must not
-+        // survive across requests (no lifecycle / memory growth). Opt-out for A/B measurement.
-+        const bool want_cache = use_id_pairs && (getenv("LLAMA_BPE_NO_PRETOK_CACHE") == nullptr);
-+        pretok_cache.init(want_cache);
- 
-         for (const auto & word : word_collection) {
-+            // Cache hit: skip merge entirely. Append one symbol per cached id.
-+            if (use_id_pairs) {
-+                llama_token cached_ids[llm_bpe_pretok_cache::MAX_IDS];
-+                int cached_n = 0;
-+                if (pretok_cache.lookup(word.data(), word.size(), cached_ids, cached_n)) {
-+                    for (int ci = 0; ci < cached_n; ++ci) {
-+                        llm_symbol sym;
-+                        sym.text = word.c_str();
-+                        sym.n = word.size();
-+                        sym.prev = final_prev_index;
-+                        sym.next = -1;
-+                        sym.id = cached_ids[ci];
-+                        if (final_prev_index != -1) {
-+                            symbols_final[final_prev_index].next = symbols_final.size();
-+                        }
-+                        symbols_final.emplace_back(sym);
-+                        final_prev_index = (int) symbols_final.size() - 1;
-+                    }
-+                    continue;
-+                }
-+            }
-+
-             work_queue = llm_bigram_bpe::queue();
-             symbols.clear();
- 
-@@ -898,9 +1028,27 @@ struct llm_tokenizer_bpe_session {
+@@ -969,9 +1073,27 @@ struct llm_tokenizer_bpe_session {
                  }
              }
  
@@ -194,7 +151,7 @@ index 043e15a01..988bfe307 100644
                      sym.prev = final_prev_index;
                      sym.next = -1;
                      if (final_prev_index != -1) {
-@@ -910,6 +1058,9 @@ struct llm_tokenizer_bpe_session {
+@@ -981,6 +1103,9 @@ struct llm_tokenizer_bpe_session {
                      final_prev_index = symbols_final.size() - 1;
                  }
              }
@@ -204,7 +161,7 @@ index 043e15a01..988bfe307 100644
          }
  
          symbols = symbols_final;
-@@ -1124,6 +1275,7 @@ private:
+@@ -1197,6 +1322,7 @@ private:
      std::vector<llm_symbol> symbols;
      std::vector<llm_symbol> symbols_final;
      llm_bigram_bpe::queue work_queue;
@@ -212,3 +169,85 @@ index 043e15a01..988bfe307 100644
  };
  
  //
+diff --git a/src/llama-vocab.cpp.rej b/src/llama-vocab.cpp.rej
+index 436a28c1c..f0df29005 100644
+--- a/src/llama-vocab.cpp.rej
++++ b/src/llama-vocab.cpp.rej
+@@ -1,46 +1,36 @@
+ diff a/src/llama-vocab.cpp b/src/llama-vocab.cpp	(rejected hunks)
+-@@ -2267,6 +2622,44 @@
+-     }
+-     GGML_ASSERT(id_to_token.size() == token_to_id.size());
++@@ -813,8 +917,34 @@ struct llm_tokenizer_bpe_session {
++         symbols_final.clear();
++         auto tok_pre = vocab.get_pre_type();
++         const bool use_id_pairs = vocab.has_bpe_id_pairs();
+++        // WHY per-call init: session is constructed once per llama_tokenize; cache must not
+++        // survive across requests (no lifecycle / memory growth). Opt-out for A/B measurement.
+++        const bool want_cache = use_id_pairs && (getenv("LLAMA_BPE_NO_PRETOK_CACHE") == nullptr);
+++        pretok_cache.init(want_cache);
+  
+-+    // Build id-pair BPE table now that token_to_id is populated. Merges were loaded earlier
+-+    // as strings; converting here avoids looking up tokens before the vocab list exists.
+-+    // WHY lenient skip: some GGUFs carry orphan merge strings; failing the whole load is
+-+    // worse than omitting those pairs (encode still falls back per-pair).
+-+    if (!bpe_ranks.empty()) {
+-+        bpe_id_pairs.init(bpe_ranks.size());
+-+        size_t skipped = 0;
+-+        for (const auto & kv_pair : bpe_ranks) {
+-+            const auto it_l = token_to_id.find(kv_pair.first.first);
+-+            const auto it_r = token_to_id.find(kv_pair.first.second);
+-+            if (it_l == token_to_id.end() || it_r == token_to_id.end()) {
+-+                skipped++;
+-+                continue;
++         for (const auto & word : word_collection) {
+++            // Cache hit: skip merge entirely. Append one symbol per cached id.
+++            if (use_id_pairs) {
+++                llama_token cached_ids[llm_bpe_pretok_cache::MAX_IDS];
+++                int cached_n = 0;
+++                if (pretok_cache.lookup(word.data(), word.size(), cached_ids, cached_n)) {
+++                    for (int ci = 0; ci < cached_n; ++ci) {
+++                        llm_symbol sym;
+++                        sym.text = word.c_str();
+++                        sym.n = word.size();
+++                        sym.prev = final_prev_index;
+++                        sym.next = -1;
+++                        sym.id = cached_ids[ci];
+++                        if (final_prev_index != -1) {
+++                            symbols_final[final_prev_index].next = symbols_final.size();
+++                        }
+++                        symbols_final.emplace_back(sym);
+++                        final_prev_index = (int) symbols_final.size() - 1;
+++                    }
+++                    continue;
+++                }
+ +            }
+-+            const std::string merged_text = kv_pair.first.first + kv_pair.first.second;
+-+            const auto it_m = token_to_id.find(merged_text);
+-+            if (it_m == token_to_id.end()) {
+-+                skipped++;
+-+                continue;
+-+            }
+-+            bpe_id_pairs.insert(it_l->second, it_r->second, kv_pair.second, it_m->second);
+-+        }
+-+        if (skipped > 0) {
+-+            LLAMA_LOG_WARN("%s: skipped %zu/%zu BPE merges when building id-pair table\n",
+-+                __func__, skipped, bpe_ranks.size());
+-+        }
+-+        // Single-codepoint / short UTF-8 pieces for O(1) char->id without std::string.
+-+        // WHY build here with id-pairs: same readiness gate (token_to_id complete).
+-+        bpe_piece4.init(token_to_id.size());
+-+        for (const auto & kv : token_to_id) {
+-+            if (kv.first.size() > 0 && kv.first.size() <= 4) {
+-+                bpe_piece4.insert(kv.first.data(), kv.first.size(), kv.second);
+-+            }
+-+        }
+-+        LLAMA_LOG_INFO("%s: bpe_id_pairs          = %zu\n", __func__, bpe_id_pairs.n);
+-+        LLAMA_LOG_INFO("%s: bpe_piece4            = %zu\n", __func__, bpe_piece4.n);
+-+    }
+ +
+-     init_tokenizer(type);
++             work_queue = llm_bigram_bpe::queue();
++             symbols.clear();
+  
+-     // determine the newline token: LLaMA "<0x0A>" == 10 == '\n', Falcon 193 == '\n'

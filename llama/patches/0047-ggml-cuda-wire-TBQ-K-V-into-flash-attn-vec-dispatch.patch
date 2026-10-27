@@ -12,7 +12,7 @@ Co-authored-by: Cursor <cursoragent@cursor.com>
  1 file changed, 125 insertions(+)
 
 diff --git a/ggml/src/ggml-cuda/fattn-common.cuh b/ggml/src/ggml-cuda/fattn-common.cuh
-index a19491821..ccc81f72a 100644
+index 41d948335..f3be50a67 100644
 --- a/ggml/src/ggml-cuda/fattn-common.cuh
 +++ b/ggml/src/ggml-cuda/fattn-common.cuh
 @@ -2,6 +2,7 @@

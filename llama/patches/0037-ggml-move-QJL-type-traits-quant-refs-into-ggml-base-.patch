@@ -14,7 +14,7 @@ does not link ggml-cpu; provide a base shim and keep SIMD/op paths in cpu.
  create mode 100644 ggml/src/qjl-quants-base.c
 
 diff --git a/ggml/src/CMakeLists.txt b/ggml/src/CMakeLists.txt
-index 30f297eef..889fe01ad 100644
+index 06fabd76b..ba78f9fdb 100644
 --- a/ggml/src/CMakeLists.txt
 +++ b/ggml/src/CMakeLists.txt
 @@ -206,6 +206,9 @@ add_library(ggml-base
@@ -37,7 +37,7 @@ index 30f297eef..889fe01ad 100644
      target_compile_definitions(ggml-base PUBLIC GGML_BACKEND_DL)
  endif()
 diff --git a/ggml/src/ggml-cpu/CMakeLists.txt b/ggml/src/ggml-cpu/CMakeLists.txt
-index 57f375cff..f28f0f750 100644
+index 49715c312..a91aff1f1 100644
 --- a/ggml/src/ggml-cpu/CMakeLists.txt
 +++ b/ggml/src/ggml-cpu/CMakeLists.txt
 @@ -57,7 +57,10 @@ function(ggml_add_cpu_backend_variant_impl tag_name)

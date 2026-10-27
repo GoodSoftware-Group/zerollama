@@ -1,22 +1,19 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: zerollama <zerollama@local>
-Date: Thu, 30 Jul 2026 03:00:25 -0700
+Date: Sat, 24 Oct 2026 20:35:00 -0700
 Subject: [PATCH] unicode: faster pretok materialize + shared cpts (gigatoken
- lessons)
 
-Skip noop UTF-8 roundtrip in GPT-2 byte remap; append UTF-8 without per-cpt
-temporary strings; pass shared codepoints into custom regex splitters so
-unicode_regex_split does not decode the megaprompt twice. Identity-safe.
-See docs/faster-bpe-tokenize.md (M15d / 0108).
 ---
- src/unicode.cpp | 108 +++++++++++++++++++++++-------------------------
- 1 file changed, 51 insertions(+), 57 deletions(-)
+ src/unicode.cpp     | 90 +++++++++++++++++++++------------------------
+ src/unicode.cpp.rej | 46 +++++++++++++++++++++++
+ 2 files changed, 88 insertions(+), 48 deletions(-)
+ create mode 100644 src/unicode.cpp.rej
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index 93996f9dd..14cfebf78 100644
+index 796f8e8fb..500b52d31 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
-@@ -194,30 +194,27 @@ static std::unordered_map<std::string, uint8_t> unicode_utf8_to_byte_map() {
+@@ -216,30 +216,27 @@ static std::vector<int> unicode_cpt_to_byte_map() {
  }
  
  static std::vector<std::string> unicode_byte_encoding_process(const std::vector<std::string> & bpe_words) {
@@ -55,7 +52,7 @@ index 93996f9dd..14cfebf78 100644
      size_t start = 0;
      for (auto offset : offsets) {
          const size_t offset_ini = start;
-@@ -330,12 +327,10 @@ static std::vector<size_t> unicode_regex_split_custom_gpt2(const std::string & t
+@@ -352,12 +349,10 @@ static std::vector<size_t> unicode_regex_split_custom_gpt2(const std::string & t
  }
  
  // LLAMA3 system regex: "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
@@ -69,7 +66,7 @@ index 93996f9dd..14cfebf78 100644
      size_t start = 0;
      for (auto offset : offsets) {
          const size_t offset_ini = start;
-@@ -471,12 +466,10 @@ static std::vector<size_t> unicode_regex_split_custom_llama3(const std::string &
+@@ -640,12 +635,10 @@ static std::vector<size_t> unicode_regex_split_custom_k2_horizon(const std::stri
  }
  
  // Qwen2 system regex: "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
@@ -83,7 +80,7 @@ index 93996f9dd..14cfebf78 100644
      size_t start = 0;
      for (auto offset : offsets) {
          const size_t offset_ini = start;
-@@ -607,12 +600,10 @@ static std::vector<size_t> unicode_regex_split_custom_qwen2(const std::string &
+@@ -776,12 +769,10 @@ static std::vector<size_t> unicode_regex_split_custom_qwen2(const std::string &
  
  // Qwen3.5 system regex: "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
  // Compared to Qwen2, letter-runs also consume Unicode combining marks (\p{M}): [\p{L}\p{M}]+ instead of \p{L}+
@@ -97,7 +94,7 @@ index 93996f9dd..14cfebf78 100644
      size_t start = 0;
      for (auto offset : offsets) {
          const size_t offset_ini = start;
-@@ -774,12 +765,10 @@ static std::vector<size_t> unicode_regex_split_stl(const std::basic_string<CharT
+@@ -943,12 +934,10 @@ static std::vector<size_t> unicode_regex_split_stl(const std::basic_string<CharT
  
  // K2 system regex patterns (from tokenization_kimi.py):
  // [\p{Han}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
@@ -111,7 +108,7 @@ index 93996f9dd..14cfebf78 100644
      size_t start = 0;
      for (auto offset : offsets) {
          const size_t offset_ini = start;
-@@ -945,12 +934,10 @@ static std::vector<size_t> unicode_regex_split_custom_kimi_k2(const std::string
+@@ -1114,12 +1103,10 @@ static std::vector<size_t> unicode_regex_split_custom_kimi_k2(const std::string
  }
  
  // AFMOE digit handling: splits digits with leading 1-2 based on total length modulo 3
@@ -125,7 +122,7 @@ index 93996f9dd..14cfebf78 100644
      size_t start = 0;
      for (auto offset : offsets) {
          const size_t offset_ini = start;
-@@ -1020,12 +1007,10 @@ static std::vector<size_t> unicode_regex_split_custom_afmoe(const std::string &
+@@ -1189,12 +1176,10 @@ static std::vector<size_t> unicode_regex_split_custom_afmoe(const std::string &
  
  // regex: [^\n]+|[\n]+
  // splits text into runs of non-newline characters and runs of newline characters
@@ -139,52 +136,7 @@ index 93996f9dd..14cfebf78 100644
      size_t start = 0;
      for (auto offset : offsets) {
          const size_t offset_ini = start;
-@@ -1047,35 +1032,35 @@ static std::vector<size_t> unicode_regex_split_custom_newlines(const std::string
-     return bpe_offsets;
- }
- 
--static std::vector<size_t> unicode_regex_split_custom(const std::string & text, const std::string & regex_expr, const std::vector<size_t> & offsets) {
-+static std::vector<size_t> unicode_regex_split_custom(const std::vector<uint32_t> & cpts, const std::string & regex_expr, const std::vector<size_t> & offsets) {
-     std::vector<size_t> bpe_offsets;
- 
-     if (regex_expr == "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)") {
--        bpe_offsets = unicode_regex_split_custom_gpt2(text, offsets);
-+        bpe_offsets = unicode_regex_split_custom_gpt2(cpts, offsets);
-     } else if (
-             regex_expr == "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+" ||
-             regex_expr == "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+") {
--        bpe_offsets = unicode_regex_split_custom_llama3(text, offsets);
-+        bpe_offsets = unicode_regex_split_custom_llama3(cpts, offsets);
-     } else if (
-            regex_expr == "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+") {
--        bpe_offsets = unicode_regex_split_custom_qwen2(text, offsets);
-+        bpe_offsets = unicode_regex_split_custom_qwen2(cpts, offsets);
-     } else if (
-            regex_expr == "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+") {
--        bpe_offsets = unicode_regex_split_custom_qwen35(text, offsets);
-+        bpe_offsets = unicode_regex_split_custom_qwen35(cpts, offsets);
-     } else if (regex_expr == "\\p{Han}+") {
-         // K2's first pattern - handle all K2 patterns together
--        bpe_offsets = unicode_regex_split_custom_kimi_k2(text, offsets);
-+        bpe_offsets = unicode_regex_split_custom_kimi_k2(cpts, offsets);
-     } else if (regex_expr == "\\p{AFMoE_digits}") {
-         // AFMOE digit pattern - use custom implementation for proper splitting
--        bpe_offsets = unicode_regex_split_custom_afmoe(text, offsets);
-+        bpe_offsets = unicode_regex_split_custom_afmoe(cpts, offsets);
-     } else if (regex_expr == "[^\\n]+|[\\n]+") {
--        bpe_offsets = unicode_regex_split_custom_newlines(text, offsets);
-+        bpe_offsets = unicode_regex_split_custom_newlines(cpts, offsets);
-     } else if (regex_expr == "\\d{1,3}(?=(?:\\d{3})*\\b)") {
-         // tiny_aya digit grouping pattern from tokenizer.json:
-         //   {"type": "Split", "pattern": {"Regex": "\\d{1,3}(?=(?:\\d{3})*\\b)"}, "behavior": "Isolated"}
-         // Splits digits into groups of 3 from the right (e.g., 1234567 -> 1, 234, 567)
-         // TODO: Revisit this regex, in case there are any subtle tokenization differences with the original regex.
--        bpe_offsets = unicode_regex_split_custom_afmoe(text, offsets);
-+        bpe_offsets = unicode_regex_split_custom_afmoe(cpts, offsets);
-     }
- 
-     return bpe_offsets;
-@@ -1085,35 +1070,41 @@ static std::vector<size_t> unicode_regex_split_custom(const std::string & text,
+@@ -1259,35 +1244,41 @@ static std::vector<size_t> unicode_regex_split_custom(const std::string & text,
  // interface
  //
  
@@ -243,7 +195,7 @@ index 93996f9dd..14cfebf78 100644
  std::vector<uint32_t> unicode_cpts_normalize_nfd(const std::vector<uint32_t> & cpts) {
      auto comp = [] (const uint32_t cpt, const range_nfd & range) {
          return cpt < range.first;
-@@ -1290,7 +1281,7 @@ std::vector<std::string> unicode_regex_split(const std::string & text, const std
+@@ -1562,7 +1553,7 @@ std::vector<std::string> unicode_regex_split(const std::string & text, const std
  
      for (const auto & regex_expr : regex_exprs) {
          // first, see if we have an efficient custom regex implementation
@@ -252,7 +204,7 @@ index 93996f9dd..14cfebf78 100644
  
          if (!tmp.empty()) {
              bpe_offsets = std::move(tmp);
-@@ -1394,8 +1385,11 @@ std::vector<std::string> unicode_regex_split(const std::string & text, const std
+@@ -1666,8 +1657,11 @@ std::vector<std::string> unicode_regex_split(const std::string & text, const std
      size_t start = 0;
      for (size_t & offset : bpe_offsets) {
          bpe_words.emplace_back();
@@ -265,3 +217,55 @@ index 93996f9dd..14cfebf78 100644
          }
          start += offset;
      }
+diff --git a/src/unicode.cpp.rej b/src/unicode.cpp.rej
+new file mode 100644
+index 000000000..70c722560
+--- /dev/null
++++ b/src/unicode.cpp.rej
+@@ -0,0 +1,46 @@
++diff a/src/unicode.cpp b/src/unicode.cpp	(rejected hunks)
++@@ -1047,35 +1032,35 @@ static std::vector<size_t> unicode_regex_split_custom_newlines(const std::string
++     return bpe_offsets;
++ }
++ 
++-static std::vector<size_t> unicode_regex_split_custom(const std::string & text, const std::string & regex_expr, const std::vector<size_t> & offsets) {
+++static std::vector<size_t> unicode_regex_split_custom(const std::vector<uint32_t> & cpts, const std::string & regex_expr, const std::vector<size_t> & offsets) {
++     std::vector<size_t> bpe_offsets;
++ 
++     if (regex_expr == "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)") {
++-        bpe_offsets = unicode_regex_split_custom_gpt2(text, offsets);
+++        bpe_offsets = unicode_regex_split_custom_gpt2(cpts, offsets);
++     } else if (
++             regex_expr == "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+" ||
++             regex_expr == "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+") {
++-        bpe_offsets = unicode_regex_split_custom_llama3(text, offsets);
+++        bpe_offsets = unicode_regex_split_custom_llama3(cpts, offsets);
++     } else if (
++            regex_expr == "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+") {
++-        bpe_offsets = unicode_regex_split_custom_qwen2(text, offsets);
+++        bpe_offsets = unicode_regex_split_custom_qwen2(cpts, offsets);
++     } else if (
++            regex_expr == "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+") {
++-        bpe_offsets = unicode_regex_split_custom_qwen35(text, offsets);
+++        bpe_offsets = unicode_regex_split_custom_qwen35(cpts, offsets);
++     } else if (regex_expr == "\\p{Han}+") {
++         // K2's first pattern - handle all K2 patterns together
++-        bpe_offsets = unicode_regex_split_custom_kimi_k2(text, offsets);
+++        bpe_offsets = unicode_regex_split_custom_kimi_k2(cpts, offsets);
++     } else if (regex_expr == "\\p{AFMoE_digits}") {
++         // AFMOE digit pattern - use custom implementation for proper splitting
++-        bpe_offsets = unicode_regex_split_custom_afmoe(text, offsets);
+++        bpe_offsets = unicode_regex_split_custom_afmoe(cpts, offsets);
++     } else if (regex_expr == "[^\\n]+|[\\n]+") {
++-        bpe_offsets = unicode_regex_split_custom_newlines(text, offsets);
+++        bpe_offsets = unicode_regex_split_custom_newlines(cpts, offsets);
++     } else if (regex_expr == "\\d{1,3}(?=(?:\\d{3})*\\b)") {
++         // tiny_aya digit grouping pattern from tokenizer.json:
++         //   {"type": "Split", "pattern": {"Regex": "\\d{1,3}(?=(?:\\d{3})*\\b)"}, "behavior": "Isolated"}
++         // Splits digits into groups of 3 from the right (e.g., 1234567 -> 1, 234, 567)
++         // TODO: Revisit this regex, in case there are any subtle tokenization differences with the original regex.
++-        bpe_offsets = unicode_regex_split_custom_afmoe(text, offsets);
+++        bpe_offsets = unicode_regex_split_custom_afmoe(cpts, offsets);
++     }
++ 
++     return bpe_offsets;

@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:59:38 -0700
+Subject: [PATCH] fix: restore draft_simple type_in ctor for milady dflash path
+
+Tip ctor took (params, n_seq) only; milady dflash-draft still passes
+COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH. Restore optional type_in + ANE bind.
+---
+ common/speculative.cpp | 27 +++++++++++++++++++++++++--
+ 1 file changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index 018490483..561f1fa4e 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -232,8 +232,11 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+ 
+     std::vector<common_params_sampling> smpls_cfg;
+ 
+-    common_speculative_impl_draft_simple(const common_params_speculative & params, uint32_t n_seq)
+-        : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE, n_seq, params.draft.n_max)
++    common_speculative_impl_draft_simple(
++            const common_params_speculative & params,
++            uint32_t n_seq,
++            common_speculative_type type_in = COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE)
++        : common_speculative_impl(type_in, n_seq, params.draft.n_max)
+         , params(params.draft)
+     {
+         auto * ctx_dft = this->params.ctx_dft;
+@@ -298,6 +301,26 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+ 
+             throw std::runtime_error("the draft model number of sequences is incompatible with the speculative n_seq");
+         }
++
++        common_ane_draft_log_init(type, llama_model_n_embd(llama_get_model(ctx_dft)));
++
++        char arch_buf[64] = {};
++        const bool is_dflash_draft =
++            llama_model_meta_val_str(llama_get_model(ctx_dft), "general.architecture", arch_buf, sizeof(arch_buf)) > 0 &&
++            strcmp(arch_buf, "dflash-draft") == 0;
++        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) || is_dflash_draft;
++        if (dflash || common_ane_draft_enabled()) {
++            common_ane_draft_bind_target_ctx(ctx_tgt);
++            llama_set_embeddings_pre_norm(ctx_tgt, true);
++        }
++
++        // Why pre-norm: ANE handoff reads llama_get_embeddings_pre_norm_ith (see ane_draft_hook.cpp).
++        if (common_ane_draft_enabled()) {
++            llama_set_embeddings_pre_norm(ctx_dft, true);
++            if (common_ane_draft_get_drive_mode() != COMMON_ANE_DRAFT_DRIVE_OFF) {
++                llama_set_embeddings(ctx_dft, true);
++            }
++        }
+     }
+ 
+     void begin(llama_seq_id seq_id, const llama_tokens & /*prompt*/) override {

@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sun, 25 Oct 2026 13:48:43 -0700
+Subject: [PATCH] fix: port ANE B7 drive-token path onto tip draft_simple
+
+Tip probabilistic drafting uses id_sampled when result_q is set; B7
+only overrides the greedy/top candidate path. Restores restore_ane_hook
+verify markers on b11870.
+---
+ common/speculative.cpp | 24 ++++++++++++++++++++++--
+ 1 file changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index 561f1fa4e..03c69e51e 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -453,10 +453,30 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+                 }
+ 
+                 // add drafted token for each sequence
+-                const llama_token id = dparams.at(seq_id).result_q ? id_sampled : cur_p->data[0].id;
++                llama_token id = dparams.at(seq_id).result_q ? id_sampled : cur_p->data[0].id;
++                float pick_p = cur_p->data[0].p;
++
++                // B7: optional ANE tied-embed argmax replaces Metal sampler token (lab).
++                // Skip when rejection-sampling path already chose id_sampled (result_q).
++                const common_ane_draft_drive_mode drive = common_ane_draft_get_drive_mode();
++                if (drive != COMMON_ANE_DRAFT_DRIVE_OFF && !dparams.at(seq_id).result_q) {
++                    llama_token ane_id = 0;
++                    float ane_p = 0.f;
++                    float hidden_cos = 0.f;
++                    if (common_ane_draft_try_drive_token(ctx_dft, i_batch - 1, &ane_id, &ane_p, &hidden_cos)) {
++                        if (drive == COMMON_ANE_DRAFT_DRIVE_SHADOW) {
++                            LOG_INF("%s: B7 shadow step=%d seq=%d ane_tok=%d metal_tok=%d match=%d hidden_cos=%.4f\n",
++                                    __func__, i, (int) seq_id, (int) ane_id, (int) id, ane_id == id ? 1 : 0, hidden_cos);
++                        } else {
++                            id = ane_id;
++                            pick_p = ane_p;
++                            LOG_DBG("%s: B7 force seq=%d ane_tok=%d\n", __func__, (int) seq_id, (int) ane_id);
++                        }
++                    }
++                }
+ 
+                 // only collect very high-confidence draft tokens
+-                if (cur_p->data[0].p < params.p_min) {
++                if (pick_p < params.p_min) {
+                     drafting[seq_id] = false;
+                     n_drafting--;
+ 

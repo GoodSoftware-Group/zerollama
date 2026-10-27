@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:48:56 -0700
+Subject: [PATCH] fix: pad remaining ubatch inits with MultiDecode null fields
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+dsv4 and batch_ext init paths still jumped decision_order → data.
+---
+ src/llama-batch.cpp         | 3 +++
+ src/llama-kv-cache-dsv4.cpp | 3 +++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/src/llama-batch.cpp b/src/llama-batch.cpp
+index f69307fb4..52cafeee0 100644
+--- a/src/llama-batch.cpp
++++ b/src/llama-batch.cpp
+@@ -348,6 +348,9 @@ bool llama_batch_allocr::init(
+             /*.output       =*/ batch.logits,
+             /*.type         =*/ is_embd_vec.empty() ? nullptr : is_embd_vec.data(),
+             /*.decision_order =*/ decision_order.empty() ? nullptr : decision_order.data(),
++        /*.parent       =*/ nullptr,
++        /*.node_id      =*/ nullptr,
++        /*.parent_node_id=*/ nullptr,
+             /*.data         =*/ {},
+         };
+ 
+diff --git a/src/llama-kv-cache-dsv4.cpp b/src/llama-kv-cache-dsv4.cpp
+index e479dc564..7dcff6bdc 100644
+--- a/src/llama-kv-cache-dsv4.cpp
++++ b/src/llama-kv-cache-dsv4.cpp
+@@ -168,6 +168,9 @@ static llama_ubatch dsv4_build_raw_write_ubatch(const llama_ubatch & ubatch) {
+         /*.output       =*/ data->output.data(),
+         /*.type         =*/ nullptr,
+         /*.decision_order =*/ nullptr,
++        /*.parent       =*/ nullptr,
++        /*.node_id      =*/ nullptr,
++        /*.parent_node_id=*/ nullptr,
+         /*.data         =*/ data,
+     };
+ 

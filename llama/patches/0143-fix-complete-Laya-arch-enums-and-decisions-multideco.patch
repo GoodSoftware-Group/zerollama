@@ -1,0 +1,125 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:40:06 -0700
+Subject: [PATCH] fix: complete Laya arch enums and decisions/multidecode HTTP
+ routes
+
+Port rejected 0124/0125/0128 hunks after tip enum/route layout drift.
+---
+ src/llama-arch.cpp            | 24 ++++++++++++++++++++++++
+ src/llama-arch.h              | 14 ++++++++++++++
+ tools/server/server-context.h |  2 ++
+ tools/server/server.cpp       |  6 ++++++
+ 4 files changed, 46 insertions(+)
+
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 451ac517d..222215845 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -808,6 +808,18 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
+     { LLM_TENSOR_DFLASH_SELECTOR_PREV,                   "selector_predecessor" },
+     { LLM_TENSOR_DFLASH_SELECTOR_NEXT,                   "selector_successor" },
+     { LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,                 "selector_hidden" },
++    { LLM_TENSOR_LAYA_TYPE_EMBD,                         "laya.type_embd" },
++    { LLM_TENSOR_LAYA_HEAD_ATTN_NORM,                    "laya.head.%d.attn_norm" },
++    { LLM_TENSOR_LAYA_HEAD_ATTN_QKV,                     "laya.head.%d.attn_qkv" },
++    { LLM_TENSOR_LAYA_HEAD_ATTN_OUT,                     "laya.head.%d.attn_out" },
++    { LLM_TENSOR_LAYA_HEAD_FFN_NORM,                     "laya.head.%d.ffn_norm" },
++    { LLM_TENSOR_LAYA_HEAD_FFN_UP,                       "laya.head.%d.ffn_up" },
++    { LLM_TENSOR_LAYA_HEAD_FFN_DOWN,                     "laya.head.%d.ffn_down" },
++    { LLM_TENSOR_LAYA_SCORER_NORM,                       "laya.scorer.norm" },
++    { LLM_TENSOR_LAYA_SCORER_FC1,                        "laya.scorer.fc1" },
++    { LLM_TENSOR_LAYA_SCORER_FC2,                        "laya.scorer.fc2" },
++    { LLM_TENSOR_LAYA_ACT_FC1,                           "laya.act.fc1" },
++    { LLM_TENSOR_LAYA_ACT_FC2,                           "laya.act.fc2" },
+     { LLM_TENSOR_LILICORR_TOKEN_PROJ,                    "lilicorr.token_proj" },
+     { LLM_TENSOR_LILICORR_PASS_HIDDEN_PROJ,              "lilicorr.pass_hidden_proj" },
+     { LLM_TENSOR_LILICORR_SLOT_EMBD,                     "lilicorr.slot_embedding" },
+@@ -1148,6 +1160,18 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
+     {LLM_TENSOR_DFLASH_SELECTOR_PREV,       {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
+     {LLM_TENSOR_DFLASH_SELECTOR_NEXT,       {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
+     {LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,     {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_LAYA_TYPE_EMBD,             {LLM_TENSOR_LAYER_INPUT,     GGML_OP_GET_ROWS}},
++    {LLM_TENSOR_LAYA_HEAD_ATTN_NORM,        {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_LAYA_HEAD_ATTN_QKV,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_LAYA_HEAD_ATTN_OUT,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_LAYA_HEAD_FFN_NORM,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_LAYA_HEAD_FFN_UP,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_LAYA_HEAD_FFN_DOWN,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_LAYA_SCORER_NORM,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
++    {LLM_TENSOR_LAYA_SCORER_FC1,            {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_LAYA_SCORER_FC2,            {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_LAYA_ACT_FC1,               {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_LAYA_ACT_FC2,               {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+     {LLM_TENSOR_LILICORR_TOKEN_PROJ,        {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+     {LLM_TENSOR_LILICORR_PASS_HIDDEN_PROJ,  {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+     {LLM_TENSOR_LILICORR_SLOT_EMBD,         {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_ADD}},
+diff --git a/src/llama-arch.h b/src/llama-arch.h
+index b9a127dbd..335d7faa0 100644
+--- a/src/llama-arch.h
++++ b/src/llama-arch.h
+@@ -176,6 +176,7 @@ enum llm_arch {
+     LLM_ARCH_K2_HORIZON,
+     LLM_ARCH_BEAM,
+     LLM_ARCH_KOLIBRI1,
++    LLM_ARCH_LAYA, // Laya typed-decision (ModernBERT encoder + decision head)
+     LLM_ARCH_UNKNOWN,
+ };
+ 
+@@ -820,6 +821,19 @@ enum llm_tensor {
+     LLM_TENSOR_DFLASH_SELECTOR_PREV,
+     LLM_TENSOR_DFLASH_SELECTOR_NEXT,
+     LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,
++    // Laya decision head (post-encoder)
++    LLM_TENSOR_LAYA_TYPE_EMBD,
++    LLM_TENSOR_LAYA_HEAD_ATTN_NORM,
++    LLM_TENSOR_LAYA_HEAD_ATTN_QKV,
++    LLM_TENSOR_LAYA_HEAD_ATTN_OUT,
++    LLM_TENSOR_LAYA_HEAD_FFN_NORM,
++    LLM_TENSOR_LAYA_HEAD_FFN_UP,
++    LLM_TENSOR_LAYA_HEAD_FFN_DOWN,
++    LLM_TENSOR_LAYA_SCORER_NORM,
++    LLM_TENSOR_LAYA_SCORER_FC1,
++    LLM_TENSOR_LAYA_SCORER_FC2,
++    LLM_TENSOR_LAYA_ACT_FC1,
++    LLM_TENSOR_LAYA_ACT_FC2,
+     LLM_TENSOR_LILICORR_TOKEN_PROJ,
+     LLM_TENSOR_LILICORR_PASS_HIDDEN_PROJ,
+     LLM_TENSOR_LILICORR_SLOT_EMBD,
+diff --git a/tools/server/server-context.h b/tools/server/server-context.h
+index 6fd610902..a1e0b481c 100644
+--- a/tools/server/server-context.h
++++ b/tools/server/server-context.h
+@@ -136,6 +136,8 @@ struct server_routes {
+     server_http_context::handler_t post_embeddings;
+     server_http_context::handler_t post_embeddings_oai;
+     server_http_context::handler_t post_rerank;
++    server_http_context::handler_t post_decisions;
++    server_http_context::handler_t post_multidecode;
+     server_http_context::handler_t post_tts;
+     server_http_context::handler_t post_systemone;
+     server_http_context::handler_t get_lora_adapters;
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index 5db6ad85e..6eaf29238 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -203,6 +203,10 @@ static void server_register_routes(server_http_context & ctx_http, server_routes
+     ctx_http.post("/reranking",                ex_wrapper(routes.post_rerank));
+     ctx_http.post("/v1/rerank",                ex_wrapper(routes.post_rerank));
+     ctx_http.post("/v1/reranking",             ex_wrapper(routes.post_rerank));
++    ctx_http.post("/v1/decisions",             ex_wrapper(routes.post_decisions));
++    ctx_http.post("/decisions",                ex_wrapper(routes.post_decisions));
++    ctx_http.post("/v1/multidecode",           ex_wrapper(routes.post_multidecode));
++    ctx_http.post("/multidecode",              ex_wrapper(routes.post_multidecode));
+     ctx_http.post("/v1/systemone",             ex_wrapper(routes.post_systemone));
+     ctx_http.post("/tokenize",                 ex_wrapper(routes.post_tokenize));
+     ctx_http.post("/detokenize",               ex_wrapper(routes.post_detokenize));
+@@ -483,6 +487,8 @@ static int server_run_router(common_params & params, int argc, char ** argv, con
+     routes.post_embeddings             = models_routes->proxy_post;
+     routes.post_embeddings_oai         = models_routes->proxy_post;
+     routes.post_rerank                 = models_routes->proxy_post;
++        routes.post_decisions              = models_routes->proxy_post;
++        routes.post_multidecode            = models_routes->proxy_post;
+     routes.post_systemone              = models_routes->proxy_post;
+     routes.post_tokenize               = models_routes->proxy_post;
+     routes.post_detokenize             = models_routes->proxy_post;

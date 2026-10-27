@@ -80,6 +80,8 @@ add_library(${TARGET}
     download.h
     fit.cpp
     fit.h
+    file-lock.cpp
+    file-lock.h
     hf-cache.cpp
     hf-cache.h
     http.h
@@ -233,3 +235,7 @@ if (ZEROLLAMA_UMA)
     message(STATUS "llama-common: ZEROLLAMA_UMA HOLD_ANE for ane_draft_session (dlsym)")
 endif()
 
+if (CMAKE_SYSTEM_NAME MATCHES "AIX")
+    # AIX's flock() function comes from libbsd.a
+    target_link_libraries(${TARGET} PRIVATE -lbsd)
+endif()

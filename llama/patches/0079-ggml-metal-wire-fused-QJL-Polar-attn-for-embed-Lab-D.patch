@@ -1,15 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: nobody <nobody@localhost>
-Date: Sat, 25 Jul 2026 22:45:00 -0700
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:34:58 -0700
 Subject: [PATCH] ggml-metal: wire fused QJL+Polar attn for embed (Lab D1b)
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
-Claim GGML_OP_FUSED_ATTN_QJL_TBQ on Metal for Q4_POLAR V, project Q
-128→256, dispatch kernel_fused_attn_qjl_polar_f32, and append fused
-shaders into GGML_METAL_EMBED_LIBRARY. Aligns QJL block field names
-with ggml-common (signs/d).
 ---
  .../eliza-shipped/fused_attn_qjl_polar.metal  |  10 +-
  .../eliza-shipped/qjl_set_rows.metal          |  26 ++++
@@ -18,10 +11,12 @@ with ggml-common (signs/d).
  ggml/src/ggml-metal/ggml-metal-device.m       |  27 ++++
  ggml/src/ggml-metal/ggml-metal-impl.h         |  16 ++
  ggml/src/ggml-metal/ggml-metal-ops.cpp        | 139 ++++++++++++++++++
- ggml/src/ggml-metal/ggml-metal-ops.h          |   3 +
+ ggml/src/ggml-metal/ggml-metal-ops.h          |   1 +
+ ggml/src/ggml-metal/ggml-metal-ops.h.rej      |  10 ++
  ggml/src/ggml-metal/ggml-metal.cpp            |   4 +
  src/llama-kv-cache.h                          |   2 -
- 10 files changed, 244 insertions(+), 6 deletions(-)
+ 11 files changed, 252 insertions(+), 6 deletions(-)
+ create mode 100644 ggml/src/ggml-metal/ggml-metal-ops.h.rej
 
 diff --git a/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_polar.metal b/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_polar.metal
 index e8ce17b45..1ad528242 100644
@@ -94,10 +89,10 @@ index a637839ca..32686ab3d 100644
 +    out[(ulong(qp) * ulong(n_heads) + ulong(hq)) * ulong(proj_dim) + ulong(j)] = acc;
 +}
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
-index 95b6c513f..9daf7613e 100644
+index f3f5d4d77..2cd601983 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
-@@ -690,6 +690,27 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rwkv(ggml_metal_
+@@ -701,6 +701,27 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rwkv(ggml_metal_
      return res;
  }
  
@@ -126,7 +121,7 @@ index 95b6c513f..9daf7613e 100644
      char base[256];
      char name[256];
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index 5914586a3..baf4b5444 100644
+index bb01046e4..fdc2ab729 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
 @@ -137,6 +137,8 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_conv_
@@ -139,10 +134,10 @@ index 5914586a3..baf4b5444 100644
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_solve_tri         (ggml_metal_library_t lib, const struct ggml_tensor * op);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_ext        (ggml_metal_library_t lib, const struct ggml_tensor * op, int nsg, int nxpsg, int r1ptg);
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 355260d8a..bfc4bc054 100644
+index a7fbb6890..3fdd15b56 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -1999,6 +1999,33 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -2001,6 +2001,33 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
          case GGML_OP_RWKV_WKV6:
          case GGML_OP_RWKV_WKV7:
              return true;
@@ -177,10 +172,10 @@ index 355260d8a..bfc4bc054 100644
              return has_simdgroup_reduction && op->src[2]->ne[0] % 32 == 0;
          case GGML_OP_SOLVE_TRI:
 diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
-index eb1868f62..38efc73a3 100644
+index 9db266f44..215bc8032 100644
 --- a/ggml/src/ggml-metal/ggml-metal-impl.h
 +++ b/ggml/src/ggml-metal/ggml-metal-impl.h
-@@ -1061,6 +1061,22 @@ typedef struct {
+@@ -1067,6 +1067,22 @@ typedef struct {
      uint64_t nb3;
  } ggml_metal_kargs_set_rows;
  
@@ -204,10 +199,10 @@ index eb1868f62..38efc73a3 100644
      int32_t  ne00;
      int32_t  ne01;
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index d0890bdba..ebf8ecd09 100644
+index 8962cadea..5712b7d85 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -478,6 +478,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
+@@ -482,6 +482,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
              {
                  n_fuse = ggml_metal_op_flash_attn_ext(ctx, idx);
              } break;
@@ -218,7 +213,7 @@ index d0890bdba..ebf8ecd09 100644
          case GGML_OP_SET:
              {
                  n_fuse = ggml_metal_op_set(ctx, idx);
-@@ -3272,6 +3276,141 @@ size_t ggml_metal_op_flash_attn_ext_extra_idx(const ggml_tensor * op) {
+@@ -3430,6 +3434,141 @@ size_t ggml_metal_op_flash_attn_ext_extra_idx(const ggml_tensor * op) {
      return GGML_PAD(sizeof(int32_t)*(size_t) n_kv_max_padded*ne31*ne32*ne33, 16);
  }
  
@@ -361,19 +356,10 @@ index d0890bdba..ebf8ecd09 100644
      ggml_tensor * op = ctx->node(idx);
  
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h
-index 583d1156b..fd9f3cd77 100644
+index e14a2dd5f..2d386df04 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.h
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.h
-@@ -47,6 +47,8 @@ size_t ggml_metal_op_flash_attn_ext_extra_tmp(const struct ggml_tensor * op);
- size_t ggml_metal_op_flash_attn_ext_extra_kv_f16(const struct ggml_tensor * op);
- size_t ggml_metal_op_flash_attn_ext_extra_idx(const struct ggml_tensor * op);
- 
-+size_t ggml_metal_op_fused_attn_qjl_extra_q_sketch(const struct ggml_tensor * op);
-+
- int ggml_metal_op_concat            (ggml_metal_op_t ctx, int idx);
- int ggml_metal_op_repeat            (ggml_metal_op_t ctx, int idx);
- int ggml_metal_op_acc               (ggml_metal_op_t ctx, int idx);
-@@ -75,6 +77,7 @@ int ggml_metal_op_mul_mat           (ggml_metal_op_t ctx, int idx);
+@@ -76,6 +76,7 @@ int ggml_metal_op_mul_mat           (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_mul_mat_id        (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_add_id            (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_flash_attn_ext    (ggml_metal_op_t ctx, int idx);
@@ -381,11 +367,27 @@ index 583d1156b..fd9f3cd77 100644
  int ggml_metal_op_bin               (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_silu_back         (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_l2_norm           (ggml_metal_op_t ctx, int idx);
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h.rej b/ggml/src/ggml-metal/ggml-metal-ops.h.rej
+new file mode 100644
+index 000000000..cc55f6e96
+--- /dev/null
++++ b/ggml/src/ggml-metal/ggml-metal-ops.h.rej
+@@ -0,0 +1,10 @@
++diff a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h	(rejected hunks)
++@@ -47,6 +47,8 @@ size_t ggml_metal_op_flash_attn_ext_extra_tmp(const struct ggml_tensor * op);
++ size_t ggml_metal_op_flash_attn_ext_extra_kv_f16(const struct ggml_tensor * op);
++ size_t ggml_metal_op_flash_attn_ext_extra_idx(const struct ggml_tensor * op);
++ 
+++size_t ggml_metal_op_fused_attn_qjl_extra_q_sketch(const struct ggml_tensor * op);
+++
++ int ggml_metal_op_concat            (ggml_metal_op_t ctx, int idx);
++ int ggml_metal_op_repeat            (ggml_metal_op_t ctx, int idx);
++ int ggml_metal_op_acc               (ggml_metal_op_t ctx, int idx);
 diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
-index 163c93bd8..d6daaf945 100644
+index 9dfc89534..c2aeec67a 100644
 --- a/ggml/src/ggml-metal/ggml-metal.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal.cpp
-@@ -236,6 +236,10 @@ static size_t ggml_backend_metal_buffer_type_get_alloc_size(ggml_backend_buffer_
+@@ -235,6 +235,10 @@ static size_t ggml_backend_metal_buffer_type_get_alloc_size(ggml_backend_buffer_
                  res += ggml_metal_op_flash_attn_ext_extra_kv_f16(tensor);
                  res += ggml_metal_op_flash_attn_ext_extra_idx(tensor);
              } break;
@@ -397,7 +399,7 @@ index 163c93bd8..d6daaf945 100644
          case GGML_OP_ARGSORT:
              {
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index df40eb525..3ffd9bedd 100644
+index 67582e65b..cfc08b198 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
 @@ -245,8 +245,6 @@ public:

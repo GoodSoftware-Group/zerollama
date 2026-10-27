@@ -1,15 +1,17 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: zerollama <zerollama@local>
-Date: Fri, 10 Jul 2026 01:06:29 -0700
+Date: Sat, 24 Oct 2026 20:34:45 -0700
 Subject: [PATCH] ollama: multi-GPU SWA flash-attn mmproj VRAM prompt tuning
 
 ---
- common/fit.cpp                  | 121 ++++++++++++++++++++++----------
- src/llama-context.cpp           |   7 ++
- tools/server/server-common.cpp  |  57 +++++++++++++++
- tools/server/server-common.h    |   5 ++
- tools/server/server-context.cpp |  69 ++++++++++++++++++
- 5 files changed, 222 insertions(+), 37 deletions(-)
+ common/fit.cpp                      | 121 +++++++++++++++++++---------
+ src/llama-context.cpp               |   7 ++
+ tools/server/server-common.cpp      |  57 +++++++++++++
+ tools/server/server-common.h        |   5 ++
+ tools/server/server-context.cpp     |  55 +++++++++++++
+ tools/server/server-context.cpp.rej |  22 +++++
+ 6 files changed, 230 insertions(+), 37 deletions(-)
+ create mode 100644 tools/server/server-context.cpp.rej
 
 diff --git a/common/fit.cpp b/common/fit.cpp
 index 8492414bf..731184794 100644
@@ -255,10 +257,10 @@ index 8492414bf..731184794 100644
  
      for (size_t id = 0; id < devs.size(); id++) {
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 51e1058a8..46c66d1c9 100644
+index cf71ff02e..a5b80c766 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -558,6 +558,13 @@ void llama_context::resolve_fused_ops(const llama_memory_context_i * mctx, uint3
+@@ -660,6 +660,13 @@ void llama_context::resolve_fused_ops(const llama_memory_context_i * mctx, uint3
      if (cparams.auto_fa) {
          resolve(llm_fused_op_flash_attn_probe, cparams.flash_attn);
          cparams.auto_fa = false;
@@ -273,10 +275,10 @@ index 51e1058a8..46c66d1c9 100644
  
      if (cparams.auto_fgdn) {
 diff --git a/tools/server/server-common.cpp b/tools/server/server-common.cpp
-index a37826abe..bda44bd80 100644
+index 80a9f2d72..bf3aa90cc 100644
 --- a/tools/server/server-common.cpp
 +++ b/tools/server/server-common.cpp
-@@ -683,6 +683,63 @@ void server_tokens::keep_first(size_t n) {
+@@ -804,6 +804,63 @@ void server_tokens::keep_first(size_t n) {
      tokens.resize(n);
  }
  
@@ -341,10 +343,10 @@ index a37826abe..bda44bd80 100644
      llama_tokens text_tokens;
      text_tokens.reserve(tokens.size());
 diff --git a/tools/server/server-common.h b/tools/server/server-common.h
-index 8cb6b90da..56d2cc897 100644
+index 0925c508e..b69dde764 100644
 --- a/tools/server/server-common.h
 +++ b/tools/server/server-common.h
-@@ -229,6 +229,11 @@ public:
+@@ -251,6 +251,11 @@ public:
  
      void keep_first(size_t n);
  
@@ -357,10 +359,10 @@ index 8cb6b90da..56d2cc897 100644
  
      size_t get_common_prefix(const server_tokens & b) const;
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 399d9612f..2748c8904 100644
+index 75233127e..d675e2eb1 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -27,6 +27,50 @@
+@@ -33,6 +33,50 @@
  #include <utility>
  #include <fstream>
  
@@ -411,7 +413,7 @@ index 399d9612f..2748c8904 100644
  // fix problem with std::min and std::max
  #if defined(_WIN32)
  #define WIN32_LEAN_AND_MEAN
-@@ -1144,6 +1188,17 @@ private:
+@@ -1353,6 +1397,17 @@ private:
                  callback_state(SERVER_STATE_LOADING, {{"stage", "mmproj_model"}});
              }
  
@@ -429,24 +431,31 @@ index 399d9612f..2748c8904 100644
              if (!is_resume) {
                  mtmd_helper_log_set(common_log_default_callback, nullptr);
              }
-@@ -1795,6 +1850,20 @@ private:
-             return false;
-         }
- 
-+        const size_t prompt_limit = slot.n_ctx > 0 ? (size_t) slot.n_ctx - 1 : 0;
-+        if (prompt_limit > 0 && task.tokens.size() > prompt_limit) {
-+            int n_keep = task.params.n_keep < 0 ? (int) task.tokens.size() : task.params.n_keep;
-+            if (add_bos_token) {
-+                n_keep += 1;
-+            }
-+            n_keep = std::min((int) prompt_limit, n_keep);
-+            const size_t orig = task.tokens.size();
-+            if (task.tokens.truncate_to_limit(prompt_limit, (size_t) n_keep)) {
-+                SLT_WRN(slot, "prompt truncated from %zu to %zu tokens to fit context\n", orig, prompt_limit);
-+                slot.truncated = true;
-+            }
-+        }
-+
-         SLT_DBG(slot, "launching slot : %s\n", safe_json_to_str(slot.to_json()).c_str());
- 
-         // initialize samplers
+diff --git a/tools/server/server-context.cpp.rej b/tools/server/server-context.cpp.rej
+new file mode 100644
+index 000000000..27eac4874
+--- /dev/null
++++ b/tools/server/server-context.cpp.rej
+@@ -0,0 +1,22 @@
++diff a/tools/server/server-context.cpp b/tools/server/server-context.cpp	(rejected hunks)
++@@ -1795,6 +1850,20 @@ private:
++             return false;
++         }
++ 
+++        const size_t prompt_limit = slot.n_ctx > 0 ? (size_t) slot.n_ctx - 1 : 0;
+++        if (prompt_limit > 0 && task.tokens.size() > prompt_limit) {
+++            int n_keep = task.params.n_keep < 0 ? (int) task.tokens.size() : task.params.n_keep;
+++            if (add_bos_token) {
+++                n_keep += 1;
+++            }
+++            n_keep = std::min((int) prompt_limit, n_keep);
+++            const size_t orig = task.tokens.size();
+++            if (task.tokens.truncate_to_limit(prompt_limit, (size_t) n_keep)) {
+++                SLT_WRN(slot, "prompt truncated from %zu to %zu tokens to fit context\n", orig, prompt_limit);
+++                slot.truncated = true;
+++            }
+++        }
+++
++         SLT_DBG(slot, "launching slot : %s\n", safe_json_to_str(slot.to_json()).c_str());
++ 
++         // initialize samplers

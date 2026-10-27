@@ -93,6 +93,10 @@ _acquire_llama_server_build_lock() {
 }
 
 _release_llama_server_build_lock() {
+  # Undo Linux ANE stub + absolute compat staging (see patch_vendor_linux_ane_hook).
+  if declare -F _restore_vendor_git_clean >/dev/null 2>&1; then
+    _restore_vendor_git_clean || true
+  fi
   rmdir "${BUILD_LOCK}" 2>/dev/null || true
 }
 
@@ -135,6 +139,8 @@ if _is_vendor_root "${ROOT}"; then
   if [[ "${ZEROLLAMA_SKIP_VENDOR_APPLY:-0}" != "1" ]]; then
     "${_ZEROLLAMA_ROOT}/scripts/vendor/apply_llama_vendor_patches.sh" "${ROOT}"
   fi
+  # Re-stage compat links (absolute when vendor is out-of-tree via symlink).
+  "${_ZEROLLAMA_ROOT}/scripts/vendor/stage_llama_compat_for_vendor.sh" "${ROOT}"
 fi
 
 # Darwin sibling fallback: re-apply ANE hook after pin checkout (vendor gets 0018 via git am).
@@ -157,6 +163,26 @@ _probe_ollama_compat_loader() {
   else
     echo "error: vendor loader missing Ollama compat hooks — run ./scripts/vendor/ensure_llama_vendor_patches.sh" >&2
     exit 1
+  fi
+}
+
+_restore_linux_ane_hooks() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    return 0
+  fi
+  if [[ -f "${ROOT}/common/ane_draft_hook.cpp" ]]; then
+    bash "${_ZEROLLAMA_ROOT}/scripts/vendor/restore_vendor_linux_ane_hook.sh" "${ROOT}" || true
+  fi
+  if [[ -f "${_ZEROLLAMA_ROOT}/llama/llama.cpp/common/ane_draft_hook.cpp" ]]; then
+    bash "${_ZEROLLAMA_ROOT}/scripts/vendor/restore_vendor_linux_ane_hook.sh" "${_ZEROLLAMA_ROOT}/llama/llama.cpp" || true
+  fi
+}
+
+# Undo absolute compat staging / Linux ANE stub so vendor HEAD stays git-clean.
+_restore_vendor_git_clean() {
+  _restore_linux_ane_hooks || true
+  if _is_vendor_root "${ROOT}" && [[ -d "${ROOT}/.git" ]]; then
+    git -C "${ROOT}" checkout -- src/ollama-compat/ 2>/dev/null || true
   fi
 }
 
@@ -598,7 +624,9 @@ if [[ -x "${BIN}" ]]; then
     _probe_ollama_compat_loader "${ROOT}"
     _probe_seq_copy_route "${BIN}" "${ROOT}"
   fi
+  _restore_vendor_git_clean || true
 else
   echo "Build finished but ${BIN} missing" >&2
+  _restore_vendor_git_clean || true
   exit 1
 fi

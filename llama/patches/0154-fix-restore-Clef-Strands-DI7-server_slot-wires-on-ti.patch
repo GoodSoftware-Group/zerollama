@@ -1,0 +1,162 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 21:02:28 -0700
+Subject: [PATCH] fix: restore Clef/Strands/DI7 server_slot wires on tip
+
+score_embeddings + uses_dflash, clef/strands includes, STRANDS decision
+type, and DI7 may_launch_new_prefill helpers lost in the tip rebase.
+---
+ common/common.cpp               |  3 +-
+ common/common.h                 |  1 +
+ tools/server/server-context.cpp | 72 +++++++++++++++++++++++++++++++++
+ 3 files changed, 75 insertions(+), 1 deletion(-)
+
+diff --git a/common/common.cpp b/common/common.cpp
+index 34b08f93c..9c110abea 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -1174,6 +1174,7 @@ static const std::map<common_decision_type, std::string> COMMON_DECISION_TYPE_NA
+     { COMMON_DECISION_TYPE_NIMBLE,         "nimble"        },
+     { COMMON_DECISION_TYPE_LAYA,           "laya"          },
+     { COMMON_DECISION_TYPE_CLEF,           "clef"          },
++    { COMMON_DECISION_TYPE_STRANDS,        "strands"       },
+     { COMMON_DECISION_TYPE_PPLX_DECIDER,   "pplx-decider"  },
+     { COMMON_DECISION_TYPE_VLLM_DECISION2, "vllm-decision2" },
+     { COMMON_DECISION_TYPE_VLLM_D3,        "vllm-d3"        },
+@@ -1301,7 +1302,7 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+     // these decision models return a score for each token via the embeddings output
+     // TODO: maybe improve this in the future
+     const auto decision_type = common_get_decision_type(model);
+-    if (decision_type == COMMON_DECISION_TYPE_LAYA || decision_type == COMMON_DECISION_TYPE_KEV || decision_type == COMMON_DECISION_TYPE_CLEF ||
++    if (decision_type == COMMON_DECISION_TYPE_LAYA || decision_type == COMMON_DECISION_TYPE_KEV || decision_type == COMMON_DECISION_TYPE_CLEF || decision_type == COMMON_DECISION_TYPE_STRANDS ||
+         decision_type == COMMON_DECISION_TYPE_LFM2_D1_OMNI || decision_type == COMMON_DECISION_TYPE_VLLM_DECISION2) {
+         params.embedding    = true;
+         params.pooling_type = LLAMA_POOLING_TYPE_NONE;
+diff --git a/common/common.h b/common/common.h
+index a6b76f0d1..2ac907607 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -1010,6 +1010,7 @@ enum common_decision_type {
+     COMMON_DECISION_TYPE_NIMBLE,  // same as openjev, the prompt lists all the questions of the request
+     COMMON_DECISION_TYPE_LAYA,    // score of one marker token per option, read from the embeddings output
+     COMMON_DECISION_TYPE_CLEF,    // all questions in one prompt, score of option i read from the embeddings output at row i
++    COMMON_DECISION_TYPE_STRANDS, // Clef-like joint head with pointer_rows (Strands)
+     COMMON_DECISION_TYPE_PPLX_DECIDER, // same as openjev, label codes of 1 or 2 letters
+     COMMON_DECISION_TYPE_VLLM_DECISION2, // score of each option read from the embeddings output, the options of a question are marked in the batch
+     COMMON_DECISION_TYPE_VLLM_D3, // same as pplx-decider, non-causal attention
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index f1af7586a..8cc04338f 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1,4 +1,6 @@
+ #include "server-context.h"
++#include "clef.h"
++#include "strands.h"
+ #include <atomic>
+ #include <thread>
+ #include "base64.hpp"
+@@ -312,6 +314,7 @@ struct server_slot {
+     // multimodal
+     mtmd_context * mctx = nullptr;
+     mtmd::batch_ptr mbatch = nullptr;
++    std::vector<std::vector<float>> score_embeddings;
+ 
+     struct tts_ctx {
+         mtmd_helper::gen_audio ctx;
+@@ -474,6 +477,7 @@ struct server_slot {
+         SLT_DBG(*this, "%s", "\n");
+ 
+         spec_is_replay = false;
++        score_embeddings.clear();
+ 
+         last_nl_pos    = 0;
+         generated      = {};
+@@ -624,6 +628,17 @@ struct server_slot {
+         return !!spec;
+     }
+ 
++    bool uses_dflash() const {
++        if (!task) {
++            return false;
++        }
++        return std::find(
++                   task->params.speculative.types.begin(),
++                   task->params.speculative.types.end(),
++                   COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) != task->params.speculative.types.end();
++    }
++
++
+     // at temp 0 both p and q are point masses, so rejection is the same as sample-and-match
+     bool use_spec_rejection() const {
+         return task && task->params.sampling.temp > 0.0f;
+@@ -3188,6 +3203,59 @@ private:
+     }
+ 
+     // returns false to decline the task, it is offered again after the decode is done
++    bool has_generating_slot() const {
++        for (const auto & slot : slots) {
++            if (slot.state == SLOT_STATE_GENERATING) {
++                return true;
++            }
++        }
++        return false;
++    }
++
++    // DI7: while decode-hot, allow new COMPLETION/INFILL launches on periodic / starve
++    // windows. attempt<=1 → off. Clock = decode batches since last launch (metrics.n_decode).
++    bool may_launch_new_prefill() const {
++        if (prefill_attempt_interval <= 1) {
++            return true;
++        }
++        if (!has_generating_slot()) {
++            return true;
++        }
++        const uint64_t n = metrics.n_decode;
++        const uint64_t since = n >= n_decode_at_last_prefill_launch
++            ? n - n_decode_at_last_prefill_launch
++            : 0;
++        // Starve: force join after this many decode batches with no new launch.
++        if (prefill_any_attempt_interval > 1 &&
++            since >= (uint64_t) prefill_any_attempt_interval) {
++            return true;
++        }
++        // Periodic: every `attempt` decode batches since last launch (not absolute n).
++        if (since > 0 && (since % (uint64_t) prefill_attempt_interval) == 0) {
++            return true;
++        }
++        return false;
++    }
++
++    void note_prefill_launched() {
++        n_decode_at_last_prefill_launch = metrics.n_decode;
++    }
++
++    // Re-offer cadence-deferred tasks after a decode step so they are not stuck until a slot frees.
++    void maybe_requeue_deferred_prefills() {
++        if (prefill_attempt_interval <= 1) {
++            return;
++        }
++        if (!may_launch_new_prefill()) {
++            return;
++        }
++        for (auto & slot : slots) {
++            if (!slot.is_processing()) {
++                queue_tasks.pop_deferred_task(slot.id);
++            }
++        }
++    }
++
+     bool process_single_task(server_task && task, bool is_yielding) {
+         // while yielding, an encode / decode is running and only reading the server state is safe
+         if (is_yielding && task.type != SERVER_TASK_TYPE_METRICS && task.type != SERVER_TASK_TYPE_SLOT_GET) {
+@@ -4003,6 +4071,10 @@ private:
+                 break; // stop any further processing
+             }
+         }
++
++        // DI7: after decode steps advance metrics.n_decode, re-offer cadence-deferred prompts
++        // while free slots exist (defer alone only wakes on slot release).
++        maybe_requeue_deferred_prefills();
+     }
+ 
+     void process_tts_slots() {

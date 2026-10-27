@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:38:53 -0700
+Subject: [PATCH] fix: wire BPE pretok_blob try_blob on tip tokenize path
+
+Move mistaken SPM decls and call unicode_regex_split_try_blob for the
+common BPE path while keeping Nemotron/Soprano normalize branches.
+---
+ src/llama-vocab.cpp | 16 ++++++++++------
+ 1 file changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
+index a5f9c2232..de62fb112 100644
+--- a/src/llama-vocab.cpp
++++ b/src/llama-vocab.cpp
+@@ -165,8 +165,6 @@ struct llm_tokenizer_spm_session {
+     llm_tokenizer_spm_session(const llama_vocab & vocab) : vocab(vocab) {}
+ 
+     void tokenize(const std::string & text, std::vector<llama_token> & output) {
+-        unicode_pretok_blob pretok_blob;
+-        bool use_blob = false;
+         // split string into utf8 chars
+         int index = 0;
+         size_t offs = 0;
+@@ -983,11 +981,14 @@ struct llm_tokenizer_bpe_session {
+     }
+ 
+     virtual void tokenize(const std::string & text, std::vector<llama_token> & output) {
++        int final_prev_index = -1;
++        unicode_pretok_blob pretok_blob;
++        bool use_blob = false;
+         auto tok_pre = vocab.get_pre_type();
+ 
+         std::vector<std::string> word_collection;
+         if (tok_pre == LLAMA_VOCAB_PRE_TYPE_NEMOTRON_3_5_EMBD) {
+-            static const std::string zwnj = "\xe2\x80\x8c";
++            static const std::string zwnj = "â";
+             std::string normalized_text = text;
+             replace_all(normalized_text, "[" + zwnj, "[");
+             replace_all(normalized_text, "<" + zwnj, "<");
+@@ -1003,16 +1004,19 @@ struct llm_tokenizer_bpe_session {
+                     space = true;
+                 } else {
+                     // Unicode full lowercase expands LATIN CAPITAL LETTER I WITH DOT ABOVE.
+-                    normalized_text += cpt == 0x0130 ? "i\xcc\x87" : unicode_cpt_to_utf8(unicode_tolower(cpt));
++                    normalized_text += cpt == 0x0130 ? "iÌ" : unicode_cpt_to_utf8(unicode_tolower(cpt));
+                     space = false;
+                 }
+             }
+             word_collection = unicode_regex_split(normalized_text, tokenizer.regex_exprs, tokenizer.byte_encode);
+         } else {
+-            word_collection = unicode_regex_split(text, tokenizer.regex_exprs, tokenizer.byte_encode);
++            use_blob = unicode_regex_split_try_blob(
++                    text, tokenizer.regex_exprs, tokenizer.byte_encode, pretok_blob);
++            if (!use_blob) {
++                word_collection = unicode_regex_split(text, tokenizer.regex_exprs, tokenizer.byte_encode);
++            }
+         }
+ 
+-        int final_prev_index = -1;
+ 
+         symbols_final.clear();
+ 

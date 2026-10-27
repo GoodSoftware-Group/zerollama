@@ -50,10 +50,10 @@ index 75ceade7d..468afb03f 100644
  }
  
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index e5703f3e8..586bafdd8 100644
+index 05334e1fc..9c79ae509 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
-@@ -2052,11 +2052,8 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
+@@ -2347,11 +2347,8 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                      throw std::runtime_error(format("invalid gguf type for %s", kv(LLM_KV_TOKENIZER_PRECOMPILED_CHARSMAP).c_str()));
                  }
                  const gguf_type pc_type = gguf_get_arr_type(ctx, precompiled_charsmap_keyidx);

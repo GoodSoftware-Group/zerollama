@@ -11,10 +11,10 @@ types instead of leaving the enum switch incomplete.
  1 file changed, 2 insertions(+)
 
 diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
-index 68b8828e3..3e9ee5319 100644
+index 9cf1fed41..0469c3b64 100644
 --- a/ggml/src/ggml-cpu/ops.cpp
 +++ b/ggml/src/ggml-cpu/ops.cpp
-@@ -6160,6 +6160,8 @@ void ggml_compute_forward_clamp(
+@@ -6248,6 +6248,8 @@ void ggml_compute_forward_clamp(
                  ggml_compute_forward_clamp_f16(params, dst);
              } break;
          case GGML_TYPE_BF16:

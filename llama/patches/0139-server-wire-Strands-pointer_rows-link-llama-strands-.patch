@@ -1,0 +1,113 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:39:08 -0700
+Subject: [PATCH] server: wire Strands pointer_rows + link llama/strands via
+
+---
+ tools/server/CMakeLists.txt     |  8 ++++++++
+ tools/server/server-context.cpp | 27 ++++++++++++++++++++-------
+ tools/server/server-task.h      |  3 ++-
+ 3 files changed, 30 insertions(+), 8 deletions(-)
+
+diff --git a/tools/server/CMakeLists.txt b/tools/server/CMakeLists.txt
+index cd1759b29..4ce41aa9a 100644
+--- a/tools/server/CMakeLists.txt
++++ b/tools/server/CMakeLists.txt
+@@ -47,6 +47,14 @@ if (DEFINED ZEROLLAMA_CLEF_DIR AND EXISTS "${ZEROLLAMA_CLEF_DIR}/clef.cpp")
+     message(STATUS "server-context: linking Clef head from ${ZEROLLAMA_CLEF_DIR}")
+ endif()
+ 
++# Pass -DZEROLLAMA_STRANDS_DIR=/path/to/llama/strands from build_llama_server.sh.
++if (DEFINED ZEROLLAMA_STRANDS_DIR AND EXISTS "${ZEROLLAMA_STRANDS_DIR}/strands.cpp")
++    target_sources(${TARGET} PRIVATE ${ZEROLLAMA_STRANDS_DIR}/strands.cpp)
++    target_include_directories(${TARGET} PRIVATE ${ZEROLLAMA_STRANDS_DIR})
++    message(STATUS "server-context: linking Strands head from ${ZEROLLAMA_STRANDS_DIR}")
++endif()
++
++
+ # llama-server-impl: server logic, reusable by app
+ 
+ set(TARGET llama-server-impl)
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 6c8705f38..b25235f37 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -553,7 +553,7 @@ struct server_slot {
+     }
+ 
+     void collect_score_embeddings(const common_batch & batch) {
+-        if (!task || task->score_fields.is_null()) return;
++        if (!task || (task->score_fields.is_null() && task->pointer_rows.is_null())) return;
+         // Embedding mode returns every token, including image tokens with logits disabled.
+         const int width = llama_model_n_embd_out(llama_get_model(ctx_tgt));
+         for (int32_t i = 0; i < batch.size(); ++i) {
+@@ -1095,6 +1095,7 @@ public:
+     //  - and, with thread-safe APIs (e.g., tokenizer calls)
+     llama_model * model_tgt = nullptr;
+     std::unique_ptr<clef_head> clef;
++    std::unique_ptr<strands_head> strands;
+ 
+     // Laya /v1/decisions: sync encode+CPU head (serialized; dedicated --decisions servers)
+     std::mutex mutex_laya;
+@@ -2607,12 +2608,17 @@ private:
+         res->n_tokens  = slot.task->n_tokens();
+         res->res_type  = slot.task->params.res_type;
+ 
+-        if (!slot.task->score_fields.is_null()) {
++        if (!slot.task->score_fields.is_null() || !slot.task->pointer_rows.is_null()) {
+             try {
+-                if (!clef) clef.reset(new clef_head(params_base.model.path));
+                 llama_tokens tokens;
+                 for (size_t i = 0; i < slot.task->tokens.size(); ++i) tokens.push_back(slot.task->tokens[i]);
+-                res->score_logits = clef->score(slot.score_embeddings, tokens, slot.task->score_fields);
++                if (!slot.task->pointer_rows.is_null()) {
++                    if (!strands) strands.reset(new strands_head(params_base.model.path));
++                    res->score_logits = strands->score(slot.score_embeddings, tokens, slot.task->pointer_rows);
++                } else {
++                    if (!clef) clef.reset(new clef_head(params_base.model.path));
++                    res->score_logits = clef->score(slot.score_embeddings, tokens, slot.task->score_fields);
++                }
+             } catch (const std::exception & e) {
+                 send_error(slot, e.what(), ERROR_TYPE_SERVER);
+                 return;
+@@ -5598,9 +5604,12 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
+     GGML_ASSERT(type == SERVER_TASK_TYPE_COMPLETION || type == SERVER_TASK_TYPE_INFILL);
+ 
+     auto res = create_response();
+-    if (common_get_decision_type(ctx_server.model_tgt) == COMMON_DECISION_TYPE_CLEF) {
+-        res->error(format_error_response("This model requires a decision request", ERROR_TYPE_INVALID_REQUEST));
+-        return res;
++    {
++        const auto dt = common_get_decision_type(ctx_server.model_tgt);
++        if (dt == COMMON_DECISION_TYPE_CLEF || dt == COMMON_DECISION_TYPE_STRANDS) {
++            res->error(format_error_response("This model requires a decision request", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
+     }
+     auto completion_id = gen_chatcmplid();
+     auto & rd = res->rd;
+@@ -7655,6 +7664,10 @@ std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(cons
+             // OAI-compat
+             task.params.res_type = res_type;
+             task.params.embd_normalize = embd_normalize;
++            if (body.contains("pointer_rows")) {
++                task.pointer_rows = body.at("pointer_rows");
++                task.params.cache_prompt = false; // the head needs every hidden state
++            }
+             if (body.contains("score_fields")) {
+                 task.score_fields = body.at("score_fields");
+                 task.params.cache_prompt = false; // the head needs every hidden state
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index fb00d4e06..e04b968fb 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -172,7 +172,8 @@ struct server_task {
+     // used by SERVER_TASK_TYPE_INFERENCE
+     task_params   params;
+     server_tokens tokens;
+-    common_json score_fields; // optional decision question and option spans
++    common_json score_fields; // optional decision question and option spans (Clef)
++    common_json pointer_rows; // optional Strands pointer-head rows
+ 
+     // only used by CLI, this allow tokenizing CLI inputs on server side
+     // we need this because mtmd_context and vocab are not accessible outside of server_context

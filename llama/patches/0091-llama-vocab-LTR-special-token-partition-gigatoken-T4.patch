@@ -16,10 +16,10 @@ for identity A/B. See docs/faster-bpe-tokenize.md (M15d / 0111).
  1 file changed, 107 insertions(+)
 
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index 988bfe307..7db3850d9 100644
+index 01ed1b2fc..b27a364b1 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
-@@ -2395,6 +2395,7 @@ struct llama_vocab::impl {
+@@ -2659,6 +2659,7 @@ struct llama_vocab::impl {
      void init_tokenizer(enum llama_vocab_type type);
  
      void tokenizer_st_partition(std::forward_list<fragment_buffer_variant> & buffer, bool parse_special) const;
@@ -27,7 +27,7 @@ index 988bfe307..7db3850d9 100644
  
      std::string token_to_piece_for_cache(
                    llama_token   token,
-@@ -3757,6 +3758,112 @@ void llama_vocab::impl::init_tokenizer(enum llama_vocab_type type) {
+@@ -4103,6 +4104,112 @@ void llama_vocab::impl::init_tokenizer(enum llama_vocab_type type) {
  // #define PRETOKENIZERDEBUG
  
  void llama_vocab::impl::tokenizer_st_partition(std::forward_list<fragment_buffer_variant> & buffer, bool parse_special) const {

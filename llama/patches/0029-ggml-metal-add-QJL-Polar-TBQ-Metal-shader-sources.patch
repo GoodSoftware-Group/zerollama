@@ -1,27 +1,11 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: zerollama <zerollama@local>
-Date: Fri, 10 Jul 2026 01:43:07 -0700
+Date: Sat, 24 Oct 2026 20:34:47 -0700
 Subject: [PATCH] ggml-metal: add QJL/Polar/TBQ Metal shader sources
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
-Copy Metal shader files from elizaOS fork:
-
-  eliza-kernels/  — source shaders (for development/debugging):
-    qjl.metal, polar.metal, tbq3_0.metal, tbq4_0.metal, tbq3_tcq.metal
-
-  eliza-shipped/  — build-ready standalone shaders linked into metallib:
-    qjl.metal, qjl_set_rows.metal, polar.metal, polar_preht.metal,
-    turbo3.metal, turbo4.metal, turbo3_tcq.metal,
-    fused_attn_qjl_tbq.metal, fused_attn_qjl_polar.metal
-
-Wire CMakeLists.txt to compile each eliza-shipped shader into its own
-.air file and link all into the combined default.metallib alongside the
-core ggml-metal.metal. The embed-library path will need a corresponding
-update (deferred to build/sync time as it depends on the host SDK).
 ---
- ggml/src/ggml-metal/CMakeLists.txt            |   29 +-
+ ggml/src/ggml-metal/CMakeLists.txt            |   25 +
+ ggml/src/ggml-metal/CMakeLists.txt.rej        |   12 +
  ggml/src/ggml-metal/eliza-kernels/istft.metal |  104 +
  ggml/src/ggml-metal/eliza-kernels/polar.metal |  220 +
  ggml/src/ggml-metal/eliza-kernels/qjl.metal   |  194 +
@@ -38,7 +22,8 @@ update (deferred to build/sync time as it depends on the host SDK).
  .../src/ggml-metal/eliza-shipped/turbo3.metal |  181 +
  .../ggml-metal/eliza-shipped/turbo3_tcq.metal |  135 +
  .../src/ggml-metal/eliza-shipped/turbo4.metal |  147 +
- 17 files changed, 6806 insertions(+), 2 deletions(-)
+ 18 files changed, 6816 insertions(+)
+ create mode 100644 ggml/src/ggml-metal/CMakeLists.txt.rej
  create mode 100644 ggml/src/ggml-metal/eliza-kernels/istft.metal
  create mode 100644 ggml/src/ggml-metal/eliza-kernels/polar.metal
  create mode 100644 ggml/src/ggml-metal/eliza-kernels/qjl.metal
@@ -57,10 +42,10 @@ update (deferred to build/sync time as it depends on the host SDK).
  create mode 100644 ggml/src/ggml-metal/eliza-shipped/turbo4.metal
 
 diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
-index 68532a984..e5d6ccf4e 100644
+index 91691b223..7cffd2701 100644
 --- a/ggml/src/ggml-metal/CMakeLists.txt
 +++ b/ggml/src/ggml-metal/CMakeLists.txt
-@@ -217,6 +217,31 @@ else()
+@@ -219,6 +219,31 @@ else()
          )
      endforeach()
  
@@ -92,17 +77,24 @@ index 68532a984..e5d6ccf4e 100644
      set(METALLIB_FILES ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/default.metallib)
  
      # the tensor API kernels go in a separate metallib, loaded only where supported
-@@ -248,8 +273,8 @@ else()
-         COMMAND rm -f ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ggml-common.h
-         COMMAND rm -f ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ggml-metal-impl.h
-         COMMAND rm -rf ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/kernels
--        DEPENDS ${AIR_FILES} ${AIR_MM_TENSOR}
--        COMMENT "Linking Metal kernels into default.metallib"
-+        DEPENDS ${AIR_FILES}
-+        COMMENT "Linking Metal kernels (ggml + eliza QJL/Polar/TBQ) into default.metallib"
-     )
- 
-     add_custom_target(
+diff --git a/ggml/src/ggml-metal/CMakeLists.txt.rej b/ggml/src/ggml-metal/CMakeLists.txt.rej
+new file mode 100644
+index 000000000..a419c973c
+--- /dev/null
++++ b/ggml/src/ggml-metal/CMakeLists.txt.rej
+@@ -0,0 +1,12 @@
++diff a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt	(rejected hunks)
++@@ -248,8 +273,8 @@ else()
++         COMMAND rm -f ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ggml-common.h
++         COMMAND rm -f ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ggml-metal-impl.h
++         COMMAND rm -rf ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/kernels
++-        DEPENDS ${AIR_FILES} ${AIR_MM_TENSOR}
++-        COMMENT "Linking Metal kernels into default.metallib"
+++        DEPENDS ${AIR_FILES}
+++        COMMENT "Linking Metal kernels (ggml + eliza QJL/Polar/TBQ) into default.metallib"
++     )
++ 
++     add_custom_target(
 diff --git a/ggml/src/ggml-metal/eliza-kernels/istft.metal b/ggml/src/ggml-metal/eliza-kernels/istft.metal
 new file mode 100644
 index 000000000..4469b120b

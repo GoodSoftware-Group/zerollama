@@ -1,43 +1,40 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: nobody <>
-Date: Tue, 14 Jul 2026 19:33:29 -0700
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:34:52 -0700
 Subject: [PATCH] ggml: add GGML_TYPE_FP8_E4M3 native FP8 weights (type 51)
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
-Block layout mirrors Q8_0 (F16 scale + 32× IEEE float8_e4m3fn). CPU
-quant/dequant + vec_dot, CUDA convert/get_rows (dequant GEMM path),
-gguf-py roundtrip, and convert_hf_to_gguf --fp8-native for ModelOpt
-per-tensor/per-row scales without full F16 expansion.
 ---
- conversion/base.py                | 100 +++++++++++++++++++++++----
- convert_hf_to_gguf.py             |   6 ++
- ggml/include/ggml.h               |   4 +-
- ggml/src/ggml-common.h            |  10 +++
- ggml/src/ggml-cpu/arch-fallback.h |   8 +++
- ggml/src/ggml-cpu/ggml-cpu.c      |   6 ++
- ggml/src/ggml-cpu/quants.c        |  31 +++++++++
- ggml/src/ggml-cpu/quants.h        |   3 +
- ggml/src/ggml-cuda/convert.cu     |  12 ++++
- ggml/src/ggml-cuda/dequantize.cuh |  39 +++++++++++
- ggml/src/ggml-cuda/getrows.cu     |   2 +
- ggml/src/ggml-cuda/ggml-cuda.cu   |   2 +
- ggml/src/ggml-impl.h              |  63 +++++++++++++++++
- ggml/src/ggml-quants.c            |  40 +++++++++++
- ggml/src/ggml-quants.h            |   3 +
- ggml/src/ggml.c                   |  10 +++
- gguf-py/gguf/constants.py         |   3 +
- gguf-py/gguf/quants.py            | 109 ++++++++++++++++++++++++++++++
- include/llama.h                   |   1 +
- src/llama-model-loader.cpp        |   2 +
- 20 files changed, 440 insertions(+), 14 deletions(-)
+ conversion/base.py                    |  73 +++++++++++++++--
+ conversion/base.py.rej                |  42 ++++++++++
+ convert_hf_to_gguf.py                 |   6 ++
+ ggml/include/ggml.h                   |   4 +-
+ ggml/src/ggml-common.h                |  10 +++
+ ggml/src/ggml-cpu/arch-fallback.h     |   7 ++
+ ggml/src/ggml-cpu/arch-fallback.h.rej |   9 +++
+ ggml/src/ggml-cpu/ggml-cpu.c          |   6 ++
+ ggml/src/ggml-cpu/quants.c            |  31 ++++++++
+ ggml/src/ggml-cpu/quants.h            |   3 +
+ ggml/src/ggml-cuda/convert.cu         |  12 +++
+ ggml/src/ggml-cuda/dequantize.cuh     |  39 +++++++++
+ ggml/src/ggml-cuda/getrows.cu         |   2 +
+ ggml/src/ggml-cuda/ggml-cuda.cu       |   2 +
+ ggml/src/ggml-impl.h                  |  63 +++++++++++++++
+ ggml/src/ggml-quants.c                |  40 ++++++++++
+ ggml/src/ggml-quants.h                |   3 +
+ ggml/src/ggml.c                       |  10 +++
+ gguf-py/gguf/constants.py             |   3 +
+ gguf-py/gguf/quants.py                | 109 ++++++++++++++++++++++++++
+ include/llama.h                       |   1 +
+ src/llama-model-loader.cpp            |   2 +
+ 22 files changed, 471 insertions(+), 6 deletions(-)
+ create mode 100644 conversion/base.py.rej
+ create mode 100644 ggml/src/ggml-cpu/arch-fallback.h.rej
 
 diff --git a/conversion/base.py b/conversion/base.py
-index a39a728f5..467a43364 100644
+index d8420eb32..6fd2e225e 100644
 --- a/conversion/base.py
 +++ b/conversion/base.py
-@@ -131,7 +131,8 @@ class ModelBase:
+@@ -132,7 +132,8 @@ class ModelBase:
                   target_model_dir: Path | None = None,
                   fuse_gate_up_exps: bool = False,
                   fp8_as_q8: bool = False,
@@ -47,7 +44,7 @@ index a39a728f5..467a43364 100644
          if type(self) is ModelBase or \
                  type(self) is TextModel or \
                  type(self) is MmprojModel:
-@@ -174,7 +175,13 @@ class ModelBase:
+@@ -175,7 +176,13 @@ class ModelBase:
          self._nvfp4_layer_algo: dict[str, str | None] = {} # per-layer quant_algo, keyed by HF module path
          self._prec_a4: dict[str, bool] = {} # gguf tensor name -> can use 4-bit (A4) activations
          self._fp8_as_q8 = fp8_as_q8
@@ -61,7 +58,7 @@ index a39a728f5..467a43364 100644
  
          # Apply heuristics to figure out typical tensor encoding based on first tensor's dtype
          # NOTE: can't use field "torch_dtype" in config.json, because some finetunes lie.
-@@ -454,10 +461,27 @@ class ModelBase:
+@@ -474,10 +481,27 @@ class ModelBase:
                          weight_name = name.removesuffix("_scale_inv")
                          w = self.model_tensors[weight_name]
                          s = self.model_tensors[name]
@@ -93,48 +90,7 @@ index a39a728f5..467a43364 100644
                      if name.endswith(".activation_scale"):  # unused
                          tensors_to_remove.append(name)
                      if name.endswith("_activation_scale"):  # Mistral-Small-4-119B-2602, unused
-@@ -558,7 +582,7 @@ class ModelBase:
-             elif quant_method == "modelopt":
-                 # Mixed-precision ModelOpt models: NVFP4 tensors are handled by
-                 # _generate_nvfp4_tensors; FP8 tensors have 1D weight_scale and
--                # are dequantized here. k/v scale tensors are unused.
-+                # are dequantized here (or packed native with --fp8-native).
-                 for name in self.model_tensors.keys():
-                     if name.endswith(".weight_scale"):
-                         weight_name = name.removesuffix("_scale")
-@@ -567,13 +591,24 @@ class ModelBase:
-                             continue
-                         w = self.model_tensors[weight_name]
-                         s = self.model_tensors[name]
--                        is_fp8_weight = False
--                        if self._fp8_as_q8:
--                            is_fp8_weight = w().dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
--                        self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), None)
--                        tensors_to_remove.append(name)
--                        if is_fp8_weight:
--                            self._fp8_dequantized.add(weight_name)
-+                        is_fp8_e4m3 = False
-+                        try:
-+                            is_fp8_e4m3 = w().dtype == torch.float8_e4m3fn
-+                        except Exception:
-+                            is_fp8_e4m3 = False
-+                        if self._fp8_native and is_fp8_e4m3:
-+                            # Keep E4M3 bytes; absorb per-tensor/per-row scale at pack time.
-+                            self._fp8_native_tensors.add(weight_name)
-+                            self._fp8_native_scales[weight_name] = s
-+                            tensors_to_remove.append(name)
-+                        else:
-+                            is_fp8_weight = False
-+                            if self._fp8_as_q8:
-+                                is_fp8_weight = w().dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
-+                            self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), None)
-+                            tensors_to_remove.append(name)
-+                            if is_fp8_weight:
-+                                self._fp8_dequantized.add(weight_name)
-                     if name.endswith((".input_scale", ".k_scale", ".v_scale")):
-                         tensors_to_remove.append(name)
-             elif quant_method is not None:
-@@ -750,6 +785,23 @@ class ModelBase:
+@@ -910,6 +934,23 @@ class ModelBase:
              return gguf.GGMLQuantizationType.Q8_0
          return False
  
@@ -158,7 +114,7 @@ index a39a728f5..467a43364 100644
      # some models need extra generated tensors (like rope_freqs)
      def generate_extra_tensors(self) -> Iterable[tuple[str, Tensor]]:
          return ()
-@@ -1061,6 +1113,28 @@ class ModelBase:
+@@ -1226,6 +1267,28 @@ class ModelBase:
  
              old_dtype = data_torch.dtype
  
@@ -187,8 +143,56 @@ index a39a728f5..467a43364 100644
              # convert any unsupported data types to float32
              if data_torch.dtype not in (torch.float16, torch.float32):
                  data_torch = data_torch.to(torch.float32)
+diff --git a/conversion/base.py.rej b/conversion/base.py.rej
+new file mode 100644
+index 000000000..b273699f7
+--- /dev/null
++++ b/conversion/base.py.rej
+@@ -0,0 +1,42 @@
++diff a/conversion/base.py b/conversion/base.py	(rejected hunks)
++@@ -558,7 +582,7 @@ class ModelBase:
++             elif quant_method == "modelopt":
++                 # Mixed-precision ModelOpt models: NVFP4 tensors are handled by
++                 # _generate_nvfp4_tensors; FP8 tensors have 1D weight_scale and
++-                # are dequantized here. k/v scale tensors are unused.
+++                # are dequantized here (or packed native with --fp8-native).
++                 for name in self.model_tensors.keys():
++                     if name.endswith(".weight_scale"):
++                         weight_name = name.removesuffix("_scale")
++@@ -567,13 +591,24 @@ class ModelBase:
++                             continue
++                         w = self.model_tensors[weight_name]
++                         s = self.model_tensors[name]
++-                        is_fp8_weight = False
++-                        if self._fp8_as_q8:
++-                            is_fp8_weight = w().dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
++-                        self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), None)
++-                        tensors_to_remove.append(name)
++-                        if is_fp8_weight:
++-                            self._fp8_dequantized.add(weight_name)
+++                        is_fp8_e4m3 = False
+++                        try:
+++                            is_fp8_e4m3 = w().dtype == torch.float8_e4m3fn
+++                        except Exception:
+++                            is_fp8_e4m3 = False
+++                        if self._fp8_native and is_fp8_e4m3:
+++                            # Keep E4M3 bytes; absorb per-tensor/per-row scale at pack time.
+++                            self._fp8_native_tensors.add(weight_name)
+++                            self._fp8_native_scales[weight_name] = s
+++                            tensors_to_remove.append(name)
+++                        else:
+++                            is_fp8_weight = False
+++                            if self._fp8_as_q8:
+++                                is_fp8_weight = w().dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+++                            self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), None)
+++                            tensors_to_remove.append(name)
+++                            if is_fp8_weight:
+++                                self._fp8_dequantized.add(weight_name)
++                     if name.endswith((".input_scale", ".k_scale", ".v_scale")):
++                         tensors_to_remove.append(name)
++             elif quant_method is not None:
 diff --git a/convert_hf_to_gguf.py b/convert_hf_to_gguf.py
-index e09616b19..6e10e5e26 100755
+index 5e263fd16..54d5147fb 100755
 --- a/convert_hf_to_gguf.py
 +++ b/convert_hf_to_gguf.py
 @@ -156,6 +156,11 @@ def parse_args() -> argparse.Namespace:
@@ -203,7 +207,7 @@ index e09616b19..6e10e5e26 100755
  
      parser.add_argument(
          "--fuse-qkv", action="store_true",
-@@ -295,6 +300,7 @@ def main() -> None:
+@@ -299,6 +304,7 @@ def main() -> None:
                                       fuse_gate_up_exps=args.fuse_gate_up_exps,
                                       fp8_as_q8=args.fp8_as_q8,
                                       fuse_qkv=args.fuse_qkv,
@@ -212,7 +216,7 @@ index e09616b19..6e10e5e26 100755
  
          if args.vocab_only:
 diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
-index aee1be384..cfd3a1578 100644
+index 94a07577a..4d205b947 100644
 --- a/ggml/include/ggml.h
 +++ b/ggml/include/ggml.h
 @@ -438,7 +438,8 @@ extern "C" {
@@ -262,7 +266,7 @@ index d43b54d1b..140730a7e 100644
  typedef struct {
      ggml_half d;           // delta
 diff --git a/ggml/src/ggml-cpu/arch-fallback.h b/ggml/src/ggml-cpu/arch-fallback.h
-index e4882984a..1d18e4b18 100644
+index 4e59d0ae0..cf8c104d6 100644
 --- a/ggml/src/ggml-cpu/arch-fallback.h
 +++ b/ggml/src/ggml-cpu/arch-fallback.h
 @@ -17,6 +17,7 @@
@@ -281,15 +285,7 @@ index e4882984a..1d18e4b18 100644
  #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
  #define ggml_quantize_mat_q8_K_4x8_generic ggml_quantize_mat_q8_K_4x8
  #define ggml_gemv_iq4_nl_8x8_q8_0_generic ggml_gemv_iq4_nl_8x8_q8_0
-@@ -88,6 +90,7 @@
- #elif defined(__x86_64__) || defined(__i386__) || defined(_M_IX86) || defined(_M_X64)
- // quants.c
- #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
-+#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
- // repack.cpp
- #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
- #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
-@@ -123,6 +126,7 @@
+@@ -121,6 +123,7 @@
  #define quantize_row_q8_K_generic quantize_row_q8_K
  #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
  #define ggml_vec_dot_q1_0_q8_0_generic ggml_vec_dot_q1_0_q8_0
@@ -297,7 +293,7 @@ index e4882984a..1d18e4b18 100644
  #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
  #define ggml_vec_dot_tq1_0_q8_K_generic ggml_vec_dot_tq1_0_q8_K
  #define ggml_vec_dot_tq2_0_q8_K_generic ggml_vec_dot_tq2_0_q8_K
-@@ -177,6 +181,7 @@
+@@ -175,6 +178,7 @@
  #define ggml_vec_dot_mxfp4_q8_0_generic ggml_vec_dot_mxfp4_q8_0
  #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
  #define ggml_vec_dot_q1_0_q8_0_generic ggml_vec_dot_q1_0_q8_0
@@ -305,7 +301,7 @@ index e4882984a..1d18e4b18 100644
  #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
  // repack.cpp
  #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
-@@ -267,6 +272,8 @@
+@@ -265,6 +269,8 @@
  // quants.c
  #define quantize_row_q8_K_generic quantize_row_q8_K
  #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
@@ -314,7 +310,7 @@ index e4882984a..1d18e4b18 100644
  #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
  #define ggml_vec_dot_tq1_0_q8_K_generic ggml_vec_dot_tq1_0_q8_K
  #define ggml_vec_dot_tq2_0_q8_K_generic ggml_vec_dot_tq2_0_q8_K
-@@ -332,6 +339,7 @@
+@@ -330,6 +336,7 @@
  #define ggml_vec_dot_mxfp4_q8_0_generic ggml_vec_dot_mxfp4_q8_0
  #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
  #define ggml_vec_dot_q1_0_q8_0_generic ggml_vec_dot_q1_0_q8_0
@@ -322,8 +318,23 @@ index e4882984a..1d18e4b18 100644
  #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
  // repack.cpp
  #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
+diff --git a/ggml/src/ggml-cpu/arch-fallback.h.rej b/ggml/src/ggml-cpu/arch-fallback.h.rej
+new file mode 100644
+index 000000000..bc98adcc4
+--- /dev/null
++++ b/ggml/src/ggml-cpu/arch-fallback.h.rej
+@@ -0,0 +1,9 @@
++diff a/ggml/src/ggml-cpu/arch-fallback.h b/ggml/src/ggml-cpu/arch-fallback.h	(rejected hunks)
++@@ -88,6 +90,7 @@
++ #elif defined(__x86_64__) || defined(__i386__) || defined(_M_IX86) || defined(_M_X64)
++ // quants.c
++ #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
+++#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
++ // repack.cpp
++ #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
++ #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index eaca6ba06..5e68fec40 100644
+index 1e2fd1c2a..cd31c587d 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -296,6 +296,12 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
@@ -525,7 +536,7 @@ index 651524be7..b5ca25a16 100644
  
  // Each call dequantizes one super-block of QK_K values into y using the
 diff --git a/ggml/src/ggml-cuda/getrows.cu b/ggml/src/ggml-cuda/getrows.cu
-index 6b36b8fbc..52029eea5 100644
+index d97e8fdb0..c3ece158a 100644
 --- a/ggml/src/ggml-cuda/getrows.cu
 +++ b/ggml/src/ggml-cuda/getrows.cu
 @@ -358,6 +358,8 @@ static void ggml_cuda_get_rows_switch_src0_type(
@@ -538,10 +549,10 @@ index 6b36b8fbc..52029eea5 100644
              break;
          case GGML_TYPE_Q6_K:
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 3a35280ca..401107bde 100644
+index 8a2ee0aae..2abef342f 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -5369,6 +5369,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+@@ -5768,6 +5768,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                      case GGML_TYPE_Q8_0:
                      case GGML_TYPE_MXFP4:
                      case GGML_TYPE_NVFP4:
@@ -549,7 +560,7 @@ index 3a35280ca..401107bde 100644
                      case GGML_TYPE_Q2_K:
                      case GGML_TYPE_Q3_K:
                      case GGML_TYPE_Q4_K:
-@@ -5410,6 +5411,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+@@ -5809,6 +5810,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                      case GGML_TYPE_Q3_K:
                      case GGML_TYPE_Q4_K:
                      case GGML_TYPE_Q5_K:
@@ -632,7 +643,7 @@ index 357b6cdf4..59be89504 100644
   * Converts brain16 to float32.
   *
 diff --git a/ggml/src/ggml-quants.c b/ggml/src/ggml-quants.c
-index 23431d654..dfbea7a7f 100644
+index 61bf00336..d15b10a8d 100644
 --- a/ggml/src/ggml-quants.c
 +++ b/ggml/src/ggml-quants.c
 @@ -416,6 +416,25 @@ void quantize_row_nvfp4_ref(const float * GGML_RESTRICT x, block_nvfp4 * GGML_RE
@@ -682,7 +693,7 @@ index 23431d654..dfbea7a7f 100644
  //
  // 2-6 bit quantization in super-blocks
  //
-@@ -2311,6 +2344,13 @@ size_t quantize_nvfp4(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+@@ -2312,6 +2345,13 @@ size_t quantize_nvfp4(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
      return nrow * ggml_row_size(GGML_TYPE_NVFP4, n_per_row);
  }
  
@@ -725,10 +736,10 @@ index ac6b83d3f..275a96a05 100644
  GGML_API void iq2xs_init_impl(enum ggml_type type);
  GGML_API void iq2xs_free_impl(enum ggml_type type);
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index 2c5aa0d30..55208d468 100644
+index c9016bb63..68ad04fbb 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
-@@ -770,6 +770,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
+@@ -778,6 +778,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
          .to_float                 = (ggml_to_float_t) dequantize_row_nvfp4,
          .from_float_ref           = (ggml_from_float_t)quantize_row_nvfp4_ref,
      },
@@ -743,7 +754,7 @@ index 2c5aa0d30..55208d468 100644
      [GGML_TYPE_Q2_K] = {
          .type_name                = "q2_K",
          .blck_size                = QK_K,
-@@ -1510,6 +1518,7 @@ enum ggml_type ggml_ftype_to_ggml_type(enum ggml_ftype ftype) {
+@@ -1520,6 +1528,7 @@ enum ggml_type ggml_ftype_to_ggml_type(enum ggml_ftype ftype) {
          case GGML_FTYPE_MOSTLY_Q8_0:          wtype = GGML_TYPE_Q8_0;  break;
          case GGML_FTYPE_MOSTLY_MXFP4:         wtype = GGML_TYPE_MXFP4; break;
          case GGML_FTYPE_MOSTLY_NVFP4:         wtype = GGML_TYPE_NVFP4; break;
@@ -751,7 +762,7 @@ index 2c5aa0d30..55208d468 100644
          case GGML_FTYPE_MOSTLY_Q2_K:          wtype = GGML_TYPE_Q2_K;  break;
          case GGML_FTYPE_MOSTLY_Q3_K:          wtype = GGML_TYPE_Q3_K;  break;
          case GGML_FTYPE_MOSTLY_Q4_K:          wtype = GGML_TYPE_Q4_K;  break;
-@@ -8348,6 +8357,7 @@ size_t ggml_quantize_chunk(
+@@ -8434,6 +8443,7 @@ size_t ggml_quantize_chunk(
          case GGML_TYPE_Q8_0:    result = quantize_q8_0   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_MXFP4:   result = quantize_mxfp4  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_NVFP4:   result = quantize_nvfp4  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
@@ -760,10 +771,10 @@ index 2c5aa0d30..55208d468 100644
          case GGML_TYPE_Q3_K:    result = quantize_q3_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_Q4_K:    result = quantize_q4_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
 diff --git a/gguf-py/gguf/constants.py b/gguf-py/gguf/constants.py
-index 8075e82a3..c667287ca 100644
+index 706cad3ea..9c4bcf343 100644
 --- a/gguf-py/gguf/constants.py
 +++ b/gguf-py/gguf/constants.py
-@@ -5809,6 +5809,7 @@ class GGMLQuantizationType(IntEnum):
+@@ -6353,6 +6353,7 @@ class GGMLQuantizationType(IntEnum):
      NVFP4   = 40
      Q1_0    = 41
      Q2_0    = 42
@@ -771,7 +782,7 @@ index 8075e82a3..c667287ca 100644
  
  
  class ExpertGatingFuncType(IntEnum):
-@@ -5863,6 +5864,7 @@ class LlamaFileType(IntEnum):
+@@ -6407,6 +6408,7 @@ class LlamaFileType(IntEnum):
      MOSTLY_TQ2_0         = 37  # except 1d tensors
      MOSTLY_MXFP4_MOE     = 38  # except 1d tensors
      MOSTLY_NVFP4         = 39  # except 1d tensors
@@ -779,7 +790,7 @@ index 8075e82a3..c667287ca 100644
      MOSTLY_Q1_0          = 40  # except 1d tensors
      MOSTLY_Q2_0          = 41  # except 1d tensors
  
-@@ -6002,6 +6004,7 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
+@@ -6572,6 +6574,7 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
      GGMLQuantizationType.TQ2_0:   (256, 2 + 64),
      GGMLQuantizationType.MXFP4:   (32, 1 + 16),
      GGMLQuantizationType.NVFP4:   (64, 4 + 32),
@@ -788,10 +799,10 @@ index 8075e82a3..c667287ca 100644
      GGMLQuantizationType.Q2_0:    (64, 2 + 16),
  }
 diff --git a/gguf-py/gguf/quants.py b/gguf-py/gguf/quants.py
-index 80966b6ef..a5d85ac95 100644
+index cc0772913..828fbc064 100644
 --- a/gguf-py/gguf/quants.py
 +++ b/gguf-py/gguf/quants.py
-@@ -764,6 +764,115 @@ class NVFP4(__Quant, qtype=GGMLQuantizationType.NVFP4):
+@@ -817,6 +817,115 @@ class NVFP4(__Quant, qtype=GGMLQuantizationType.NVFP4):
          return (d * vals.astype(np.float32)).reshape(n_super, 64)
  
  
@@ -908,10 +919,10 @@ index 80966b6ef..a5d85ac95 100644
      ksigns: bytes = (
          b"\x00\x81\x82\x03\x84\x05\x06\x87\x88\x09\x0a\x8b\x0c\x8d\x8e\x0f"
 diff --git a/include/llama.h b/include/llama.h
-index 4495b6659..b511b55db 100644
+index b1c37f53b..a229209ee 100644
 --- a/include/llama.h
 +++ b/include/llama.h
-@@ -157,6 +157,7 @@ extern "C" {
+@@ -158,6 +158,7 @@ extern "C" {
          LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors
          LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors
          LLAMA_FTYPE_MOSTLY_Q2_0          = 41, // except 1d tensors
@@ -920,10 +931,10 @@ index 4495b6659..b511b55db 100644
          LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
      };
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 81d248bea..3ee936ff3 100644
+index cf63e744a..76346c9b0 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
-@@ -47,6 +47,7 @@ const char * llama_ftype_name(llama_ftype ftype) {
+@@ -48,6 +48,7 @@ const char * llama_ftype_name(llama_ftype ftype) {
          case LLAMA_FTYPE_MOSTLY_Q8_0:      name = LLAMA_FTYPE_PREFIX "Q8_0"; break;
          case LLAMA_FTYPE_MOSTLY_MXFP4_MOE: name = LLAMA_FTYPE_PREFIX "MXFP4 MoE"; break;
          case LLAMA_FTYPE_MOSTLY_NVFP4:     name = LLAMA_FTYPE_PREFIX "NVFP4"; break;
@@ -931,7 +942,7 @@ index 81d248bea..3ee936ff3 100644
          case LLAMA_FTYPE_MOSTLY_Q2_K:      name = LLAMA_FTYPE_PREFIX "Q2_K - Medium"; break;
          case LLAMA_FTYPE_MOSTLY_Q2_K_S:    name = LLAMA_FTYPE_PREFIX "Q2_K - Small"; break;
          case LLAMA_FTYPE_MOSTLY_Q3_K_S:    name = LLAMA_FTYPE_PREFIX "Q3_K - Small"; break;
-@@ -788,6 +789,7 @@ llama_model_loader::llama_model_loader(
+@@ -791,6 +792,7 @@ llama_model_loader::llama_model_loader(
              case GGML_TYPE_IQ4_XS:  ftype = LLAMA_FTYPE_MOSTLY_IQ4_XS;  break;
              case GGML_TYPE_IQ3_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ3_S;   break;
              case GGML_TYPE_NVFP4:   ftype = LLAMA_FTYPE_MOSTLY_NVFP4;   break;

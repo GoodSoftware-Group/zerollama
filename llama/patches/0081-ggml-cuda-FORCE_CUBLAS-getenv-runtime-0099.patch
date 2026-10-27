@@ -8,7 +8,7 @@ Subject: [PATCH] ggml-cuda: FORCE_CUBLAS getenv runtime (0099)
  1 file changed, 26 insertions(+)
 
 diff --git a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu
-index 9812040ee..b888d4d03 100644
+index 520c0da7a..2e23bf364 100644
 --- a/ggml/src/ggml-cuda/mmq.cu
 +++ b/ggml/src/ggml-cuda/mmq.cu
 @@ -1,5 +1,6 @@
@@ -18,7 +18,7 @@ index 9812040ee..b888d4d03 100644
  #include "quantize.cuh"
  #include "mmid.cuh"
  
-@@ -325,6 +326,31 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
+@@ -357,6 +358,31 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
      return false;
  #endif // GGML_CUDA_FORCE_CUBLAS
  

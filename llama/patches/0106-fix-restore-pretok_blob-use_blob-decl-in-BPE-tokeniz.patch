@@ -1,0 +1,919 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:37:09 -0700
+Subject: [PATCH] fix: restore pretok_blob / use_blob decl in BPE tokenize
+
+---
+ common/CMakeLists.txt.rej                  |  13 ---
+ common/speculative.cpp.rej                 |  37 --------
+ conversion/base.py.rej                     |  18 ----
+ ggml/include/ggml-rpc.h.rej                |  10 --
+ ggml/src/ggml-cpu/arch-fallback.h.rej      |   9 --
+ ggml/src/ggml-cuda/fattn.cu.rej            |  35 -------
+ ggml/src/ggml-cuda/gated_delta_net.cu.rej  |  16 ----
+ ggml/src/ggml-cuda/ggml-cuda.cu.rej        |   9 --
+ ggml/src/ggml-cuda/mmq.cu.rej              |  11 ---
+ ggml/src/ggml-cuda/mmq.cuh.rej             |  27 ------
+ ggml/src/ggml-metal/CMakeLists.txt.rej     |  12 ---
+ ggml/src/ggml-metal/ggml-metal-ops.cpp.rej |   9 --
+ ggml/src/ggml-metal/ggml-metal-ops.h.rej   |  10 --
+ ggml/src/ggml.c.rej                        |  19 ----
+ gguf-py/gguf/constants.py.rej              |  13 ---
+ src/llama-arch.cpp.rej                     |  23 -----
+ src/llama-context.cpp.rej                  |  35 -------
+ src/llama-graph.cpp.rej                    |   9 --
+ src/llama-kv-cache.cpp.rej                 |  14 ---
+ src/llama-model.cpp.rej                    |  55 -----------
+ src/llama-model.h.rej                      |  12 ---
+ src/llama-vocab.cpp.rej                    |  33 +++----
+ src/llama-vocab.cpp.rej.rej                | 101 ---------------------
+ src/unicode.cpp.rej                        |  38 --------
+ tools/server/server-context.cpp.rej        |  28 ------
+ tools/server/server-context.h.rej          |   9 --
+ tools/server/server-schema.cpp.rej         |  49 ----------
+ tools/server/server-task.h.rej             |   9 --
+ tools/server/server.cpp.rej                |  15 ---
+ 29 files changed, 13 insertions(+), 665 deletions(-)
+ delete mode 100644 common/CMakeLists.txt.rej
+ delete mode 100644 common/speculative.cpp.rej
+ delete mode 100644 conversion/base.py.rej
+ delete mode 100644 ggml/include/ggml-rpc.h.rej
+ delete mode 100644 ggml/src/ggml-cpu/arch-fallback.h.rej
+ delete mode 100644 ggml/src/ggml-cuda/fattn.cu.rej
+ delete mode 100644 ggml/src/ggml-cuda/gated_delta_net.cu.rej
+ delete mode 100644 ggml/src/ggml-cuda/ggml-cuda.cu.rej
+ delete mode 100644 ggml/src/ggml-cuda/mmq.cu.rej
+ delete mode 100644 ggml/src/ggml-cuda/mmq.cuh.rej
+ delete mode 100644 ggml/src/ggml-metal/CMakeLists.txt.rej
+ delete mode 100644 ggml/src/ggml-metal/ggml-metal-ops.cpp.rej
+ delete mode 100644 ggml/src/ggml-metal/ggml-metal-ops.h.rej
+ delete mode 100644 ggml/src/ggml.c.rej
+ delete mode 100644 gguf-py/gguf/constants.py.rej
+ delete mode 100644 src/llama-arch.cpp.rej
+ delete mode 100644 src/llama-context.cpp.rej
+ delete mode 100644 src/llama-graph.cpp.rej
+ delete mode 100644 src/llama-kv-cache.cpp.rej
+ delete mode 100644 src/llama-model.cpp.rej
+ delete mode 100644 src/llama-model.h.rej
+ delete mode 100644 src/llama-vocab.cpp.rej.rej
+ delete mode 100644 src/unicode.cpp.rej
+ delete mode 100644 tools/server/server-context.cpp.rej
+ delete mode 100644 tools/server/server-context.h.rej
+ delete mode 100644 tools/server/server-schema.cpp.rej
+ delete mode 100644 tools/server/server-task.h.rej
+ delete mode 100644 tools/server/server.cpp.rej
+
+diff --git a/common/CMakeLists.txt.rej b/common/CMakeLists.txt.rej
+deleted file mode 100644
+index b068dfc51..000000000
+--- a/common/CMakeLists.txt.rej
++++ /dev/null
+@@ -1,13 +0,0 @@
+-diff a/common/CMakeLists.txt b/common/CMakeLists.txt	(rejected hunks)
+-@@ -225,3 +225,11 @@ else()
+-         message(STATUS "llama-common: ANE draft session stub (missing ${_ZEROLLAMA_ANE_BRIDGE})")
+-     endif()
+- endif()
+-+
+-+# zerollama M23: HOLD_ANE around ane_draft_session eval via dlsym→libllama uma.
+-+# Do not link libuma into common (duplicate g_client vs M22 llama link).
+-+if (ZEROLLAMA_UMA)
+-+    target_compile_definitions(${TARGET} PRIVATE ZEROLLAMA_UMA=1)
+-+    message(STATUS "llama-common: ZEROLLAMA_UMA HOLD_ANE for ane_draft_session (dlsym)")
+-+endif()
+-+
+diff --git a/common/speculative.cpp.rej b/common/speculative.cpp.rej
+deleted file mode 100644
+index c90c3d945..000000000
+--- a/common/speculative.cpp.rej
++++ /dev/null
+@@ -1,37 +0,0 @@
+-diff a/common/speculative.cpp b/common/speculative.cpp	(rejected hunks)
+-@@ -189,8 +189,11 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+- 
+-     std::vector<common_sampler_ptr> smpls;
+- 
+--    common_speculative_impl_draft_simple(const common_params_speculative & params, uint32_t n_seq)
+--        : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE, n_seq, params.draft.n_max)
+-+    common_speculative_impl_draft_simple(
+-+            const common_params_speculative & params,
+-+            uint32_t n_seq,
+-+            common_speculative_type type_in = COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE)
+-+        : common_speculative_impl(type_in, n_seq, params.draft.n_max)
+-         , params(params.draft)
+-     {
+-         auto * ctx_dft = this->params.ctx_dft;
+-@@ -258,7 +261,11 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+- 
+-         common_ane_draft_log_init(type, llama_model_n_embd(llama_get_model(ctx_dft)));
+- 
+--        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
+-+        char arch_buf[64] = {};
+-+        const bool is_dflash_draft =
+-+            llama_model_meta_val_str(llama_get_model(ctx_dft), "general.architecture", arch_buf, sizeof(arch_buf)) > 0 &&
+-+            strcmp(arch_buf, "dflash-draft") == 0;
+-+        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) || is_dflash_draft;
+-         if (dflash || common_ane_draft_enabled()) {
+-             common_ane_draft_bind_target_ctx(ctx_tgt);
+-             llama_set_embeddings_pre_norm(ctx_tgt, true);
+-@@ -2524,7 +2531,7 @@ common_params common_base_params_to_speculative(const common_params & params) {
+- 
+-     result.cache_type_k  = params_spec.cache_type_k;
+-     result.cache_type_v  = params_spec.cache_type_v;
+--    result.n_outputs_max = params.n_parallel;
+-+    result.n_outputs_max = std::max(params.n_parallel, (int32_t) params.n_batch);
+-     result.n_outputs_max_per_seq = 1;
+- 
+-     // dflash/dspark decode the whole noise block in a single pass and sample every block position on the backend
+diff --git a/conversion/base.py.rej b/conversion/base.py.rej
+deleted file mode 100644
+index 937b481f7..000000000
+--- a/conversion/base.py.rej
++++ /dev/null
+@@ -1,18 +0,0 @@
+-diff a/conversion/base.py b/conversion/base.py	(rejected hunks)
+-@@ -627,12 +627,12 @@ class ModelBase:
+-                             continue
+-                         w = self.model_tensors[weight_name]
+-                         s = self.model_tensors[name]
+--                        is_fp8_e4m3 = False
+-+                        is_native_fp8 = False
+-                         try:
+--                            is_fp8_e4m3 = w().dtype == torch.float8_e4m3fn
+-+                            is_native_fp8 = w().dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+-                         except Exception:
+--                            is_fp8_e4m3 = False
+--                        if self._fp8_native and is_fp8_e4m3:
+-+                            is_native_fp8 = False
+-+                        if self._fp8_native and is_native_fp8:
+-                             # Keep E4M3 bytes; absorb per-tensor/per-row scale at pack time.
+-                             self._fp8_native_tensors.add(weight_name)
+-                             self._fp8_native_scales[weight_name] = s
+diff --git a/ggml/include/ggml-rpc.h.rej b/ggml/include/ggml-rpc.h.rej
+deleted file mode 100644
+index 32b89f104..000000000
+--- a/ggml/include/ggml-rpc.h.rej
++++ /dev/null
+@@ -1,10 +0,0 @@
+-diff a/ggml/include/ggml-rpc.h b/ggml/include/ggml-rpc.h	(rejected hunks)
+-@@ -11,7 +11,7 @@ extern "C" {
+- #define RPC_PROTO_PATCH_VERSION    0
+- 
+- #ifdef  __cplusplus
+--static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
+-+static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
+- #endif
+- 
+- #define GGML_RPC_MAX_SERVERS       16
+diff --git a/ggml/src/ggml-cpu/arch-fallback.h.rej b/ggml/src/ggml-cpu/arch-fallback.h.rej
+deleted file mode 100644
+index 0b1903e88..000000000
+--- a/ggml/src/ggml-cpu/arch-fallback.h.rej
++++ /dev/null
+@@ -1,9 +0,0 @@
+-diff a/ggml/src/ggml-cpu/arch-fallback.h b/ggml/src/ggml-cpu/arch-fallback.h	(rejected hunks)
+-@@ -91,6 +93,7 @@
+- // quants.c
+- #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
+- #define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+-+#define ggml_vec_dot_fp8_e5m2_q8_0_generic ggml_vec_dot_fp8_e5m2_q8_0
+- // repack.cpp
+- #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
+- #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
+diff --git a/ggml/src/ggml-cuda/fattn.cu.rej b/ggml/src/ggml-cuda/fattn.cu.rej
+deleted file mode 100644
+index d90e72d9a..000000000
+--- a/ggml/src/ggml-cuda/fattn.cu.rej
++++ /dev/null
+@@ -1,35 +0,0 @@
+-diff a/ggml/src/ggml-cuda/fattn.cu b/ggml/src/ggml-cuda/fattn.cu	(rejected hunks)
+-@@ -534,20 +544,24 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
+- 
+-     // AMD MFMA needs a certain minimum batch size to outscale the tile kernel for large head sizes.
+-     if ((amd_mfma_available(cc) && Q->ne[0] <= 256) && Q->ne[0] != 40 && Q->ne[0] != 72) {
+--        if ((Q->ne[0] <= 64 && Q->ne[1] * gqa_ratio_eff > 8)) {
+--            return BEST_FATTN_KERNEL_MMA_F16;
+--        }
+--        if ((Q->ne[0] <= 128 && Q->ne[1] * gqa_ratio_eff > 16)) {
+--            return BEST_FATTN_KERNEL_MMA_F16;
+--        }
+--        if ((Q->ne[0] <= 256 && Q->ne[1] * gqa_ratio_eff > 64)) {
+--            return BEST_FATTN_KERNEL_MMA_F16;
+-+        if (!export_lse) {
+-+            if ((Q->ne[0] <= 64 && Q->ne[1] * gqa_ratio_eff > 8)) {
+-+                return BEST_FATTN_KERNEL_MMA_F16;
+-+            }
+-+            if ((Q->ne[0] <= 128 && Q->ne[1] * gqa_ratio_eff > 16)) {
+-+                return BEST_FATTN_KERNEL_MMA_F16;
+-+            }
+-+            if ((Q->ne[0] <= 256 && Q->ne[1] * gqa_ratio_eff > 64)) {
+-+                return BEST_FATTN_KERNEL_MMA_F16;
+-+            }
+-         }
+-     }
+- 
+-     // AMD WMMA is always faster than the tile kernel if the full tile width of 16 can be utilized.
+-     if ((amd_wmma_available(cc) && gqa_opt_applies && Q->ne[0] <= 128) && Q->ne[0] != 40 && Q->ne[0] != 72 && Q->ne[1] * gqa_ratio_eff > 8) {
+--        return BEST_FATTN_KERNEL_MMA_F16;
+-+        if (!export_lse) {
+-+            return BEST_FATTN_KERNEL_MMA_F16;
+-+        }
+-     }
+- 
+-     // If there are no tensor cores available, use the generic tile kernel:
+diff --git a/ggml/src/ggml-cuda/gated_delta_net.cu.rej b/ggml/src/ggml-cuda/gated_delta_net.cu.rej
+deleted file mode 100644
+index ce8bb6976..000000000
+--- a/ggml/src/ggml-cuda/gated_delta_net.cu.rej
++++ /dev/null
+@@ -1,16 +0,0 @@
+-diff a/ggml/src/ggml-cuda/gated_delta_net.cu b/ggml/src/ggml-cuda/gated_delta_net.cu	(rejected hunks)
+-@@ -233,14 +233,6 @@ static void launch_gated_delta_net(const float * q_d,
+-     }
+- }
+- 
+--void ggml_cuda_op_gated_delta_net_fused_cache(
+--        ggml_backend_cuda_context & ctx, ggml_tensor * dst, ggml_cuda_gated_delta_net_fused_cache cache) {
+--    // Stub for link compatibility with ggml-cuda.cu fusion detector. Fusion is disabled
+--    // (try_gdn_cache_fusion returns 0) because the row-per-warp kernel dropped cache writes.
+--    GGML_UNUSED(cache);
+--    ggml_cuda_op_gated_delta_net(ctx, dst);
+--}
+--
+- void ggml_cuda_op_gated_delta_net(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+-     ggml_tensor * src_q     = dst->src[0];
+-     ggml_tensor * src_k     = dst->src[1];
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu.rej b/ggml/src/ggml-cuda/ggml-cuda.cu.rej
+deleted file mode 100644
+index 3a0064278..000000000
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu.rej
++++ /dev/null
+@@ -1,9 +0,0 @@
+-diff a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu	(rejected hunks)
+-@@ -2870,6 +2877,7 @@ static int ggml_cuda_try_gdn_cache_fusion(
+-     fused_state_cpy.data        = (float *) dst->data; // rollback group 0 (newest)
+-     fused_state_cpy.slot_stride = K > 1 ? (int64_t) (dst->nb[2] / sizeof(float)) : 0;
+-     return skip;
+-+#endif
+- }
+- 
+- static bool ggml_cuda_topk_moe_fusion(const struct ggml_cgraph * cgraph, int node_idx, ggml_cuda_topk_moe_args & args) {
+diff --git a/ggml/src/ggml-cuda/mmq.cu.rej b/ggml/src/ggml-cuda/mmq.cu.rej
+deleted file mode 100644
+index 97ea21c98..000000000
+--- a/ggml/src/ggml-cuda/mmq.cu.rej
++++ /dev/null
+@@ -1,11 +0,0 @@
+-diff a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu	(rejected hunks)
+-@@ -31,6 +31,9 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
+-         case GGML_TYPE_FP8_E4M3:
+-             mul_mat_q_case<GGML_TYPE_FP8_E4M3>(ctx, args, stream);
+-             break;
+-+        case GGML_TYPE_FP8_E5M2:
+-+            mul_mat_q_case<GGML_TYPE_FP8_E5M2>(ctx, args, stream);
+-+            break;
+-         case GGML_TYPE_Q2_K:
+-             mul_mat_q_case<GGML_TYPE_Q2_K>(ctx, args, stream);
+-             break;
+diff --git a/ggml/src/ggml-cuda/mmq.cuh.rej b/ggml/src/ggml-cuda/mmq.cuh.rej
+deleted file mode 100644
+index 309b9ef6d..000000000
+--- a/ggml/src/ggml-cuda/mmq.cuh.rej
++++ /dev/null
+@@ -1,27 +0,0 @@
+-diff a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh	(rejected hunks)
+-@@ -595,6 +597,12 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
+-                     ggml_cuda_mmq_load_tiles_fp8_e4m3<type, J, fallback>,
+-                     ggml_cuda_mmq_vec_dot_q8_0_q8_1_dp4a<type, J, fallback>,
+-                     ggml_cuda_mmq_write_back_dp4a<type, J, fallback>);
+-+            case GGML_TYPE_FP8_E5M2:
+-+                return ggml_cuda_mmq_util_funcs(
+-+                    VDR_FP8_E5M2_Q8_1_MMQ,
+-+                    ggml_cuda_mmq_load_tiles_fp8_e5m2<type, J, fallback>,
+-+                    ggml_cuda_mmq_vec_dot_q8_0_q8_1_dp4a<type, J, fallback>,
+-+                    ggml_cuda_mmq_write_back_dp4a<type, J, fallback>);
+- // ---------------------------------------------------------------------------------------------
+-             case GGML_TYPE_Q2_K:
+-                 return ggml_cuda_mmq_util_funcs(
+-@@ -771,6 +779,12 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
+-                 ggml_cuda_mmq_load_tiles_fp8_e4m3<type, J, fallback>,
+-                 ggml_cuda_mmq_vec_dot_q8_0_q8_1_mma<type, J, fallback, MMQ_Q8_1_DS_LAYOUT_D4>,
+-                 ggml_cuda_mmq_write_back_mma<type, J, fallback>);
+-+        case GGML_TYPE_FP8_E5M2:
+-+            return ggml_cuda_mmq_util_funcs(
+-+                -1,
+-+                ggml_cuda_mmq_load_tiles_fp8_e5m2<type, J, fallback>,
+-+                ggml_cuda_mmq_vec_dot_q8_0_q8_1_mma<type, J, fallback, MMQ_Q8_1_DS_LAYOUT_D4>,
+-+                ggml_cuda_mmq_write_back_mma<type, J, fallback>);
+- // ---------------------------------------------------------------------------------------------
+-         case GGML_TYPE_Q2_K:
+-             return ggml_cuda_mmq_util_funcs(
+diff --git a/ggml/src/ggml-metal/CMakeLists.txt.rej b/ggml/src/ggml-metal/CMakeLists.txt.rej
+deleted file mode 100644
+index a419c973c..000000000
+--- a/ggml/src/ggml-metal/CMakeLists.txt.rej
++++ /dev/null
+@@ -1,12 +0,0 @@
+-diff a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt	(rejected hunks)
+-@@ -248,8 +273,8 @@ else()
+-         COMMAND rm -f ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ggml-common.h
+-         COMMAND rm -f ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ggml-metal-impl.h
+-         COMMAND rm -rf ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/kernels
+--        DEPENDS ${AIR_FILES} ${AIR_MM_TENSOR}
+--        COMMENT "Linking Metal kernels into default.metallib"
+-+        DEPENDS ${AIR_FILES}
+-+        COMMENT "Linking Metal kernels (ggml + eliza QJL/Polar/TBQ) into default.metallib"
+-     )
+- 
+-     add_custom_target(
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp.rej b/ggml/src/ggml-metal/ggml-metal-ops.cpp.rej
+deleted file mode 100644
+index 4fa6e6325..000000000
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp.rej
++++ /dev/null
+@@ -1,9 +0,0 @@
+-diff a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp	(rejected hunks)
+-@@ -2610,6 +2622,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+-         ggml_metal_encoder_dispatch_threadgroups(enc, ((ne11 + nr1 - 1) / nr1), ((ne01 + nr0 - 1) / nr0), ne12 * ne13, 32, nsg, 1);
+-     } else {
+-         auto pipeline = ggml_metal_library_get_pipeline_mul_mv(lib, op);
+-+        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
+- 
+-         const int nr0 = pipeline.nr0;
+-         const int nr1 = pipeline.nr1;
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h.rej b/ggml/src/ggml-metal/ggml-metal-ops.h.rej
+deleted file mode 100644
+index cc55f6e96..000000000
+--- a/ggml/src/ggml-metal/ggml-metal-ops.h.rej
++++ /dev/null
+@@ -1,10 +0,0 @@
+-diff a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h	(rejected hunks)
+-@@ -47,6 +47,8 @@ size_t ggml_metal_op_flash_attn_ext_extra_tmp(const struct ggml_tensor * op);
+- size_t ggml_metal_op_flash_attn_ext_extra_kv_f16(const struct ggml_tensor * op);
+- size_t ggml_metal_op_flash_attn_ext_extra_idx(const struct ggml_tensor * op);
+- 
+-+size_t ggml_metal_op_fused_attn_qjl_extra_q_sketch(const struct ggml_tensor * op);
+-+
+- int ggml_metal_op_concat            (ggml_metal_op_t ctx, int idx);
+- int ggml_metal_op_repeat            (ggml_metal_op_t ctx, int idx);
+- int ggml_metal_op_acc               (ggml_metal_op_t ctx, int idx);
+diff --git a/ggml/src/ggml.c.rej b/ggml/src/ggml.c.rej
+deleted file mode 100644
+index 6219dd222..000000000
+--- a/ggml/src/ggml.c.rej
++++ /dev/null
+@@ -1,19 +0,0 @@
+-diff a/ggml/src/ggml.c b/ggml/src/ggml.c	(rejected hunks)
+-@@ -1166,7 +1166,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
+-     "GLU",
+- };
+- 
+--static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+-+static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
+- 
+- static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+-     "none",
+-@@ -1281,7 +1285,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+-     "glu(x)",
+- };
+- 
+--static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+-+static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
+- 
+- static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
+- 
+diff --git a/gguf-py/gguf/constants.py.rej b/gguf-py/gguf/constants.py.rej
+deleted file mode 100644
+index 37d191e70..000000000
+--- a/gguf-py/gguf/constants.py.rej
++++ /dev/null
+@@ -1,13 +0,0 @@
+-diff a/gguf-py/gguf/constants.py b/gguf-py/gguf/constants.py	(rejected hunks)
+-@@ -222,6 +222,11 @@ class Keys:
+-         RECURRENT_LAYERS             = "{arch}.attention.recurrent_layers"
+-         TEMPERATURE_SCALE            = "{arch}.attention.temperature_scale"
+-         ROPE_PATTERN                 = "{arch}.attention.rope_pattern"
+-+        # Dual Chunk Attention (Qwen long-ctx / 1M). Metadata only until native FA lands.
+-+        # See docs/dca-dual-chunk-attention.md
+-+        DCA_CHUNK_SIZE               = "{arch}.attention.dca.chunk_size"
+-+        DCA_LOCAL_SIZE               = "{arch}.attention.dca.local_size"
+-+        DCA_ORIG_CTX_LEN             = "{arch}.attention.dca.original_context_length"
+- 
+-         class Indexer:
+-             HEAD_COUNT = "{arch}.attention.indexer.head_count"
+diff --git a/src/llama-arch.cpp.rej b/src/llama-arch.cpp.rej
+deleted file mode 100644
+index b7abe8884..000000000
+--- a/src/llama-arch.cpp.rej
++++ /dev/null
+@@ -1,23 +0,0 @@
+-diff a/src/llama-arch.cpp b/src/llama-arch.cpp	(rejected hunks)
+-@@ -377,6 +378,11 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
+-     { LLM_KV_DFLASH_SELECTOR_RANK,    "%s.selector_rank"    },
+-     { LLM_KV_DFLASH_SELECTOR_TOP_K,   "%s.selector_top_k"   },
+- 
+-+    { LLM_KV_DFLASH_DRAFT_BLOCK_SIZE,  "%s.dflash.block_size"        },
+-+    { LLM_KV_DFLASH_MASK_TOKEN_ID,     "%s.dflash.mask_token_id"     },
+-+    { LLM_KV_DFLASH_TARGET_LAYER_IDS,  "%s.dflash.target_layer_ids"  },
+-+    { LLM_KV_DFLASH_N_TARGET_FEATURES, "%s.dflash.n_target_features" },
+-+
+-     { LLM_KV_SHORTCONV_L_CACHE, "%s.shortconv.l_cache" },
+-     // sentence-transformers dense modules feature dims
+-     { LLM_KV_DENSE_2_FEAT_IN,        "%s.dense_2_feat_in"  },
+-@@ -1000,6 +1008,9 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
+-     // eagle3
+-     {LLM_TENSOR_FC,                         {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+-     {LLM_TENSOR_D2T,                        {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
+-+    // milady dflash-draft
+-+    {LLM_TENSOR_DFLASH_FC,                  {LLM_TENSOR_LAYER_INPUT,     GGML_OP_MUL_MAT}},
+-+    {LLM_TENSOR_DFLASH_HIDDEN_NORM,         {LLM_TENSOR_LAYER_INPUT,     GGML_OP_MUL}},
+-     // dspark
+-     {LLM_TENSOR_DSPARK_MARKOV_W1,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
+-     {LLM_TENSOR_DSPARK_MARKOV_W2,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+diff --git a/src/llama-context.cpp.rej b/src/llama-context.cpp.rej
+deleted file mode 100644
+index e16946401..000000000
+--- a/src/llama-context.cpp.rej
++++ /dev/null
+@@ -1,35 +0,0 @@
+-diff a/src/llama-context.cpp b/src/llama-context.cpp	(rejected hunks)
+-@@ -2665,11 +2669,33 @@ ggml_status llama_context::graph_compute(
+-         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
+-     }
+- 
+-+#if defined(ZEROLLAMA_UMA)
+-+    // Admission only: HOLD_GPU around Metal graph compute + drain (M21 lesson —
+-+    // RELEASE must not race ggml_backend_sched_synchronize).
+-+    const char * uma_phase = batched ? "prefill" : "decode";
+-+    const bool uma_gate = uma_mlx_runtime_enabled();
+-+    if (uma_gate) {
+-+        if (uma_mlx_lease_begin(uma_phase) != 0) {
+-+            LLAMA_LOG_ERROR("%s: uma lease begin (%s) failed: %s\n", __func__, uma_phase, uma_mlx_last_error());
+-+            return GGML_STATUS_FAILED;
+-+        }
+-+    }
+-+#endif
+-+
+-     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
+-     if (status != GGML_STATUS_SUCCESS) {
+-         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
+-     }
+- 
+-+#if defined(ZEROLLAMA_UMA)
+-+    if (uma_gate) {
+-+        if (status == GGML_STATUS_SUCCESS) {
+-+            ggml_backend_sched_synchronize(sched.get());
+-+        }
+-+        uma_mlx_lease_end();
+-+    }
+-+#endif
+-+
+-     // fprintf(stderr, "splits: %d\n", ggml_backend_sched_get_n_splits(sched));
+- 
+-     return status;
+diff --git a/src/llama-graph.cpp.rej b/src/llama-graph.cpp.rej
+deleted file mode 100644
+index bdcbb25e2..000000000
+--- a/src/llama-graph.cpp.rej
++++ /dev/null
+@@ -1,9 +0,0 @@
+-diff a/src/llama-graph.cpp b/src/llama-graph.cpp	(rejected hunks)
+-@@ -4,6 +4,7 @@
+- #include "llama-model.h"
+- #include "llama-batch.h"
+- #include "llama-cparams.h"
+-+#include "llama-dca.h"
+- #include "llama-sampler.h"
+- 
+- #include "llama-kv-cache.h"
+diff --git a/src/llama-kv-cache.cpp.rej b/src/llama-kv-cache.cpp.rej
+deleted file mode 100644
+index 72277756b..000000000
+--- a/src/llama-kv-cache.cpp.rej
++++ /dev/null
+@@ -1,14 +0,0 @@
+-diff a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp	(rejected hunks)
+-@@ -2198,11 +2556,7 @@ ggml_cgraph * llama_kv_cache::build_graph_shift(llm_graph_result * res, llama_co
+- }
+- 
+- void llama_kv_cache::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
+--    // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
+--    if (other) {
+--        return;
+--    }
+--
+-+    // Shared cells: metadata is the same vector — write from this view (read-only).
+-     GGML_UNUSED(flags);
+- 
+-     io.write(&n_stream, sizeof(n_stream));
+diff --git a/src/llama-model.cpp.rej b/src/llama-model.cpp.rej
+deleted file mode 100644
+index c6a4d1b87..000000000
+--- a/src/llama-model.cpp.rej
++++ /dev/null
+@@ -1,55 +0,0 @@
+-diff a/src/llama-model.cpp b/src/llama-model.cpp	(rejected hunks)
+-@@ -3192,6 +3194,8 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
+-             }
+-             // DSV4 DSpark drafters use DeepSeek-V4's normal RoPE; legacy DFlash backbones are NeoX
+-             return model->hparams.dsv4_hc_mult > 0 ? LLAMA_ROPE_TYPE_NORM : LLAMA_ROPE_TYPE_NEOX;
+-+        case LLM_ARCH_DFLASH_DRAFT:
+-+            return LLAMA_ROPE_TYPE_NEOX;
+- 
+-         case LLM_ARCH_QWEN2VL:
+-         case LLM_ARCH_PADDLEOCR:
+-@@ -3458,6 +3462,44 @@ uint32_t llama_model_target_layer_ids_n(const struct llama_model * model) {
+-     return (uint32_t) model->target_layer_ids.size();
+- }
+- 
+-+int32_t llama_model_dflash_n_target_features(const struct llama_model * model) {
+-+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
+-+        return 0;
+-+    }
+-+    return (int32_t) model->hparams.dflash_n_target_features;
+-+}
+-+
+-+int32_t llama_model_dflash_mask_token_id(const struct llama_model * model) {
+-+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
+-+        return -1;
+-+    }
+-+    return (int32_t) model->hparams.dflash_mask_token_id;
+-+}
+-+
+-+int32_t llama_model_dflash_block_size(const struct llama_model * model) {
+-+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
+-+        return 0;
+-+    }
+-+    return (int32_t) model->hparams.dflash_block_size;
+-+}
+-+
+-+int32_t llama_model_dflash_n_target_layers(const struct llama_model * model) {
+-+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
+-+        return 0;
+-+    }
+-+    return (int32_t) model->hparams.dflash_n_target_layers;
+-+}
+-+
+-+int32_t llama_model_dflash_target_layer_id(const struct llama_model * model, int32_t i) {
+-+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT || i < 0) {
+-+        return -1;
+-+    }
+-+    if ((uint32_t) i >= model->hparams.dflash_n_target_layers) {
+-+        return -1;
+-+    }
+-+    return (int32_t) model->hparams.dflash_target_layer_ids[i];
+-+}
+-+
+- uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out) {
+-     if (model->vocab.n_tokens() == 0 || model->tok_embd == nullptr) {
+-         return 0;
+diff --git a/src/llama-model.h.rej b/src/llama-model.h.rej
+deleted file mode 100644
+index 3ddf5c0ad..000000000
+--- a/src/llama-model.h.rej
++++ /dev/null
+@@ -1,12 +0,0 @@
+-diff a/src/llama-model.h b/src/llama-model.h	(rejected hunks)
+-@@ -715,6 +715,10 @@ struct llama_model {
+-     struct ggml_tensor * dflash_selector_next   = nullptr;
+-     struct ggml_tensor * dflash_selector_hidden = nullptr;
+- 
+-+    // milady dflash-draft
+-+    struct ggml_tensor * dflash_fc          = nullptr;
+-+    struct ggml_tensor * dflash_hidden_norm = nullptr;
+-+
+-     // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
+-     std::vector<int32_t> target_layer_ids;
+- 
+diff --git a/src/llama-vocab.cpp.rej b/src/llama-vocab.cpp.rej
+index ac216dd3a..69afeb513 100644
+--- a/src/llama-vocab.cpp.rej
++++ b/src/llama-vocab.cpp.rej
+@@ -1,23 +1,16 @@
+ diff a/src/llama-vocab.cpp b/src/llama-vocab.cpp	(rejected hunks)
+-@@ -958,10 +958,17 @@ struct llm_tokenizer_bpe_session {
+-         symbols_final.clear();
+-         auto tok_pre = vocab.get_pre_type();
+-         const bool use_id_pairs = vocab.has_bpe_id_pairs();
+--        // WHY per-call init: session is constructed once per llama_tokenize; cache must not
+--        // survive across requests (no lifecycle / memory growth). Opt-out for A/B measurement.
+--        const bool want_cache = use_id_pairs && (getenv("LLAMA_BPE_NO_PRETOK_CACHE") == nullptr);
+--        pretok_cache.init(want_cache);
+-+        // WHY (0120): init pretok cache once per session, not per tokenize() call.
+-+        // tokenizer_st_partition invokes session.tokenize() once per text fragment between
+-+        // specials; re-assign(4096) + cold cache each fragment made mixed/chat megaprompts
+-+        // ~2.6× slower with cache ON than NO_PRETOK_CACHE (see findings). Session is
+-+        // constructed once per llama_tokenize, so cross-fragment reuse is correct and
+-+        // still has no cross-request lifecycle.
+-+        if (!pretok_cache_ready) {
+-+            const bool want_cache = use_id_pairs && (getenv("LLAMA_BPE_NO_PRETOK_CACHE") == nullptr);
+-+            pretok_cache.init(want_cache);
+-+            pretok_cache_ready = true;
++@@ -953,7 +953,13 @@ struct llm_tokenizer_bpe_session {
++ 
++     virtual void tokenize(const std::string & text, std::vector<llama_token> & output) {
++         int final_prev_index = -1;
++-        const auto word_collection = unicode_regex_split(text, tokenizer.regex_exprs, tokenizer.byte_encode);
+++        unicode_pretok_blob pretok_blob;
+++        const bool use_blob = unicode_regex_split_try_blob(
+++                text, tokenizer.regex_exprs, tokenizer.byte_encode, pretok_blob);
+++        std::vector<std::string> word_collection;
+++        if (!use_blob) {
+++            word_collection = unicode_regex_split(text, tokenizer.regex_exprs, tokenizer.byte_encode);
+ +        }
+  
+-         auto process_word = [&](const char * wdata, size_t wsize) {
+-             // Cache hit: skip merge entirely. Append one symbol per cached id.
++         symbols_final.clear();
++         auto tok_pre = vocab.get_pre_type();
+diff --git a/src/llama-vocab.cpp.rej.rej b/src/llama-vocab.cpp.rej.rej
+deleted file mode 100644
+index 216749cd0..000000000
+--- a/src/llama-vocab.cpp.rej.rej
++++ /dev/null
+@@ -1,101 +0,0 @@
+-diff a/src/llama-vocab.cpp.rej b/src/llama-vocab.cpp.rej	(rejected hunks)
+-@@ -1,46 +1,56 @@
+- diff a/src/llama-vocab.cpp b/src/llama-vocab.cpp	(rejected hunks)
+--@@ -2267,6 +2622,44 @@
+--     }
+--     GGML_ASSERT(id_to_token.size() == token_to_id.size());
+-- 
+--+    // Build id-pair BPE table now that token_to_id is populated. Merges were loaded earlier
+--+    // as strings; converting here avoids looking up tokens before the vocab list exists.
+--+    // WHY lenient skip: some GGUFs carry orphan merge strings; failing the whole load is
+--+    // worse than omitting those pairs (encode still falls back per-pair).
+--+    if (!bpe_ranks.empty()) {
+--+        bpe_id_pairs.init(bpe_ranks.size());
+--+        size_t skipped = 0;
+--+        for (const auto & kv_pair : bpe_ranks) {
+--+            const auto it_l = token_to_id.find(kv_pair.first.first);
+--+            const auto it_r = token_to_id.find(kv_pair.first.second);
+--+            if (it_l == token_to_id.end() || it_r == token_to_id.end()) {
+--+                skipped++;
+--+                continue;
+--+            }
+--+            const std::string merged_text = kv_pair.first.first + kv_pair.first.second;
+--+            const auto it_m = token_to_id.find(merged_text);
+--+            if (it_m == token_to_id.end()) {
+--+                skipped++;
+--+                continue;
+--+            }
+--+            bpe_id_pairs.insert(it_l->second, it_r->second, kv_pair.second, it_m->second);
+--+        }
+--+        if (skipped > 0) {
+--+            LLAMA_LOG_WARN("%s: skipped %zu/%zu BPE merges when building id-pair table\n",
+--+                __func__, skipped, bpe_ranks.size());
+--+        }
+--+        // Single-codepoint / short UTF-8 pieces for O(1) char->id without std::string.
+--+        // WHY build here with id-pairs: same readiness gate (token_to_id complete).
+--+        bpe_piece4.init(token_to_id.size());
+--+        for (const auto & kv : token_to_id) {
+--+            if (kv.first.size() > 0 && kv.first.size() <= 4) {
+--+                bpe_piece4.insert(kv.first.data(), kv.first.size(), kv.second);
+--+            }
+--+        }
+--+        LLAMA_LOG_INFO("%s: bpe_id_pairs          = %zu\n", __func__, bpe_id_pairs.n);
+--+        LLAMA_LOG_INFO("%s: bpe_piece4            = %zu\n", __func__, bpe_piece4.n);
+--+    }
+-+@@ -905,7 +905,15 @@
+-+ 
+-+     void tokenize(const std::string & text, std::vector<llama_token> & output) {
+-+         int final_prev_index = -1;
+-+-        const auto word_collection = unicode_regex_split(text, tokenizer.regex_exprs, tokenizer.byte_encode);
+- +
+--     init_tokenizer(type);
+-++        // WHY (0119): prefer offset+blob pretok on ASCII custom regex — skip ~370k string/MiB.
+-++        unicode_pretok_blob pretok_blob;
+-++        const bool use_blob = unicode_regex_split_try_blob(
+-++                text, tokenizer.regex_exprs, tokenizer.byte_encode, pretok_blob);
+-++        std::vector<std::string> word_collection;
+-++        if (!use_blob) {
+-++            word_collection = unicode_regex_split(text, tokenizer.regex_exprs, tokenizer.byte_encode);
+-++        }
+-+ 
+-+         symbols_final.clear();
+-+         auto tok_pre = vocab.get_pre_type();
+-+@@ -2233,9 +2266,6 @@
+-+     // set of all tokens that cause "end of generation"
+-+     std::set<llama_token> special_eog_ids;
+-+ 
+-+-    // Gemma4 unified / tokenizer.ggml.suppress_tokens — bias logits to -inf.
+-+-    std::vector<llama_token> suppress_tokens;
+-+-
+-+     std::unique_ptr<llm_tokenizer> tokenizer;
+-+ 
+-+     std::vector<char> precompiled_charsmap;
+-+@@ -2767,16 +2797,6 @@
+-+ 
+-+         ml.get_key(LLM_KV_TOKENIZER_ADD_PREFIX,      add_space_prefix,         false);
+-+         ml.get_key(LLM_KV_TOKENIZER_REMOVE_EXTRA_WS, remove_extra_whitespaces, false);
+-+-
+-+-        // suppress tokens (Gemma4 logits bias)
+-+-        {
+-+-            const int suppress_idx = gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_SUPPRESS_TOKENS).c_str());
+-+-            if (suppress_idx != -1) {
+-+-                const int n = gguf_get_arr_n(ctx, suppress_idx);
+-+-                const int32_t * data = (const int32_t *) gguf_get_arr_data(ctx, suppress_idx);
+-+-                suppress_tokens.assign(data, data + n);
+-+-            }
+-+-        }
+-+     }
+-+ 
+-+     const int token_idx = gguf_find_key(ctx, kv(LLM_KV_TOKENIZER_LIST).c_str());
+-+@@ -4521,10 +4541,6 @@
+-+ 
+-+ bool llama_vocab::get_treat_whitespace_as_suffix() const {
+-+     return pimpl->treat_whitespace_as_suffix;
+-+-}
+-+-
+-+-const std::vector<llama_token> & llama_vocab::get_suppress_tokens() const {
+-+-    return pimpl->suppress_tokens;
+-+ }
+-  
+--     // determine the newline token: LLaMA "<0x0A>" == 10 == '\n', Falcon 193 == '\n'
+-+ int llama_vocab::max_token_len() const {
+diff --git a/src/unicode.cpp.rej b/src/unicode.cpp.rej
+deleted file mode 100644
+index d5fdf7191..000000000
+--- a/src/unicode.cpp.rej
++++ /dev/null
+@@ -1,38 +0,0 @@
+-diff a/src/unicode.cpp b/src/unicode.cpp	(rejected hunks)
+-@@ -1942,6 +1997,36 @@ bool unicode_cpt_is_han(uint32_t cpt) {
+-     return false;
+- }
+- 
+-+bool unicode_regex_split_try_blob(
+-+        const std::string & text,
+-+        const std::vector<std::string> & regex_exprs,
+-+        bool byte_encode,
+-+        unicode_pretok_blob & out) {
+-+    // Opt-out for same-binary A/B vs vector<string> materialize.
+-+    if (getenv("LLAMA_BPE_NO_PRETOK_BLOB") != nullptr) {
+-+        return false;
+-+    }
+-+    // Only ASCII custom scanners produce offset lists we can blob without regex collapse.
+-+    if (!unicode_want_ascii_pretok() || regex_exprs.size() != 1 || !unicode_bytes_are_ascii(text)) {
+-+        return false;
+-+    }
+-+    const std::string & expr = regex_exprs[0];
+-+    std::vector<size_t> bpe_offsets;
+-+    bpe_offsets.reserve(std::max<size_t>(1, text.size() / 3));
+-+    const unsigned char * bytes = (const unsigned char *) text.data();
+-+    if (unicode_is_qwen2_regex_expr(expr) || unicode_is_qwen35_regex_expr(expr)) {
+-+        unicode_regex_split_qwen2_ascii_bytes_seg(bytes, 0, text.size(), bpe_offsets);
+-+    } else if (unicode_is_gpt2_regex_expr(expr)) {
+-+        unicode_regex_split_gpt2_ascii_bytes_seg(bytes, 0, text.size(), bpe_offsets);
+-+    } else if (unicode_is_llama3_regex_expr(expr)) {
+-+        unicode_regex_split_llama3_ascii_bytes_seg(bytes, 0, text.size(), bpe_offsets);
+-+    } else {
+-+        return false;
+-+    }
+-+    unicode_fill_blob_from_byte_offsets(text, bpe_offsets, byte_encode, out);
+-+    return true;
+-+}
+-+
+- std::vector<std::string> unicode_regex_split(const std::string & text, const std::vector<std::string> & regex_exprs, bool byte_encode) {
+-     // WHY (0114–0116): all-ASCII custom pretok — skip uint32 decode + cpt_byte_off.
+-     if (unicode_want_ascii_pretok() && regex_exprs.size() == 1 && unicode_bytes_are_ascii(text)) {
+diff --git a/tools/server/server-context.cpp.rej b/tools/server/server-context.cpp.rej
+deleted file mode 100644
+index 47cf7d330..000000000
+--- a/tools/server/server-context.cpp.rej
++++ /dev/null
+@@ -1,28 +0,0 @@
+-diff a/tools/server/server-context.cpp b/tools/server/server-context.cpp	(rejected hunks)
+-@@ -500,6 +507,16 @@ struct server_slot {
+-         return !!spec;
+-     }
+- 
+-+    bool uses_dflash() const {
+-+        if (!task) {
+-+            return false;
+-+        }
+-+        return std::find(
+-+                   task->params.speculative.types.begin(),
+-+                   task->params.speculative.types.end(),
+-+                   COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) != task->params.speculative.types.end();
+-+    }
+-+
+-     void add_token(const completion_token_output & token) {
+-         if (!is_processing()) {
+-             SLT_WRN(*this, "%s", "slot is not processing\n");
+-@@ -3260,6 +3331,9 @@ private:
+-                 const int n_draft_max = slot.get_n_draft_max();
+- 
+-                 if (n_draft_max > 0) {
+-+                    if (slot.uses_dflash() && slot.adaptive_dm.dm_adaptive) {
+-+                        slot.adaptive_requested_n_max = n_draft_max;
+-+                    }
+-                     GGML_ASSERT(slot.can_speculate());
+- 
+-                     if (!slot.spec_draft.empty()) {
+diff --git a/tools/server/server-context.h.rej b/tools/server/server-context.h.rej
+deleted file mode 100644
+index 95af1d646..000000000
+--- a/tools/server/server-context.h.rej
++++ /dev/null
+@@ -1,9 +0,0 @@
+-diff a/tools/server/server-context.h b/tools/server/server-context.h	(rejected hunks)
+-@@ -170,6 +171,7 @@ private:
+-     std::unique_ptr<server_res_generator> handle_slots_restore(const server_http_req & req, int id_slot);
+-     std::unique_ptr<server_res_generator> handle_slots_erase(const server_http_req &, int id_slot);
+-     std::unique_ptr<server_res_generator> handle_kv_seq_copy(const server_http_req & req);
+-+    std::unique_ptr<server_res_generator> handle_cuda_graph_invalidate(const server_http_req & req);
+-     std::unique_ptr<server_res_generator> handle_embeddings_impl(const server_http_req & req, task_response_type res_type);
+-     std::unique_ptr<server_res_generator> handle_count_tokens(const server_http_req & req, task_response_type res_type);
+- 
+diff --git a/tools/server/server-schema.cpp.rej b/tools/server/server-schema.cpp.rej
+deleted file mode 100644
+index 193af3a29..000000000
+--- a/tools/server/server-schema.cpp.rej
++++ /dev/null
+@@ -1,49 +0,0 @@
+-diff a/tools/server/server-schema.cpp b/tools/server/server-schema.cpp	(rejected hunks)
+-@@ -555,6 +595,47 @@ task_params eval_llama_cmpl_schema(
+-         // if "reasoning_format" is not provided, its handler will not be called, we will need to handle it here
+-         auto reasoning_format = params.chat_parser_params.reasoning_format;
+-         params.chat_parser_params.reasoning_in_content = params.stream && (reasoning_format == COMMON_REASONING_FORMAT_DEEPSEEK_LEGACY);
+-+
+-+        {
+-+            const bool loop_guard_active =
+-+                params.reasoning_loop_guard.mode != COMMON_REASONING_LOOP_GUARD_OFF &&
+-+                params.chat_parser_params.reasoning_format != COMMON_REASONING_FORMAT_NONE;
+-+            const bool has_reasoning_tags =
+-+                !params.sampling.reasoning_budget_start.empty() &&
+-+                !params.sampling.reasoning_budget_end.empty();
+-+            if (loop_guard_active && has_reasoning_tags) {
+-+                params.sampling.reasoning_budget_tracking = true;
+-+            }
+-+            if (loop_guard_active) {
+-+                if (params.reasoning_loop_guard.min_reasoning_tokens < 0) {
+-+                    throw std::runtime_error("Error: reasoning_loop_min_tokens must be >= 0");
+-+                }
+-+                if (params.reasoning_loop_guard.window_tokens <= 0) {
+-+                    throw std::runtime_error("Error: reasoning_loop_window must be > 0");
+-+                }
+-+                if (params.reasoning_loop_guard.max_period <= 0) {
+-+                    throw std::runtime_error("Error: reasoning_loop_max_period must be > 0");
+-+                }
+-+                if (params.reasoning_loop_guard.min_repeated_coverage <= 0) {
+-+                    throw std::runtime_error("Error: reasoning_loop_min_coverage must be > 0");
+-+                }
+-+                if (params.reasoning_loop_guard.check_interval <= 0) {
+-+                    throw std::runtime_error("Error: reasoning_loop_check_interval must be > 0");
+-+                }
+-+                if (params.reasoning_loop_guard.interventions_max < 0) {
+-+                    throw std::runtime_error("Error: reasoning_loop_interventions must be >= 0");
+-+                }
+-+                if (params.reasoning_loop_guard.window_tokens < params.reasoning_loop_guard.min_repeated_coverage) {
+-+                    throw std::runtime_error("Error: reasoning_loop_window must be >= reasoning_loop_min_coverage");
+-+                }
+-+                if (params.reasoning_loop_guard.max_period > params.reasoning_loop_guard.window_tokens / 3) {
+-+                    throw std::runtime_error("Error: reasoning_loop_max_period must be <= reasoning_loop_window / 3");
+-+                }
+-+                if (params.reasoning_loop_guard.min_reasoning_tokens < params.reasoning_loop_guard.min_repeated_coverage) {
+-+                    throw std::runtime_error("Error: reasoning_loop_min_tokens must be >= reasoning_loop_min_coverage");
+-+                }
+-+            }
+-+        }
+-     }
+- 
+-     // debugging
+diff --git a/tools/server/server-task.h.rej b/tools/server/server-task.h.rej
+deleted file mode 100644
+index 8196a1420..000000000
+--- a/tools/server/server-task.h.rej
++++ /dev/null
+@@ -1,9 +0,0 @@
+-diff a/tools/server/server-task.h b/tools/server/server-task.h	(rejected hunks)
+-@@ -26,6 +26,7 @@ enum server_task_type {
+-     SERVER_TASK_TYPE_SLOT_RESTORE,
+-     SERVER_TASK_TYPE_SLOT_ERASE,
+-     SERVER_TASK_TYPE_SLOT_SEQ_COPY,
+-+    SERVER_TASK_TYPE_CUDA_GRAPH_INVALIDATE,
+-     SERVER_TASK_TYPE_GET_LORA,
+-     SERVER_TASK_TYPE_SET_LORA,
+- };
+diff --git a/tools/server/server.cpp.rej b/tools/server/server.cpp.rej
+deleted file mode 100644
+index e0dff585a..000000000
+--- a/tools/server/server.cpp.rej
++++ /dev/null
+@@ -1,15 +0,0 @@
+-diff a/tools/server/server.cpp b/tools/server/server.cpp	(rejected hunks)
+-@@ -269,6 +301,13 @@ int llama_server(common_params & params, int argc, char ** argv) {
+-     ctx_http.post("/responses",                ex_wrapper(routes.post_responses_oai));
+-     ctx_http.post("/v1/audio/transcriptions",  ex_wrapper(routes.post_transcriptions_oai));
+-     ctx_http.post("/audio/transcriptions",     ex_wrapper(routes.post_transcriptions_oai));
+-+#ifdef LLAMA_BUILD_KOKORO
+-+    if (eliza_kokoro::is_enabled()) {
+-+        ctx_http.post("/v1/audio/speech",      ex_wrapper(eliza_kokoro::audio_speech_handler()));
+-+        ctx_http.post("/audio/speech",         ex_wrapper(eliza_kokoro::audio_speech_handler()));
+-+    }
+-+#endif
+-+
+-     ctx_http.post("/v1/messages",              ex_wrapper(routes.post_anthropic_messages)); // anthropic messages API
+-     ctx_http.post("/infill",                   ex_wrapper(routes.post_infill));
+-     ctx_http.post("/embedding",                ex_wrapper(routes.post_embeddings)); // legacy

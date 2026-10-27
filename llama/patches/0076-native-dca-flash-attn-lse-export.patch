@@ -15,10 +15,10 @@ Subject: [PATCH] native dca flash attn lse export
  8 files changed, 159 insertions(+), 11 deletions(-)
 
 diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
-index a4bced7c6..d5e00e325 100644
+index 3a640215e..a59bec84b 100644
 --- a/ggml/include/ggml.h
 +++ b/ggml/include/ggml.h
-@@ -2529,6 +2529,16 @@ extern "C" {
+@@ -2547,6 +2547,16 @@ extern "C" {
              struct ggml_tensor * a,
              struct ggml_tensor * sinks);
  
@@ -36,10 +36,10 @@ index a4bced7c6..d5e00e325 100644
      GGML_API struct ggml_tensor * ggml_flash_attn_back(
             struct ggml_context * ctx,
 diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
-index 9124b60a1..68b8828e3 100644
+index 2d42b0d52..9cf1fed41 100644
 --- a/ggml/src/ggml-cpu/ops.cpp
 +++ b/ggml/src/ggml-cpu/ops.cpp
-@@ -9464,6 +9464,13 @@ static void ggml_flash_attn_ext_reduce_partials(
+@@ -9559,6 +9559,13 @@ static void ggml_flash_attn_ext_reduce_partials(
              const float S_inv = 1.0f / S_final;
              ggml_vec_scale_f32(DV, VKQ_final, S_inv);
          }
@@ -54,7 +54,7 @@ index 9124b60a1..68b8828e3 100644
          memcpy((char *) dst->data + (0*ne2*ne1 + q_head + 0*ne1)*nb1, VKQ_final, nb1);
      }
 diff --git a/ggml/src/ggml-cuda/fattn-common.cuh b/ggml/src/ggml-cuda/fattn-common.cuh
-index ccc81f72a..114ddade8 100644
+index f3be50a67..931f125f9 100644
 --- a/ggml/src/ggml-cuda/fattn-common.cuh
 +++ b/ggml/src/ggml-cuda/fattn-common.cuh
 @@ -1049,7 +1049,8 @@ __launch_bounds__(D, 1)
@@ -105,7 +105,7 @@ index ccc81f72a..114ddade8 100644
      GGML_ASSERT(Q->type == GGML_TYPE_F32);
      GGML_ASSERT(KQV->type == GGML_TYPE_F32);
  
-@@ -1281,7 +1306,11 @@ void launch_fattn(
+@@ -1288,7 +1313,11 @@ void launch_fattn(
          };
  
          const int  max_blocks   = max_blocks_per_sm*nsm;
@@ -118,7 +118,7 @@ index ccc81f72a..114ddade8 100644
  
          blocks_num.x = ntiles_dst;
          blocks_num.y = 1;
-@@ -1303,7 +1332,9 @@ void launch_fattn(
+@@ -1310,7 +1339,9 @@ void launch_fattn(
              blocks_num.x = nblocks_stream_k;
          }
  
@@ -129,7 +129,7 @@ index ccc81f72a..114ddade8 100644
              dst_tmp_meta.alloc((size_t(blocks_num.x) * ncols * (2 + DV/2)));
          }
      } else {
-@@ -1339,9 +1370,20 @@ void launch_fattn(
+@@ -1346,9 +1377,20 @@ void launch_fattn(
          if (parallel_blocks > 1) {
              dst_tmp.alloc(parallel_blocks*ggml_nelements(KQV));
              dst_tmp_meta.alloc(parallel_blocks*ggml_nrows(KQV));
@@ -150,7 +150,7 @@ index ccc81f72a..114ddade8 100644
      float scale         = 1.0f;
      float max_bias      = 0.0f;
      float logit_softcap = 0.0f;
-@@ -1373,7 +1415,7 @@ void launch_fattn(
+@@ -1380,7 +1422,7 @@ void launch_fattn(
          mask ? ((const char *) mask->data) : nullptr,
          sinks ? ((const char *) sinks->data) : nullptr,
          KV_max.ptr,
@@ -159,7 +159,7 @@ index ccc81f72a..114ddade8 100644
          scale, max_bias, m0, m1, n_head_log2, logit_softcap,
          Q->ne[0], ne01,     Q->ne[2], Q->ne[3], Q->nb[1], Q->nb[2], Q->nb[3],
          K->ne[0], n_kv, K->ne[2], K->ne[3], nb11, nb12, nb13,
-@@ -1419,6 +1461,14 @@ void launch_fattn(
+@@ -1426,6 +1468,14 @@ void launch_fattn(
                   Q->ne[1], Q->ne[2], gqa_ratio, total_work,
                   fd_k_j_z_ne12, fd_k_j_z, fd_k_j, fd_k);
          }
@@ -174,7 +174,7 @@ index ccc81f72a..114ddade8 100644
      } else if (parallel_blocks > 1) {
          const dim3 block_dim_combine(DV, 1, 1);
          const dim3 blocks_num_combine(Q->ne[1], Q->ne[2], Q->ne[3]);
-@@ -1426,7 +1476,13 @@ void launch_fattn(
+@@ -1433,7 +1483,13 @@ void launch_fattn(
  
          const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(blocks_num_combine, block_dim_combine, nbytes_shared_combine, main_stream);
          ggml_cuda_kernel_launch(flash_attn_combine_results<DV>, launch_params,
@@ -190,10 +190,10 @@ index ccc81f72a..114ddade8 100644
      CUDA_CHECK(cudaGetLastError());
  }
 diff --git a/ggml/src/ggml-cuda/fattn-mma-f16.cuh b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
-index 1ef701ea6..f38c5f843 100644
+index e93bd2bb7..24dfd1495 100644
 --- a/ggml/src/ggml-cuda/fattn-mma-f16.cuh
 +++ b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
-@@ -1250,6 +1250,8 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+@@ -1238,6 +1238,8 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
          const int stride_K,
          const int stride_V,
          const int stride_mask,
@@ -202,7 +202,7 @@ index 1ef701ea6..f38c5f843 100644
          const int jt,
          const int zt_gqa,
          const int kb0_start,
-@@ -1818,11 +1820,48 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
+@@ -1806,11 +1808,48 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
              __syncthreads();
          }
      }
@@ -252,7 +252,7 @@ index 1ef701ea6..f38c5f843 100644
      NO_DEVICE_CODE;
  #endif // defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE)
  }
-@@ -1980,12 +2019,14 @@ static __global__ void flash_attn_ext_f16(
+@@ -1968,12 +2007,14 @@ static __global__ void flash_attn_ext_f16(
              constexpr bool needs_fixup = false; // CUDA block is working on an entire tile.
              flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup>
                  (Q_f2, K_h2, V_h2, mask_h, indices, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
@@ -269,7 +269,7 @@ index 1ef701ea6..f38c5f843 100644
          }
  
          kbc += iter_k;
-@@ -2029,7 +2070,8 @@ static __global__ void flash_attn_ext_f16(
+@@ -2017,7 +2058,8 @@ static __global__ void flash_attn_ext_f16(
      constexpr bool needs_fixup = false;
      flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup>
          (Q_f2, K_h2, V_h2, mask_h, indices, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
@@ -280,7 +280,7 @@ index 1ef701ea6..f38c5f843 100644
      GGML_UNUSED_VARS(Q_ptr, K_ptr, V_ptr, mask_ptr, sinks_ptr, KV_max_ptr, dst_ptr, dst_meta_ptr, scale,
          max_bias, m0, m1, n_head_log2, logit_softcap,
 diff --git a/ggml/src/ggml-cuda/fattn-tile.cuh b/ggml/src/ggml-cuda/fattn-tile.cuh
-index b5ea915e1..b2c2846de 100644
+index bd4a7710f..2d325123c 100644
 --- a/ggml/src/ggml-cuda/fattn-tile.cuh
 +++ b/ggml/src/ggml-cuda/fattn-tile.cuh
 @@ -1127,7 +1127,7 @@ static __global__ void flash_attn_tile(
@@ -293,10 +293,10 @@ index b5ea915e1..b2c2846de 100644
          }
      }
 diff --git a/ggml/src/ggml-cuda/fattn-vec.cuh b/ggml/src/ggml-cuda/fattn-vec.cuh
-index 29f7d4323..cdff438d2 100644
+index db05c0ab3..e5c9c5e1b 100644
 --- a/ggml/src/ggml-cuda/fattn-vec.cuh
 +++ b/ggml/src/ggml-cuda/fattn-vec.cuh
-@@ -508,7 +508,7 @@ static __global__ void flash_attn_ext_vec(
+@@ -510,7 +510,7 @@ static __global__ void flash_attn_ext_vec(
  
      }
  
@@ -306,10 +306,10 @@ index 29f7d4323..cdff438d2 100644
      }
  #else
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index a5fed5bbf..f45bcbfe0 100644
+index c52f33145..7510e4583 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -2639,6 +2639,14 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
+@@ -2792,6 +2792,14 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
              }
          }
  
@@ -325,10 +325,10 @@ index a5fed5bbf..f45bcbfe0 100644
              break;
          }
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index 1ff109cb4..7712563a3 100644
+index 9ce5e423d..1ac262fcc 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
-@@ -5680,6 +5680,31 @@ void ggml_flash_attn_ext_add_sinks(
+@@ -5724,6 +5724,31 @@ void ggml_flash_attn_ext_add_sinks(
      a->src[4] = sinks;
  }
  

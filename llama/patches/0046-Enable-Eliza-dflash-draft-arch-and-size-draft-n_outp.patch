@@ -1,44 +1,35 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: zerollama-vendor <zerollama@local>
-Date: Thu, 30 Jul 2026 18:04:50 -0700
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:34:50 -0700
 Subject: [PATCH] Enable Eliza dflash-draft arch and size draft n_outputs_max
- for milady sync.
 
 ---
- common/speculative.cpp      |  32 +++-
+ common/speculative.cpp      |  17 +-
+ common/speculative.cpp.rej  |  82 ++++-----
  src/CMakeLists.txt          |   1 +
- src/llama-arch.cpp          |  11 ++
+ src/llama-arch.cpp          |   3 +
+ src/llama-arch.cpp.rej      |  23 +++
  src/llama-arch.h            |   9 +
  src/llama-dflash-stubs.cpp  |  42 +++++
  src/llama-ext.h             |   3 +
  src/llama-hparams.h         |   7 +
- src/llama-model.cpp         |  42 +++++
- src/llama-model.h           |   4 +
+ src/llama-model.cpp         |   2 +
+ src/llama-model.cpp.rej     |  55 +++++++
+ src/llama-model.h.rej       |  12 ++
  src/models/dflash-draft.cpp | 320 ++++++++++++++++++++++++++++++++++++
  src/models/models.h         |  12 ++
- 11 files changed, 477 insertions(+), 6 deletions(-)
+ 14 files changed, 535 insertions(+), 53 deletions(-)
+ create mode 100644 src/llama-arch.cpp.rej
  create mode 100644 src/llama-dflash-stubs.cpp
+ create mode 100644 src/llama-model.cpp.rej
+ create mode 100644 src/llama-model.h.rej
  create mode 100644 src/models/dflash-draft.cpp
 
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index db06f5c0e..07bcd1811 100644
+index 72457709a..a71c38cd1 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
-@@ -189,8 +189,11 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
- 
-     std::vector<common_sampler_ptr> smpls;
- 
--    common_speculative_impl_draft_simple(const common_params_speculative & params, uint32_t n_seq)
--        : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE, n_seq, params.draft.n_max)
-+    common_speculative_impl_draft_simple(
-+            const common_params_speculative & params,
-+            uint32_t n_seq,
-+            common_speculative_type type_in = COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE)
-+        : common_speculative_impl(type_in, n_seq, params.draft.n_max)
-         , params(params.draft)
-     {
-         auto * ctx_dft = this->params.ctx_dft;
-@@ -202,7 +205,7 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+@@ -245,7 +245,7 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
  
          zeros.assign(llama_model_n_embd_inp(llama_get_model(ctx_dft)), 0.0f);
  
@@ -47,29 +38,7 @@ index db06f5c0e..07bcd1811 100644
          SPC_TRC("- n_max=%d, n_min=%d, p_min=%f\n", this->params.n_max, this->params.n_min, this->params.p_min);
          SPC_TRC("- gpu_layers=%d, cache_k=%s, cache_v=%s, ctx_tgt=%s, ctx_dft=%s, devices=[%s]\n",
                  this->params.n_gpu_layers,
-@@ -258,7 +261,11 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
- 
-         common_ane_draft_log_init(type, llama_model_n_embd(llama_get_model(ctx_dft)));
- 
--        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
-+        char arch_buf[64] = {};
-+        const bool is_dflash_draft =
-+            llama_model_meta_val_str(llama_get_model(ctx_dft), "general.architecture", arch_buf, sizeof(arch_buf)) > 0 &&
-+            strcmp(arch_buf, "dflash-draft") == 0;
-+        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) || is_dflash_draft;
-         if (dflash || common_ane_draft_enabled()) {
-             common_ane_draft_bind_target_ctx(ctx_tgt);
-             llama_set_embeddings_pre_norm(ctx_tgt, true);
-@@ -2524,7 +2531,7 @@ common_params common_base_params_to_speculative(const common_params & params) {
- 
-     result.cache_type_k  = params_spec.cache_type_k;
-     result.cache_type_v  = params_spec.cache_type_v;
--    result.n_outputs_max = params.n_parallel;
-+    result.n_outputs_max = std::max(params.n_parallel, (int32_t) params.n_batch);
-     result.n_outputs_max_per_seq = 1;
- 
-     // dflash/dspark decode the whole noise block in a single pass and sample every block position on the backend
-@@ -2692,7 +2699,20 @@ common_speculative * common_speculative_init(common_params_speculative & params,
+@@ -2850,7 +2850,20 @@ common_speculative * common_speculative_init(common_params_speculative & params,
                  break;
              }
              case COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH: {
@@ -91,11 +60,104 @@ index db06f5c0e..07bcd1811 100644
                  break;
              }
              case COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK: {
+diff --git a/common/speculative.cpp.rej b/common/speculative.cpp.rej
+index c4f733886..c90c3d945 100644
+--- a/common/speculative.cpp.rej
++++ b/common/speculative.cpp.rej
+@@ -1,57 +1,37 @@
+ diff a/common/speculative.cpp b/common/speculative.cpp	(rejected hunks)
+-@@ -253,6 +255,22 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
++@@ -189,8 +189,11 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+  
+-             throw std::runtime_error("the draft model number of sequences is incompatible with the speculative n_seq");
+-         }
+-+
+-+        common_ane_draft_log_init(type, llama_model_n_embd(llama_get_model(ctx_dft)));
+-+
+-+        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
+-+        if (dflash || common_ane_draft_enabled()) {
+-+            common_ane_draft_bind_target_ctx(ctx_tgt);
+-+            llama_set_embeddings_pre_norm(ctx_tgt, true);
+-+        }
+-+
+-+        // Why pre-norm: ANE handoff reads llama_get_embeddings_pre_norm_ith (see ane_draft_hook.cpp).
+-+        if (common_ane_draft_enabled()) {
+-+            llama_set_embeddings_pre_norm(ctx_dft, true);
+-+            if (common_ane_draft_get_drive_mode() != COMMON_ANE_DRAFT_DRIVE_OFF) {
+-+                llama_set_embeddings(ctx_dft, true);
+-+            }
+-+        }
+-     }
++     std::vector<common_sampler_ptr> smpls;
+  
+-     void begin(llama_seq_id /*seq_id*/, const llama_tokens & /*prompt*/) override {
+-@@ -359,11 +385,29 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+-                             common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
+-                 }
++-    common_speculative_impl_draft_simple(const common_params_speculative & params, uint32_t n_seq)
++-        : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE, n_seq, params.draft.n_max)
+++    common_speculative_impl_draft_simple(
+++            const common_params_speculative & params,
+++            uint32_t n_seq,
+++            common_speculative_type type_in = COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE)
+++        : common_speculative_impl(type_in, n_seq, params.draft.n_max)
++         , params(params.draft)
++     {
++         auto * ctx_dft = this->params.ctx_dft;
++@@ -258,7 +261,11 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
+  
+--                // add drafted token for each sequence
+--                const llama_token id = cur_p->data[0].id;
+-+                llama_token id = cur_p->data[0].id;
+-+                float pick_p = cur_p->data[0].p;
+-+
+-+                // B7: optional ANE tied-embed argmax replaces Metal sampler token (lab).
+-+                const common_ane_draft_drive_mode drive = common_ane_draft_get_drive_mode();
+-+                if (drive != COMMON_ANE_DRAFT_DRIVE_OFF) {
+-+                    llama_token ane_id = 0;
+-+                    float ane_p = 0.f;
+-+                    float hidden_cos = 0.f;
+-+                    if (common_ane_draft_try_drive_token(ctx_dft, i_batch - 1, &ane_id, &ane_p, &hidden_cos)) {
+-+                        if (drive == COMMON_ANE_DRAFT_DRIVE_SHADOW) {
+-+                            LOG_INF("%s: B7 shadow step=%d seq=%d ane_tok=%d metal_tok=%d match=%d hidden_cos=%.4f\n",
+-+                                    __func__, i, (int) seq_id, (int) ane_id, (int) id, ane_id == id ? 1 : 0, hidden_cos);
+-+                        } else {
+-+                            id = ane_id;
+-+                            pick_p = ane_p;
+-+                            LOG_DBG("%s: B7 force seq=%d ane_tok=%d\n", __func__, (int) seq_id, (int) ane_id);
+-+                        }
+-+                    }
+-+                }
++         common_ane_draft_log_init(type, llama_model_n_embd(llama_get_model(ctx_dft)));
+  
+-                 // only collect very high-confidence draft tokens
+--                if (cur_p->data[0].p < params.p_min) {
+-+                if (pick_p < params.p_min) {
+-                     drafting[seq_id] = false;
+-                     n_drafting--;
++-        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
+++        char arch_buf[64] = {};
+++        const bool is_dflash_draft =
+++            llama_model_meta_val_str(llama_get_model(ctx_dft), "general.architecture", arch_buf, sizeof(arch_buf)) > 0 &&
+++            strcmp(arch_buf, "dflash-draft") == 0;
+++        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) || is_dflash_draft;
++         if (dflash || common_ane_draft_enabled()) {
++             common_ane_draft_bind_target_ctx(ctx_tgt);
++             llama_set_embeddings_pre_norm(ctx_tgt, true);
++@@ -2524,7 +2531,7 @@ common_params common_base_params_to_speculative(const common_params & params) {
+  
++     result.cache_type_k  = params_spec.cache_type_k;
++     result.cache_type_v  = params_spec.cache_type_v;
++-    result.n_outputs_max = params.n_parallel;
+++    result.n_outputs_max = std::max(params.n_parallel, (int32_t) params.n_batch);
++     result.n_outputs_max_per_seq = 1;
++ 
++     // dflash/dspark decode the whole noise block in a single pass and sample every block position on the backend
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 9586d3933..f409d1a00 100644
+index 12878ceda..a3c2fca14 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -33,6 +33,7 @@ set(LLAMA_CORE_SOURCES
+@@ -34,6 +34,7 @@ set(LLAMA_CORE_SOURCES
      llama-memory-hybrid-idx.cpp
      llama-memory-recurrent.cpp
      llama-memory-kv-ext.cpp
@@ -104,10 +166,10 @@ index 9586d3933..f409d1a00 100644
      llama-model-loader.cpp
      llama-model-saver.cpp
 diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
-index cc361c7f2..c507e2892 100644
+index 39e29d09a..45302dfc3 100644
 --- a/src/llama-arch.cpp
 +++ b/src/llama-arch.cpp
-@@ -144,6 +144,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
+@@ -151,6 +151,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
      { LLM_ARCH_MISTRAL3,         "mistral3"         },
      { LLM_ARCH_EAGLE3,           "eagle3"           },
      { LLM_ARCH_DFLASH,           "dflash"           },
@@ -115,19 +177,7 @@ index cc361c7f2..c507e2892 100644
      { LLM_ARCH_MISTRAL4,         "mistral4"         },
      { LLM_ARCH_PADDLEOCR,        "paddleocr"        },
      { LLM_ARCH_MIMO2,            "mimo2"            },
-@@ -377,6 +378,11 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
-     { LLM_KV_DFLASH_SELECTOR_RANK,    "%s.selector_rank"    },
-     { LLM_KV_DFLASH_SELECTOR_TOP_K,   "%s.selector_top_k"   },
- 
-+    { LLM_KV_DFLASH_DRAFT_BLOCK_SIZE,  "%s.dflash.block_size"        },
-+    { LLM_KV_DFLASH_MASK_TOKEN_ID,     "%s.dflash.mask_token_id"     },
-+    { LLM_KV_DFLASH_TARGET_LAYER_IDS,  "%s.dflash.target_layer_ids"  },
-+    { LLM_KV_DFLASH_N_TARGET_FEATURES, "%s.dflash.n_target_features" },
-+
-     { LLM_KV_SHORTCONV_L_CACHE, "%s.shortconv.l_cache" },
-     // sentence-transformers dense modules feature dims
-     { LLM_KV_DENSE_2_FEAT_IN,        "%s.dense_2_feat_in"  },
-@@ -705,6 +711,8 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
+@@ -789,6 +790,8 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
      { LLM_TENSOR_MASKED_EMBD_ORDERING,                   "masked_embd_ordering" },
      { LLM_TENSOR_FC,                                     "fc" },
      { LLM_TENSOR_D2T,                                    "d2t" },
@@ -136,21 +186,40 @@ index cc361c7f2..c507e2892 100644
      { LLM_TENSOR_DSPARK_MARKOV_W1,                       "markov_w1" },
      { LLM_TENSOR_DSPARK_MARKOV_W2,                       "markov_w2" },
      { LLM_TENSOR_DSPARK_CONF_PROJ,                       "conf_proj" },
-@@ -1000,6 +1008,9 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
-     // eagle3
-     {LLM_TENSOR_FC,                         {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
-     {LLM_TENSOR_D2T,                        {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
-+    // milady dflash-draft
-+    {LLM_TENSOR_DFLASH_FC,                  {LLM_TENSOR_LAYER_INPUT,     GGML_OP_MUL_MAT}},
-+    {LLM_TENSOR_DFLASH_HIDDEN_NORM,         {LLM_TENSOR_LAYER_INPUT,     GGML_OP_MUL}},
-     // dspark
-     {LLM_TENSOR_DSPARK_MARKOV_W1,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
-     {LLM_TENSOR_DSPARK_MARKOV_W2,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+diff --git a/src/llama-arch.cpp.rej b/src/llama-arch.cpp.rej
+new file mode 100644
+index 000000000..b7abe8884
+--- /dev/null
++++ b/src/llama-arch.cpp.rej
+@@ -0,0 +1,23 @@
++diff a/src/llama-arch.cpp b/src/llama-arch.cpp	(rejected hunks)
++@@ -377,6 +378,11 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
++     { LLM_KV_DFLASH_SELECTOR_RANK,    "%s.selector_rank"    },
++     { LLM_KV_DFLASH_SELECTOR_TOP_K,   "%s.selector_top_k"   },
++ 
+++    { LLM_KV_DFLASH_DRAFT_BLOCK_SIZE,  "%s.dflash.block_size"        },
+++    { LLM_KV_DFLASH_MASK_TOKEN_ID,     "%s.dflash.mask_token_id"     },
+++    { LLM_KV_DFLASH_TARGET_LAYER_IDS,  "%s.dflash.target_layer_ids"  },
+++    { LLM_KV_DFLASH_N_TARGET_FEATURES, "%s.dflash.n_target_features" },
+++
++     { LLM_KV_SHORTCONV_L_CACHE, "%s.shortconv.l_cache" },
++     // sentence-transformers dense modules feature dims
++     { LLM_KV_DENSE_2_FEAT_IN,        "%s.dense_2_feat_in"  },
++@@ -1000,6 +1008,9 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
++     // eagle3
++     {LLM_TENSOR_FC,                         {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
++     {LLM_TENSOR_D2T,                        {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
+++    // milady dflash-draft
+++    {LLM_TENSOR_DFLASH_FC,                  {LLM_TENSOR_LAYER_INPUT,     GGML_OP_MUL_MAT}},
+++    {LLM_TENSOR_DFLASH_HIDDEN_NORM,         {LLM_TENSOR_LAYER_INPUT,     GGML_OP_MUL}},
++     // dspark
++     {LLM_TENSOR_DSPARK_MARKOV_W1,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
++     {LLM_TENSOR_DSPARK_MARKOV_W2,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
 diff --git a/src/llama-arch.h b/src/llama-arch.h
-index 612b6797a..f22c7f8ba 100644
+index 3d0032c0c..9fc8ef438 100644
 --- a/src/llama-arch.h
 +++ b/src/llama-arch.h
-@@ -160,6 +160,7 @@ enum llm_arch {
+@@ -168,6 +168,7 @@ enum llm_arch {
      LLM_ARCH_MINIMAX_M3,
      LLM_ARCH_DFLASH,
      LLM_ARCH_NANBEIGE,
@@ -158,7 +227,7 @@ index 612b6797a..f22c7f8ba 100644
      LLM_ARCH_QWEN3TTS,
      LLM_ARCH_POCKETTTS,
      LLM_ARCH_MINIMAX_01,
-@@ -422,6 +423,12 @@ enum llm_kv {
+@@ -466,6 +467,12 @@ enum llm_kv {
      LLM_KV_NORM_BEFORE_RESIDUAL,
      LLM_KV_NORM_BEFORE_FC,
  
@@ -171,7 +240,7 @@ index 612b6797a..f22c7f8ba 100644
      LLM_KV_SHORTCONV_L_CACHE,
  
      LLM_KV_XIELU_ALPHA_N,
-@@ -712,6 +719,8 @@ enum llm_tensor {
+@@ -795,6 +802,8 @@ enum llm_tensor {
      LLM_TENSOR_HRM_Z_L_INIT,
      LLM_TENSOR_FC,
      LLM_TENSOR_D2T,
@@ -229,10 +298,10 @@ index 000000000..27458c0c3
 +
 +int32_t llama_context_cross_n_enc(const struct llama_context *) { return 0; }
 diff --git a/src/llama-ext.h b/src/llama-ext.h
-index d50b2e218..a1c71dc8b 100644
+index 8ba9d610c..52638e2b8 100644
 --- a/src/llama-ext.h
 +++ b/src/llama-ext.h
-@@ -192,6 +192,9 @@ LLAMA_API void llama_set_dflash_target_export(struct llama_context * ctx_tgt, co
+@@ -217,6 +217,9 @@ LLAMA_API void llama_set_dflash_target_export(struct llama_context * ctx_tgt, co
  // Row from the last target decode ([n_target_features]); NULL when export inactive.
  LLAMA_API float * llama_get_dflash_target_features_ith(struct llama_context * ctx, int32_t i);
  
@@ -243,10 +312,10 @@ index d50b2e218..a1c71dc8b 100644
  LLAMA_API float * llama_get_dflash_attn_out_ith(struct llama_context * ctx, int32_t i);
  
 diff --git a/src/llama-hparams.h b/src/llama-hparams.h
-index 756007e1f..2169c3974 100644
+index 2b92f5d60..087ffd2eb 100644
 --- a/src/llama-hparams.h
 +++ b/src/llama-hparams.h
-@@ -244,6 +244,13 @@ struct llama_hparams {
+@@ -259,6 +259,13 @@ struct llama_hparams {
      // e.g. the eagle3 encoder fuses target_layers * target_hidden features
      uint32_t n_embd_inp_enc_impl = 0;
  
@@ -261,10 +330,10 @@ index 756007e1f..2169c3974 100644
      uint32_t n_embd_out_impl = 0;
  
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 742bcd5d5..622b62399 100644
+index 1de65c728..e4f3e22d3 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -334,6 +334,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
+@@ -352,6 +352,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
              return new llama_model_eagle3(params);
          case LLM_ARCH_DFLASH:
              return new llama_model_dflash(params);
@@ -273,75 +342,85 @@ index 742bcd5d5..622b62399 100644
          case LLM_ARCH_MIMO2:
              return new llama_model_mimo2(params);
          case LLM_ARCH_KIMI_LINEAR:
-@@ -3192,6 +3194,8 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
-             }
-             // DSV4 DSpark drafters use DeepSeek-V4's normal RoPE; legacy DFlash backbones are NeoX
-             return model->hparams.dsv4_hc_mult > 0 ? LLAMA_ROPE_TYPE_NORM : LLAMA_ROPE_TYPE_NEOX;
-+        case LLM_ARCH_DFLASH_DRAFT:
-+            return LLAMA_ROPE_TYPE_NEOX;
- 
-         case LLM_ARCH_QWEN2VL:
-         case LLM_ARCH_PADDLEOCR:
-@@ -3458,6 +3462,44 @@ uint32_t llama_model_target_layer_ids_n(const struct llama_model * model) {
-     return (uint32_t) model->target_layer_ids.size();
- }
- 
-+int32_t llama_model_dflash_n_target_features(const struct llama_model * model) {
-+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
-+        return 0;
-+    }
-+    return (int32_t) model->hparams.dflash_n_target_features;
-+}
-+
-+int32_t llama_model_dflash_mask_token_id(const struct llama_model * model) {
-+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
-+        return -1;
-+    }
-+    return (int32_t) model->hparams.dflash_mask_token_id;
-+}
-+
-+int32_t llama_model_dflash_block_size(const struct llama_model * model) {
-+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
-+        return 0;
-+    }
-+    return (int32_t) model->hparams.dflash_block_size;
-+}
-+
-+int32_t llama_model_dflash_n_target_layers(const struct llama_model * model) {
-+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
-+        return 0;
-+    }
-+    return (int32_t) model->hparams.dflash_n_target_layers;
-+}
-+
-+int32_t llama_model_dflash_target_layer_id(const struct llama_model * model, int32_t i) {
-+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT || i < 0) {
-+        return -1;
-+    }
-+    if ((uint32_t) i >= model->hparams.dflash_n_target_layers) {
-+        return -1;
-+    }
-+    return (int32_t) model->hparams.dflash_target_layer_ids[i];
-+}
-+
- uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out) {
-     if (model->vocab.n_tokens() == 0 || model->tok_embd == nullptr) {
-         return 0;
-diff --git a/src/llama-model.h b/src/llama-model.h
-index 25e514869..6b04cd10d 100644
---- a/src/llama-model.h
-+++ b/src/llama-model.h
-@@ -715,6 +715,10 @@ struct llama_model {
-     struct ggml_tensor * dflash_selector_next   = nullptr;
-     struct ggml_tensor * dflash_selector_hidden = nullptr;
- 
-+    // milady dflash-draft
-+    struct ggml_tensor * dflash_fc          = nullptr;
-+    struct ggml_tensor * dflash_hidden_norm = nullptr;
-+
-     // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
-     std::vector<int32_t> target_layer_ids;
- 
+diff --git a/src/llama-model.cpp.rej b/src/llama-model.cpp.rej
+new file mode 100644
+index 000000000..c6a4d1b87
+--- /dev/null
++++ b/src/llama-model.cpp.rej
+@@ -0,0 +1,55 @@
++diff a/src/llama-model.cpp b/src/llama-model.cpp	(rejected hunks)
++@@ -3192,6 +3194,8 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
++             }
++             // DSV4 DSpark drafters use DeepSeek-V4's normal RoPE; legacy DFlash backbones are NeoX
++             return model->hparams.dsv4_hc_mult > 0 ? LLAMA_ROPE_TYPE_NORM : LLAMA_ROPE_TYPE_NEOX;
+++        case LLM_ARCH_DFLASH_DRAFT:
+++            return LLAMA_ROPE_TYPE_NEOX;
++ 
++         case LLM_ARCH_QWEN2VL:
++         case LLM_ARCH_PADDLEOCR:
++@@ -3458,6 +3462,44 @@ uint32_t llama_model_target_layer_ids_n(const struct llama_model * model) {
++     return (uint32_t) model->target_layer_ids.size();
++ }
++ 
+++int32_t llama_model_dflash_n_target_features(const struct llama_model * model) {
+++    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
+++        return 0;
+++    }
+++    return (int32_t) model->hparams.dflash_n_target_features;
+++}
+++
+++int32_t llama_model_dflash_mask_token_id(const struct llama_model * model) {
+++    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
+++        return -1;
+++    }
+++    return (int32_t) model->hparams.dflash_mask_token_id;
+++}
+++
+++int32_t llama_model_dflash_block_size(const struct llama_model * model) {
+++    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
+++        return 0;
+++    }
+++    return (int32_t) model->hparams.dflash_block_size;
+++}
+++
+++int32_t llama_model_dflash_n_target_layers(const struct llama_model * model) {
+++    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
+++        return 0;
+++    }
+++    return (int32_t) model->hparams.dflash_n_target_layers;
+++}
+++
+++int32_t llama_model_dflash_target_layer_id(const struct llama_model * model, int32_t i) {
+++    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT || i < 0) {
+++        return -1;
+++    }
+++    if ((uint32_t) i >= model->hparams.dflash_n_target_layers) {
+++        return -1;
+++    }
+++    return (int32_t) model->hparams.dflash_target_layer_ids[i];
+++}
+++
++ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out) {
++     if (model->vocab.n_tokens() == 0 || model->tok_embd == nullptr) {
++         return 0;
+diff --git a/src/llama-model.h.rej b/src/llama-model.h.rej
+new file mode 100644
+index 000000000..3ddf5c0ad
+--- /dev/null
++++ b/src/llama-model.h.rej
+@@ -0,0 +1,12 @@
++diff a/src/llama-model.h b/src/llama-model.h	(rejected hunks)
++@@ -715,6 +715,10 @@ struct llama_model {
++     struct ggml_tensor * dflash_selector_next   = nullptr;
++     struct ggml_tensor * dflash_selector_hidden = nullptr;
++ 
+++    // milady dflash-draft
+++    struct ggml_tensor * dflash_fc          = nullptr;
+++    struct ggml_tensor * dflash_hidden_norm = nullptr;
+++
++     // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
++     std::vector<int32_t> target_layer_ids;
++ 
 diff --git a/src/models/dflash-draft.cpp b/src/models/dflash-draft.cpp
 new file mode 100644
 index 000000000..aafb95188
@@ -669,10 +748,10 @@ index 000000000..aafb95188
 +    ggml_build_forward_expand(gf, cur);
 +}
 diff --git a/src/models/models.h b/src/models/models.h
-index 89644c634..10beb6b0c 100644
+index 03438a0ee..149124ddb 100644
 --- a/src/models/models.h
 +++ b/src/models/models.h
-@@ -1395,6 +1395,18 @@ struct llama_model_dflash : public llama_model_base {
+@@ -1611,6 +1611,18 @@ struct llama_model_dflash : public llama_model_base {
      std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
  };
  

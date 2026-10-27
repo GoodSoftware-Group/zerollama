@@ -64,7 +64,7 @@ zerollama pull llama3.2:3b
 | Sibling llama.cpp | `scripts/vendor/ensure_llama_cpp_sibling.sh` |
 | Metal sign-off | `scripts/gpu/metal_signoff.sh` (CI `:8080`, not production `:11434`) |
 
-**Pin:** ggml-org **`b11351`** (`631109b34da437a3c4a5ebd75091d677671392e3`) — [runtime/LLAMA_CPP_PIN.md](./runtime/LLAMA_CPP_PIN.md) · L6 ladder [docs/llama-cpp-pin-ladder.md](./docs/llama-cpp-pin-ladder.md). Sibling clone defaults to elizaOS for fork kernels; public pin checkout: `LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp.git`.
+**Pin:** ggml-org **`b11870`** (`74bca3950054eed1795f525cb9cf06bfe796492d`) — [runtime/LLAMA_CPP_PIN.md](./runtime/LLAMA_CPP_PIN.md) · L6 ladder [docs/llama-cpp-pin-ladder.md](./docs/llama-cpp-pin-ladder.md). Rollback **b11351**. Sibling clone defaults to elizaOS for fork kernels; public pin checkout: `LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp.git`.
 
 **Optional (skip cleanly):** `../mlx` (safetensors), `../bmtl/.../uma_toolkit` (UMA), training venv (`MAC_SETUP_TRAINING=1`). DeepSeek-V4 Flash mlx-lm packs: [docs/mlx-deepseek-v4-flash.md](./docs/mlx-deepseek-v4-flash.md) — `create --experimental --link`, do not blob-copy.
 

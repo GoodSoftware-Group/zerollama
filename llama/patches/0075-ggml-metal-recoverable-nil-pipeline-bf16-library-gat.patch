@@ -12,10 +12,10 @@ Subject: [PATCH] ggml-metal: recoverable nil pipeline + bf16 library gate
  4 files changed, 107 insertions(+), 2 deletions(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-context.m b/ggml/src/ggml-metal/ggml-metal-context.m
-index 83b2ca609..2cc3ec06d 100644
+index e64ed79b3..a4f3756f4 100644
 --- a/ggml/src/ggml-metal/ggml-metal-context.m
 +++ b/ggml/src/ggml-metal/ggml-metal-context.m
-@@ -748,6 +748,13 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
+@@ -764,6 +764,13 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
          }
      }
  
@@ -29,7 +29,7 @@ index 83b2ca609..2cc3ec06d 100644
      return GGML_STATUS_SUCCESS;
  }
  
-@@ -849,6 +856,10 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
+@@ -865,6 +872,10 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
          for (int idx = 0; idx < ggml_metal_op_n_nodes(ctx_op); ++idx) {
              const int res = ggml_metal_op_encode(ctx_op, idx);
              if (res == 0) {
@@ -41,7 +41,7 @@ index 83b2ca609..2cc3ec06d 100644
              }
  
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index de1a01319..5914586a3 100644
+index 12acbf87c..bb01046e4 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
 @@ -80,6 +80,11 @@ void ggml_metal_encoder_debug_group_pop (ggml_metal_encoder_t encoder);
@@ -57,7 +57,7 @@ index de1a01319..5914586a3 100644
  void ggml_metal_encoder_set_buffer(ggml_metal_encoder_t encoder, struct ggml_metal_buffer_id buffer, int idx);
  
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index b0773c31d..f9f593631 100644
+index 1c1e266e2..e098176a4 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
 @@ -33,6 +33,24 @@ static const NSInteger MTLGPUFamilyMetal4_GGML = 5002;
@@ -102,7 +102,7 @@ index b0773c31d..f9f593631 100644
      return pipeline.pipeline->obj.maxTotalThreadsPerThreadgroup;
  }
  
-@@ -831,6 +859,12 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_compile_pipeline(ggml_
+@@ -833,6 +861,12 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_compile_pipeline(ggml_
  
  struct ggml_metal_encoder {
      id<MTLComputeCommandEncoder> obj;
@@ -115,7 +115,7 @@ index b0773c31d..f9f593631 100644
  };
  
  ggml_metal_encoder_t ggml_metal_encoder_init(ggml_metal_cmd_buf_t cmd_buf_raw, bool concurrent) {
-@@ -865,22 +899,49 @@ void ggml_metal_encoder_debug_group_pop (ggml_metal_encoder_t encoder) {
+@@ -867,22 +901,49 @@ void ggml_metal_encoder_debug_group_pop (ggml_metal_encoder_t encoder) {
  }
  
  void ggml_metal_encoder_set_pipeline(ggml_metal_encoder_t encoder, struct ggml_metal_pipeline_with_params pipeline) {
@@ -167,7 +167,7 @@ index b0773c31d..f9f593631 100644
      // ref: https://developer.apple.com/documentation/metal/mtlcomputecommandencoder/setthreadgroupmemorylength(_:index:)
      GGML_ASSERT(size % 16 == 0);
  
-@@ -888,14 +949,26 @@ void ggml_metal_encoder_set_threadgroup_memory_size(ggml_metal_encoder_t encoder
+@@ -890,14 +951,26 @@ void ggml_metal_encoder_set_threadgroup_memory_size(ggml_metal_encoder_t encoder
  }
  
  void ggml_metal_encoder_dispatch_threadgroups(ggml_metal_encoder_t encoder, int tg0, int tg1, int tg2, int tptg0, int tptg1, int tptg2) {
@@ -195,10 +195,10 @@ index b0773c31d..f9f593631 100644
  }
  
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index 2c272dc52..d0890bdba 100644
+index 90b0c01b6..8962cadea 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -541,6 +541,22 @@ int ggml_metal_op_encode(ggml_metal_op_t ctx, int idx) {
+@@ -545,6 +545,22 @@ int ggml_metal_op_encode(ggml_metal_op_t ctx, int idx) {
      }
  
      int res = ggml_metal_op_encode_impl(ctx, idx);

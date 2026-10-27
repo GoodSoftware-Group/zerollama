@@ -1,17 +1,18 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: zerollama <zerollama@local>
-Date: Tue, 28 Jul 2026 22:49:06 -0700
+Date: Sat, 24 Oct 2026 20:34:59 -0700
 Subject: [PATCH] server: kokoro /v1/audio/speech mount (0101)
 
 ---
  CMakeLists.txt              |  4 ++++
  tools/CMakeLists.txt        |  4 ++++
  tools/server/CMakeLists.txt |  7 +++++++
- tools/server/server.cpp     | 39 +++++++++++++++++++++++++++++++++++++
- 4 files changed, 54 insertions(+)
+ tools/server/server.cpp     | 32 ++++++++++++++++++++++++++++++++
+ tools/server/server.cpp.rej | 22 ++++++++++++++--------
+ 5 files changed, 61 insertions(+), 8 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 8a874c96e..1410b120a 100644
+index d091a1411..e1a299844 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -133,6 +133,10 @@ option(LLAMA_BUILD_TESTS     "llama: build tests"
@@ -26,7 +27,7 @@ index 8a874c96e..1410b120a 100644
  option(LLAMA_BUILD_UI        "llama: build the embedded Web UI for server"                                       OFF)
  option(LLAMA_USE_PREBUILT_UI "llama: use prebuilt UI from HF Bucket when available" ON)
 diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
-index c8ad1db43..7e0bda76c 100644
+index 6a6592c7b..3861712e2 100644
 --- a/tools/CMakeLists.txt
 +++ b/tools/CMakeLists.txt
 @@ -24,6 +24,10 @@ else()
@@ -41,10 +42,10 @@ index c8ad1db43..7e0bda76c 100644
      endif()
      add_subdirectory(tokenize)
 diff --git a/tools/server/CMakeLists.txt b/tools/server/CMakeLists.txt
-index ead3abb5d..ad3a4c0b0 100644
+index 37ee5b8e0..974db8b2a 100644
 --- a/tools/server/CMakeLists.txt
 +++ b/tools/server/CMakeLists.txt
-@@ -67,3 +67,10 @@ install(TARGETS ${TARGET} RUNTIME)
+@@ -71,3 +71,10 @@ install(TARGETS ${TARGET} RUNTIME)
  
  target_link_libraries(${TARGET} PRIVATE llama-server-impl)
  target_compile_features(${TARGET} PRIVATE cxx_std_17)
@@ -56,10 +57,10 @@ index ead3abb5d..ad3a4c0b0 100644
 +    target_compile_definitions(${TARGET} PRIVATE LLAMA_BUILD_KOKORO)
 +endif()
 diff --git a/tools/server/server.cpp b/tools/server/server.cpp
-index 7431ed2df..4dc8ce590 100644
+index b6ebf7523..4306e6475 100644
 --- a/tools/server/server.cpp
 +++ b/tools/server/server.cpp
-@@ -12,11 +12,18 @@
+@@ -13,11 +13,18 @@
  #include "llama.h"
  #include "log.h"
  
@@ -78,7 +79,7 @@ index 7431ed2df..4dc8ce590 100644
  
  #if defined(_WIN32)
  #include <windows.h>
-@@ -106,6 +113,31 @@ int llama_server(int argc, char ** argv) {
+@@ -743,6 +750,31 @@ int llama_server(int argc, char ** argv) {
      // touch it. lifecycle is symmetric, stop_gc() runs in clean_up() before backend free
      server_stream_session_manager_start();
  
@@ -110,17 +111,31 @@ index 7431ed2df..4dc8ce590 100644
      if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
          return 1;
      }
-@@ -269,6 +301,13 @@ int llama_server(common_params & params, int argc, char ** argv) {
-     ctx_http.post("/responses",                ex_wrapper(routes.post_responses_oai));
-     ctx_http.post("/v1/audio/transcriptions",  ex_wrapper(routes.post_transcriptions_oai));
-     ctx_http.post("/audio/transcriptions",     ex_wrapper(routes.post_transcriptions_oai));
-+#ifdef LLAMA_BUILD_KOKORO
-+    if (eliza_kokoro::is_enabled()) {
-+        ctx_http.post("/v1/audio/speech",      ex_wrapper(eliza_kokoro::audio_speech_handler()));
-+        ctx_http.post("/audio/speech",         ex_wrapper(eliza_kokoro::audio_speech_handler()));
-+    }
-+#endif
-+
-     ctx_http.post("/v1/messages",              ex_wrapper(routes.post_anthropic_messages)); // anthropic messages API
-     ctx_http.post("/infill",                   ex_wrapper(routes.post_infill));
-     ctx_http.post("/embedding",                ex_wrapper(routes.post_embeddings)); // legacy
+diff --git a/tools/server/server.cpp.rej b/tools/server/server.cpp.rej
+index 24f7dd885..e0dff585a 100644
+--- a/tools/server/server.cpp.rej
++++ b/tools/server/server.cpp.rej
+@@ -1,9 +1,15 @@
+ diff a/tools/server/server.cpp b/tools/server/server.cpp	(rejected hunks)
+-@@ -294,6 +294,7 @@ int llama_server(common_params & params, int argc, char ** argv) {
+-     ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
+-     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));
+-     ctx_http.post("/kv/seq-copy",              ex_wrapper(routes.post_kv_seq_copy));
+-+    ctx_http.post("/cuda-graph/invalidate",    ex_wrapper(routes.post_cuda_graph_invalidate));
+- 
+-     // resumable streaming: a child binds the local session factories, the router binds
+-     // proxies that resolve the owning child, see server-stream.h
++@@ -269,6 +301,13 @@ int llama_server(common_params & params, int argc, char ** argv) {
++     ctx_http.post("/responses",                ex_wrapper(routes.post_responses_oai));
++     ctx_http.post("/v1/audio/transcriptions",  ex_wrapper(routes.post_transcriptions_oai));
++     ctx_http.post("/audio/transcriptions",     ex_wrapper(routes.post_transcriptions_oai));
+++#ifdef LLAMA_BUILD_KOKORO
+++    if (eliza_kokoro::is_enabled()) {
+++        ctx_http.post("/v1/audio/speech",      ex_wrapper(eliza_kokoro::audio_speech_handler()));
+++        ctx_http.post("/audio/speech",         ex_wrapper(eliza_kokoro::audio_speech_handler()));
+++    }
+++#endif
+++
++     ctx_http.post("/v1/messages",              ex_wrapper(routes.post_anthropic_messages)); // anthropic messages API
++     ctx_http.post("/infill",                   ex_wrapper(routes.post_infill));
++     ctx_http.post("/embedding",                ex_wrapper(routes.post_embeddings)); // legacy

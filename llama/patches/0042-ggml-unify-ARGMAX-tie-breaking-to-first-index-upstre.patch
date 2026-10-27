@@ -11,10 +11,10 @@ ties to match torch/numpy and other backends.
  1 file changed, 5 insertions(+), 2 deletions(-)
 
 diff --git a/ggml/src/ggml-cpu/vec.h b/ggml/src/ggml-cpu/vec.h
-index 59fa88f2c..d6b087507 100644
+index f24fa00f2..33e202d02 100644
 --- a/ggml/src/ggml-cpu/vec.h
 +++ b/ggml/src/ggml-cpu/vec.h
-@@ -1619,8 +1619,11 @@ inline static void ggml_vec_argmax_f32(const int n, int * s, const float * x) {
+@@ -1698,8 +1698,11 @@ inline static void ggml_vec_argmax_f32(const int n, int * s, const float * x) {
      float max = -INFINITY;
      int idx = 0;
      for (int i = 0; i < n; ++i) {
