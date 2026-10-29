@@ -12,7 +12,7 @@ Related: [wan-t2v.md](./wan-t2v.md), [wangp-borrowings.md](./wangp-borrowings.md
 
 | Choice | Why |
 |--------|-----|
-| **LTXV 13B distilled + quanto** | 6 steps, long-prompt model, Wan2GP mmgp profile 5 fits 16 GB VRAM classes better than LTX-2 |
+| **LTXV 13B distilled + quanto** | 6 steps, long-prompt model. Tag still asks mmgp **profile 5** (fits 16 GB). Profiles 2/4/5 window T5 at **100 MiB**, which re-reads the 4.6 GiB quanto file every block. On ≥12 GiB free the wrapper raises that budget to **6144 MiB** so T5 stays in VRAM (`LTX_MMGP_LOCK=1` or `LTX_TEXT_ENCODER_STREAM=1` keeps the window). A ≥20 GiB GPU with ≥16 GiB free also steps 13B/2B to profile 4 for a larger DiT window. |
 | **LTXV 2B distilled FP8** | Prompt-iteration / cartoon-prototype tag (`ltxv-2b-distilled:lab`). ~4.5 GiB DiT, 512² / 8 steps. Wan2GP has no native 2B type — we install a **finetune JSON** that reuses the LTXV loader. |
 | **LTX-2.5 on astra (2×4090)** | Gemma4-12B TE + 22B DiT (~50 GB pack) — host floor **72 GiB MemAvailable** (see [WHY below](#why-ltx-25-host-floor-is-72-gib)); dual-GPU **best-fit** placement ([cuda_device.py](../scripts/video/cuda_device.py)); start/end stills via `options.keyframes` |
 | **Not LTX-2.5 on CT 1564** | ~24 GiB host + prod serve is a wall; use LTXV 13B/2B there |
@@ -34,7 +34,8 @@ training.py  run_local_script
    │  wan2gp venv python  scripts/video/ltx_video_generate.py
    ▼
 Wan2GP shared.api / wgp.py --process
-   │  model_type=ltxv_distilled, profile 5, attention sdpa
+   │  model_type=ltxv_distilled, profile 5 (→ 4 on a large GPU)
+   │  T5 budget 100 MiB → 6144 MiB when the chosen GPU has ≥12 GiB free
    ▼
 $OLLAMA_MODELS/generated/<job_id>.mp4
 ```

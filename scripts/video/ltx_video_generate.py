@@ -285,7 +285,146 @@ def patch_mmgp_lightricks_string_config() -> None:
     offload.fast_load_transformers_model = wrapped  # type: ignore[assignment]
 
 
+def patch_torch_meshgrid() -> None:
+    """Pass indexing='ij' so PyTorch's C++ meshgrid warning never hits stderr.
+
+    warnings.filterwarnings does not catch it: the message is TORCH_WARN from
+    TensorShape.cpp, printed as UserWarning on torch/functional.py.
+    'ij' is the historical default, so results stay the same.
+    """
+    import torch
+    from torch import functional as fn
+
+    if getattr(fn.meshgrid, "_zerollama_indexing", False):
+        return
+    orig = fn.meshgrid
+
+    def meshgrid(*tensors, indexing=None, **kwargs):
+        if indexing is None and "indexing" not in kwargs:
+            indexing = "ij"
+        return orig(*tensors, indexing=indexing, **kwargs)
+
+    meshgrid._zerollama_indexing = True  # type: ignore[attr-defined]
+    fn.meshgrid = meshgrid  # type: ignore[assignment]
+    torch.meshgrid = meshgrid  # type: ignore[assignment]
+
+
+def _mem_available_bytes() -> int:
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        return 0
+    return 0
+
+
+def pin_text_encoder_budget(wgp, model_type: str = "") -> None:
+    """Wan2GP profiles 2/4/5 set text_encoder budget to 100 MiB.
+
+    The quanto T5 is 4.6 GiB, so that window re-reads the safetensors file
+    on every block (the repeating "Loading Text Encoder" line). mmgp treats
+    a budget larger than the model as "keep the whole model" (budget 0).
+    When the chosen GPU has ≥12 GiB free, set 6144 MiB so T5 stays in VRAM.
+    Otherwise, if the host has ≥40 GiB MemAvailable, pin a reserved-RAM copy
+    so later swaps are RAM→VRAM. LTX-2.5 is left alone (Gemma + 22B DiT).
+    LTX_MMGP_LOCK=1 and LTX_TEXT_ENCODER_STREAM=1 keep the 100 MiB window.
+    """
+    orig = getattr(wgp, "init_pipe", None)
+    if orig is None or getattr(orig, "_zerollama_te", False):
+        return
+
+    def init_pipe(pipe, kwargs, profile):
+        mmgp_profile = orig(pipe, kwargs, profile)
+        if is_ltx2(model_type) or truthy("LTX_TEXT_ENCODER_STREAM") or truthy("LTX_MMGP_LOCK"):
+            return mmgp_profile
+        budgets = kwargs.get("budgets")
+        if not isinstance(budgets, dict):
+            return mmgp_profile
+        current = budgets.get("text_encoder")
+        if not isinstance(current, (int, float)) or current >= 4096:
+            return mmgp_profile
+        stay_mib = int(env("LTX_TEXT_ENCODER_BUDGET_MIB") or "6144")
+        free = 0
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                free, _total = torch.cuda.mem_get_info()
+        except Exception:
+            free = 0
+        gib = 1024**3
+        if free >= 12 * gib:
+            budgets["text_encoder"] = stay_mib
+            eprint(
+                f"mmgp: keep T5 resident (budget {stay_mib} MiB, was {int(current)}; "
+                f"{free / gib:.1f} GiB free)"
+            )
+            return mmgp_profile
+        if _mem_available_bytes() < 40 * gib:
+            eprint(
+                "mmgp: T5 stays on the 100 MiB window "
+                "(GPU free < 12 GiB and host MemAvailable < 40 GiB)"
+            )
+            return mmgp_profile
+        pinned = kwargs.get("pinnedMemory")
+        if pinned is False or pinned is None:
+            kwargs["pinnedMemory"] = ["text_encoder"]
+        elif isinstance(pinned, str):
+            kwargs["pinnedMemory"] = [pinned, "text_encoder"]
+        elif isinstance(pinned, list) and "text_encoder" not in pinned:
+            kwargs["pinnedMemory"] = [*pinned, "text_encoder"]
+        eprint(
+            "mmgp: pin T5 in reserved RAM (GPU free < 12 GiB; "
+            "LTX_TEXT_ENCODER_STREAM=1 keeps the 100 MiB disk window)"
+        )
+        return mmgp_profile
+
+    init_pipe._zerollama_te = True  # type: ignore[attr-defined]
+    wgp.init_pipe = init_pipe  # type: ignore[assignment]
+
+
+def relax_mmgp_profile(profile: str, model_type: str) -> str:
+    """On a ≥20 GiB GPU, step 13B/2B from profile 5 to 4 (larger DiT window).
+
+    This does not by itself keep T5 resident — both profiles window the text
+    encoder at 100 MiB. pin_text_encoder_budget does that. LTX-2.5 stays on 5.
+    LTX_MMGP_LOCK=1 keeps the requested profile.
+    """
+    if truthy("LTX_MMGP_LOCK"):
+        return profile
+    if profile != "5" or is_ltx2(model_type):
+        return profile
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return profile
+        free, total = torch.cuda.mem_get_info()
+    except Exception:
+        return profile
+    gib = 1024**3
+    if total >= 20 * gib and free >= 16 * gib:
+        eprint(
+            f"mmgp: profile 5 → 4 ({total / gib:.1f} GiB GPU, {free / gib:.1f} free; "
+            "LTX_MMGP_LOCK=1 keeps 5)"
+        )
+        return "4"
+    return profile
+
+
 def run_generate(repo: Path, ckpt: Path, settings: dict, output: Path) -> int:
+    # diffusers FutureWarning (in_channels) is a Python warning. The meshgrid
+    # line is C++ and is silenced by patch_torch_meshgrid instead.
+    import warnings
+
+    warnings.filterwarnings("ignore", category=FutureWarning)
+    patch_torch_meshgrid()
+    # 13B T5 / LTX-2.5 Gemma are safetensors. The GGUF CUDA probe always fails here
+    # (no llamacpp_gguf_cuda) and only prints a scary fallback line.
+    os.environ.setdefault("WGP_GGUF_LLAMACPP_CUDA", "0")
+
     progress(5.0, "importing Wan2GP API")
     sys.path.insert(0, str(repo))
     # Shared freest-GPU picker lives next to this wrapper.
@@ -306,13 +445,19 @@ def run_generate(repo: Path, ckpt: Path, settings: dict, output: Path) -> int:
     apply_cuda_device(override_env="LTX_CUDA_DEVICE", label="LTX")
     from shared.api import init  # type: ignore
 
-    profile = env("LTX_MMGP_PROFILE") or env("WAN2GP_PROFILE") or "5"
+    profile = relax_mmgp_profile(
+        env("LTX_MMGP_PROFILE") or env("WAN2GP_PROFILE") or "5",
+        str(settings.get("model_type") or ""),
+    )
     attention = env("LTX_ATTENTION") or "sdpa"
     progress(12.0, f"init Wan2GP profile={profile} attention={attention}")
     session = init(
         root=repo,
         cli_args=["--attention", attention, "--profile", profile],
     )
+    import wgp  # loaded by init(); patch before the first generate
+
+    pin_text_encoder_budget(wgp, str(settings.get("model_type") or ""))
     progress(20.0, f"submit {settings.get('model_type', 'ltx')} task")
     job = session.submit_task(settings)
     last = 20.0
@@ -348,6 +493,8 @@ def run_generate(repo: Path, ckpt: Path, settings: dict, output: Path) -> int:
             if text:
                 # mmgp re-hooks the same modules many times while thrashing — keep journal readable.
                 if "Hooked to model" in text or "Async loading plan" in text:
+                    continue
+                if "Memory Management for the GPU Poor" in text:
                     continue
                 if text.count("Loading Model") and "ltx-2.5" in text:
                     # one-line breadcrumb instead of a reload flood
