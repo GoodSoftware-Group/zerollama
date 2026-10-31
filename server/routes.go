@@ -464,6 +464,24 @@ func (s *Server) scheduleRunner(ctx context.Context, name string, caps []model.C
 	if vram := s.applyGgmlNumCtxClamp(ctx, model, &opts); vram != nil {
 		ggmlCtx = mergeGgmlNumCtxInfo(ggmlCtx, vram)
 	}
+	if hostMemReuseLoaded(ctx) {
+		snap := s.sched.loadedReuseSnapshot(model)
+		wantImage := slices.Contains(model.Config.Capabilities, "image")
+		pinned, err := pinRequestToLoadedRunner(opts, snap, wantImage)
+		if err != nil {
+			return nil, model, nil, nil, func() {}, err
+		}
+		if pinned.NumCtx != opts.NumCtx {
+			slog.Info("host RAM pressure: serving with loaded context",
+				"model", name,
+				"requested_num_ctx", opts.NumCtx,
+				"loaded_num_ctx", pinned.NumCtx,
+			)
+		}
+		opts = pinned
+		loadedShift := snap.contextShift
+		shift = &loadedShift
+	}
 
 	releaseQoS, err := s.reserveScheduleQoS(ctx, model, requestOpts)
 	if err != nil {
@@ -888,8 +906,12 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 		abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusBadRequest, msg)
 		return
 	} else if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, ErrHostMemNoReuse) {
+			status = http.StatusServiceUnavailable
+		}
 		if streamKeepalive != nil {
-			abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
+			abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, status, err.Error())
 			return
 		}
 		handleScheduleError(c, req.Model, err)
@@ -3880,8 +3902,12 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusBadRequest, msg)
 		return
 	} else if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, ErrHostMemNoReuse) {
+			status = http.StatusServiceUnavailable
+		}
 		if streamKeepalive != nil {
-			abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, http.StatusInternalServerError, err.Error())
+			abortStreamingJSON(c, streamKeepalive, streamCh, req.Model, status, err.Error())
 			return
 		}
 		handleScheduleError(c, req.Model, err)
@@ -4352,6 +4378,8 @@ func handleScheduleError(c *gin.Context, name string, err error) {
 	case errors.Is(err, ErrMaxQueue):
 		metricsIncQueueReject()
 		writeBusyUnavailable(c, err.Error(), preemptedReasonFromErr(err))
+	case errors.Is(err, ErrHostMemNoReuse):
+		writeBusyUnavailable(c, err.Error())
 	case errors.Is(err, os.ErrNotExist):
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model %q not found, try pulling it first", name)})
 	// Why 400: model is configured for the Python runtime sidecar; the legacy ggml

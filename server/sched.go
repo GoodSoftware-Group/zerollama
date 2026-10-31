@@ -131,6 +131,55 @@ func InitScheduler(ctx context.Context) *Scheduler {
 	return sched
 }
 
+// loadedReuseSnapshot captures the resident runner so a request under host RAM
+// pressure can reuse it without GrowNumCtx or a reload.
+func (s *Scheduler) loadedReuseSnapshot(m *Model) loadedReuse {
+	var out loadedReuse
+	if s == nil || m == nil {
+		return out
+	}
+	key := schedulerModelKey(m)
+	if key == "" {
+		return out
+	}
+	s.loadedMu.Lock()
+	runner := s.loaded[key]
+	s.loadedMu.Unlock()
+	if runner == nil {
+		return out
+	}
+	runner.refMu.Lock()
+	defer runner.refMu.Unlock()
+	out.found = true
+	out.loading = runner.loading
+	out.isImagegen = runner.isImagegen
+	out.contextShift = runner.contextShift
+	if runner.model != nil {
+		out.adaptersMatch = reflect.DeepEqual(runner.model.AdapterPaths, m.AdapterPaths) &&
+			reflect.DeepEqual(runner.model.ProjectorPaths, m.ProjectorPaths)
+	} else {
+		out.adaptersMatch = true
+	}
+	if runner.Options != nil {
+		out.runner = runner.Options.Runner
+	}
+	if runner.llama != nil {
+		out.effectiveCtx = runner.llama.ContextLength()
+		if out.effectiveCtx <= 0 && runner.Options != nil {
+			out.effectiveCtx = runner.Options.NumCtx
+		}
+		if runner.model != nil && runner.model.IsMLX() && runner.llama.HasExited() {
+			out.dead = true
+		}
+	} else if !runner.loading {
+		out.dead = true
+	}
+	if out.effectiveCtx > 0 {
+		out.runner.NumCtx = out.effectiveCtx
+	}
+	return out
+}
+
 // schedulerModelKey returns the scheduler map key for a model.
 // GGUF-backed models use ModelPath; safetensors/image models without a
 // ModelPath use manifest digest so distinct models don't collide.
