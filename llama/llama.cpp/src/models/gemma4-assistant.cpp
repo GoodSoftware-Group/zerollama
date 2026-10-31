@@ -16,6 +16,16 @@ void llama_model_gemma4_assistant::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,  hparams.f_norm_rms_eps);
     ml.get_key(LLM_KV_ATTENTION_KEY_LENGTH_SWA,     hparams.n_embd_head_k_swa);
     ml.get_key(LLM_KV_ATTENTION_VALUE_LENGTH_SWA,   hparams.n_embd_head_v_swa);
+
+    // Standalone assistant GGUFs store the draft stack in block_count
+    // (blk.0 .. blk.N-1). nextn_predict_layers is the MTP horizon (often 1),
+    // not that stack depth. Tensor load and the graph both walk n_layer_nextn.
+    // Leaving the trunk split (n_layer = block_count - horizon) binds one SWA
+    // block and then done_getting_tensors fails ("expected 49, got 15" on the
+    // Eliza gemma4-assistant 77M head). There is no trunk in this file.
+    if (hparams.n_layer_all > 0) {
+        hparams.n_layer_nextn = hparams.n_layer_all;
+    }
 }
 
 void llama_model_gemma4_assistant::load_arch_tensors(llama_model_loader &) {

@@ -8,6 +8,18 @@ import (
 
 )
 
+func TestSchedulerCooldownKeySplitsSharedBlob(t *testing.T) {
+	blob := "/models/eliza.gguf"
+	base := &Model{Name: "eliza-1:2b", ModelPath: blob}
+	mtp := &Model{Name: "eliza-1-2b-mtp:latest", ModelPath: blob}
+	if schedulerModelKey(base) != schedulerModelKey(mtp) {
+		t.Fatal("shared GGUF must stay one runner key")
+	}
+	if schedulerCooldownKey(base) == schedulerCooldownKey(mtp) {
+		t.Fatal("draft failure must not share the base cooldown key")
+	}
+}
+
 func TestLoadCooldownBackoff(t *testing.T) {
 	t.Setenv("ZEROLLAMA_LOAD_COOLDOWN", "100ms")
 	t.Setenv("ZEROLLAMA_LOAD_COOLDOWN_MAX", "1s")
