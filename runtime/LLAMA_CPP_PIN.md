@@ -9,10 +9,10 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 | **Recommended build tree** | `vendor/llama-cpp-b12119/` — `./scripts/build/build_llama_server.sh` |
 | **Optional sibling** | `../llama.cpp` @ `LLAMA_CPP_COMMIT` (unpatched; the patched tree is `vendor/llama-cpp-b12119/`) |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` |
-| **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `6f1e6543704bc5b080c7a98e7b6f707b31f6ed51` (ggml-org tag **b12119**, 2026-11-04). Master is one CI commit ahead (`3de52ac`, #31439); the pin stays on the release tag. |
+| **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `6f1e6543704bc5b080c7a98e7b6f707b31f6ed51` (ggml-org tag **b12119**, 2026-11-04). The pin stays on the release tag. Master’s remaining delta is CI `#31439` (`3de52ac`). `#30541` is cherry-picked as patch **0162**. |
 | **Binary** | `build/bin/llama-server` — `./scripts/build/build_llama_server.sh` |
-| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (**161** files, **0001–0161**, formatted on **b12119**, vendor tip `9b9d55a`). Upstream unscaled `F8_E4M3` (type 43) stays beside block `FP8_E4M3` (type 51) and `FP8_E5M2` (type 52). Apply by filename — numbers shift on ladder rungs. Container: `./scripts/vendor/build_llama_server_container.sh`. BPE: [docs/faster-bpe-tokenize.md](../docs/faster-bpe-tokenize.md). MultiDecode: [docs/multidecode-llama-cpp.md](../docs/multidecode-llama-cpp.md). DeepInfer: [docs/deepinfer-ladder.md](../docs/deepinfer-ladder.md). |
-| **Why ggml-org master** | Track upstream llama.cpp tip. Ranges below are the pre-b12119 catalog; the formatted series is **0001–0161**. Eliza QJL/Polar/TBQ applied as patches **0026–0030**; CUDA L2 completeness and Metal TBQ SET_ROWS follow in the mid series; block FP8 weights are types 51/52 beside upstream F8 type 43 (see [native-fp8-gguf.md](../docs/native-fp8-gguf.md)); hardware PR ports **0080–0086**; Bee reasoning-loop guard **0087**; TBQ vec_dot dedupe **0088**; L3-R6b cell+tensor+pages COW **0089**; media-aware `/kv/seq-copy` **0090**; llama-bench Eliza L2 KV type names **0093**; native DCA **0094–0098**; Metal recoverable nil pipeline + bf16 library gate + Polar/QJL SET_ROWS + fused QJL+Polar attn **0096–0098** (Lab D — `speed` runs on Mac, tok/s FAIL merge); Kokoro **0100–0101**; Bee B1 adaptive draft-max **0102**. **Hedge:** do not assume [elizaOS/llama.cpp](https://github.com/elizaOS/llama.cpp) keeps rebasing onto latest ggml-org — this pin remains source of truth. Sibling scout: `../eliza-llama.cpp` @ `ad56033` (OmniVoice/FFI stay out of our binary; Kokoro optional via `LLAMA_BUILD_KOKORO=ON`). |
+| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (**162** files, **0001–0162**, formatted on **b12119**, vendor tip `f82a6cc`). Upstream unscaled `F8_E4M3` (type 43) stays beside block `FP8_E4M3` (type 51) and `FP8_E5M2` (type 52). Apply by filename — numbers shift on ladder rungs. Container: `./scripts/vendor/build_llama_server_container.sh`. BPE: [docs/faster-bpe-tokenize.md](../docs/faster-bpe-tokenize.md). MultiDecode: [docs/multidecode-llama-cpp.md](../docs/multidecode-llama-cpp.md). DeepInfer: [docs/deepinfer-ladder.md](../docs/deepinfer-ladder.md). |
+| **Why ggml-org master** | Track upstream llama.cpp tip. Ranges below are the pre-b12119 catalog; the formatted series is **0001–0162**. Eliza QJL/Polar/TBQ applied as patches **0026–0030**; CUDA L2 completeness and Metal TBQ SET_ROWS follow in the mid series; block FP8 weights are types 51/52 beside upstream F8 type 43 (see [native-fp8-gguf.md](../docs/native-fp8-gguf.md)); hardware PR ports **0080–0086**; Bee reasoning-loop guard **0087**; TBQ vec_dot dedupe **0088**; L3-R6b cell+tensor+pages COW **0089**; media-aware `/kv/seq-copy` **0090**; llama-bench Eliza L2 KV type names **0093**; native DCA **0094–0098**; Metal recoverable nil pipeline + bf16 library gate + Polar/QJL SET_ROWS + fused QJL+Polar attn **0096–0098** (Lab D — `speed` runs on Mac, tok/s FAIL merge); Kokoro **0100–0101**; Bee B1 adaptive draft-max **0102**. **Hedge:** do not assume [elizaOS/llama.cpp](https://github.com/elizaOS/llama.cpp) keeps rebasing onto latest ggml-org — this pin remains source of truth. Sibling scout: `../eliza-llama.cpp` @ `ad56033` (OmniVoice/FFI stay out of our binary; Kokoro optional via `LLAMA_BUILD_KOKORO=ON`). |
 
 ## In-process ggml (Go CGO) — unified with runtime
 
@@ -20,7 +20,7 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 |-------|--------|
 | **Vendor pin** | **`b12119`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-b12119/` (rollback pin files: **b11870** in `LLAMA_CPP_*.prev`; older trees: `vendor/llama-cpp-b11351/`, also b11232/b11081/b10969/…) |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` (same as runtime sibling) |
-| **Ollama patches** | Same series as the runtime table (**161** format-patches, **0001–0161**, on **b12119**). Eliza QJL/Polar/TBQ shaders stay in `eliza-shipped/`. Pretok lives in **`src/unicode.*`**. Mac CGO: `llama/cgo_vendor_hash.cpp` + `llama_print_build_info(const char *, FILE *)`. Tip CGO also needs `ml/.../tiled/tiled.go` + `llama/.../parsers/parsers.go`. |
+| **Ollama patches** | Same series as the runtime table (**162** format-patches, **0001–0162**, on **b12119**). Eliza QJL/Polar/TBQ shaders stay in `eliza-shipped/`. Pretok lives in **`src/unicode.*`**. Mac CGO: `llama/cgo_vendor_hash.cpp` + `llama_print_build_info(const char *, FILE *)`. Tip CGO also needs `ml/.../tiled/tiled.go` + `llama/.../parsers/parsers.go`. |
 | **In-tree Metal dig** | Upstream split Metal kernels (`kernels/*.metal`). Eliza SET_ROWS + fused QJL+Polar attn remain as extra AIR objects. Native FP8 weight types **51/52**. FA-vec per-device tables are upstream. |
 | **Rebase helper** | `./scripts/vendor/rebase_vendor_unified.sh --sync` |
 
@@ -67,7 +67,7 @@ Rebuild llama.cpp when bumping `LLAMA_CPP_COMMIT`; run runtime integration tests
 
 ## L6 pin-debt ladder (ggml-org tip **b12119**)
 
-**Status:** pin is **b12119** (2026-11-04) with **161** patch files (**0001–0161**) rebased onto that tag. Production `llama-server` is built with CUDA 12.8 / sm_120. Rollback pin files: **b11870**.
+**Status:** pin is **b12119** (2026-11-04) with **162** patch files (**0001–0162**) rebased onto that tag. **0162** cherry-picks ggml-org `#30541` (quantized on-device KV state copy). Production `llama-server` is built with CUDA 12.8 / sm_120. Rollback pin files: **b11870**.
 
 | Item | Detail |
 |------|--------|
@@ -76,7 +76,7 @@ Rebuild llama.cpp when bumping `LLAMA_CPP_COMMIT`; run runtime integration tests
 | **Clef staging** | `llama/clef/` — wire with `./scripts/phase/stage_clef_for_pin.sh --wire` |
 | **Clef compile check** | `./scripts/phase/l6_clef_compile_check.sh` |
 
-Clef **runtime wire + Cloudflare Flash product convert** are green on the previous tip. This pin bump does not redeploy production. Rollback via `LLAMA_CPP_*.prev` (**b11870**) and `./scripts/phase/l6_promote_tip_env.sh --rollback`. See [docs/system-one-score.md](../docs/system-one-score.md) · [docs/llama-cpp-pin-ladder.md](../docs/llama-cpp-pin-ladder.md).
+Clef **runtime wire + Cloudflare Flash product convert** were green on **b11351**. Production `llama-server` on this CT is the **b12119** binary. Rollback via `LLAMA_CPP_*.prev` (**b11870**) and `./scripts/phase/l6_promote_tip_env.sh --rollback` (refuses until that tree is built). See [docs/system-one-score.md](../docs/system-one-score.md) · [docs/llama-cpp-pin-ladder.md](../docs/llama-cpp-pin-ladder.md).
 
 ## Bump checklist (runtime sibling)
 

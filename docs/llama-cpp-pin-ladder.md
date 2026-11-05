@@ -1,8 +1,8 @@
 # llama.cpp pin-debt ladder (L6 enabler)
 
 **Status (Nov 2026):** pin identity is **b12119** (`6f1e6543704bc5b080c7a98e7b6f707b31f6ed51`, 2026-11-04, `server : realtime: send an error event instead of crashing on exceptions`).
-`vendor/llama-cpp-b12119/` is a shallow checkout of that tag. Master is one CI commit ahead (`3de52ac`, #31439); the pin stays on the release tag.
-The patch series is **161** files (**0001–0161**), formatted on **b12119**. Two empty tip-port commits were dropped during the rebase (`v_cells` was already a pointer). **0160–0161** are the compile fixes that let `llama-server` build (dflash `v_mla`, kv-cache bufs).
+`vendor/llama-cpp-b12119/` is a shallow checkout of that tag. The pin stays on the release tag. Master’s remaining delta is CI `#31439` (`3de52ac`). `#30541` (quantized on-device KV state copy) is cherry-picked as patch **0162**.
+The patch series is **162** files (**0001–0162**), formatted on **b12119**. Two empty tip-port commits were dropped during the rebase (`v_cells` was already a pointer). **0160–0161** are the compile fixes that let `llama-server` build (dflash `v_mla`, kv-cache bufs). **0162** is `#30541`.
 Rollback pin files: `LLAMA_CPP_*.prev` → **b11870**.
 
 | Field | Value |
@@ -11,7 +11,7 @@ Rollback pin files: `LLAMA_CPP_*.prev` → **b11870**.
 | **Previous (rollback)** | **b11870** (`74bca3950054eed1795f525cb9cf06bfe796492d`) — `LLAMA_CPP_*.prev` |
 | **Ollama tip pin** | **b11351** (last matched upstream Ollama pin; zerollama is ahead) |
 | **Clef runtime floor** | **b11232+** — tip wire uses `common_batch` / `batch.view` |
-| **Patch series** | `llama/patches/` **0001–0161** (161 files, formatted on **b12119**). Vendor tip `9b9d55a` (`LLAMA_CPP_VENDOR_HEAD`) |
+| **Patch series** | `llama/patches/` **0001–0162** (162 files, formatted on **b12119**). Vendor tip `f82a6cc` (`LLAMA_CPP_VENDOR_HEAD`) |
 | **Pin truth** | [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) · `LLAMA_CPP_VERSION` / `LLAMA_CPP_COMMIT` · `Makefile.sync` |
 | **CUDA toolkit (5080 CT)** | Prefer **CUDA 12.8** (`CUDA_HOME=/usr/local/cuda-12.8`) — CUDA 13.3 `libcudart` aborts in `cudaGetDeviceCount` on this host |
 
@@ -36,7 +36,7 @@ conflicts stay reviewable.
 | **4** | **b11232** | `6f767fe9…` | Clef floor (`#18652` / Clef `#18741`) | **Done** — kept as `vendor/llama-cpp-b11232/` rollback |
 | **5** | **b11351** | `631109b3…` | Match Ollama **v0.40.x** tip (`#18761`) | **Done (Oct 2026)** — tip `common_batch` + Clef; kept as `vendor/llama-cpp-b11351/` |
 | **6** | **b11870** | `74bca395…` | Prior zerollama tip | **Done** — previous series formatted here. Rollback via `LLAMA_CPP_*.prev` |
-| **7 (pin)** | **b12119** | `6f1e6543…` | Latest ggml-org release tag (2026-11-04) | **Done** — 161 patches rebased; `llama-server` built (sm_120) and serving on CT 1564 |
+| **7 (pin)** | **b12119** | `6f1e6543…` | Latest ggml-org release tag (2026-11-04) | **Done** — 162 patches on the pin; `llama-server` built (sm_120) and serving on CT 1564. **0162** cherry-picks `#30541` |
 
 **Do not** jump 0 → 5 in one shot unless you have a clean worktree day and a
 rollback plan (`vendor/llama-cpp-b10615/` + `llama/patches/` backup).
@@ -155,7 +155,7 @@ stop, format-patch, smoke, then continue — do not stack unresolved `git am` ga
 | `./scripts/phase/l6_clef_vl_decisions_smoke.sh` | Image `/v1/decisions` against a VL Clef tag (host already serving) |
 | `./scripts/phase/l6_strands_graft_head.py` | Graft Strands pointer head + decision meta onto Qwen3.5 GGUF |
 | `./scripts/phase/l6_strands_decisions_e2e.sh` | Lab Go + tip `LLAMA_SERVER_BIN` → Strands `/v1/decisions` |
-| `./scripts/phase/l6_promote_tip_env.sh` | Prep tip/rollback `LLAMA_SERVER_BIN` env (no serve restart) |
+| `./scripts/phase/l6_promote_tip_env.sh` | Prep current-pin / `.prev` rollback `LLAMA_SERVER_BIN` env (no serve restart, no Go binary replace) |
 | `./scripts/phase/stage_clef_for_pin.sh` | Refresh staging; `--wire` only when pin ≥ b11232 |
 
 ---
@@ -165,10 +165,10 @@ stop, format-patch, smoke, then continue — do not stack unresolved `git am` ga
 1. **Production Clef GGUF** — **done:** Cloudflare HF → Ollama-wire via `l6_clef_product_convert.sh` (text Q8_0 + mmproj F16). Tags: `clef-flash` (text), `clef-flash-vl` (text+mmproj). Note: `ggml-org/Clef-Flash-GGUF` (native `clef` + `decision.*`) is **not** interchangeable with `llama/clef/clef.cpp`.
 2. **Strands PointerRows** on CUDA llama-server — **done:** tip wire **0138** + `llama/strands/` pointer head; graft `l6_strands_graft_head.py` → product Q8; lab e2e `l6_strands_decisions_e2e.sh` PASS; **prod tag `strands-hobson`** `/v1/decisions` smoke PASS (`noul≈0.31`). MLX path unchanged.
 3. **Operator rebuild:** on this 5080 CT use `CUDA_HOME=/usr/local/cuda-12.8` (default CUDA 13.3 aborts at device init). Tip Go binary: `run/zerollama-lab` (rebuild after tiled/parsers CGO packages land).
-4. Rollback stays at `vendor/llama-cpp-b11232/` + `LLAMA_CPP_*.prev` if tip misbehaves in production.
-5. **Production CT serve (cudallama)** — **promoted to tip b11351** (Oct 2026): `run/zerollama-lab` + `LLAMA_SERVER_BIN=…/llama-cpp-b11351`; `clef-flash` + `clef-flash-vl` + `strands-hobson` live; text + image + Strands `/v1/decisions` smoke PASS. Rollback:
+4. Rollback identity is `LLAMA_CPP_*.prev` → **b11870**. `l6_promote_tip_env.sh --rollback` reads that file and refuses when `vendor/llama-cpp-b11870/build/bin/llama-server` is missing. Do not point rollback at `vendor/llama-cpp-b10615` (that binary is the embeddings server on `127.0.0.1:18092`).
+5. **Production CT serve (cudallama)** — **b12119**: `run/zerollama-lab` + `LLAMA_SERVER_BIN=vendor/llama-cpp-b12119/build/bin/llama-server` (vendor tip `f82a6cc`). Chat models loaded on `:8080` still use the in-process ggml runner; this `llama-server` starts on the runtime path. Oct 2026 Clef/Strands smokes passed on the older **b11351** pin. Rollback:
    ```bash
-   ./scripts/phase/l6_promote_tip_env.sh --rollback --write
+   ./scripts/phase/l6_promote_tip_env.sh --rollback --write   # fails until b11870 is built
    # restart ~/bin/serve.sh with that env
    ```
 

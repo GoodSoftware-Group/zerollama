@@ -64,7 +64,7 @@ zerollama pull llama3.2:3b
 | Sibling llama.cpp | `scripts/vendor/ensure_llama_cpp_sibling.sh` |
 | Metal sign-off | `scripts/gpu/metal_signoff.sh` (CI `:8080`, not production `:11434`) |
 
-**Pin:** ggml-org **`b12119`** (`6f1e6543704bc5b080c7a98e7b6f707b31f6ed51`) — [runtime/LLAMA_CPP_PIN.md](./runtime/LLAMA_CPP_PIN.md) · L6 ladder [docs/llama-cpp-pin-ladder.md](./docs/llama-cpp-pin-ladder.md). Rollback **b11870**. Sibling clone defaults to elizaOS for fork kernels; public pin checkout: `LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp.git`. Patch series **0001–0161** (161 files) is rebased onto this tag. Production `llama-server` is `vendor/llama-cpp-b12119/build/bin/llama-server`.
+**Pin:** ggml-org **`b12119`** (`6f1e6543704bc5b080c7a98e7b6f707b31f6ed51`) — [runtime/LLAMA_CPP_PIN.md](./runtime/LLAMA_CPP_PIN.md) · L6 ladder [docs/llama-cpp-pin-ladder.md](./docs/llama-cpp-pin-ladder.md). Rollback **b11870**. Sibling clone defaults to elizaOS for fork kernels; public pin checkout: `LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp.git`. Patch series **0001–0162** (162 files) is rebased onto this tag. **0162** cherry-picks ggml-org `#30541`. Production `llama-server` is `vendor/llama-cpp-b12119/build/bin/llama-server`.
 
 **Optional (skip cleanly):** `../mlx` (safetensors), `../bmtl/.../uma_toolkit` (UMA), training venv (`MAC_SETUP_TRAINING=1`). DeepSeek-V4 Flash mlx-lm packs: [docs/mlx-deepseek-v4-flash.md](./docs/mlx-deepseek-v4-flash.md) — `create --experimental --link`, do not blob-copy.
 

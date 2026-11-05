@@ -97,9 +97,9 @@ _ensure_httplib() {
 _setup_cgo() {
 	export CGO_ENABLED=1
 	export CGO_CFLAGS_ALLOW="${CGO_CFLAGS_ALLOW:--mfma|-mavx2|-O3}"
-	if [[ -f "${ROOT}/scripts/training_embed_build_env.sh" ]] && pkg-config --exists python-3.11-embed 2>/dev/null; then
-		# shellcheck source=scripts/training_embed_build_env.sh disable=SC1091
-		source "${ROOT}/scripts/training_embed_build_env.sh" 3.11
+	if [[ -f "${ROOT}/scripts/training/training_embed_build_env.sh" ]] && pkg-config --exists python-3.11-embed 2>/dev/null; then
+		# shellcheck source=scripts/training/training_embed_build_env.sh disable=SC1091
+		source "${ROOT}/scripts/training/training_embed_build_env.sh" 3.11
 	fi
 }
 

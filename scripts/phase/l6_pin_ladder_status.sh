@@ -114,7 +114,7 @@ fi
 echo ""
 echo "Doc: docs/llama-cpp-pin-ladder.md · runtime/LLAMA_CPP_PIN.md · llama/clef/README.md"
 if [[ "${VERSION}" == "b12119" ]]; then
-  echo "Next: patches rebased (161 files, 0001–0161). Production llama-server is vendor/llama-cpp-b12119 — rollback pin: LLAMA_CPP_*.prev (b11870)"
+  echo "Next: patches rebased (162 files, 0001–0162). Production llama-server is vendor/llama-cpp-b12119 — rollback pin: LLAMA_CPP_*.prev (b11870)"
 elif [[ "${VERSION}" == "b11351" ]]; then
   echo "Next: Strands CUDA PointerRows (deferred) · tip prod live — rollback: l6_promote_tip_env.sh --rollback"
 else

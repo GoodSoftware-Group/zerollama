@@ -1,0 +1,87 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Thu, 5 Nov 2026 02:01:59 +0000
+Subject: [PATCH] fix: kv cache compile on b12119 memory bufs and attn mask
+
+---
+ src/llama-kv-cache.cpp | 18 +++++++++---------
+ 1 file changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 5516414..ba2b7a1 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -382,7 +382,7 @@ bool llama_kv_cache::ensure_unique_tensors(const char * reason) {
+     new_bufs.reserve(ctx_map.size());
+     for (auto & [buft, ctx] : ctx_map) {
+         ggml_backend_buffer_t buf = nullptr;
+-        if (hparams.no_alloc) {
++        if (ctxs_bufs.no_alloc) {
+             buf = ggml_backend_buft_alloc_buffer(buft, /*size =*/ 0);
+             for (ggml_tensor * t = ggml_get_first_tensor(ctx.get()); t != nullptr; t = ggml_get_next_tensor(ctx.get(), t)) {
+                 t->buffer = buf;
+@@ -400,7 +400,7 @@ bool llama_kv_cache::ensure_unique_tensors(const char * reason) {
+                 ggml_backend_buffer_get_size(buf) / 1024.0 / 1024.0,
+                 reason ? reason : "?");
+         // Zero so unused cells are defined when pages mode copies only used spans.
+-        if (!hparams.no_alloc) {
++        if (!ctxs_bufs.no_alloc) {
+             ggml_backend_buffer_clear(buf, 0);
+         }
+         new_bufs.emplace_back(std::move(ctx), buf);
+@@ -460,7 +460,7 @@ bool llama_kv_cache::ensure_unique_tensors(const char * reason) {
+         };
+     }
+     for (auto & nb : new_bufs) {
+-        ctxs_bufs.emplace_back(std::move(nb));
++        ctxs_bufs.bufs.emplace_back(std::move(nb));
+     }
+ 
+     layers_aliased = false;
+@@ -1832,8 +1832,8 @@ bool llama_kv_cache::shrink(uint32_t n_cells) {
+ }
+ 
+ bool llama_kv_cache::realloc_kv(uint32_t n_cells, bool compact) {
+-    if (n_pad > 1 && n_cells % n_pad != 0) {
+-        n_cells = ((n_cells + n_pad - 1) / n_pad) * n_pad;
++    if (saved_n_pad > 1 && n_cells % saved_n_pad != 0) {
++        n_cells = ((n_cells + saved_n_pad - 1) / saved_n_pad) * saved_n_pad;
+     }
+ 
+     const uint32_t old_n = get_size();
+@@ -1846,7 +1846,7 @@ bool llama_kv_cache::realloc_kv(uint32_t n_cells, bool compact) {
+     if (compact && n_cells == 0) {
+         return false;
+     }
+-    if (other || layers_aliased || hparams.no_alloc) {
++    if (other || layers_aliased || ctxs_bufs.no_alloc) {
+         LLAMA_LOG_WARN("%s: refuse %s %u → %u (shared/aliased/no_alloc)\n",
+                 __func__, compact ? "shrink" : "grow", old_n, n_cells);
+         return false;
+@@ -2023,7 +2023,7 @@ bool llama_kv_cache::realloc_kv(uint32_t n_cells, bool compact) {
+         layer.k_idx_stream = std::move(pg.k_idx_stream);
+     }
+ 
+-    ctxs_bufs = std::move(new_bufs);
++    ctxs_bufs.bufs = std::move(new_bufs);
+ 
+     if (compact) {
+         for (uint32_t s = 0; s < n_stream; ++s) {
+@@ -2549,7 +2549,7 @@ static void set_input_attn_mask_impl(const args_set_input_attn_mask & args, T *
+ 
+             const llama_seq_id seq_id = ubatch->seq_id[i][0];
+ 
+-            const auto & cells = (*v_cells).at(seq_to_stream[seq_id]);
++            const auto & cells = v_cells.at(seq_to_stream[seq_id]);
+ 
+             // shared mask rows: every query of the sequence uses the row of its first token
+             const uint32_t iq = args.block_uniform ? seq_first[seq_id] : i;
+@@ -2758,7 +2758,7 @@ void llama_kv_cache::set_input_attn_mask(const llm_attn_mask & attn_mask, const
+         const args_set_input_attn_mask args = {
+             /*.hparams          =*/ hparams,
+             /*.ubatch           =*/ ubatch,
+-            /*.v_cells          =*/ v_cells,
++            /*.v_cells          =*/ *v_cells,
+             /*.seq_to_stream    =*/ seq_to_stream,
+             /*.n_swa            =*/ n_swa,
+             /*.swa_type         =*/ swa_type,

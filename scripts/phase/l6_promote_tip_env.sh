@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Prepare (or print) tip b11351 llama-server env for the next production restart.
+# Prepare (or print) the current pin's llama-server env for the next production restart.
 #
-# WHY: CT production still runs LLAMA_SERVER_BIN=vendor/llama-cpp-b10615 while the
-# repo pin is b11351 (Clef product e2e green on tip). This script never kills
-# :8080 / :11434 / :8081 — operator restarts ~/bin/serve.sh after review.
+# Tip tag is LLAMA_CPP_VERSION. Rollback tag is LLAMA_CPP_VERSION.prev.
+# This script never kills :8080 / :11434 / :8081 and never replaces run/zerollama-lab.
 #
 # Usage:
 #   ./scripts/phase/l6_promote_tip_env.sh              # dry-run checks + print export block
 #   ./scripts/phase/l6_promote_tip_env.sh --write       # also write run/l6_tip_llama_server.env
-#   ./scripts/phase/l6_promote_tip_env.sh --rollback    # print / write b10615 rollback env
+#   ./scripts/phase/l6_promote_tip_env.sh --rollback    # print / write the .prev pin env
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -26,27 +25,39 @@ for arg in "$@"; do
   esac
 done
 
-TIP_ROOT="${ROOT}/vendor/llama-cpp-b11351"
+TIP_TAG="$(tr -d '[:space:]' < "${ROOT}/LLAMA_CPP_VERSION")"
+ROLL_TAG="$(tr -d '[:space:]' < "${ROOT}/LLAMA_CPP_VERSION.prev")"
+if [[ -z "${TIP_TAG}" || -z "${ROLL_TAG}" ]]; then
+  echo "error: LLAMA_CPP_VERSION and LLAMA_CPP_VERSION.prev must both be set" >&2
+  exit 1
+fi
+
+TIP_ROOT="${ROOT}/vendor/llama-cpp-${TIP_TAG}"
 TIP_BIN="${TIP_ROOT}/build/bin/llama-server"
-ROLL_ROOT="${ROOT}/vendor/llama-cpp-b10615"
+ROLL_ROOT="${ROOT}/vendor/llama-cpp-${ROLL_TAG}"
 ROLL_BIN="${ROLL_ROOT}/build/bin/llama-server"
 OUT_ENV="${ROOT}/run/l6_tip_llama_server.env"
 LAB_ZL="${ROOT}/run/zerollama-lab"
+CUDA_HOME_PIN="${CUDA_HOME_PIN:-/usr/local/cuda-12.8}"
 
 if [[ "${MODE}" == "promote" ]]; then
   TARGET_ROOT="${TIP_ROOT}"
   TARGET_BIN="${TIP_BIN}"
-  LABEL="tip b11351"
+  LABEL="tip ${TIP_TAG}"
 else
   TARGET_ROOT="${ROLL_ROOT}"
   TARGET_BIN="${ROLL_BIN}"
-  LABEL="rollback b10615"
+  LABEL="rollback ${ROLL_TAG}"
 fi
 
 echo "== L6 ${LABEL} env =="
 if [[ ! -x "${TARGET_BIN}" ]]; then
   echo "error: missing ${TARGET_BIN}" >&2
-  echo "hint: CUDA_HOME=/usr/local/cuda-12.8 CMAKE_CUDA_ARCHITECTURES=120-real ./scripts/build/build_llama_server.sh" >&2
+  if [[ "${MODE}" == "rollback" ]]; then
+    echo "hint: rollback stays on ${ROLL_TAG} (LLAMA_CPP_VERSION.prev). Do not point it at vendor/llama-cpp-b10615." >&2
+  else
+    echo "hint: CUDA_HOME=${CUDA_HOME_PIN} CMAKE_CUDA_ARCHITECTURES=120-real ./scripts/build/build_llama_server.sh" >&2
+  fi
   exit 1
 fi
 
@@ -63,14 +74,8 @@ if [[ "${MODE}" == "promote" ]]; then
   "${TARGET_BIN}" --version 2>&1 | head -3 | sed 's/^/  /'
 fi
 
-# Lab Go binary (System One + ggufIsClef + tip CGO) — do not overwrite run/zerollama.
-if [[ -x /tmp/zerollama-lab ]]; then
-  mkdir -p "${ROOT}/run"
-  cp -f /tmp/zerollama-lab "${LAB_ZL}"
-  chmod +x "${LAB_ZL}"
-  echo "lab Go binary:        ${LAB_ZL} (from /tmp/zerollama-lab)"
-elif [[ -x "${LAB_ZL}" ]]; then
-  echo "lab Go binary:        ${LAB_ZL} (existing)"
+if [[ -x "${LAB_ZL}" ]]; then
+  echo "lab Go binary:        ${LAB_ZL} (existing; not replaced)"
 else
   echo "lab Go binary:        missing — rebuild: CGO_ENABLED=1 go build -o ${LAB_ZL} ."
 fi
@@ -93,8 +98,12 @@ export LLAMA_CPP_BIN=${TARGET_ROOT}/build/bin
 export LLAMA_SERVER_BIN=${TARGET_BIN}
 export LLAMA_CPP_LIB=${TARGET_ROOT}/build/bin/libllama.so
 export LD_LIBRARY_PATH=${TARGET_ROOT}/build/bin:\${LD_LIBRARY_PATH:-}
-# Optional: tip Go daemon with System One / Clef routing (lab or next serve binary)
-# export ZEROLLAMA_BIN=${LAB_ZL}
+# Go daemon stays the existing lab binary; llama-server is the rebased pin.
+export ZEROLLAMA_BIN=${LAB_ZL}
+export CUDA_HOME=${CUDA_HOME_PIN}
+export CUDA_PATH=${CUDA_HOME_PIN}
+# Production bind (LAN via CT IP 192.168.255.164). Do not use 127.0.0.1 here.
+export OLLAMA_HOST=0.0.0.0:8080
 EOF
 )
 
