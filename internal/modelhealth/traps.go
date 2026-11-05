@@ -14,6 +14,7 @@ import (
 	"github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/fs/gguf"
 	"github.com/ollama/ollama/manifest"
+	"github.com/ollama/ollama/template"
 	"github.com/ollama/ollama/types/model"
 )
 
@@ -101,8 +102,16 @@ func checkConfigTrapsIn(modelsDir, display string, mf *manifest.Manifest) []Repo
 
 	modelPath := layerPath(modelsDir, mf, "application/vnd.ollama.image.model")
 	paramsPath := layerPath(modelsDir, mf, "application/vnd.ollama.image.params")
-	hasGoTemplate := layerPath(modelsDir, mf, "application/vnd.ollama.image.template") != "" ||
-		layerPath(modelsDir, mf, "application/vnd.ollama.image.prompt") != ""
+	tmplPath := layerPath(modelsDir, mf, "application/vnd.ollama.image.template")
+	if tmplPath == "" {
+		tmplPath = layerPath(modelsDir, mf, "application/vnd.ollama.image.prompt")
+	}
+	goTemplate := ""
+	if tmplPath != "" {
+		if b, err := os.ReadFile(tmplPath); err == nil {
+			goTemplate = string(b)
+		}
+	}
 
 	var ggufChatTemplate string
 	var ggufFileType string
@@ -142,7 +151,7 @@ func checkConfigTrapsIn(modelsDir, display string, mf *manifest.Manifest) []Repo
 	}
 	out = append(out, trap21NoGenerationConfig(display, paramsPath, params))
 	out = append(out, trap10QuantLabel(display, nTagQuant(display), cfg.FileType, ggufFileType))
-	out = append(out, trap56NoChatTemplate(display, hasGoTemplate, ggufChatTemplate, cfg.Renderer))
+	out = append(out, trap56NoChatTemplate(display, goTemplate, ggufChatTemplate, cfg.Renderer))
 	out = append(out, trap55ContextMismatch(display, cfg.ContextLen, paramsNumCtx(params), ggufCtxLen))
 	return out
 }
@@ -198,9 +207,22 @@ func trap10QuantLabel(display, tagQuant, configFileType, ggufFileType string) Re
 	return Report{Name: name, Status: StatusOK, Detail: fmt.Sprintf("tag %s matches file_type %s", tagQuant, actual)}
 }
 
-func trap56NoChatTemplate(display string, hasGoTemplate bool, ggufChatTemplate, renderer string) Report {
+func trap56NoChatTemplate(display string, goTemplate, ggufChatTemplate, renderer string) Report {
 	name := fmt.Sprintf("model %s trap-56 (chat template)", display)
-	if hasGoTemplate || renderer != "" {
+	hasGoTemplate := strings.TrimSpace(goTemplate) != ""
+	hasRenderer := strings.TrimSpace(renderer) != ""
+
+	// Passthrough {{ .Prompt }} is not a chat template — unless a builtin
+	// RENDERER already owns prompt assembly (then empty/passthrough Go TEMPLATE is fine).
+	if hasGoTemplate && template.IsPassthrough(goTemplate) && !hasRenderer {
+		return Report{
+			Name:    name,
+			Status:  StatusRepairable,
+			Detail:  "Go TEMPLATE is passthrough ({{ .Prompt }} only) — no chat-role framing (minefield trap 56)",
+			FixHint: "zerollama doctor --repair-models --apply " + display + " (or set RENDERER/PARSER for the GGUF family)",
+		}
+	}
+	if hasGoTemplate || hasRenderer {
 		return Report{Name: name, Status: StatusOK, Detail: "Go template or renderer present"}
 	}
 	if strings.TrimSpace(ggufChatTemplate) != "" {

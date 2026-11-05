@@ -66,7 +66,8 @@ Model template repair (milkey/moophlo-class + ChatML hygiene):
   zerollama doctor --repair-models [MODEL...]                 # dry-run (warm /api/ps if no MODEL)
   zerollama doctor --repair-models --all-local                # scan every /api/tags model
   zerollama doctor --repair-models --apply [MODEL...]         # recreate tag FROM itself
-  (Invasive TEMPLATE rewrites: Qwen3 family only; ChatML stop hygiene: any family.
+  (Passthrough {{ .Prompt }} → family RENDERER when known; invasive TEMPLATE
+   rewrites: Qwen3 family only; ChatML stop hygiene: any family.
    See docs/doctor-model-repair.md)
 
 See docs/model-serving-minefield.md.`,

@@ -215,6 +215,70 @@ func TestDiagnoseRendererSkipsResponsePlaceholder(t *testing.T) {
 	}
 }
 
+func TestDiagnosePassthroughDeepseek(t *testing.T) {
+	api := &fakeAPI{
+		show: &ShowInfo{
+			Name:         "deepseek-v4-flash:q2_k",
+			Template:     "{{ .Prompt }}",
+			Architecture: "deepseek4",
+			Parameters:   "num_ctx                        2048\n",
+		},
+	}
+	rep, err := Diagnose(t.Context(), api, "deepseek-v4-flash:q2_k", Options{SkipLive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Findings) != 1 || rep.Findings[0].Recipe != RecipePassthroughTemplate {
+		t.Fatalf("findings=%+v", rep.Findings)
+	}
+	if rep.Patch == nil || rep.Patch.Renderer != "deepseek3" || rep.Patch.Parser != "deepseek3" {
+		t.Fatalf("patch=%+v", rep.Patch)
+	}
+	if !rep.Patch.ClearTemplate || rep.Patch.Template != "" {
+		t.Fatalf("expected clear passthrough template, got %+v", rep.Patch)
+	}
+	if !strings.Contains(rep.Patch.Modelfile, "RENDERER deepseek3") {
+		t.Fatalf("modelfile=%q", rep.Patch.Modelfile)
+	}
+}
+
+func TestDiagnosePassthroughUnknownArchManual(t *testing.T) {
+	api := &fakeAPI{
+		show: &ShowInfo{
+			Name:         "mystery:latest",
+			Template:     "{{ .Prompt }}",
+			Architecture: "llama",
+			Parser:       "llama",
+		},
+	}
+	rep, err := Diagnose(t.Context(), api, "mystery:latest", Options{SkipLive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range rep.Findings {
+		if f.Recipe == RecipePassthroughTemplate {
+			t.Fatalf("unknown arch must not auto-patch: %+v", f)
+		}
+	}
+	if len(rep.ManualReview) == 0 {
+		t.Fatal("expected manual-review note")
+	}
+}
+
+func TestBuildPatchPassthroughQwen3ChatML(t *testing.T) {
+	show := ShowInfo{Architecture: "qwen3", Parser: "qwen3", Template: "{{ .Prompt }}"}
+	p, err := BuildPatch("m:latest", show, []Finding{{Recipe: RecipePassthroughTemplate}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Renderer != "" {
+		t.Fatalf("classic qwen3 should use TEMPLATE not RENDERER: %+v", p)
+	}
+	if !strings.Contains(p.Template, "<|im_start|>") {
+		t.Fatalf("expected ChatML, got %q", p.Template[:min(80, len(p.Template))])
+	}
+}
+
 func TestBuildPatchStopsOnly(t *testing.T) {
 	show := ShowInfo{
 		Template:   "<|im_start|>user\n{{ .Content }}<|im_end|>\n{{ .Response }}",
@@ -401,7 +465,7 @@ func (f *fakeAPI) Chat(ctx context.Context, name string, messages []map[string]s
 	return f.chatUser, nil
 }
 
-func (f *fakeAPI) Create(ctx context.Context, name, from, template, parser string, params map[string]any) error {
+func (f *fakeAPI) Create(ctx context.Context, name, from string, patch *Patch) error {
 	f.created = true
 	return nil
 }

@@ -1,0 +1,7 @@
+{
+  "capabilities": ["decision"],
+  "modality_backends": { "decisions": "gliner-decide" },
+  "architecture": "arm64",
+  "os": "darwin",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

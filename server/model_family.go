@@ -31,6 +31,7 @@ func isProjectorArchitecture(arch string) bool {
 var llmFamilyPreference = []string{
 	"qwen35moe", "qwen35", "qwen3next", "qwen3vlmoe", "qwen3vl", "qwen3",
 	"gemma4", "gemma3", "llama4", "llama3", "gpt_oss", "gptoss", "gpt-oss", "mistral3",
+	"deepseek4", "minimax-m2",
 }
 
 // isGptOSSFamily reports whether arch names a GPT-OSS model (GGUF gptoss, HF gpt_oss, etc.).
@@ -60,13 +61,15 @@ func primaryModelFamily(cfg model.ConfigV2) string {
 			return pref
 		}
 	}
-	if cfg.ModelFamily != "" && !isProjectorArchitecture(cfg.ModelFamily) {
+	// Skip "unknown" placeholders left by create when a non-LLM layer ran first.
+	if cfg.ModelFamily != "" && cfg.ModelFamily != "unknown" && !isProjectorArchitecture(cfg.ModelFamily) {
 		return cfg.ModelFamily
 	}
 	for _, f := range cfg.ModelFamilies {
-		if !isProjectorArchitecture(f) {
-			return f
+		if f == "" || f == "unknown" || isProjectorArchitecture(f) {
+			continue
 		}
+		return f
 	}
 	// Projector-only manifest (e.g. standalone clip mmproj) — no LLM family to route on.
 	return ""
@@ -79,6 +82,8 @@ func defaultParserForFamily(m *Model) string {
 	switch m.PrimaryFamily() {
 	case "qwen35", "qwen35moe":
 		return "qwen3.5"
+	case "deepseek4", "deepseek3", "deepseek2":
+		return "deepseek3"
 	default:
 		if isGptOSSFamily(m.PrimaryFamily()) || isGptOSSFamily(m.Config.ModelFamily) {
 			return "harmony"

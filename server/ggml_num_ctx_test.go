@@ -259,12 +259,38 @@ func TestGgmlArchitectureForcesParallelOne(t *testing.T) {
 		{"qwen3next", true},
 		{"lfm2", true},
 		{"nemotron_h", true},
+		{"deepseek4", true},
+		{"llama4", true},
+		{"minimax-m2", true},
 	}
 	for _, tc := range cases {
 		m := &Model{Config: model.ConfigV2{ModelFamily: tc.family, ModelFamilies: []string{tc.family}}}
 		if got := ggmlArchitectureForcesParallelOne(m); got != tc.want {
 			t.Fatalf("family %q: ForcesParallelOne=%v, want %v", tc.family, got, tc.want)
 		}
+	}
+	// create may set ModelFamily=unknown while ModelFamilies still lists deepseek4.
+	m := &Model{Config: model.ConfigV2{
+		ModelFamily:   "unknown",
+		ModelFamilies: []string{"unknown", "deepseek4"},
+	}}
+	if !ggmlArchitectureForcesParallelOne(m) {
+		t.Fatal("deepseek4 in ModelFamilies must force parallel=1 even when ModelFamily=unknown")
+	}
+}
+
+func TestMetalUmaParallelBudget(t *testing.T) {
+	metal := []ml.DeviceInfo{{Library: "Metal", FreeMemory: 100 * format.GibiByte}}
+	cuda := []ml.DeviceInfo{{Library: "CUDA", FreeMemory: 100 * format.GibiByte}}
+	free := uint64(100 * format.GibiByte)
+	if got := metalUmaParallelBudget(cuda, nil, free); got != free {
+		t.Fatalf("non-Metal must pass through: got %d want %d", got, free)
+	}
+	if got := metalUmaParallelBudget(metal, nil, free); got != free {
+		t.Fatalf("nil GGML must pass through: got %d want %d", got, free)
+	}
+	if got := metalUmaParallelBudget(metal, &ggml.GGML{}, free); got != free {
+		t.Fatalf("empty tensors: got %d want %d", got, free)
 	}
 }
 

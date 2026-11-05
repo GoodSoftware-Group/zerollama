@@ -153,7 +153,10 @@ func NewContextParams(numCtx int, batchSize int, numSeqMax int, threads int, fla
 	// /api/embed via GetEmbeddingsSeq without a second context. Side effect:
 	// chat prefill only marks the last token as output, so llama-batch logs
 	// "embeddings required but some input tokens were not marked as outputs"
-	// once per session and overrides — harmless for generative chat.
+	// once per session and overrides — harmless for generative chat on
+	// n_embd_out == n_embd models. Call DisableEmbeddingsWhenWideOut after
+	// model load for DeepSeek-V4 HC (and peers) where t_embd is n_embd-wide
+	// but extraction uses n_embd_out (= hc*n_embd) → ggml tensor OOB abort.
 	params.embeddings = C.bool(true)
 	switch flashAttention {
 	case ml.FlashAttentionEnabled:
@@ -167,6 +170,26 @@ func NewContextParams(numCtx int, batchSize int, numSeqMax int, threads int, fla
 	params.type_v = kvCacheTypeFromStr(strings.ToLower(kvCacheType))
 
 	return ContextParams{c: params}
+}
+
+// DisableEmbeddingsWhenWideOut turns off context embeddings when the model's
+// output embedding width differs from n_embd. DeepSeek-V4 hyper-connection
+// graphs set t_embd after hc_head (n_embd) while llama_context extracts with
+// n_embd_out — that assert-aborts on the first decode.
+func (p *ContextParams) DisableEmbeddingsWhenWideOut(m *Model) {
+	if p == nil || m == nil {
+		return
+	}
+	if m.NEmbdOut() != m.NEmbd() {
+		p.c.embeddings = C.bool(false)
+	}
+}
+
+func (p *ContextParams) SetEmbeddings(on bool) {
+	if p == nil {
+		return
+	}
+	p.c.embeddings = C.bool(on)
 }
 
 // kvCacheTypeFromStr converts a string cache type to the corresponding GGML type value
@@ -555,6 +578,11 @@ func (m *Model) Tokenize(text string, addSpecial bool, parseSpecial bool) ([]int
 
 func (m *Model) NEmbd() int {
 	return int(C.llama_model_n_embd(m.c))
+}
+
+// NEmbdOut is the model output / pooled embedding width (may exceed NEmbd for HC models).
+func (m *Model) NEmbdOut() int {
+	return int(C.llama_model_n_embd_out(m.c))
 }
 
 // vision processing

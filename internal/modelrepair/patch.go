@@ -204,6 +204,7 @@ func BuildPatch(name string, show ShowInfo, findings []Finding) (*Patch, error) 
 	stopsOnly := false
 	emptyTmpl := false
 	needResponse := false
+	passthrough := false
 	for _, f := range findings {
 		switch f.Recipe {
 		case RecipeThinkGenerateEmpty, RecipeThinkParserMismatch:
@@ -216,6 +217,8 @@ func BuildPatch(name string, show ShowInfo, findings []Finding) (*Patch, error) 
 			emptyTmpl = true
 		case RecipeMissingResponsePlaceholder:
 			needResponse = true
+		case RecipePassthroughTemplate:
+			passthrough = true
 		default:
 			return nil, fmt.Errorf("unhandled repair recipe %q", f.Recipe)
 		}
@@ -258,6 +261,25 @@ func BuildPatch(name string, show ShowInfo, findings []Finding) (*Patch, error) 
 			p.Parser = "qwen3"
 		}
 		rewroteTemplate = true
+	case passthrough:
+		if r, parser, ok := suggestedFamilyChatStack(show); ok {
+			// Builtin renderer owns assembly; clear inherited {{ .Prompt }}.
+			p.Renderer = r
+			p.Parser = parser
+			p.Template = ""
+			p.ClearTemplate = true
+		} else if isQwen3Family(show) {
+			// Classic qwen3: stock ChatML TEMPLATE (no dedicated renderer).
+			p.Template = templateChatMLStock
+			if show.Parser != "" {
+				p.Parser = show.Parser
+			} else {
+				p.Parser = "qwen3"
+			}
+			rewroteTemplate = true
+		} else {
+			return nil, fmt.Errorf("passthrough_template: no family stack for arch=%q", show.Architecture)
+		}
 	case needResponse && looksChatML(show.Template):
 		// Keep operator template; only restore generate continuation.
 		p.Template = strings.TrimRight(show.Template, "\n") + "\n" + templateResponseSuffix + "\n"
@@ -283,13 +305,19 @@ func BuildPatch(name string, show ShowInfo, findings []Finding) (*Patch, error) 
 func formatModelfilePreview(name string, p *Patch) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "FROM %s\n", name)
+	if p.Renderer != "" {
+		fmt.Fprintf(&b, "RENDERER %s\n", p.Renderer)
+	}
+	if p.Parser != "" {
+		fmt.Fprintf(&b, "PARSER %s\n", p.Parser)
+	}
+	if p.ClearTemplate && p.Template == "" {
+		b.WriteString("# (clear inherited passthrough TEMPLATE — renderer owns chat assembly)\n")
+	}
 	if p.Template != "" {
 		b.WriteString("TEMPLATE \"\"\"")
 		b.WriteString(p.Template)
 		b.WriteString("\"\"\"\n")
-	}
-	if p.Parser != "" {
-		fmt.Fprintf(&b, "PARSER %s\n", p.Parser)
 	}
 	if stops, ok := p.Parameters["stop"]; ok {
 		switch v := stops.(type) {

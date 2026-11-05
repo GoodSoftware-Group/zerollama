@@ -48,6 +48,19 @@ func TestDefaultRendererForBrokenVLManifest(t *testing.T) {
 	}
 }
 
+func TestDefaultRendererParserDeepseek4(t *testing.T) {
+	m := &Model{Config: model.ConfigV2{
+		ModelFamily:   "unknown",
+		ModelFamilies: []string{"unknown", "deepseek4"},
+	}}
+	if got := defaultRendererForFamily(m); got != "deepseek3" {
+		t.Fatalf("defaultRendererForFamily() = %q, want deepseek3", got)
+	}
+	if got := defaultParserForFamily(m); got != "deepseek3" {
+		t.Fatalf("defaultParserForFamily() = %q, want deepseek3", got)
+	}
+}
+
 func TestPrimaryModelFamilyProjectorOnlyReturnsEmpty(t *testing.T) {
 	cfg := model.ConfigV2{
 		ModelFamily:   "clip",
@@ -92,8 +105,8 @@ func TestCapabilitiesGptOSSMLX(t *testing.T) {
 	}
 	m := Model{
 		Config: model.ConfigV2{
-			ModelFamily: "gpt_oss",
-			ModelFormat: "safetensors",
+			ModelFamily:  "gpt_oss",
+			ModelFormat:  "safetensors",
 			Capabilities: []string{"completion"},
 		},
 		Template: tmpl,

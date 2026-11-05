@@ -19,6 +19,9 @@ func TestGuessParserForArchitecture(t *testing.T) {
 	if got := guessParserForArchitecture("qwen3", "enable thinking"); got != "qwen3-thinking" {
 		t.Fatalf("qwen3 thinking=%q", got)
 	}
+	if got := guessParserForArchitecture("deepseek4", ""); got != "deepseek3" {
+		t.Fatalf("deepseek4=%q", got)
+	}
 }
 
 func TestGuessParserFromKV(t *testing.T) {

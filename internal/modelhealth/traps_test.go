@@ -46,29 +46,42 @@ func TestTrap10QuantLabel(t *testing.T) {
 }
 
 func TestTrap56NoChatTemplate(t *testing.T) {
-	r := trap56NoChatTemplate("m", true, "", "")
+	r := trap56NoChatTemplate("m", "<|im_start|>user\n{{ .Prompt }}", "", "")
 	if r.Status != StatusOK {
-		t.Fatal("go template should be ok")
+		t.Fatal("structured go template should be ok")
 	}
 
-	r = trap56NoChatTemplate("m", false, "{{ messages }}", "")
+	r = trap56NoChatTemplate("m", "", "{{ messages }}", "")
 	if r.Status != StatusOK {
 		t.Fatal("jinja should be ok")
 	}
 
-	r = trap56NoChatTemplate("m", false, "def apply_chat_template(messages):\n  raise Exception('no')\n", "")
+	r = trap56NoChatTemplate("m", "", "def apply_chat_template(messages):\n  raise Exception('no')\n", "")
 	if r.Status != StatusRepairable {
 		t.Fatalf("python-only: status=%s", r.Status)
 	}
 
-	r = trap56NoChatTemplate("m", false, "", "")
+	r = trap56NoChatTemplate("m", "", "", "")
 	if r.Status != StatusRepairable {
 		t.Fatalf("missing: status=%s", r.Status)
 	}
 
-	r = trap56NoChatTemplate("m", false, "", "qwen35")
+	r = trap56NoChatTemplate("m", "", "", "qwen35")
 	if r.Status != StatusOK {
 		t.Fatal("renderer should be ok")
+	}
+
+	r = trap56NoChatTemplate("m", "{{ .Prompt }}", "", "")
+	if r.Status != StatusRepairable {
+		t.Fatalf("passthrough without renderer: status=%s detail=%s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.FixHint, "--repair-models") {
+		t.Fatalf("fix hint=%q", r.FixHint)
+	}
+
+	r = trap56NoChatTemplate("m", "{{ .Prompt }}", "", "deepseek3")
+	if r.Status != StatusOK {
+		t.Fatal("passthrough with renderer is ok (renderer owns assembly)")
 	}
 }
 
@@ -207,8 +220,13 @@ func TestCheckConfigTrapsInWithFixture(t *testing.T) {
 	}
 
 	q56 := byTrap["model traptest:q8_0 trap-56 (chat template)"]
-	if q56.Status != StatusOK {
-		t.Fatalf("trap-56: template present, got %s", q56.Status)
+	// Fixture ships TEMPLATE {{ .Prompt }} with no RENDERER — that is passthrough,
+	// not a real chat template (minefield trap 56).
+	if q56.Status != StatusRepairable {
+		t.Fatalf("trap-56: passthrough template should be repairable, got %s (%s)", q56.Status, q56.Detail)
+	}
+	if !strings.Contains(q56.Detail, "passthrough") {
+		t.Fatalf("trap-56 detail=%q", q56.Detail)
 	}
 
 	q55 := byTrap["model traptest:q8_0 trap-55/61 (context)"]

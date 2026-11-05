@@ -45,6 +45,16 @@ Progress lines go to **stderr**; the report (and proposed Modelfile on dry-run) 
 | `chatml_missing_stops` | ChatML TEMPLATE without `PARAMETER stop <|im_end|>` and/or `<\|im_start\|>` | Add those stops only (TEMPLATE/PARSER inherited) | Without stops the model emits role markers into the next turn |
 | `missing_response_placeholder` | Go TEMPLATE has `{{` but no `{{ .Response }}` | Append Response + `<\|im_end\|>` suffix; keep Messages layout | `/api/generate` continuation needs the assistant-so-far placeholder |
 
+### Passthrough TEMPLATE (family RENDERER when known)
+
+| Recipe ID | Symptom | Patch | Why |
+|-----------|---------|-------|-----|
+| `passthrough_template` | Go TEMPLATE is only `{{ .Prompt }}` (optionally `.System`/`.Response`) with no role markers | Install family `RENDERER`+`PARSER` and clear the passthrough layer; classic `qwen3` gets stock ChatML instead | Trap-56 used to treat any Go TEMPLATE as OK; DeepSeek-V4 / Qwen3.5 then chat without `<｜User｜>` / ChatML framing and look like gibberish |
+
+**Known auto stacks:** `deepseek2/3/4` → `deepseek3`; `qwen35`/`qwen35moe` → `qwen3.5`; `gemma4` → `gemma4`; `gptoss` → `harmony`. Unknown arches → `manual_review` (never apply a wrong family’s renderer).
+
+Serve also defaults DeepSeek-V4 / Qwen3.5 renderers at runtime when the Modelfile omits them; `--apply` persists the fix so `show` / trap-56 stay clean on older binaries.
+
 ### Invasive TEMPLATE rewrites (Qwen3 family only)
 
 Auto-patch that **replaces** TEMPLATE runs **only** when the tag is in the **Qwen3 family** (`PARSER` / GGUF `general.architecture` / Modelfile `PARSER` contains `qwen3`).

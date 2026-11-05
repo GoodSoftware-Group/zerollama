@@ -1,0 +1,8 @@
+{
+  "capabilities": ["decision"],
+  "modality_backends": { "decisions": "clm" },
+  "renderer": "clm",
+  "architecture": "arm64",
+  "os": "darwin",
+  "rootfs": { "type": "layers", "diff_ids": [] }
+}

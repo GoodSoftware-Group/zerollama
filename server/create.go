@@ -625,6 +625,9 @@ func createModel(r api.CreateRequest, name model.Name, baseLayers []*layerGGML, 
 				case "qwen35", "qwen35moe":
 					config.Renderer = cmp.Or(config.Renderer, "qwen3.5")
 					config.Parser = cmp.Or(config.Parser, "qwen3.5")
+				case "deepseek4", "deepseek3", "deepseek2":
+					config.Renderer = cmp.Or(config.Renderer, "deepseek3")
+					config.Parser = cmp.Or(config.Parser, "deepseek3")
 				default:
 					if isGptOSSFamily(arch) {
 						config.Renderer = cmp.Or(config.Renderer, "harmony")
@@ -646,6 +649,14 @@ func createModel(r api.CreateRequest, name model.Name, baseLayers []*layerGGML, 
 		layers, err = setTemplate(layers, r.Template)
 		if err != nil {
 			return err
+		}
+	} else if strings.TrimSpace(r.Renderer) != "" {
+		// Installing a builtin RENDERER without a new TEMPLATE: drop inherited
+		// passthrough {{ .Prompt }} so show/doctor stop treating it as a real
+		// chat template (runtime already prefers RENDERER over Go TEMPLATE).
+		if inherited := templateTextFromLayers(baseLayers); template.IsPassthrough(inherited) {
+			layers = removeLayer(layers, "application/vnd.ollama.image.template")
+			layers = removeLayer(layers, "application/vnd.ollama.image.prompt")
 		}
 	}
 
@@ -845,6 +856,29 @@ func removeLayer(layers []manifest.Layer, mediatype string) []manifest.Layer {
 
 		return true
 	})
+}
+
+// templateTextFromLayers reads the Go TEMPLATE (or legacy prompt) blob text from
+// create base layers. Used to detect passthrough {{ .Prompt }} before stripping.
+func templateTextFromLayers(baseLayers []*layerGGML) string {
+	for _, layer := range baseLayers {
+		if layer == nil {
+			continue
+		}
+		switch layer.MediaType {
+		case "application/vnd.ollama.image.template", "application/vnd.ollama.image.prompt":
+			path, err := manifest.BlobsPath(layer.Digest)
+			if err != nil {
+				continue
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			return string(b)
+		}
+	}
+	return ""
 }
 
 func setTemplate(layers []manifest.Layer, t string) ([]manifest.Layer, error) {

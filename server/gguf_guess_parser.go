@@ -44,7 +44,7 @@ func guessParserForArchitecture(arch, chatTemplate string) string {
 		return "lfm2"
 	case "ministral", "ministral3":
 		return "ministral"
-	case "deepseek2", "deepseek3":
+	case "deepseek2", "deepseek3", "deepseek4":
 		return "deepseek3"
 	case "glm4", "glm4moe":
 		return "glm-4.7"

@@ -85,6 +85,7 @@ model=qwen2.5:0.5b  build=0.30.11  (pre trap 77/78 fixes)
 
 - **04/20/25** — upstream `minefield_doctor.py` has no `/apply-template` on this Ollama-shaped stack; **zerollama doctor** covers them via `/api/chat` `_debug_render_only` (see §2.2)
 - **10/17/21** — need `--hf-repo` or a readable chat template for full upstream checks (native doctor still covers 10/21 from manifests)
+- **56** — native doctor flags missing templates **and** passthrough `TEMPLATE {{ .Prompt }}` (no role framing); `doctor --repair-models --apply` installs family RENDERER when known (DeepSeek → deepseek3, Qwen3.5 → qwen3.5, …)
 - Core **35 / 53 / 61** — no check in `minefield_doctor.py` (upstream leaves them as hand-runs; see §2.1). Zerollama covers **53** in doctor; **35** / **54** / **61** (+ **60** cold/warm) via lab scripts; **55/61** arithmetic in doctor; **63** via history round-trip doctor; **09** documented (VL).
 
 Coverage lines from the tool are **not** a bill of health for the full registry (166 numbered traps as of 2026-10-15; upstream doctor implements ~70 IDs).

@@ -170,17 +170,31 @@ func estimateGgmlLoadVRAM(modelPath string, f *ggml.GGML, numCtx int, profile gg
 var ggmlForceParallelOne = []string{
 	"mllama", "qwen3vl", "qwen3vlmoe",
 	"qwen3next", "lfm2", "lfm2moe", "nemotron_h", "nemotron_h_moe",
+	// DeepSeek-V4 Flash: HC + DSV4 KV; multi-seq inflate and embeddings-width
+	// mismatch made auto -np=8 OOM / abort. Keep single-slot until upstream
+	// n_embd_out extraction and MoE VRAM estimates are solid.
+	"deepseek4",
+	// Llama 4 Scout/Maverick (ollamarunner): GraphSize underestimates UMA residency
+	// with UseMmap unused; auto -np=8 → Metal OOM + SIGSEGV on 128 GiB Macs.
+	"llama4",
+	// MiniMax-M2: ~100 GiB Q3 MoE; multi-slot KV/compute jetsams Apple UMA.
+	"minimax-m2",
 }
 
 func ggmlArchitectureForcesParallelOne(model *Model) bool {
 	if model == nil {
 		return false
 	}
-	family := model.PrimaryFamily()
-	if family == "" {
-		family = model.Config.ModelFamily
+	// PrimaryFamily can be "unknown" when create ordered a stub layer first;
+	// still honor any matching arch in ModelFamilies (e.g. deepseek4).
+	cands := []string{model.PrimaryFamily(), model.Config.ModelFamily}
+	cands = append(cands, model.Config.ModelFamilies...)
+	for _, f := range cands {
+		if f != "" && slices.Contains(ggmlForceParallelOne, f) {
+			return true
+		}
 	}
-	return slices.Contains(ggmlForceParallelOne, family)
+	return false
 }
 
 // suggestMaxGgmlNumParallelWith returns the largest -np in [1, maxCap] whose load
@@ -218,6 +232,42 @@ func suggestMaxGgmlNumParallel(f *ggml.GGML, modelPath string, numCtx int, effec
 	return suggestMaxGgmlNumParallelWith(estimateGgmlLoadVRAM, f, modelPath, numCtx, effectiveFree, profile, maxCap)
 }
 
+// metalUmaParallelBudget shrinks the auto -np free budget on Apple Metal UMA.
+// ollamarunner always allocates weight buffers (LoadRequest.UseMmap is ignored),
+// so GraphSize + free-"VRAM" alone happily picks -np=8 for ~80–100 GiB models and
+// then Metal OOMs under decode. Reserve a slice of free for residency spikes.
+func metalUmaParallelBudget(gpus []ml.DeviceInfo, f *ggml.GGML, free uint64) uint64 {
+	if free == 0 || f == nil || !gpusAreMetalUMA(gpus) {
+		return free
+	}
+	var weights uint64
+	for _, t := range f.Tensors().Items() {
+		weights += t.Size()
+	}
+	if weights == 0 {
+		return free
+	}
+	// Keep ≥25% of free, or ≥10% of weight size, whichever is larger — both are
+	// cheap when the model is small, and decisive for Scout/MiniMax-class loads.
+	reserve := free / 4
+	if w := weights / 10; w > reserve {
+		reserve = w
+	}
+	if free > reserve {
+		return free - reserve
+	}
+	return free / 2
+}
+
+func gpusAreMetalUMA(gpus []ml.DeviceInfo) bool {
+	for _, g := range gpus {
+		if g.Library == "Metal" {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveGgmlNumParallel picks llama-server -np for this load.
 // Auto (default): fit from free VRAM up to PARALLEL_MAX (and OLLAMA_NUM_PARALLEL when set).
 // Auto off: OLLAMA_NUM_PARALLEL exactly. Go completion semaphore matches the chosen -np.
@@ -247,6 +297,7 @@ func resolveGgmlNumParallel(m *Model, opts api.Options, gpus []ml.DeviceInfo, f 
 		numCtx = api.DefaultOptions().NumCtx
 	}
 	free := effectiveGgmlFreeVRAM(gpus)
+	free = metalUmaParallelBudget(gpus, f, free)
 	profile := ggmlLoadProfileForGPUs(m, opts, gpus)
 	fitted := suggestMaxGgmlNumParallel(f, m.ModelPath, numCtx, free, profile, maxCap)
 	if fitted < 1 {

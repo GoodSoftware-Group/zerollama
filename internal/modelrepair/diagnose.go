@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/ollama/ollama/template"
 )
 
 // API is the subset of the Go daemon used for diagnose/apply.
@@ -11,7 +13,7 @@ type API interface {
 	Show(ctx context.Context, name string) (*ShowInfo, error)
 	Generate(ctx context.Context, name string, prompt string, think *bool, opts map[string]any) (*GenerateResult, error)
 	Chat(ctx context.Context, name string, messages []map[string]string, opts map[string]any) (*ChatResult, error)
-	Create(ctx context.Context, name, from, template, parser string, params map[string]any) error
+	Create(ctx context.Context, name, from string, patch *Patch) error
 	ListRunning(ctx context.Context) ([]string, error)
 	ListLocal(ctx context.Context) ([]string, error)
 	Unload(ctx context.Context, name string) error
@@ -81,6 +83,22 @@ func Diagnose(ctx context.Context, api API, name string, opts Options) (Report, 
 		}
 	}
 
+	// Passthrough {{ .Prompt }}: looks like a template to trap-56's old check but
+	// does not frame chat roles. Prefer family RENDERER when known.
+	if !tmplEmpty && !usesRenderer && template.IsPassthrough(show.Template) {
+		if _, _, ok := suggestedFamilyChatStack(*show); ok || qwenOK {
+			findings = append(findings, Finding{
+				Recipe:  RecipePassthroughTemplate,
+				Detail:  "TEMPLATE is passthrough ({{ .Prompt }} only) — no chat-role framing",
+				FixHint: "install family RENDERER/PARSER (or Qwen3 ChatML) via --apply",
+			})
+		} else {
+			manual = append(manual, fmt.Sprintf(
+				"passthrough_template (arch=%q parser=%q) — no known family RENDERER; set TEMPLATE/RENDERER manually",
+				show.Architecture, show.Parser))
+		}
+	}
+
 	if !tmplEmpty && looksChatML(show.Template) && chatMLMissingStops(*show) {
 		findings = append(findings, Finding{
 			Recipe:  RecipeChatMLMissingStops,
@@ -89,7 +107,9 @@ func Diagnose(ctx context.Context, api API, name string, opts Options) (Report, 
 		})
 	}
 
-	if !tmplEmpty && !usesRenderer && templateMissingResponse(show.Template) {
+	// Skip Response-placeholder hygiene when the whole TEMPLATE is passthrough —
+	// RecipePassthroughTemplate (or its manual_review note) already covers that.
+	if !tmplEmpty && !usesRenderer && !template.IsPassthrough(show.Template) && templateMissingResponse(show.Template) {
 		if looksChatML(show.Template) {
 			findings = append(findings, Finding{
 				Recipe:  RecipeMissingResponsePlaceholder,

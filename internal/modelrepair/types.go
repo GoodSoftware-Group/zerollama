@@ -11,7 +11,8 @@
 //     prompt / parser / default think routing is the real fault.
 //
 // Auto-apply for invasive TEMPLATE rewrites is gated to Qwen3 family only.
-// Hygiene recipes that only add PARAMETER stop tokens apply to any ChatML tag.
+// Family RENDERER installs (deepseek3 / qwen3.5 / …) apply when arch maps to a
+// known builtin. Hygiene recipes that only add PARAMETER stop tokens apply to any ChatML tag.
 package modelrepair
 
 import "fmt"
@@ -48,6 +49,11 @@ const (
 	// Why: PARSER qwen3-thinking + plain ChatML (no toggles/<think>) is the same
 	// class of trap as think_generate_empty; report explicitly for operators.
 	RecipeThinkParserMismatch RecipeID = "think_parser_mismatch"
+	// RecipePassthroughTemplate: TEMPLATE is {{ .Prompt }} (no chat-role framing).
+	// Why: trap-56 used to treat any Go TEMPLATE as OK; passthrough leaves DeepSeek
+	// / Qwen3.5 / etc. without role markers → gibberish chat. Auto-fix installs
+	// the family RENDERER/PARSER (or Qwen3 ChatML) when the arch is known.
+	RecipePassthroughTemplate RecipeID = "passthrough_template"
 )
 
 // Finding is one diagnosed issue for a model.
@@ -59,9 +65,14 @@ type Finding struct {
 
 // Patch is the proposed Modelfile overlay (FROM + overrides).
 type Patch struct {
-	Template   string         `json:"template,omitempty"`
-	Parser     string         `json:"parser,omitempty"`
+	Template string `json:"template,omitempty"`
+	Parser   string `json:"parser,omitempty"`
+	// Renderer is a builtin chat renderer (deepseek3, qwen3.5, …). Empty inherits FROM.
+	Renderer   string         `json:"renderer,omitempty"`
 	Parameters map[string]any `json:"parameters,omitempty"`
+	// ClearTemplate asks /api/create to drop an inherited passthrough Go TEMPLATE
+	// when installing Renderer (server strips when Renderer set and Template empty).
+	ClearTemplate bool `json:"clear_template,omitempty"`
 	// Modelfile is a human-readable preview suitable for dry-run output.
 	Modelfile string `json:"modelfile,omitempty"`
 }

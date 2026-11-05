@@ -129,16 +129,29 @@ func (h *HTTPAPI) Chat(ctx context.Context, name string, messages []map[string]s
 	}, nil
 }
 
-func (h *HTTPAPI) Create(ctx context.Context, name, from, template, parser string, params map[string]any) error {
+func (h *HTTPAPI) Create(ctx context.Context, name, from string, patch *Patch) error {
+	if patch == nil {
+		return fmt.Errorf("nil patch")
+	}
 	stream := true
 	body := map[string]any{
 		"model":      name,
 		"name":       name,
 		"from":       from,
 		"stream":     stream,
-		"template":   template,
-		"parser":     parser,
-		"parameters": params,
+		"parameters": patch.Parameters,
+	}
+	// Only send template when non-empty so create can strip passthrough when
+	// Renderer is set (see server/create.go). Empty string would be omitted by
+	// omitempty on some paths; we deliberately omit the key.
+	if patch.Template != "" {
+		body["template"] = patch.Template
+	}
+	if patch.Parser != "" {
+		body["parser"] = patch.Parser
+	}
+	if patch.Renderer != "" {
+		body["renderer"] = patch.Renderer
 	}
 	reqBody, err := json.Marshal(body)
 	if err != nil {

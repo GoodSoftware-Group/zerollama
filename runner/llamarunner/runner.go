@@ -101,7 +101,7 @@ type Sequence struct {
 	// shift if context window is exceeded
 	shift bool
 
-	doneReason llm.DoneReason
+	doneReason   llm.DoneReason
 	stopSequence string
 
 	// logprobs configuration
@@ -1039,6 +1039,7 @@ func (s *Server) loadModel(
 	}
 
 	ctxParams := llama.NewContextParams(kvSize, s.batchSize, s.parallel, threads, flashAttention, kvCacheType)
+	ctxParams.DisableEmbeddingsWhenWideOut(s.model)
 	s.lc, err = llama.NewContextWithModel(s.model, ctxParams)
 	if err != nil {
 		panic(err)

@@ -47,6 +47,10 @@ func defaultRendererForFamily(m *Model) string {
 	switch m.PrimaryFamily() {
 	case "qwen35", "qwen35moe":
 		return "qwen3.5"
+	case "deepseek4", "deepseek3", "deepseek2":
+		// Flash/V3/V2 share the deepseek3 chat framing; passthrough {{ .Prompt }}
+		// otherwise yields gibberish on /api/chat.
+		return "deepseek3"
 	default:
 		if isGptOSSFamily(m.PrimaryFamily()) || isGptOSSFamily(m.Config.ModelFamily) {
 			return "harmony"
