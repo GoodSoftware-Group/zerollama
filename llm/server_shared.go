@@ -84,6 +84,8 @@ type LlamaServer interface {
 }
 
 // LoadModel will load a model from disk. The model must be in the GGML format.
+// Multi-shard llama.cpp GGUFs are merged so VRAM / num_parallel estimates see
+// every tensor (first shard alone is often metadata-only or incomplete).
 func LoadModel(model string, maxArraySize int) (*ggml.GGML, error) {
 	if _, err := os.Stat(model); err != nil {
 		return nil, err
@@ -95,8 +97,11 @@ func LoadModel(model string, maxArraySize int) (*ggml.GGML, error) {
 	}
 	defer f.Close()
 
-	ggml, err := ggml.Decode(f, maxArraySize)
-	return ggml, err
+	meta, err := ggml.Decode(f, maxArraySize)
+	if err != nil {
+		return nil, err
+	}
+	return ggml.MergeSplits(model, meta)
 }
 
 // LoadModelMetadata reads GGUF headers without tokenizer vocab bodies or a full tensor weight walk.
@@ -121,7 +126,11 @@ func LoadModelMetadata(model string) (*ggml.GGML, error) {
 	}
 	defer f.Close()
 
-	g, err := ggml.DecodeMetadata(f)
+	meta, err := ggml.DecodeMetadata(f)
+	if err != nil {
+		return nil, err
+	}
+	g, err := ggml.MergeSplits(model, meta)
 	if err != nil {
 		return nil, err
 	}
@@ -370,9 +379,9 @@ type CompletionResponse struct {
 	// PreemptedReason explains DoneReasonPreempted (e.g. lower_wait_interactive).
 	PreemptedReason string `json:"preempted_reason,omitempty"`
 	// FinishDetails is mlx-serve loop-stop (repetition_loop); finish_reason stays length.
-	FinishDetails         string `json:"finish_details,omitempty"`
+	FinishDetails string `json:"finish_details,omitempty"`
 	// StopSequence is the matched request stop string (Anthropic stop_sequence echo).
-	StopSequence string `json:"stop_sequence,omitempty"`
+	StopSequence          string `json:"stop_sequence,omitempty"`
 	PrefillProcessed      int    `json:"prefill_processed,omitempty"`
 	PrefillTotal          int    `json:"prefill_total,omitempty"`
 	PromptEvalCount       int    `json:"prompt_eval_count"`

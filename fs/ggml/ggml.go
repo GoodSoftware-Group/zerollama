@@ -397,6 +397,13 @@ type Tensor struct {
 	Shape []uint64 `json:"shape"`
 
 	io.WriterTo `json:"-"`
+
+	// File is the absolute path of the GGUF shard holding this tensor's data.
+	// Empty means the primary model path (single-file GGUF / pre-MergeSplits).
+	File string `json:"-"`
+	// Base is the file offset of the tensor data region in File.
+	// When File is empty, readers use Tensors.Offset from the GGML meta.
+	Base uint64 `json:"-"`
 }
 
 func (t Tensor) block() (n int) {

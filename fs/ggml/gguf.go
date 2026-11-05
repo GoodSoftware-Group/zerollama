@@ -239,10 +239,6 @@ func (llm *gguf) Decode(rs io.ReadSeeker) error {
 	// patch KV with parameter count
 	llm.kv["general.parameter_count"] = llm.parameters
 
-	if llm.metadataOnly {
-		return nil
-	}
-
 	alignment := llm.kv.Uint("general.alignment", 32)
 
 	offset, err := rs.Seek(0, io.SeekCurrent)
@@ -252,6 +248,10 @@ func (llm *gguf) Decode(rs io.ReadSeeker) error {
 
 	padding := ggufPadding(offset, int64(alignment))
 	llm.tensorOffset = uint64(offset + padding)
+
+	if llm.metadataOnly {
+		return nil
+	}
 
 	// get file size to validate tensor bounds
 	fileSize, err := rs.Seek(0, io.SeekEnd)

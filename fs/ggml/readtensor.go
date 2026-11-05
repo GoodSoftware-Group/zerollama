@@ -29,6 +29,11 @@ func ReadTensorBytes(path, name string) ([]byte, *Tensor, error) {
 		return nil, nil, err
 	}
 
+	meta, err = MergeSplits(path, meta)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	var tensor *Tensor
 	for _, t := range meta.Tensors().Items() {
 		if t != nil && t.Name == name {
@@ -40,14 +45,21 @@ func ReadTensorBytes(path, name string) ([]byte, *Tensor, error) {
 		return nil, nil, fmt.Errorf("tensor %q not found in %s", name, path)
 	}
 
-	off := int64(meta.Tensors().Offset + tensor.Offset)
-	if _, err := f.Seek(off, io.SeekStart); err != nil {
+	tensorPath := tensor.DataPath(path)
+	rf, err := os.Open(tensorPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rf.Close()
+
+	off := tensor.AbsoluteOffset(meta.Tensors().Offset)
+	if _, err := rf.Seek(off, io.SeekStart); err != nil {
 		return nil, nil, fmt.Errorf("seek tensor %q: %w", name, err)
 	}
 
 	size := int64(tensor.Size())
 	buf := make([]byte, size)
-	if _, err := io.ReadFull(f, buf); err != nil {
+	if _, err := io.ReadFull(rf, buf); err != nil {
 		return nil, nil, fmt.Errorf("read tensor %q: %w", name, err)
 	}
 	return buf, tensor, nil

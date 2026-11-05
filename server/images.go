@@ -657,6 +657,8 @@ func loadModelUncached(name string) (*Model, error) {
 
 	enrichMLXModelConfig(m)
 
+	var modelLayers []ggufModelLayer
+
 	for _, layer := range mf.Layers {
 		filename, err := ensureBlob(layer.Digest)
 		if err != nil {
@@ -666,12 +668,11 @@ func loadModelUncached(name string) (*Model, error) {
 
 		switch layer.MediaType {
 		case "application/vnd.ollama.image.model":
-			m.ModelPath = filename
-			m.ParentModel = layer.From
-			if md, err := readGGUFMetadata(layer.Digest); err == nil {
-				m.metadata = md
-			}
-			// HasChatTemplate is set from loadGGUFMetadataAt below (one GGUF header read).
+			modelLayers = append(modelLayers, ggufModelLayer{
+				digest:   layer.Digest,
+				from:     layer.From,
+				blobPath: filename,
+			})
 		case manifest.MediaTypeImageDraft:
 			m.DraftPath = filename
 		case "application/vnd.ollama.image.embed":
@@ -739,6 +740,18 @@ func loadModelUncached(name string) (*Model, error) {
 		}
 	}
 
+	if len(modelLayers) > 0 {
+		path, parent, metaDigest, err := resolveGGUFModelPath(modelLayers)
+		if err != nil {
+			return nil, err
+		}
+		m.ModelPath = path
+		m.ParentModel = parent
+		if md, err := readGGUFMetadata(metaDigest); err == nil {
+			m.metadata = md
+		}
+	}
+
 	if m.ModelPath != "" {
 		if f, err := loadGGUFMetadataAt(m.ModelPath); err == nil {
 			applyGGUFGuessToModel(m, f)
@@ -746,6 +759,110 @@ func loadModelUncached(name string) (*Model, error) {
 	}
 
 	return m, nil
+}
+
+type ggufModelLayer struct {
+	digest   string
+	from     string
+	blobPath string
+}
+
+// resolveGGUFModelPath picks the load path for one or more GGUF model layers.
+//
+// llama.cpp split GGUFs must be opened via the first shard (*-00001-of-NNNNN.gguf)
+// with sibling shards discoverable under the same directory and naming prefix.
+// Ollama stores shards as content-addressed blobs (sha256-…), so a multi-layer
+// manifest cannot pass a bare blob path to the loader. When more than one model
+// layer is present, materialize named symlinks under $OLLAMA_MODELS/splits/<id>/
+// and return the first-shard path.
+func resolveGGUFModelPath(layers []ggufModelLayer) (modelPath, parent, metaDigest string, err error) {
+	if len(layers) == 1 {
+		return layers[0].blobPath, layers[0].from, layers[0].digest, nil
+	}
+
+	type shard struct {
+		ggufModelLayer
+		base string
+		idx  int // 1-based when parsed from filename
+	}
+	shards := make([]shard, 0, len(layers))
+	for _, l := range layers {
+		base := filepath.Base(strings.TrimSpace(l.from))
+		if base == "" || base == "." {
+			base = filepath.Base(l.blobPath)
+		}
+		idx, _, ok := parseGGUFSplitName(base)
+		if !ok {
+			idx = len(shards) + 1
+		}
+		shards = append(shards, shard{ggufModelLayer: l, base: base, idx: idx})
+	}
+	slices.SortFunc(shards, func(a, b shard) int {
+		if a.idx != b.idx {
+			return a.idx - b.idx
+		}
+		return strings.Compare(a.base, b.base)
+	})
+
+	idSum := sha256.New()
+	for _, s := range shards {
+		_, _ = io.WriteString(idSum, s.digest)
+		_, _ = io.WriteString(idSum, "\n")
+	}
+	splitID := fmt.Sprintf("%x", idSum.Sum(nil))[:16]
+	dir := filepath.Join(envconfig.Models(), "splits", splitID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", "", "", fmt.Errorf("gguf splits dir: %w", err)
+	}
+
+	for i, s := range shards {
+		target := filepath.Join(dir, s.base)
+		if err := replaceSymlink(s.blobPath, target); err != nil {
+			return "", "", "", fmt.Errorf("gguf split link %s: %w", s.base, err)
+		}
+		shards[i].blobPath = target
+	}
+	first := shards[0]
+	return first.blobPath, first.from, first.digest, nil
+}
+
+// parseGGUFSplitName parses llama.cpp split filenames: prefix-0000I-of-0000N.gguf.
+// Returns 1-based shard index, total count, and ok.
+func parseGGUFSplitName(base string) (idx, n int, ok bool) {
+	const sep = "-of-"
+	if !strings.HasSuffix(base, ".gguf") {
+		return 0, 0, false
+	}
+	stem := strings.TrimSuffix(base, ".gguf")
+	of := strings.LastIndex(stem, sep)
+	if of < 0 {
+		return 0, 0, false
+	}
+	right := stem[of+len(sep):]
+	left := stem[:of]
+	dash := strings.LastIndex(left, "-")
+	if dash < 0 {
+		return 0, 0, false
+	}
+	idxStr := left[dash+1:]
+	i, err1 := strconv.Atoi(idxStr)
+	total, err2 := strconv.Atoi(right)
+	if err1 != nil || err2 != nil || i < 1 || total < 1 || i > total {
+		return 0, 0, false
+	}
+	return i, total, true
+}
+
+// replaceSymlink creates path as a symlink to target, replacing any prior entry.
+func replaceSymlink(oldname, path string) error {
+	if abs, err := filepath.Abs(oldname); err == nil {
+		oldname = abs
+	}
+	if cur, err := os.Readlink(path); err == nil && cur == oldname {
+		return nil
+	}
+	_ = os.Remove(path)
+	return os.Symlink(oldname, path)
 }
 
 // ensureBlob returns a local blob path, fetching from remote storage on miss when configured.
