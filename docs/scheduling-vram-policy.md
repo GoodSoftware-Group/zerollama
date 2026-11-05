@@ -9,6 +9,7 @@ It complements:
 - [testing-smoke.md](./testing-smoke.md) — dual-stack smoke on a single GPU
 - [ROADMAP.md](./ROADMAP.md) — phases 8–13 and training track T6
 - [fleet-scheduling.md](./fleet-scheduling.md) — multi-node management, warm routing, agent status (fleet track F1–F7)
+- [slurm-integration.md](./slurm-integration.md) — Slurm guest + queue client (design; cluster allocation stays in Slurm)
 - [localai-borrowings.md](./localai-borrowings.md) — fast GGUF metadata, guess hooks, watchdog, concurrency groups, manifest hygiene
 - [upstream-ollama-diff.md](./upstream-ollama-diff.md) — upstream uses Go→llama-server only (no Python runtime); Phase 17 alignment
 

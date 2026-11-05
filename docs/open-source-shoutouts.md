@@ -13,6 +13,7 @@
 | Ollama | https://github.com/ollama/ollama | Compatible wire shape |
 | llama.cpp | https://github.com/ggml-org/llama.cpp | Engine pin — [LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) |
 | DeepGEMM | https://github.com/deepseek-ai/DeepGEMM | GEMM / MoE kernel ideas (patterns only) — [deepgemm-borrowings.md](./deepgemm-borrowings.md) |
+| Slurm | https://github.com/SchedMD/slurm | Cluster queues (guest + submit client; design) — [slurm-integration.md](./slurm-integration.md) |
 
 Outbound thank-you issues (Jul 2026):
 

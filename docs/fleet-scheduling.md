@@ -279,6 +279,8 @@ This aligns with existing per-node behavior: `GetRunner` **fast path** when mode
 
 Phase **11+ / T6** unified **policy on one GPU** remains independent of fleet routing. A management node does not replace the VRAM broker; it **chooses a node** that already runs that broker.
 
+**Slurm** is a third scheduler, for sites that already have one. It owns cluster allocation and walltime. Fleet routing stays for zerollama hosts that are not a Slurm partition. A node running as a Slurm guest does not also take fleet assignments for GPUs that allocation reserved. Design: [slurm-integration.md](./slurm-integration.md).
+
 ---
 
 ## Milestones

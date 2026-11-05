@@ -16,6 +16,8 @@ Directional (not a shipped scheduler contract): **GPU-backed batching system** f
 
 **What is also not automatic yet:** a **fleet management node** when many zerollama instances serve one agent population. Each node keeps its local scheduler; a separate layer handles **discovery** (directional: mDNS), **warm-model routing**, and **short assignment tokens**—not long reservations or scatter-gather across GPUs. See [fleet-scheduling.md](./fleet-scheduling.md) and the [Fleet scheduling track](#fleet-scheduling-multi-node) below.
 
+**Slurm sites** keep Slurm as the cluster allocator. Zerollama is a guest inside an allocation, or a client that submits training and batch work into an existing partition. It does not embed `slurmctld`. See [slurm-integration.md](./slurm-integration.md) and the [Slurm track](#slurm) below.
+
 Documenting both shapes here avoids mistaking today’s **two schedulers + one VRAM broker per node** for a finished global or multi-node optimizer.
 
 ---
@@ -603,6 +605,24 @@ Pick the best **local** model per request across every surface — deterministic
 **Relationship to Phase 11 / T6:** Single-GPU admission and training defer remain on each node. Fleet layer only **chooses** which node receives the request.
 
 **Not goals:** Global preemption across nodes; Redis pull-queue as v1 requirement; reservation market with frequent cancel (penalty/backoff deferred).
+
+---
+
+## Slurm
+
+**Why a separate track:** Campus and lab clusters already queue GPU work with [Slurm](https://github.com/SchedMD/slurm). Those sites need `sbatch` to start a server, and a way to land training jobs in a partition they already operate. Fleet routing answers a different question (which **zerollama** host has this model warm) and stays on short assignment tokens.
+
+**Guide:** [slurm-integration.md](./slurm-integration.md)
+
+| Milestone | Goal | Owner | Exit criteria |
+|-----------|------|--------|----------------|
+| **SL0** | **Design** | Docs | **Done (Nov 2026)** — guest vs queue-client vs local facade; state map; GPL boundary (CLI / slurmrestd only). Doc: [slurm-integration.md](./slurm-integration.md). |
+| **SL1** | **Allocation guest** | Go | `SLURM_JOB_ID` enables drain-on-`SIGTERM`, GPU fence (`CUDA_VISIBLE_DEVICES` / `SLURM_*_GPUS`), URL file, `slurm` object on `GET /api/status`. |
+| **SL2** | **Queue client via `sbatch`** | Go | `POST /api/train/jobs` with `slurm` runs `sbatch --parsable`, polls state, `DELETE` → `scancel`. Submit host does not also run the payload. |
+| **SL3** | **slurmrestd transport** | Go | Same SL2 contract over HTTP. Pinned data_parser (`ZEROLLAMA_SLURMRESTD_VERSION`). JWT not logged. |
+| **SL4** | **Local facade** | Go | Opt-in slurmrestd-shaped submit/list/cancel against the local train queue, plus `zerollama slurm` text output. Real `sbatch` still requires a real controller. |
+
+**Not goals:** Embedding `slurmctld` or linking `libslurm`; putting `/api/chat` behind `squeue`; replacing fleet routing with partitions; job arrays, hetjobs, MPI steps, fairshare, or `slurmdbd` in v1.
 
 ---
 
