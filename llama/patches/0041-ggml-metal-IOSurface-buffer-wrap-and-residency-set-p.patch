@@ -15,7 +15,7 @@ pause Metal residency keep-alive during long host compute windows.
  5 files changed, 173 insertions(+), 1 deletion(-)
 
 diff --git a/ggml/include/ggml-metal.h b/ggml/include/ggml-metal.h
-index 433838f0d..24df357b3 100644
+index 433838f..24df357 100644
 --- a/ggml/include/ggml-metal.h
 +++ b/ggml/include/ggml-metal.h
 @@ -26,6 +26,7 @@
@@ -58,7 +58,7 @@ index 433838f0d..24df357b3 100644
  }
  #endif
 diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
-index 7cffd2701..2a1bab265 100644
+index 7cffd27..2a1bab2 100644
 --- a/ggml/src/ggml-metal/CMakeLists.txt
 +++ b/ggml/src/ggml-metal/CMakeLists.txt
 @@ -1,6 +1,7 @@
@@ -78,10 +78,10 @@ index 7cffd2701..2a1bab265 100644
  
  if (GGML_METAL_NDEBUG)
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index 6d77c57ff..12acbf87c 100644
+index e096d61..db9aaca 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
-@@ -331,6 +331,12 @@ void ggml_metal_device_rsets_rm (ggml_metal_device_t dev, ggml_metal_rset_t rset
+@@ -337,6 +337,12 @@ void ggml_metal_device_rsets_rm (ggml_metal_device_t dev, ggml_metal_rset_t rset
  
  void ggml_metal_device_rsets_keep_alive(ggml_metal_device_t dev);
  
@@ -94,7 +94,7 @@ index 6d77c57ff..12acbf87c 100644
  ggml_metal_event_t ggml_metal_device_event_init(ggml_metal_device_t dev);
  void ggml_metal_device_event_free(ggml_metal_device_t dev, ggml_metal_event_t ev);
  void ggml_metal_device_event_synchronize(ggml_metal_device_t dev, ggml_metal_event_t ev);
-@@ -353,6 +359,7 @@ typedef struct ggml_metal_buffer * ggml_metal_buffer_t;
+@@ -359,6 +365,7 @@ typedef struct ggml_metal_buffer * ggml_metal_buffer_t;
  
  ggml_metal_buffer_t ggml_metal_buffer_init(ggml_metal_device_t dev, size_t size, bool shared);
  ggml_metal_buffer_t ggml_metal_buffer_map (ggml_metal_device_t dev, void * ptr, size_t size, size_t max_tensor_size);
@@ -103,7 +103,7 @@ index 6d77c57ff..12acbf87c 100644
  void   ggml_metal_buffer_free     (ggml_metal_buffer_t buf);
  void * ggml_metal_buffer_get_base (ggml_metal_buffer_t buf);
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 46d2d94fe..48a1a7ad2 100644
+index 56aea27..26e8d90 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
 @@ -8,6 +8,8 @@
@@ -179,7 +179,7 @@ index 46d2d94fe..48a1a7ad2 100644
  struct ggml_metal_event {
      void * obj; // id<MTLSharedEvent>
  
-@@ -2057,6 +2093,9 @@ struct ggml_metal_buffer {
+@@ -2102,6 +2138,9 @@ struct ggml_metal_buffer {
  
      // pointers to global device
      ggml_metal_device_t dev;
@@ -189,7 +189,7 @@ index 46d2d94fe..48a1a7ad2 100644
  };
  
  static void ggml_metal_log_allocated_size(id<MTLDevice> device, size_t size_aligned) {
-@@ -2323,6 +2362,37 @@ ggml_metal_buffer_t ggml_metal_buffer_map(ggml_metal_device_t dev, void * ptr, s
+@@ -2360,6 +2399,37 @@ ggml_metal_buffer_t ggml_metal_buffer_map(ggml_metal_device_t dev, void * ptr, s
      return res;
  }
  
@@ -227,8 +227,8 @@ index 46d2d94fe..48a1a7ad2 100644
  void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
      @autoreleasepool {
          ggml_metal_device_rsets_rm(buf->dev, buf->rset);
-@@ -2342,6 +2412,11 @@ void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
- #endif
+@@ -2375,6 +2445,11 @@ void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
+         vm_deallocate((vm_map_t)mach_task_self(), (vm_address_t)buf->all_data, buf->all_size);
      }
  
 +    if (buf->iosurface) {
@@ -240,10 +240,10 @@ index 46d2d94fe..48a1a7ad2 100644
  }
  
 diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
-index 1f43c3aca..00f1266bd 100644
+index a2d91a9..4f925ed 100644
 --- a/ggml/src/ggml-metal/ggml-metal.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal.cpp
-@@ -755,6 +755,24 @@ static ggml_backend_buffer_t ggml_backend_metal_device_buffer_mapped(ggml_backen
+@@ -822,6 +822,24 @@ static ggml_backend_buffer_t ggml_backend_metal_device_buffer_mapped(ggml_backen
      return ggml_backend_buffer_init(ggml_backend_metal_buffer_type_mapped(props_dev->device), ggml_backend_metal_buffer_shared_i, res, size);
  }
  
@@ -268,7 +268,7 @@ index 1f43c3aca..00f1266bd 100644
  static bool ggml_backend_metal_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
      ggml_metal_device_t ctx_dev = (ggml_metal_device_t)dev->context;
  
-@@ -987,6 +1005,9 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const
+@@ -1054,6 +1072,9 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const
      if (strcmp(name, "ggml_backend_fusion_set_enabled") == 0) {
          return (void *)ggml_backend_metal_fusion_set_enabled;
      }
@@ -278,7 +278,7 @@ index 1f43c3aca..00f1266bd 100644
  
      return NULL;
  
-@@ -1062,4 +1083,46 @@ ggml_backend_reg_t ggml_backend_metal_reg(void) {
+@@ -1129,4 +1150,46 @@ ggml_backend_reg_t ggml_backend_metal_reg(void) {
      return &reg;
  }
  

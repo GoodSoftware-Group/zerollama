@@ -8,7 +8,7 @@ Subject: [PATCH] convert fp8 native compressed tensors tensor
  1 file changed, 47 insertions(+), 41 deletions(-)
 
 diff --git a/conversion/base.py.rej b/conversion/base.py.rej
-index b273699f7..ebff5c42f 100644
+index b273699..ebff5c4 100644
 --- a/conversion/base.py.rej
 +++ b/conversion/base.py.rej
 @@ -1,42 +1,48 @@

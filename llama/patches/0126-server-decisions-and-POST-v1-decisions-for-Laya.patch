@@ -15,10 +15,10 @@ Subject: [PATCH] server: --decisions and POST /v1/decisions for Laya
  create mode 100644 tools/server/server-laya.h
 
 diff --git a/common/arg.cpp b/common/arg.cpp
-index c3362076a..2cb208063 100644
+index 127bf7f..ad069ec 100644
 --- a/common/arg.cpp
 +++ b/common/arg.cpp
-@@ -3592,6 +3592,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+@@ -3531,6 +3531,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
              params.pooling_type = LLAMA_POOLING_TYPE_RANK;
          }
      ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_RERANKING"));
@@ -35,10 +35,10 @@ index c3362076a..2cb208063 100644
          {"--api-key"}, "KEY",
          "API key to use for authentication, multiple keys can be provided as a comma-separated list (default: none)",
 diff --git a/common/common.h b/common/common.h
-index 982ccdfcd..6935f8065 100644
+index 5307c35..9720d80 100644
 --- a/common/common.h
 +++ b/common/common.h
-@@ -658,6 +658,7 @@ struct common_params {
+@@ -660,6 +660,7 @@ struct common_params {
  
      // embedding
      bool embedding         = false; // get only sentence embedding
@@ -47,10 +47,10 @@ index 982ccdfcd..6935f8065 100644
      std::string embd_out   = "";    // empty = default, "array" = [[],[]...], "json" = openai style, "json+" = same "json" + cosine similarity matrix
      std::string embd_sep   = "\n";  // separator of embeddings
 diff --git a/tools/server/CMakeLists.txt b/tools/server/CMakeLists.txt
-index 974db8b2a..13d0166a4 100644
+index cf2d583..0a8908f 100644
 --- a/tools/server/CMakeLists.txt
 +++ b/tools/server/CMakeLists.txt
-@@ -27,6 +27,8 @@ add_library(${TARGET} STATIC
+@@ -29,6 +29,8 @@ add_library(${TARGET} STATIC
      server-schema.h
      server-loop-guard.cpp
      server-loop-guard.h
@@ -60,10 +60,10 @@ index 974db8b2a..13d0166a4 100644
  
  if (BUILD_SHARED_LIBS)
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index ed40347f6..bd6ab170c 100644
+index 998d8ed..4b6c703 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -12,6 +12,7 @@
+@@ -13,6 +13,7 @@
  #include "server-stream.h"
  #include "server-loop-guard.h"
  #include "server-adaptive-dm.h"
@@ -71,7 +71,7 @@ index ed40347f6..bd6ab170c 100644
  
  #include "build-info.h"
  #include "common.h"
-@@ -1080,6 +1081,14 @@ public:
+@@ -1091,6 +1092,14 @@ public:
      //  - and, with thread-safe APIs (e.g., tokenizer calls)
      llama_model * model_tgt = nullptr;
  
@@ -84,9 +84,9 @@ index ed40347f6..bd6ab170c 100644
 +    }
 +
      mtmd_context * mctx = nullptr;
+     mtmd_helper_cap mtmd_cap = {};
      // note: video_params.ffmpeg_bin_dir points into params_base, which outlives this struct
-     mtmd_helper_init_opt init_opt = mtmd_helper_init_opt_default();
-@@ -1197,6 +1206,7 @@ private:
+@@ -1212,6 +1221,7 @@ private:
  
          ctx_tgt = nullptr;
          model_tgt = nullptr;
@@ -94,7 +94,7 @@ index ed40347f6..bd6ab170c 100644
  
          mtmd_free(mctx);
          mctx = nullptr;
-@@ -6938,6 +6948,99 @@ void server_routes::init_routes() {
+@@ -7096,6 +7106,99 @@ void server_routes::init_routes() {
          return res;
      };
  
@@ -196,7 +196,7 @@ index ed40347f6..bd6ab170c 100644
  
 diff --git a/tools/server/server-laya.cpp b/tools/server/server-laya.cpp
 new file mode 100644
-index 000000000..88fd47b81
+index 0000000..88fd47b
 --- /dev/null
 +++ b/tools/server/server-laya.cpp
 @@ -0,0 +1,536 @@
@@ -738,7 +738,7 @@ index 000000000..88fd47b81
 +}
 diff --git a/tools/server/server-laya.h b/tools/server/server-laya.h
 new file mode 100644
-index 000000000..20d35313d
+index 0000000..20d3531
 --- /dev/null
 +++ b/tools/server/server-laya.h
 @@ -0,0 +1,89 @@

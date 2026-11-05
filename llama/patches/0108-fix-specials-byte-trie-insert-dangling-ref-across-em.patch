@@ -16,10 +16,10 @@ pressure). Write the child index after emplace using indices only.
  1 file changed, 8 insertions(+), 4 deletions(-)
 
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index 65e1f11e2..e5cb60d1d 100644
+index 22cf071..f205504 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
-@@ -101,12 +101,16 @@ struct llm_specials_byte_trie {
+@@ -95,12 +95,16 @@ struct llm_specials_byte_trie {
          uint32_t cur = 0;
          for (size_t i = 0; i < len; ++i) {
              const unsigned char c = (unsigned char) key[i];

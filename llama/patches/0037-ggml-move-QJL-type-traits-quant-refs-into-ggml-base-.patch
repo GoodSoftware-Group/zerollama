@@ -14,7 +14,7 @@ does not link ggml-cpu; provide a base shim and keep SIMD/op paths in cpu.
  create mode 100644 ggml/src/qjl-quants-base.c
 
 diff --git a/ggml/src/CMakeLists.txt b/ggml/src/CMakeLists.txt
-index 06fabd76b..ba78f9fdb 100644
+index 06fabd7..ba78f9f 100644
 --- a/ggml/src/CMakeLists.txt
 +++ b/ggml/src/CMakeLists.txt
 @@ -206,6 +206,9 @@ add_library(ggml-base
@@ -37,7 +37,7 @@ index 06fabd76b..ba78f9fdb 100644
      target_compile_definitions(ggml-base PUBLIC GGML_BACKEND_DL)
  endif()
 diff --git a/ggml/src/ggml-cpu/CMakeLists.txt b/ggml/src/ggml-cpu/CMakeLists.txt
-index 49715c312..a91aff1f1 100644
+index 49715c3..a91aff1 100644
 --- a/ggml/src/ggml-cpu/CMakeLists.txt
 +++ b/ggml/src/ggml-cpu/CMakeLists.txt
 @@ -57,7 +57,10 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
@@ -53,7 +53,7 @@ index 49715c312..a91aff1f1 100644
          ggml-cpu/qjl/qjl_cpu_features.h
          ggml-cpu/qjl/qjl_dispatch.c
 diff --git a/ggml/src/ggml-cpu/qjl/quants-qjl.c b/ggml/src/ggml-cpu/qjl/quants-qjl.c
-index 4cabf50cc..532605a77 100644
+index 4cabf50..532605a 100644
 --- a/ggml/src/ggml-cpu/qjl/quants-qjl.c
 +++ b/ggml/src/ggml-cpu/qjl/quants-qjl.c
 @@ -159,22 +159,12 @@ static const float * qjl_default_projection(void) {
@@ -122,7 +122,7 @@ index 4cabf50cc..532605a77 100644
  /*
 diff --git a/ggml/src/qjl-quants-base.c b/ggml/src/qjl-quants-base.c
 new file mode 100644
-index 000000000..c0c8a541f
+index 0000000..c0c8a54
 --- /dev/null
 +++ b/ggml/src/qjl-quants-base.c
 @@ -0,0 +1,114 @@

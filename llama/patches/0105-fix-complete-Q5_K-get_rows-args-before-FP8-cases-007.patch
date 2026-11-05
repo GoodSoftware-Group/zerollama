@@ -8,7 +8,7 @@ Subject: [PATCH] fix: complete Q5_K get_rows args before FP8 cases (0075 port)
  1 file changed, 2 insertions(+)
 
 diff --git a/ggml/src/ggml-cuda/getrows.cu b/ggml/src/ggml-cuda/getrows.cu
-index 74ff373cc..12a421864 100644
+index 74ff373..12a4218 100644
 --- a/ggml/src/ggml-cuda/getrows.cu
 +++ b/ggml/src/ggml-cuda/getrows.cu
 @@ -358,6 +358,8 @@ static void ggml_cuda_get_rows_switch_src0_type(

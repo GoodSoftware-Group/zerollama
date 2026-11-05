@@ -11,10 +11,10 @@ Subject: [PATCH] ollama: wire fused QJL-K attention + CUDA SET_ROWS for
  4 files changed, 97 insertions(+), 27 deletions(-)
 
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 6b7d6d6c2..07b918a0a 100644
+index ebf0ec8..6ce3a4d 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -26,6 +26,7 @@
+@@ -27,6 +27,7 @@
  #include "ggml-cuda/diagmask.cuh"
  #include "ggml-cuda/diag.cuh"
  #include "ggml-cuda/fattn.cuh"
@@ -23,7 +23,7 @@ index 6b7d6d6c2..07b918a0a 100644
  #include "ggml-cuda/getrows.cuh"
  #include "ggml-cuda/im2col.cuh"
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu.rej b/ggml/src/ggml-cuda/ggml-cuda.cu.rej
-index 5ac6bc18e..11940765d 100644
+index 5ac6bc1..1194076 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu.rej
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu.rej
 @@ -1,30 +1,28 @@
@@ -83,7 +83,7 @@ index 5ac6bc18e..11940765d 100644
 +         default:
 +             return false;
 diff --git a/ggml/src/ggml-cuda/set-rows.cu b/ggml/src/ggml-cuda/set-rows.cu
-index 465997065..ba708a212 100644
+index 4659970..ba708a2 100644
 --- a/ggml/src/ggml-cuda/set-rows.cu
 +++ b/ggml/src/ggml-cuda/set-rows.cu
 @@ -1,6 +1,15 @@
@@ -134,10 +134,10 @@ index 465997065..ba708a212 100644
          GGML_ABORT("unsupported type %s", ggml_type_name(dst->type));
      }
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index a22dfba96..fd8d8197e 100644
+index edf1ca7..0be65b3 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
-@@ -2989,6 +2989,43 @@ ggml_tensor * llm_graph_context::build_attn_mha(
+@@ -3024,6 +3024,43 @@ ggml_tensor * llm_graph_context::build_attn_mha(
              v = ggml_transpose(ctx0, v);
          }
  
@@ -181,7 +181,7 @@ index a22dfba96..fd8d8197e 100644
          // this can happen when KV cache is not used (e.g. an embedding model with non-causal attn)
          if (k->type == GGML_TYPE_F32) {
              k = ggml_cast(ctx0, k, GGML_TYPE_F16);
-@@ -3025,6 +3062,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
+@@ -3065,6 +3102,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
          }
  
          cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);

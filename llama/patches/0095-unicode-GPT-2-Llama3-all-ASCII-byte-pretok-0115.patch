@@ -9,7 +9,7 @@ Subject: [PATCH] unicode: GPT-2 + Llama3 all-ASCII byte pretok (0115)
  2 files changed, 272 insertions(+), 29 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index 1f1c68154..a136427ea 100644
+index 1f1c681..a136427 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
 @@ -505,6 +505,63 @@ static inline bool unicode_is_qwen2_regex_expr(const std::string & regex_expr) {
@@ -310,7 +310,7 @@ index 1f1c68154..a136427ea 100644
  
  // GPT2 system regex:  's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
 diff --git a/src/unicode.cpp.rej b/src/unicode.cpp.rej
-index d7eb2dd25..a96256533 100644
+index d7eb2dd..a962565 100644
 --- a/src/unicode.cpp.rej
 +++ b/src/unicode.cpp.rej
 @@ -1,14 +1,24 @@

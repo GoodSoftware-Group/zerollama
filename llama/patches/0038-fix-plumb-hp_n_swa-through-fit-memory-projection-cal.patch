@@ -12,10 +12,10 @@ common_get_device_memory_data(_impl) signature after SWA projection work.
  3 files changed, 6 insertions(+), 5 deletions(-)
 
 diff --git a/common/fit.cpp b/common/fit.cpp
-index 731184794..8611854e5 100644
+index e1e3025..decd038 100644
 --- a/common/fit.cpp
 +++ b/common/fit.cpp
-@@ -755,12 +755,12 @@ static void common_params_fit_impl(
+@@ -836,12 +836,12 @@ static void common_params_fit_impl(
              mparams_test.tensor_buft_overrides = tensor_buft_overrides;
          }
  
@@ -30,7 +30,7 @@ index 731184794..8611854e5 100644
                  equal_fits = false;
                  break;
              }
-@@ -776,7 +776,7 @@ static void common_params_fit_impl(
+@@ -857,7 +857,7 @@ static void common_params_fit_impl(
  
          LOG_INF("%s: %s\n", __func__, reason);
          for (size_t id = 0; id < nd; ++id) {
@@ -40,20 +40,20 @@ index 731184794..8611854e5 100644
                  __func__, dev_names[id].c_str(), ngl_equal[id].n_layer, used/MiB,
                  (dmds_equal[id].free - used)/MiB);
 diff --git a/common/fit.h b/common/fit.h
-index 824d386b0..bbe30e0f2 100644
+index 47478bb..2a01fde 100644
 --- a/common/fit.h
 +++ b/common/fit.h
-@@ -64,4 +64,5 @@ common_device_memory_data_vec common_get_device_memory_data(
+@@ -106,4 +106,5 @@ common_device_memory_data_vec common_get_device_memory_data(
                             uint32_t & hp_ngl,
                             uint32_t & hp_n_ctx_train,
                             uint32_t & hp_n_expert,
 +                           uint32_t & hp_n_swa,
                       ggml_log_level   log_level);
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index d675e2eb1..56fcb29e8 100644
+index 0695b0d..a117d0d 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -3398,8 +3398,8 @@ private:
+@@ -3471,8 +3471,8 @@ private:
                      // Full-sequence copy (partial p1 triggers assert on KV backends).
                      common_context_seq_cp(ctx_tgt, id_src, id_dst, 0, -1);
                      if (ctx_dft) {

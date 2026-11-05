@@ -225,6 +225,22 @@ func TestInvalidRequests(t *testing.T) {
 	}
 }
 
+func TestValidateLimitsEmptyState(t *testing.T) {
+	for _, state := range []string{`""`, `" "`} {
+		for _, decisionType := range []string{"vllm-d3", "d3", "laya", "clef", ""} {
+			t.Run(decisionType+"/"+state, func(t *testing.T) {
+				req := testRequest(t)
+				req.State = json.RawMessage(state)
+				err := ValidateLimits(req, decisionType)
+				allow := decisionType == "vllm-d3" || decisionType == "d3"
+				if (err == nil) != allow {
+					t.Fatalf("ValidateLimits(%q) error = %v", decisionType, err)
+				}
+			})
+		}
+	}
+}
+
 func TestContent(t *testing.T) {
 	for _, tt := range []struct{ input, want string }{
 		{` "line\nquoted \"text\"" `, "line\nquoted \"text\""},

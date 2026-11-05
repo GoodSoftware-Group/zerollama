@@ -14,10 +14,10 @@ Subject: [PATCH] llm: add LLM_ARCH_LAYA (ModernBERT encoder + decision head)
  create mode 100644 src/models/laya.cpp
 
 diff --git a/include/llama.h b/include/llama.h
-index 6714fe075..45b954ef8 100644
+index 67f93cf..d8abb20 100644
 --- a/include/llama.h
 +++ b/include/llama.h
-@@ -598,6 +598,9 @@ extern "C" {
+@@ -599,6 +599,9 @@ extern "C" {
      LLAMA_API const struct llama_vocab * llama_model_get_vocab(const struct llama_model * model);
      LLAMA_API enum llama_rope_type       llama_model_rope_type(const struct llama_model * model);
  
@@ -28,22 +28,22 @@ index 6714fe075..45b954ef8 100644
      LLAMA_API int32_t llama_model_n_embd       (const struct llama_model * model);
      LLAMA_API int32_t llama_model_n_embd_inp   (const struct llama_model * model);
 diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
-index daf8b0f9d..451ac517d 100644
+index 6d9c850..2f94448 100644
 --- a/src/llama-arch.cpp
 +++ b/src/llama-arch.cpp
-@@ -152,6 +152,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
+@@ -157,6 +157,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
      { LLM_ARCH_EAGLE3,           "eagle3"           },
      { LLM_ARCH_DFLASH,           "dflash"           },
      { LLM_ARCH_DFLASH_DRAFT,     "dflash-draft"     }, // milady DFlash speculative draft
 +    { LLM_ARCH_LAYA,             "laya"             },
      { LLM_ARCH_MISTRAL4,         "mistral4"         },
+     { LLM_ARCH_MISTRAL_LARGE4,   "mistral-large4"   },
      { LLM_ARCH_PADDLEOCR,        "paddleocr"        },
-     { LLM_ARCH_MIMO2,            "mimo2"            },
 diff --git a/src/llama-hparams.h b/src/llama-hparams.h
-index 8d774a2cc..50108e36f 100644
+index 2370f83..6fca45c 100644
 --- a/src/llama-hparams.h
 +++ b/src/llama-hparams.h
-@@ -265,6 +265,10 @@ struct llama_hparams {
+@@ -283,6 +283,10 @@ struct llama_hparams {
      // for Classifiers
      uint32_t n_cls_out = 1;
  
@@ -55,7 +55,7 @@ index 8d774a2cc..50108e36f 100644
      uint32_t n_embd_inp_impl = 0;
  
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 42d2f80d7..60efaa3c1 100644
+index c3f0b68..28019e1 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
 @@ -80,6 +80,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
@@ -67,7 +67,7 @@ index 42d2f80d7..60efaa3c1 100644
          case LLM_ARCH_NEO_BERT:
              return new llama_model_neo_bert(params);
          case LLM_ARCH_EUROBERT:
-@@ -2796,6 +2798,13 @@ const ggml_tensor * llama_model::get_tensor(const char * name) const {
+@@ -2877,6 +2879,13 @@ const ggml_tensor * llama_model::get_tensor(const char * name) const {
      return it->second;
  }
  
@@ -81,7 +81,7 @@ index 42d2f80d7..60efaa3c1 100644
  float llama_model::get_rope_freq_base (const llama_cparams & cparams, int il) const {
      return hparams.is_swa(il) ? hparams.rope_freq_base_train_swa : cparams.rope_freq_base;
  }
-@@ -3608,6 +3617,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
+@@ -3718,6 +3727,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
          case LLM_ARCH_BERT:
          case LLM_ARCH_JINA_BERT_V3:
          case LLM_ARCH_MODERN_BERT:
@@ -91,7 +91,7 @@ index 42d2f80d7..60efaa3c1 100644
          case LLM_ARCH_EUROBERT:
 diff --git a/src/models/laya.cpp b/src/models/laya.cpp
 new file mode 100644
-index 000000000..e39929f29
+index 0000000..e39929f
 --- /dev/null
 +++ b/src/models/laya.cpp
 @@ -0,0 +1,206 @@
@@ -302,10 +302,10 @@ index 000000000..e39929f29
 +    ggml_build_forward_expand(gf, cur);
 +}
 diff --git a/src/models/models.h b/src/models/models.h
-index 149124ddb..1dd26807a 100644
+index 3834f8a..bac7de2 100644
 --- a/src/models/models.h
 +++ b/src/models/models.h
-@@ -396,6 +396,19 @@ struct llama_model_modern_bert : public llama_model_base {
+@@ -401,6 +401,19 @@ struct llama_model_modern_bert : public llama_model_base {
  };
  
  

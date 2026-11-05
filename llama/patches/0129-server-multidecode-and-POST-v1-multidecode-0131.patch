@@ -10,10 +10,10 @@ Subject: [PATCH] server: --multidecode and POST /v1/multidecode (0131)
  3 files changed, 193 insertions(+)
 
 diff --git a/common/arg.cpp b/common/arg.cpp
-index 2cb208063..3ba0943ae 100644
+index ad069ec..9be8779 100644
 --- a/common/arg.cpp
 +++ b/common/arg.cpp
-@@ -3601,6 +3601,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+@@ -3540,6 +3540,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
              params.pooling_type = LLAMA_POOLING_TYPE_NONE;
          }
      ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISIONS"));
@@ -28,10 +28,10 @@ index 2cb208063..3ba0943ae 100644
          {"--api-key"}, "KEY",
          "API key to use for authentication, multiple keys can be provided as a comma-separated list (default: none)",
 diff --git a/common/common.h b/common/common.h
-index 6935f8065..a6b76f0d1 100644
+index 9720d80..1fbd9f7 100644
 --- a/common/common.h
 +++ b/common/common.h
-@@ -659,6 +659,7 @@ struct common_params {
+@@ -661,6 +661,7 @@ struct common_params {
      // embedding
      bool embedding         = false; // get only sentence embedding
      bool decisions         = false; // enable /v1/decisions (Laya typed-decision head)
@@ -40,10 +40,10 @@ index 6935f8065..a6b76f0d1 100644
      std::string embd_out   = "";    // empty = default, "array" = [[],[]...], "json" = openai style, "json+" = same "json" + cosine similarity matrix
      std::string embd_sep   = "\n";  // separator of embeddings
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index bd6ab170c..eab2f64bd 100644
+index 4b6c703..cc6fb4d 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -1085,6 +1085,10 @@ public:
+@@ -1096,6 +1096,10 @@ public:
      std::mutex mutex_laya;
      std::unique_ptr<laya_head_weights> laya_weights;
  
@@ -54,7 +54,7 @@ index bd6ab170c..eab2f64bd 100644
      llama_context * get_ctx_tgt() {
          return ctx_tgt;
      }
-@@ -7041,6 +7045,187 @@ void server_routes::init_routes() {
+@@ -7199,6 +7203,187 @@ void server_routes::init_routes() {
          return res;
      };
  

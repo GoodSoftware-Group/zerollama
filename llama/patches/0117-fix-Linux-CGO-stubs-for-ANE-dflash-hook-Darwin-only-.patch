@@ -10,7 +10,7 @@ helpers that live behind __APPLE__.
  1 file changed, 18 insertions(+)
 
 diff --git a/common/ane_draft_hook.cpp b/common/ane_draft_hook.cpp
-index 07a24ba07..ee21e60d6 100644
+index 07a24ba..ee21e60 100644
 --- a/common/ane_draft_hook.cpp
 +++ b/common/ane_draft_hook.cpp
 @@ -128,6 +128,23 @@ common_ane_draft_drive_mode common_ane_draft_get_drive_mode() {

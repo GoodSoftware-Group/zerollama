@@ -12,7 +12,7 @@ b11351 unicode end-state, grafting tip-only NFC and cpt_to_byte APIs.
  2 files changed, 1637 insertions(+), 686 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index 8e54f37ba..6467d9ac3 100644
+index 8e54f37..6467d9a 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
 @@ -44,9 +44,6 @@ uint32_t unicode_cpt_from_utf8(const std::string & utf8, size_t & offset) {
@@ -2664,7 +2664,7 @@ index 8e54f37ba..6467d9ac3 100644
      bpe_words.reserve(bpe_offsets.size()); // reserve memory for the approximate size
  
 diff --git a/src/unicode.h b/src/unicode.h
-index afb50c49c..09b448764 100644
+index afb50c4..09b4487 100644
 --- a/src/unicode.h
 +++ b/src/unicode.h
 @@ -112,9 +112,9 @@ bool unicode_cpt_is_han(uint32_t cpt);

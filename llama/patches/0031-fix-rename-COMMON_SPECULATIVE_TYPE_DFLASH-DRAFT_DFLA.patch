@@ -14,7 +14,7 @@ identifier and broke llama-common on Mac builds.
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/common/ane_draft_hook.cpp b/common/ane_draft_hook.cpp
-index b57ab1ece..849963b64 100644
+index b57ab1e..849963b 100644
 --- a/common/ane_draft_hook.cpp
 +++ b/common/ane_draft_hook.cpp
 @@ -1522,7 +1522,7 @@ static bool ane_should_sync_target_cross(const llama_model * model_dft) {

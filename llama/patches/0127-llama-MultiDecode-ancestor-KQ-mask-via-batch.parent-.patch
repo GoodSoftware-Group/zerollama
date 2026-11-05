@@ -16,7 +16,7 @@ Subject: [PATCH] llama: MultiDecode ancestor KQ mask via batch.parent (0129)
  create mode 100644 examples/multidecode/multidecode-exactness.cpp
 
 diff --git a/examples/CMakeLists.txt b/examples/CMakeLists.txt
-index 39f802d25..25804ce4a 100644
+index 39f802d..25804ce 100644
 --- a/examples/CMakeLists.txt
 +++ b/examples/CMakeLists.txt
 @@ -29,6 +29,7 @@ else()
@@ -29,7 +29,7 @@ index 39f802d25..25804ce4a 100644
      add_subdirectory(gen-docs)
 diff --git a/examples/multidecode/CMakeLists.txt b/examples/multidecode/CMakeLists.txt
 new file mode 100644
-index 000000000..8713adf80
+index 0000000..8713adf
 --- /dev/null
 +++ b/examples/multidecode/CMakeLists.txt
 @@ -0,0 +1,5 @@
@@ -40,7 +40,7 @@ index 000000000..8713adf80
 +target_compile_features(${TARGET} PRIVATE cxx_std_17)
 diff --git a/examples/multidecode/multidecode-exactness.cpp b/examples/multidecode/multidecode-exactness.cpp
 new file mode 100644
-index 000000000..ea2feb573
+index 0000000..ea2feb5
 --- /dev/null
 +++ b/examples/multidecode/multidecode-exactness.cpp
 @@ -0,0 +1,245 @@
@@ -290,10 +290,10 @@ index 000000000..ea2feb573
 +    return 0;
 +}
 diff --git a/include/llama.h b/include/llama.h
-index 45b954ef8..b45d5e31e 100644
+index d8abb20..449bfd1 100644
 --- a/include/llama.h
 +++ b/include/llama.h
-@@ -262,6 +262,10 @@ extern "C" {
+@@ -263,6 +263,10 @@ extern "C" {
      //               - if embeddings: all tokens are output
      //               - if not:        only the last token is output
      //            )
@@ -304,7 +304,7 @@ index 45b954ef8..b45d5e31e 100644
      //
      typedef struct llama_batch {
          int32_t n_tokens;
-@@ -272,6 +276,7 @@ extern "C" {
+@@ -273,6 +277,7 @@ extern "C" {
          int32_t      *  n_seq_id;
          llama_seq_id ** seq_id;
          int8_t       *  logits;   // TODO: rename this to "output"
@@ -313,10 +313,10 @@ index 45b954ef8..b45d5e31e 100644
  
      enum llama_model_kv_override_type {
 diff --git a/src/llama-batch.cpp b/src/llama-batch.cpp
-index 321aa9d23..01e1a6a0e 100644
+index f84c6d5..04efb54 100644
 --- a/src/llama-batch.cpp
 +++ b/src/llama-batch.cpp
-@@ -193,6 +193,40 @@ bool llama_batch_allocr::init(
+@@ -213,6 +213,40 @@ bool llama_batch_allocr::init(
          }
      }
  
@@ -357,7 +357,7 @@ index 321aa9d23..01e1a6a0e 100644
      //
      // build output/logits array
      //
-@@ -594,6 +628,21 @@ llama_ubatch llama_batch_allocr::split_simple(uint32_t n_ubatch) {
+@@ -616,6 +650,21 @@ llama_ubatch llama_batch_allocr::split_simple(uint32_t n_ubatch) {
          return {};
      }
  
@@ -379,7 +379,7 @@ index 321aa9d23..01e1a6a0e 100644
      std::vector<int32_t> idxs;
  
      while (true) {
-@@ -617,6 +666,12 @@ llama_ubatch llama_batch_allocr::split_simple(uint32_t n_ubatch) {
+@@ -639,6 +688,12 @@ llama_ubatch llama_batch_allocr::split_simple(uint32_t n_ubatch) {
  }
  
  llama_ubatch llama_batch_allocr::split_equal(uint32_t n_ubatch, bool sequential, uint32_t n_keep_tail) {
@@ -392,7 +392,7 @@ index 321aa9d23..01e1a6a0e 100644
      if (sequential && has_cpl) {
          LLAMA_LOG_ERROR("%s: sequential split is not supported when there are coupled sequences in the input batch (you may need to use the -kvu flag)\n", __func__);
  
-@@ -956,6 +1011,8 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
+@@ -985,6 +1040,8 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
          }
      }
  
@@ -401,7 +401,7 @@ index 321aa9d23..01e1a6a0e 100644
      llama_ubatch res {
          /*.b_equal_seqs =*/ equal_seqs,
          /*.n_tokens     =*/ n_tokens,
-@@ -1085,6 +1142,7 @@ struct llama_batch llama_batch_get_one(
+@@ -1116,6 +1173,7 @@ struct llama_batch llama_batch_get_one(
          /*n_seq_id =*/ nullptr,
          /*seq_id   =*/ nullptr,
          /*logits   =*/ nullptr,
@@ -409,7 +409,7 @@ index 321aa9d23..01e1a6a0e 100644
      };
  }
  
-@@ -1097,6 +1155,7 @@ struct llama_batch llama_batch_init(int32_t n_tokens_alloc, int32_t embd, int32_
+@@ -1128,6 +1186,7 @@ struct llama_batch llama_batch_init(int32_t n_tokens_alloc, int32_t embd, int32_
          /*n_seq_id =*/ nullptr,
          /*seq_id   =*/ nullptr,
          /*logits   =*/ nullptr,
@@ -417,7 +417,7 @@ index 321aa9d23..01e1a6a0e 100644
      };
  
      if (embd) {
-@@ -1114,6 +1173,7 @@ struct llama_batch llama_batch_init(int32_t n_tokens_alloc, int32_t embd, int32_
+@@ -1145,6 +1204,7 @@ struct llama_batch llama_batch_init(int32_t n_tokens_alloc, int32_t embd, int32_
      batch.seq_id[n_tokens_alloc] = nullptr;
  
      batch.logits   = (int8_t *)        malloc(sizeof(int8_t)         * n_tokens_alloc);
@@ -425,7 +425,7 @@ index 321aa9d23..01e1a6a0e 100644
  
      return batch;
  }
-@@ -1130,6 +1190,7 @@ void llama_batch_free(struct llama_batch batch) {
+@@ -1161,6 +1221,7 @@ void llama_batch_free(struct llama_batch batch) {
          free(batch.seq_id);
      }
      if (batch.logits)   free(batch.logits);
@@ -434,10 +434,10 @@ index 321aa9d23..01e1a6a0e 100644
  
  
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index ab096fd1b..293454d39 100644
+index 468d8e7..101017f 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
-@@ -2062,6 +2062,7 @@ bool llama_kv_cache::check_and_clear_resized() {
+@@ -2054,6 +2054,7 @@ bool llama_kv_cache::check_and_clear_resized() {
      const bool r = was_resized;
      was_resized = false;
      return r;
@@ -445,8 +445,8 @@ index ab096fd1b..293454d39 100644
  
  uint32_t llama_kv_cache::get_n_stream() const {
      return n_stream;
-@@ -2637,6 +2638,73 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
-     //LLAMA_LOG_ERROR("%s: kq mask time: %0.3f ms\n", __func__, (t_end - t_start)/1000.0);
+@@ -2765,6 +2766,73 @@ void llama_kv_cache::set_input_attn_mask(const llm_attn_mask & attn_mask, const
+     }
  }
  
 +void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const {
@@ -519,29 +519,29 @@ index ab096fd1b..293454d39 100644
  void llama_kv_cache::set_input_kq_mask_dca(ggml_tensor * dst, const llama_ubatch * ubatch, int dca_stage) const {
      const uint32_t n_tokens = ubatch->n_tokens;
  
-@@ -3843,6 +3911,10 @@ void llama_kv_cache_context::set_input_v_idxs(ggml_tensor * dst, const llama_uba
+@@ -3952,6 +4020,10 @@ void llama_kv_cache_context::set_input_v_idxs(ggml_tensor * dst, const llama_uba
  }
  
- void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {
-+    if (ubatch->parent != nullptr) {
-+        kv->set_input_kq_mask_multidecode(dst, ubatch, sinfos[i_cur]);
+ void llama_kv_cache_context::set_input_attn_mask(const llm_attn_mask & attn_mask, const llama_ubatch * ubatch, bool causal_attn) const {
++    if (ubatch->parent != nullptr && attn_mask.raw) {
++        kv->set_input_kq_mask_multidecode(attn_mask.raw, ubatch, sinfos[i_cur]);
 +        return;
 +    }
-     kv->set_input_kq_mask(dst, ubatch, causal_attn);
+     kv->set_input_attn_mask(attn_mask, ubatch, causal_attn);
  }
  
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index bf8f9d758..75ae11c3c 100644
+index 323efd8..2df3420 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
-@@ -248,6 +248,10 @@ public:
+@@ -257,6 +257,10 @@ public:
      void set_input_k_shift(ggml_tensor * dst) const;
  
-     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
+     void set_input_attn_mask (const llm_attn_mask & attn_mask, const llama_ubatch * ubatch, bool causal_attn) const;
 +    // Dual Chunk Attention stage mask: dca_stage 0=intra, 1=succ, 2=inter
 +    void set_input_kq_mask_dca(ggml_tensor * dst, const llama_ubatch * ubatch, int dca_stage) const;
 +    // MultiDecode: ancestor-only KQ mask using ubatch->parent + slot cell indices
 +    void set_input_kq_mask_multidecode(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const;
      void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
  
-     void set_input_k_rot(ggml_tensor * dst) const;
+     // true if llama_kv_cell_ext holds information that has to survive a state save/restore

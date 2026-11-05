@@ -65,7 +65,7 @@ Other checkouts under the same parent (`ggml/`, `shard/`, rotorquant labs, …) 
 | LocalAI | v4.5.6 tree | 2026-07-03 | LA11+ candidates in [localai-borrowings.md](./localai-borrowings.md) |
 | Wan2GP `main` | `7e45fe7e2110` | 2026-08-11 | **Brought:** `mmgp==3.7.12` attach for 16g TI2V — [wangp-borrowings.md](./wangp-borrowings.md) |
 | mlx-serve | README / `pld_index.zig` | 2026-08-24 | **Brought:** PLD + spec gates — [mlx-serve-borrowings.md](./mlx-serve-borrowings.md) |
-| Ollama `main` | `e3cddc3e` (latest tag **v0.40.0**; tip **v0.40.1-rc0**; llama.cpp **b11351**; MLX **`a59cc231`**) | 2026-10-07 | Product-first ladders L0–L6 — [upstream-ollama-diff.md](./upstream-ollama-diff.md#cherry-pick-status-oct-2026-c1737589--v0401-rc0--e3cddc3e); prior Sep tip `c1737589` |
+| Ollama `main` | `a6d33251` (latest release **v0.40.14**; tip **v0.40.15-rc1**) | 2026-11-04 | **Brought:** `OllamaCompat`→0.40.14, empty d3 state (#19173), Responses readable input (#19192), cloud web_search decode (#19476), qwen3coder literal `</function>` (#19228), Kimi empty `[]` tool turns (#19312) — [upstream-ollama-diff.md](./upstream-ollama-diff.md); prior Oct tip `e3cddc3e` / v0.40.0 |
 | Flare `main` | README + core-design / CLI / API skim (no local tip) | 2026-10-23 | **Bring next:** FL1–FL3 (turn-boundary checkpoints, KV-limit docs, host×GPU reuse metrics) — [flare-borrowings.md](./flare-borrowings.md); **do not** vendor Helios |
 
 ---

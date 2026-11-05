@@ -20,7 +20,7 @@ import (
 // not an rc, unless we deliberately need that client gate.
 //
 // Never ldflag a git hash into this value. Put git describe in Commit.
-const OllamaCompat = "0.40.10"
+const OllamaCompat = "0.40.14"
 
 // Version is the product stamp (`zerollama -v`, GET /api/version "version").
 // Defaults to OllamaCompat so operators and the registry see one coherent

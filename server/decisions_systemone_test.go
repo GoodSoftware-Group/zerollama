@@ -39,14 +39,15 @@ func TestModelUsesSystemOneScore(t *testing.T) {
 	require.Equal(t, "tev1", systemOneEncodingFromDecisionType("nimble"))
 	require.Equal(t, "tev1", systemOneEncodingFromDecisionType("kev"))
 	require.Equal(t, "tev1", systemOneEncodingFromDecisionType("pplx-decider"))
-	require.Equal(t, "tev1", systemOneEncodingFromDecisionType("vllm-d3"))
+	require.Equal(t, "vllm-d3", systemOneEncodingFromDecisionType("vllm-d3"))
+	require.Equal(t, "vllm-d3", systemOneEncodingFromDecisionType("d3"))
 	require.Equal(t, "clef", systemOneEncodingFromDecisionType("clef"))
 	require.Equal(t, "strands", systemOneEncodingFromDecisionType("strands"))
 	require.Equal(t, "", systemOneEncodingFromDecisionType("laya"))
 
 	d3 := &Model{Config: model.ConfigV2{Capabilities: []string{"decision"}, Renderer: "d3"}}
 	require.True(t, modelUsesSystemOneScore(d3))
-	require.Equal(t, "tev1", decisionScoreEncoding(d3))
+	require.Equal(t, "vllm-d3", decisionScoreEncoding(d3))
 }
 
 func TestAPIDecisionsToLLMCopiesImages(t *testing.T) {

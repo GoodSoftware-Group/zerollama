@@ -11,10 +11,10 @@ Subject: [PATCH] =?UTF-8?q?=3D=3FUTF-8=3Fq=3Ffix:=3D20b10864=3D20rebase=3D?=
  3 files changed, 5 insertions(+), 4 deletions(-)
 
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 92d0471cd..998819c9f 100644
+index aa6838b..e6b3ac0 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -271,7 +271,7 @@ llama_context::llama_context(
+@@ -281,7 +281,7 @@ llama_context::llama_context(
      if (hparams.dca_enabled()) {
          cparams.rope_freq_scale = 1.0f;
          cparams.yarn_ext_factor = 0.0f;
@@ -24,10 +24,10 @@ index 92d0471cd..998819c9f 100644
  
      if (cparams.yarn_ext_factor < 0.0f) { // negative indicates 'not set'
 diff --git a/src/llama-hparams.h b/src/llama-hparams.h
-index 50108e36f..6b79278bc 100644
+index 6fca45c..af09694 100644
 --- a/src/llama-hparams.h
 +++ b/src/llama-hparams.h
-@@ -276,8 +276,8 @@ struct llama_hparams {
+@@ -294,8 +294,8 @@ struct llama_hparams {
      // e.g. the eagle3 encoder fuses target_layers * target_hidden features
      uint32_t n_embd_inp_enc_impl = 0;
  
@@ -38,7 +38,7 @@ index 50108e36f..6b79278bc 100644
      uint32_t dflash_mask_token_id     = 0;
      uint32_t dflash_n_target_features = 25600;
      uint32_t dflash_n_target_layers   = 0;
-@@ -286,6 +286,7 @@ struct llama_hparams {
+@@ -304,6 +304,7 @@ struct llama_hparams {
      // output embedding dimension (0 = use n_embd)
      uint32_t n_embd_out_impl = 0;
  
@@ -47,7 +47,7 @@ index 50108e36f..6b79278bc 100644
      uint32_t dflash_conv_kernel_size = 0;
      uint32_t dflash_conv_group_size  = 0;
 diff --git a/src/models/dflash-draft.cpp b/src/models/dflash-draft.cpp
-index aafb95188..313f1cda6 100644
+index aafb951..313f1cd 100644
 --- a/src/models/dflash-draft.cpp
 +++ b/src/models/dflash-draft.cpp
 @@ -18,7 +18,7 @@ static int64_t dflash_max_cross_ctx() {

@@ -9,10 +9,10 @@ Subject: [PATCH] llama-vocab: pretok cache once per session not per fragment
  2 files changed, 19 insertions(+), 31 deletions(-)
 
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index 081220e8f..65e1f11e2 100644
+index c630054..22cf071 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
-@@ -1377,6 +1377,7 @@ private:
+@@ -1385,6 +1385,7 @@ private:
      std::vector<llm_symbol> symbols_final;
      llm_bigram_bpe::queue work_queue;
      llm_bpe_pretok_cache pretok_cache;
@@ -21,7 +21,7 @@ index 081220e8f..65e1f11e2 100644
  
  //
 diff --git a/src/llama-vocab.cpp.rej b/src/llama-vocab.cpp.rej
-index f0df29005..ac216dd3a 100644
+index f0df290..ac216dd 100644
 --- a/src/llama-vocab.cpp.rej
 +++ b/src/llama-vocab.cpp.rej
 @@ -1,36 +1,23 @@

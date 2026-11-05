@@ -18,10 +18,10 @@ Subject: [PATCH] ollama: GPU discovery enhancements (b9509 port)
  create mode 100644 ggml/src/mem_nvml.cpp
 
 diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
-index e430c5411..b96233442 100644
+index 486074f..e4a4d37 100644
 --- a/ggml/include/ggml-backend.h
 +++ b/ggml/include/ggml-backend.h
-@@ -178,6 +178,13 @@ extern "C" {
+@@ -181,6 +181,13 @@ extern "C" {
          const char * device_id;
          // device capabilities
          struct ggml_backend_dev_caps caps;
@@ -36,7 +36,7 @@ index e430c5411..b96233442 100644
  
      GGML_API const char *                  ggml_backend_dev_name(ggml_backend_dev_t device);
 diff --git a/ggml/src/CMakeLists.txt b/ggml/src/CMakeLists.txt
-index fe001a042..06fabd76b 100644
+index fe001a0..06fabd7 100644
 --- a/ggml/src/CMakeLists.txt
 +++ b/ggml/src/CMakeLists.txt
 @@ -206,6 +206,8 @@ add_library(ggml-base
@@ -49,10 +49,10 @@ index fe001a042..06fabd76b 100644
  
  set_target_properties(ggml-base PROPERTIES
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 92c127e81..6b7d6d6c2 100644
+index 262e4e6..ebf0ec8 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -263,6 +263,50 @@ static int ggml_cuda_parse_id(char devName[]) {
+@@ -248,6 +248,50 @@ static int ggml_cuda_parse_id(const char * devName) {
  }
  #endif // defined(GGML_USE_HIP)
  
@@ -103,7 +103,7 @@ index 92c127e81..6b7d6d6c2 100644
  static ggml_cuda_device_info ggml_cuda_init() {
      ggml_cuda_device_info info = {};
  
-@@ -5395,7 +5439,16 @@ struct ggml_backend_cuda_device_context {
+@@ -5665,7 +5709,16 @@ struct ggml_backend_cuda_device_context {
      std::string name;
      std::string description;
      std::string pci_bus_id;
@@ -120,7 +120,7 @@ index 92c127e81..6b7d6d6c2 100644
  };
  
  static const char * ggml_backend_cuda_device_get_name(ggml_backend_dev_t dev) {
-@@ -5486,14 +5539,43 @@ static bool ggml_backend_cuda_get_available_uma_memory(long * available_memory_k
+@@ -5756,14 +5809,43 @@ static bool ggml_backend_cuda_get_available_uma_memory(long * available_memory_k
  
  static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
      ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *)dev->context;
@@ -171,7 +171,7 @@ index 92c127e81..6b7d6d6c2 100644
      }
  
  // ref: https://github.com/ggml-org/llama.cpp/pull/17368
-@@ -5518,6 +5600,7 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
+@@ -5788,6 +5870,7 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
      }
  #endif // defined(__linux__) && !defined(GGML_USE_HIP)
  
@@ -179,7 +179,7 @@ index 92c127e81..6b7d6d6c2 100644
      // virtual devices sharing one physical GPU share its memory pool; split it between them
      const int share_count = ggml_cuda_physical_device_share_count(ctx->device);
      *free  /= share_count;
-@@ -6260,7 +6343,11 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
+@@ -6536,7 +6619,11 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
                  ggml_backend_cuda_device_context * dev_ctx = new ggml_backend_cuda_device_context;
                  dev_ctx->device = i;
                  dev_ctx->name = GGML_CUDA_NAME + std::to_string(i);
@@ -192,7 +192,7 @@ index 92c127e81..6b7d6d6c2 100644
  
                  char pci_bus_id[32] = {};
                  CUDA_CHECK(cudaDeviceGetPCIBusId(pci_bus_id, sizeof(pci_bus_id), physical_id));
-@@ -6272,6 +6359,15 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
+@@ -6548,6 +6635,15 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
                  for (char & c : dev_ctx->pci_bus_id) {
                      c = std::tolower(c);
                  }
@@ -210,7 +210,7 @@ index 92c127e81..6b7d6d6c2 100644
                  ggml_backend_dev_t dev = new ggml_backend_device {
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu.rej b/ggml/src/ggml-cuda/ggml-cuda.cu.rej
 new file mode 100644
-index 000000000..5ac6bc18e
+index 0000000..5ac6bc1
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu.rej
 @@ -0,0 +1,30 @@
@@ -245,10 +245,10 @@ index 000000000..5ac6bc18e
 +             const ggml_cuda_device_info & info = ggml_cuda_info();
 +             const bool virtual_devices = info.device_count > info.physical_device_count;
 diff --git a/ggml/src/ggml-impl.h b/ggml/src/ggml-impl.h
-index ae26e0c23..357b6cdf4 100644
+index 4dc55e7..f63a450 100644
 --- a/ggml/src/ggml-impl.h
 +++ b/ggml/src/ggml-impl.h
-@@ -753,6 +753,14 @@ static inline bool ggml_can_fuse_subgraph(const struct ggml_cgraph * cgraph,
+@@ -811,6 +811,14 @@ static inline bool ggml_can_fuse_subgraph(const struct ggml_cgraph * cgraph,
      return ggml_can_fuse_subgraph_ext(cgraph, idxs, count, ops, outputs, num_outputs);
  }
  
@@ -264,10 +264,10 @@ index ae26e0c23..357b6cdf4 100644
  }
  #endif
 diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
-index dd4901d28..1f43c3aca 100644
+index 263e430..a2d91a9 100644
 --- a/ggml/src/ggml-metal/ggml-metal.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal.cpp
-@@ -694,6 +694,7 @@ static enum ggml_backend_dev_type ggml_backend_metal_device_get_type(ggml_backen
+@@ -761,6 +761,7 @@ static enum ggml_backend_dev_type ggml_backend_metal_device_get_type(ggml_backen
      GGML_UNUSED(dev);
  }
  
@@ -275,7 +275,7 @@ index dd4901d28..1f43c3aca 100644
  static void ggml_backend_metal_device_get_props(ggml_backend_dev_t dev, ggml_backend_dev_props * props) {
      props->name        = ggml_backend_metal_device_get_name(dev);
      props->description = ggml_backend_metal_device_get_description(dev);
-@@ -701,6 +702,7 @@ static void ggml_backend_metal_device_get_props(ggml_backend_dev_t dev, ggml_bac
+@@ -768,6 +769,7 @@ static void ggml_backend_metal_device_get_props(ggml_backend_dev_t dev, ggml_bac
  
      ggml_backend_metal_device_get_memory(dev, &props->memory_free, &props->memory_total);
  
@@ -285,7 +285,7 @@ index dd4901d28..1f43c3aca 100644
          /* .host_buffer          = */ false,
 diff --git a/ggml/src/mem_hip.cpp b/ggml/src/mem_hip.cpp
 new file mode 100644
-index 000000000..fa9997fb9
+index 0000000..fa9997f
 --- /dev/null
 +++ b/ggml/src/mem_hip.cpp
 @@ -0,0 +1,558 @@
@@ -850,7 +850,7 @@ index 000000000..fa9997fb9
 \ No newline at end of file
 diff --git a/ggml/src/mem_nvml.cpp b/ggml/src/mem_nvml.cpp
 new file mode 100644
-index 000000000..f473a2a2c
+index 0000000..f473a2a
 --- /dev/null
 +++ b/ggml/src/mem_nvml.cpp
 @@ -0,0 +1,274 @@

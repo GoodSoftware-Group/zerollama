@@ -10,7 +10,7 @@ Subject: [PATCH] ollama: wire ANE draft sources into llama-common CMake
  create mode 100644 common/CMakeLists.txt.rej
 
 diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
-index 8e3c88dac..779e5532b 100644
+index 8e3c88d..779e553 100644
 --- a/common/CMakeLists.txt
 +++ b/common/CMakeLists.txt
 @@ -59,6 +59,8 @@ add_library(${TARGET}
@@ -24,7 +24,7 @@ index 8e3c88dac..779e5532b 100644
      chat-auto-parser-helpers.cpp
 diff --git a/common/CMakeLists.txt.rej b/common/CMakeLists.txt.rej
 new file mode 100644
-index 000000000..d3adbb781
+index 0000000..d3adbb7
 --- /dev/null
 +++ b/common/CMakeLists.txt.rej
 @@ -0,0 +1,35 @@

@@ -26,7 +26,7 @@ Subject: [PATCH] Enable Eliza dflash-draft arch and size draft n_outputs_max
  create mode 100644 src/models/dflash-draft.cpp
 
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index 72457709a..a71c38cd1 100644
+index 9699609..09d4482 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
 @@ -245,7 +245,7 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
@@ -38,7 +38,7 @@ index 72457709a..a71c38cd1 100644
          SPC_TRC("- n_max=%d, n_min=%d, p_min=%f\n", this->params.n_max, this->params.n_min, this->params.p_min);
          SPC_TRC("- gpu_layers=%d, cache_k=%s, cache_v=%s, ctx_tgt=%s, ctx_dft=%s, devices=[%s]\n",
                  this->params.n_gpu_layers,
-@@ -2850,7 +2850,20 @@ common_speculative * common_speculative_init(common_params_speculative & params,
+@@ -2924,7 +2924,20 @@ common_speculative * common_speculative_init(common_params_speculative & params,
                  break;
              }
              case COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH: {
@@ -61,7 +61,7 @@ index 72457709a..a71c38cd1 100644
              }
              case COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK: {
 diff --git a/common/speculative.cpp.rej b/common/speculative.cpp.rej
-index c4f733886..c90c3d945 100644
+index c4f7338..c90c3d9 100644
 --- a/common/speculative.cpp.rej
 +++ b/common/speculative.cpp.rej
 @@ -1,57 +1,37 @@
@@ -154,7 +154,7 @@ index c4f733886..c90c3d945 100644
 + 
 +     // dflash/dspark decode the whole noise block in a single pass and sample every block position on the backend
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 12878ceda..a3c2fca14 100644
+index 12878ce..a3c2fca 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -34,6 +34,7 @@ set(LLAMA_CORE_SOURCES
@@ -166,18 +166,18 @@ index 12878ceda..a3c2fca14 100644
      llama-model-loader.cpp
      llama-model-saver.cpp
 diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
-index 39e29d09a..45302dfc3 100644
+index 92a13e9..d03299d 100644
 --- a/src/llama-arch.cpp
 +++ b/src/llama-arch.cpp
-@@ -151,6 +151,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
+@@ -156,6 +156,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
      { LLM_ARCH_MISTRAL3,         "mistral3"         },
      { LLM_ARCH_EAGLE3,           "eagle3"           },
      { LLM_ARCH_DFLASH,           "dflash"           },
 +    { LLM_ARCH_DFLASH_DRAFT,     "dflash-draft"     }, // milady DFlash speculative draft
      { LLM_ARCH_MISTRAL4,         "mistral4"         },
+     { LLM_ARCH_MISTRAL_LARGE4,   "mistral-large4"   },
      { LLM_ARCH_PADDLEOCR,        "paddleocr"        },
-     { LLM_ARCH_MIMO2,            "mimo2"            },
-@@ -789,6 +790,8 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
+@@ -850,6 +851,8 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
      { LLM_TENSOR_MASKED_EMBD_ORDERING,                   "masked_embd_ordering" },
      { LLM_TENSOR_FC,                                     "fc" },
      { LLM_TENSOR_D2T,                                    "d2t" },
@@ -188,7 +188,7 @@ index 39e29d09a..45302dfc3 100644
      { LLM_TENSOR_DSPARK_CONF_PROJ,                       "conf_proj" },
 diff --git a/src/llama-arch.cpp.rej b/src/llama-arch.cpp.rej
 new file mode 100644
-index 000000000..b7abe8884
+index 0000000..b7abe88
 --- /dev/null
 +++ b/src/llama-arch.cpp.rej
 @@ -0,0 +1,23 @@
@@ -216,10 +216,10 @@ index 000000000..b7abe8884
 +     {LLM_TENSOR_DSPARK_MARKOV_W1,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
 +     {LLM_TENSOR_DSPARK_MARKOV_W2,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
 diff --git a/src/llama-arch.h b/src/llama-arch.h
-index 3d0032c0c..9fc8ef438 100644
+index f811607..722167f 100644
 --- a/src/llama-arch.h
 +++ b/src/llama-arch.h
-@@ -168,6 +168,7 @@ enum llm_arch {
+@@ -172,6 +172,7 @@ enum llm_arch {
      LLM_ARCH_MINIMAX_M3,
      LLM_ARCH_DFLASH,
      LLM_ARCH_NANBEIGE,
@@ -227,7 +227,7 @@ index 3d0032c0c..9fc8ef438 100644
      LLM_ARCH_QWEN3TTS,
      LLM_ARCH_POCKETTTS,
      LLM_ARCH_MINIMAX_01,
-@@ -466,6 +467,12 @@ enum llm_kv {
+@@ -483,6 +484,12 @@ enum llm_kv {
      LLM_KV_NORM_BEFORE_RESIDUAL,
      LLM_KV_NORM_BEFORE_FC,
  
@@ -240,7 +240,7 @@ index 3d0032c0c..9fc8ef438 100644
      LLM_KV_SHORTCONV_L_CACHE,
  
      LLM_KV_XIELU_ALPHA_N,
-@@ -795,6 +802,8 @@ enum llm_tensor {
+@@ -855,6 +862,8 @@ enum llm_tensor {
      LLM_TENSOR_HRM_Z_L_INIT,
      LLM_TENSOR_FC,
      LLM_TENSOR_D2T,
@@ -251,7 +251,7 @@ index 3d0032c0c..9fc8ef438 100644
      LLM_TENSOR_DSPARK_CONF_PROJ,
 diff --git a/src/llama-dflash-stubs.cpp b/src/llama-dflash-stubs.cpp
 new file mode 100644
-index 000000000..27458c0c3
+index 0000000..27458c0
 --- /dev/null
 +++ b/src/llama-dflash-stubs.cpp
 @@ -0,0 +1,42 @@
@@ -298,10 +298,10 @@ index 000000000..27458c0c3
 +
 +int32_t llama_context_cross_n_enc(const struct llama_context *) { return 0; }
 diff --git a/src/llama-ext.h b/src/llama-ext.h
-index 8ba9d610c..52638e2b8 100644
+index 3035544..e773fb6 100644
 --- a/src/llama-ext.h
 +++ b/src/llama-ext.h
-@@ -217,6 +217,9 @@ LLAMA_API void llama_set_dflash_target_export(struct llama_context * ctx_tgt, co
+@@ -255,6 +255,9 @@ LLAMA_API void llama_set_dflash_target_export(struct llama_context * ctx_tgt, co
  // Row from the last target decode ([n_target_features]); NULL when export inactive.
  LLAMA_API float * llama_get_dflash_target_features_ith(struct llama_context * ctx, int32_t i);
  
@@ -312,10 +312,10 @@ index 8ba9d610c..52638e2b8 100644
  LLAMA_API float * llama_get_dflash_attn_out_ith(struct llama_context * ctx, int32_t i);
  
 diff --git a/src/llama-hparams.h b/src/llama-hparams.h
-index 2b92f5d60..087ffd2eb 100644
+index 95daf48..ee36ec4 100644
 --- a/src/llama-hparams.h
 +++ b/src/llama-hparams.h
-@@ -259,6 +259,13 @@ struct llama_hparams {
+@@ -277,6 +277,13 @@ struct llama_hparams {
      // e.g. the eagle3 encoder fuses target_layers * target_hidden features
      uint32_t n_embd_inp_enc_impl = 0;
  
@@ -330,10 +330,10 @@ index 2b92f5d60..087ffd2eb 100644
      uint32_t n_embd_out_impl = 0;
  
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 1de65c728..e4f3e22d3 100644
+index 3c4e598..5eee422 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -352,6 +352,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
+@@ -362,6 +362,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
              return new llama_model_eagle3(params);
          case LLM_ARCH_DFLASH:
              return new llama_model_dflash(params);
@@ -344,7 +344,7 @@ index 1de65c728..e4f3e22d3 100644
          case LLM_ARCH_KIMI_LINEAR:
 diff --git a/src/llama-model.cpp.rej b/src/llama-model.cpp.rej
 new file mode 100644
-index 000000000..c6a4d1b87
+index 0000000..c6a4d1b
 --- /dev/null
 +++ b/src/llama-model.cpp.rej
 @@ -0,0 +1,55 @@
@@ -405,7 +405,7 @@ index 000000000..c6a4d1b87
 +         return 0;
 diff --git a/src/llama-model.h.rej b/src/llama-model.h.rej
 new file mode 100644
-index 000000000..3ddf5c0ad
+index 0000000..3ddf5c0
 --- /dev/null
 +++ b/src/llama-model.h.rej
 @@ -0,0 +1,12 @@
@@ -423,7 +423,7 @@ index 000000000..3ddf5c0ad
 + 
 diff --git a/src/models/dflash-draft.cpp b/src/models/dflash-draft.cpp
 new file mode 100644
-index 000000000..aafb95188
+index 0000000..aafb951
 --- /dev/null
 +++ b/src/models/dflash-draft.cpp
 @@ -0,0 +1,320 @@
@@ -748,10 +748,10 @@ index 000000000..aafb95188
 +    ggml_build_forward_expand(gf, cur);
 +}
 diff --git a/src/models/models.h b/src/models/models.h
-index 03438a0ee..149124ddb 100644
+index e201ee3..3834f8a 100644
 --- a/src/models/models.h
 +++ b/src/models/models.h
-@@ -1611,6 +1611,18 @@ struct llama_model_dflash : public llama_model_base {
+@@ -1638,6 +1638,18 @@ struct llama_model_mistral_large4 : public llama_model_base {
      std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
  };
  

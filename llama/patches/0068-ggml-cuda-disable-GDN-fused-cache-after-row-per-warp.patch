@@ -10,7 +10,7 @@ Subject: [PATCH] ggml-cuda: disable GDN fused-cache after row-per-warp kernel
  3 files changed, 32 insertions(+), 462 deletions(-)
 
 diff --git a/ggml/src/ggml-cuda/gated_delta_net.cu.rej b/ggml/src/ggml-cuda/gated_delta_net.cu.rej
-index bca10222e..eb89e48d4 100644
+index bca1022..eb89e48 100644
 --- a/ggml/src/ggml-cuda/gated_delta_net.cu.rej
 +++ b/ggml/src/ggml-cuda/gated_delta_net.cu.rej
 @@ -1,457 +1,27 @@
@@ -490,10 +490,10 @@ index bca10222e..eb89e48d4 100644
 ++    ggml_cuda_op_gated_delta_net(ctx, dst);
 ++}
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 4d6b92b6e..c52f33145 100644
+index 7e97552..aa1089c 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -2991,6 +2991,13 @@ static bool ggml_cuda_should_fuse_rms_norm_mul_rope(const ggml_tensor * rms_norm
+@@ -3231,6 +3231,13 @@ static bool ggml_cuda_should_fuse_rms_norm_mul_rope(const ggml_tensor * rms_norm
  // (slot i -> rollback group i, slot 0 newest), so the kernel can write them and skip the cpy.
  static int ggml_cuda_try_gdn_cache_fusion(
          const ggml_cgraph * cgraph, int node_idx, ggml_cuda_gated_delta_net_fused_cache & fused_state_cpy) {
@@ -508,7 +508,7 @@ index 4d6b92b6e..c52f33145 100644
      // the kernel skips the snapshot tail, so the gdn output must not be a graph output
      if (gdn->op != GGML_OP_GATED_DELTA_NET || gdn->type != GGML_TYPE_F32 ||
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu.rej b/ggml/src/ggml-cuda/ggml-cuda.cu.rej
-index 17b5e7c02..3a0064278 100644
+index 17b5e7c..3a00642 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu.rej
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu.rej
 @@ -1,16 +1,9 @@

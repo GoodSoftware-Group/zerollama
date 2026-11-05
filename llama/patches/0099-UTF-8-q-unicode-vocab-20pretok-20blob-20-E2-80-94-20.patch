@@ -14,10 +14,10 @@ Subject: [PATCH] =?UTF-8?q?=3D=3FUTF-8=3Fq=3Funicode/vocab:=3D20pretok=3D2?=
  create mode 100644 src/llama-vocab.cpp.rej.rej
 
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index cc147cfd2..081220e8f 100644
+index c3ff5cc..c630054 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
-@@ -1121,8 +1121,8 @@ struct llm_tokenizer_bpe_session {
+@@ -1129,8 +1129,8 @@ struct llm_tokenizer_bpe_session {
              int result_n = 0;
              const int nsym_initial = index; // symbols filled above (index == symbols.size())
              bool cacheable = use_id_pairs
@@ -28,7 +28,7 @@ index cc147cfd2..081220e8f 100644
                  && nsym_initial >= 3;
  
              // add the finished tokens to the final list keeping correct order for next and prev
-@@ -1145,7 +1145,20 @@ struct llm_tokenizer_bpe_session {
+@@ -1153,7 +1153,20 @@ struct llm_tokenizer_bpe_session {
                  }
              }
              if (cacheable && result_n > 0) {
@@ -52,7 +52,7 @@ index cc147cfd2..081220e8f 100644
  
 diff --git a/src/llama-vocab.cpp.rej.rej b/src/llama-vocab.cpp.rej.rej
 new file mode 100644
-index 000000000..216749cd0
+index 0000000..216749c
 --- /dev/null
 +++ b/src/llama-vocab.cpp.rej.rej
 @@ -0,0 +1,101 @@
@@ -158,7 +158,7 @@ index 000000000..216749cd0
 +-     // determine the newline token: LLaMA "<0x0A>" == 10 == '\n', Falcon 193 == '\n'
 ++ int llama_vocab::max_token_len() const {
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index a52f573ed..8e54f37ba 100644
+index a52f573..8e54f37 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
 @@ -612,45 +612,100 @@ static inline void unicode_ascii_consume_digits_bytes(
@@ -278,7 +278,7 @@ index a52f573ed..8e54f37ba 100644
  }
  
 diff --git a/src/unicode.cpp.rej b/src/unicode.cpp.rej
-index 1c7a89e65..d5fdf7191 100644
+index 1c7a89e..d5fdf71 100644
 --- a/src/unicode.cpp.rej
 +++ b/src/unicode.cpp.rej
 @@ -1,19 +1,38 @@
@@ -335,7 +335,7 @@ index 1c7a89e65..d5fdf7191 100644
 -             return unicode_regex_split_gpt2_ascii_bytes(text, byte_encode);
 -         }
 diff --git a/src/unicode.h b/src/unicode.h
-index 29dbfc709..afb50c49c 100644
+index 29dbfc7..afb50c4 100644
 --- a/src/unicode.h
 +++ b/src/unicode.h
 @@ -111,3 +111,22 @@ uint32_t unicode_tolower(uint32_t cpt);

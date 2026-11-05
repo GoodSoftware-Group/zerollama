@@ -67,7 +67,7 @@ files; fattn TBQ instances added via explicit glob.
  create mode 100644 ggml/src/ggml-cuda/turboquant.cuh
 
 diff --git a/ggml/src/ggml-cuda/CMakeLists.txt b/ggml/src/ggml-cuda/CMakeLists.txt
-index 297d9ffc9..c53cc2dea 100644
+index 297d9ff..c53cc2d 100644
 --- a/ggml/src/ggml-cuda/CMakeLists.txt
 +++ b/ggml/src/ggml-cuda/CMakeLists.txt
 @@ -126,6 +126,9 @@ if (CUDAToolkit_FOUND)
@@ -108,7 +108,7 @@ index 297d9ffc9..c53cc2dea 100644
              # As of 12.3.1 CUDA Toolkit for Windows does not offer a static cublas library
 diff --git a/ggml/src/ggml-cuda/fused-attn-qjl-polar.cu b/ggml/src/ggml-cuda/fused-attn-qjl-polar.cu
 new file mode 100644
-index 000000000..0b17daa0d
+index 0000000..0b17daa
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/fused-attn-qjl-polar.cu
 @@ -0,0 +1,212 @@
@@ -326,7 +326,7 @@ index 000000000..0b17daa0d
 +#endif // GGML_CUDA_FUSED_ATTN_QJL
 diff --git a/ggml/src/ggml-cuda/fused-attn-qjl-tbq.cu b/ggml/src/ggml-cuda/fused-attn-qjl-tbq.cu
 new file mode 100644
-index 000000000..82bcdf702
+index 0000000..82bcdf7
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/fused-attn-qjl-tbq.cu
 @@ -0,0 +1,322 @@
@@ -654,7 +654,7 @@ index 000000000..82bcdf702
 +#endif // GGML_CUDA_FUSED_ATTN_QJL
 diff --git a/ggml/src/ggml-cuda/fused-attn.cu b/ggml/src/ggml-cuda/fused-attn.cu
 new file mode 100644
-index 000000000..c1e74cdaf
+index 0000000..c1e74cd
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/fused-attn.cu
 @@ -0,0 +1,157 @@
@@ -817,7 +817,7 @@ index 000000000..c1e74cdaf
 +#endif // GGML_CUDA_FUSED_ATTN_QJL
 diff --git a/ggml/src/ggml-cuda/fused-attn.cuh b/ggml/src/ggml-cuda/fused-attn.cuh
 new file mode 100644
-index 000000000..dcec3c514
+index 0000000..dcec3c5
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/fused-attn.cuh
 @@ -0,0 +1,44 @@
@@ -867,7 +867,7 @@ index 000000000..dcec3c514
 +#endif // GGML_CUDA_FUSED_ATTN_QJL
 diff --git a/ggml/src/ggml-cuda/polar-set-rows.cuh b/ggml/src/ggml-cuda/polar-set-rows.cuh
 new file mode 100644
-index 000000000..2ecc803d5
+index 0000000..2ecc803
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/polar-set-rows.cuh
 @@ -0,0 +1,97 @@
@@ -970,7 +970,7 @@ index 000000000..2ecc803d5
 +#endif // GGML_CUDA_POLARQUANT
 diff --git a/ggml/src/ggml-cuda/polarquant.cu b/ggml/src/ggml-cuda/polarquant.cu
 new file mode 100644
-index 000000000..24723a27c
+index 0000000..24723a2
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/polarquant.cu
 @@ -0,0 +1,431 @@
@@ -1407,7 +1407,7 @@ index 000000000..24723a27c
 +#endif // GGML_CUDA_POLARQUANT
 diff --git a/ggml/src/ggml-cuda/polarquant.cuh b/ggml/src/ggml-cuda/polarquant.cuh
 new file mode 100644
-index 000000000..5acc7a683
+index 0000000..5acc7a6
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/polarquant.cuh
 @@ -0,0 +1,80 @@
@@ -1493,7 +1493,7 @@ index 000000000..5acc7a683
 +#endif // GGML_CUDA_POLARQUANT
 diff --git a/ggml/src/ggml-cuda/qjl-set-rows.cuh b/ggml/src/ggml-cuda/qjl-set-rows.cuh
 new file mode 100644
-index 000000000..b1f3bfbba
+index 0000000..b1f3bfb
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/qjl-set-rows.cuh
 @@ -0,0 +1,50 @@
@@ -1549,7 +1549,7 @@ index 000000000..b1f3bfbba
 +#endif // GGML_CUDA_QJL
 diff --git a/ggml/src/ggml-cuda/qjl.cu b/ggml/src/ggml-cuda/qjl.cu
 new file mode 100644
-index 000000000..812c4024d
+index 0000000..812c402
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/qjl.cu
 @@ -0,0 +1,387 @@
@@ -1942,7 +1942,7 @@ index 000000000..812c4024d
 +#endif // GGML_CUDA_QJL
 diff --git a/ggml/src/ggml-cuda/qjl.cuh b/ggml/src/ggml-cuda/qjl.cuh
 new file mode 100644
-index 000000000..36ebf9edd
+index 0000000..36ebf9e
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/qjl.cuh
 @@ -0,0 +1,96 @@
@@ -2044,7 +2044,7 @@ index 000000000..36ebf9edd
 +#endif // GGML_CUDA_QJL
 diff --git a/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-tbq3_0-tbq3_0.cu b/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-tbq3_0-tbq3_0.cu
 new file mode 100644
-index 000000000..eebeca996
+index 0000000..eebeca9
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-tbq3_0-tbq3_0.cu
 @@ -0,0 +1,7 @@
@@ -2057,7 +2057,7 @@ index 000000000..eebeca996
 +DECL_FATTN_VEC_CASE(256, GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ3_0);
 diff --git a/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-tbq3_0-tbq4_0.cu b/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-tbq3_0-tbq4_0.cu
 new file mode 100644
-index 000000000..da32734df
+index 0000000..da32734
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-tbq3_0-tbq4_0.cu
 @@ -0,0 +1,7 @@
@@ -2070,7 +2070,7 @@ index 000000000..da32734df
 +DECL_FATTN_VEC_CASE(256, GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0);
 diff --git a/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-tbq4_0-tbq3_0.cu b/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-tbq4_0-tbq3_0.cu
 new file mode 100644
-index 000000000..bf93166d9
+index 0000000..bf93166
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-tbq4_0-tbq3_0.cu
 @@ -0,0 +1,7 @@
@@ -2083,7 +2083,7 @@ index 000000000..bf93166d9
 +DECL_FATTN_VEC_CASE(256, GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ3_0);
 diff --git a/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-tbq4_0-tbq4_0.cu b/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-tbq4_0-tbq4_0.cu
 new file mode 100644
-index 000000000..efa5e425e
+index 0000000..efa5e42
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-tbq4_0-tbq4_0.cu
 @@ -0,0 +1,7 @@
@@ -2096,7 +2096,7 @@ index 000000000..efa5e425e
 +DECL_FATTN_VEC_CASE(256, GGML_TYPE_TBQ4_0, GGML_TYPE_TBQ4_0);
 diff --git a/ggml/src/ggml-cuda/turbo-tcq-codebook.h b/ggml/src/ggml-cuda/turbo-tcq-codebook.h
 new file mode 100644
-index 000000000..70c312a51
+index 0000000..70c312a
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/turbo-tcq-codebook.h
 @@ -0,0 +1,77 @@
@@ -2179,7 +2179,7 @@ index 000000000..70c312a51
 +};
 diff --git a/ggml/src/ggml-cuda/turbo-tcq.cu b/ggml/src/ggml-cuda/turbo-tcq.cu
 new file mode 100644
-index 000000000..7c3e4adbb
+index 0000000..7c3e4ad
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/turbo-tcq.cu
 @@ -0,0 +1,233 @@
@@ -2418,7 +2418,7 @@ index 000000000..7c3e4adbb
 +#endif // GGML_CUDA_TBQ3_TCQ
 diff --git a/ggml/src/ggml-cuda/turbo-tcq.cuh b/ggml/src/ggml-cuda/turbo-tcq.cuh
 new file mode 100644
-index 000000000..525b134d0
+index 0000000..525b134
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/turbo-tcq.cuh
 @@ -0,0 +1,61 @@
@@ -2485,7 +2485,7 @@ index 000000000..525b134d0
 +#endif // GGML_CUDA_TBQ3_TCQ
 diff --git a/ggml/src/ggml-cuda/turboquant.cuh b/ggml/src/ggml-cuda/turboquant.cuh
 new file mode 100644
-index 000000000..4734488a0
+index 0000000..4734488
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/turboquant.cuh
 @@ -0,0 +1,196 @@

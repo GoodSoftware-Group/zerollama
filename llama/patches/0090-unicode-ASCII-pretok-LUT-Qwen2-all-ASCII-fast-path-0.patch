@@ -11,7 +11,7 @@ the all-ASCII path for A/B. See docs/faster-bpe-tokenize.md (M15d / 0110).
  1 file changed, 188 insertions(+), 4 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index 3a53a7d4f..b9c250d30 100644
+index 3a53a7d..b9c250d 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
 @@ -4,6 +4,7 @@

@@ -156,7 +156,6 @@ json server_slot_stats::to_json() const {
     if (n_draft_tokens > 0) {
         base["draft_n"]          = n_draft_tokens;
         base["draft_n_accepted"] = n_draft_accepted;
-        // WHY accept_rate on timings: one scalar for dashboards without parsing per-pos.>>>>>>> eccd40f3 (Bump llama.cpp pin to ggml-org b11870 with tip-chase patches.)
         base["accept_rate"]      = (double) n_draft_accepted / (double) n_draft_tokens;
         if (n_draft_verif_steps > 0 && !n_accepted_per_pos.empty()) {
             json rates = json::array();
@@ -164,7 +163,6 @@ json server_slot_stats::to_json() const {
                 rates.push_back((double) accepted / (double) n_draft_verif_steps);
             }
             // DI3: verified empirical per-depth accept (not predicted confidence).
-            // WHY kind field: keep A/B scripts from confusing this with adaptive-dm EWMA.>>>>>>> eccd40f3 (Bump llama.cpp pin to ggml-org b11870 with tip-chase patches.)
             base["accept_by_pos"]      = rates;
             base["accept_by_pos_kind"] = "verified";
         }
@@ -231,6 +229,9 @@ std::vector<std::string> server_model_output_modalities(common_decision_type dec
         case COMMON_DECISION_TYPE_LFM2_D1:
         case COMMON_DECISION_TYPE_LFM2_D1_OMNI:
         case COMMON_DECISION_TYPE_H2O_LIGHTNING:
+        case COMMON_DECISION_TYPE_MINICPM_OCR_JEV:
+        case COMMON_DECISION_TYPE_LFM3_D1:
+        case COMMON_DECISION_TYPE_LFM3_D1_OMNI:
             out = {"decisions"};
             break;
         case COMMON_DECISION_TYPE_GRANITE_SWITCH:
@@ -1417,7 +1418,7 @@ static void oaicompat_content_load_media(json & content, const server_chat_param
             p.erase("input_video");
             p.erase("video_url");
 
-        } else if (type != "text") {
+        } else if (type != "text" && type != "tool_reference") {
             throw std::invalid_argument("unsupported content[].type");
         }
     }
@@ -1543,7 +1544,7 @@ json oaicompat_chat_params_parse(
     inputs.json_schema            = json_schema.is_null() ? "" : json_schema.dump();
     inputs.grammar                = grammar;
     inputs.use_jinja              = opt.use_jinja;
-    inputs.parallel_tool_calls    = json_value(body, "parallel_tool_calls", caps["supports_parallel_tool_calls"]);
+    inputs.parallel_tool_calls    = json_value(body, "parallel_tool_calls", caps.at("supports_parallel_tool_calls").get<bool>());
     inputs.add_generation_prompt  = json_value(body, "add_generation_prompt", true);
     inputs.continue_final_message = body.contains("continue_final_message") ?
         common_chat_continuation_parse(body.at("continue_final_message")) :

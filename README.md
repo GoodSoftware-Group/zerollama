@@ -175,7 +175,7 @@ print(chat(model='gemma3', messages=[{'role': 'user', 'content': 'Why is the sky
 ZEROLLAMA_GPU_JOBS=false OLLAMA_NOPRUNE=1 ./zerollama serve
 ```
 
-Vendor pin: **`f280b269` / b10615** — [runtime/LLAMA_CPP_PIN.md](runtime/LLAMA_CPP_PIN.md). After patch edits: `make -f Makefile.sync clean apply-patches && ./scripts/vendor/sync_vendor_llama.sh`.
+Vendor pin: **`6f1e6543` / b12119** — [runtime/LLAMA_CPP_PIN.md](runtime/LLAMA_CPP_PIN.md). After patch edits: `make -f Makefile.sync clean apply-patches && ./scripts/vendor/sync_vendor_llama.sh`.
 
 ## Documentation
 

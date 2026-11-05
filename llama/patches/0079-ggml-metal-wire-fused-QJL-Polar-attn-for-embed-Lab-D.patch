@@ -19,7 +19,7 @@ Subject: [PATCH] ggml-metal: wire fused QJL+Polar attn for embed (Lab D1b)
  create mode 100644 ggml/src/ggml-metal/ggml-metal-ops.h.rej
 
 diff --git a/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_polar.metal b/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_polar.metal
-index e8ce17b45..1ad528242 100644
+index e8ce17b..1ad5282 100644
 --- a/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_polar.metal
 +++ b/ggml/src/ggml-metal/eliza-shipped/fused_attn_qjl_polar.metal
 @@ -41,9 +41,11 @@ using namespace metal;
@@ -55,7 +55,7 @@ index e8ce17b45..1ad528242 100644
  
  // Decode one block_q4_polar -> 128 real head-dim V values via v_buf, FMA into
 diff --git a/ggml/src/ggml-metal/eliza-shipped/qjl_set_rows.metal b/ggml/src/ggml-metal/eliza-shipped/qjl_set_rows.metal
-index a637839ca..32686ab3d 100644
+index a637839..32686ab 100644
 --- a/ggml/src/ggml-metal/eliza-shipped/qjl_set_rows.metal
 +++ b/ggml/src/ggml-metal/eliza-shipped/qjl_set_rows.metal
 @@ -4206,3 +4206,29 @@ template [[host_name("kernel_set_rows_f32_i64_qjl1_256")]] kernel void kernel_se
@@ -89,10 +89,10 @@ index a637839ca..32686ab3d 100644
 +    out[(ulong(qp) * ulong(n_heads) + ulong(hq)) * ulong(proj_dim) + ulong(j)] = acc;
 +}
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
-index f3f5d4d77..2cd601983 100644
+index 463d57c..e759bbb 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
-@@ -701,6 +701,27 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rwkv(ggml_metal_
+@@ -742,6 +742,27 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rwkv(ggml_metal_
      return res;
  }
  
@@ -121,10 +121,10 @@ index f3f5d4d77..2cd601983 100644
      char base[256];
      char name[256];
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index bb01046e4..fdc2ab729 100644
+index 1fb5bd8..be3044a 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
-@@ -137,6 +137,8 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_conv_
+@@ -138,6 +138,8 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_conv_
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_scan          (ggml_metal_library_t lib, const struct ggml_tensor * op, bool tail);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_ssm_scan_ssd_mma  (ggml_metal_library_t lib, const struct ggml_tensor * op);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rwkv              (ggml_metal_library_t lib, const struct ggml_tensor * op);
@@ -134,10 +134,10 @@ index bb01046e4..fdc2ab729 100644
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_solve_tri         (ggml_metal_library_t lib, const struct ggml_tensor * op);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_ext        (ggml_metal_library_t lib, const struct ggml_tensor * op, int nsg, int nxpsg, int r1ptg);
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index a7fbb6890..3fdd15b56 100644
+index f300942..8035525 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -2001,6 +2001,33 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -2045,6 +2045,33 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
          case GGML_OP_RWKV_WKV6:
          case GGML_OP_RWKV_WKV7:
              return true;
@@ -172,10 +172,10 @@ index a7fbb6890..3fdd15b56 100644
              return has_simdgroup_reduction && op->src[2]->ne[0] % 32 == 0;
          case GGML_OP_SOLVE_TRI:
 diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
-index 9db266f44..215bc8032 100644
+index 11c15fe..2d0d7de 100644
 --- a/ggml/src/ggml-metal/ggml-metal-impl.h
 +++ b/ggml/src/ggml-metal/ggml-metal-impl.h
-@@ -1067,6 +1067,22 @@ typedef struct {
+@@ -1081,6 +1081,22 @@ typedef struct {
      uint64_t nb3;
  } ggml_metal_kargs_set_rows;
  
@@ -199,10 +199,10 @@ index 9db266f44..215bc8032 100644
      int32_t  ne00;
      int32_t  ne01;
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index 8962cadea..5712b7d85 100644
+index 771f773..2e55fd3 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -482,6 +482,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
+@@ -486,6 +486,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
              {
                  n_fuse = ggml_metal_op_flash_attn_ext(ctx, idx);
              } break;
@@ -213,8 +213,8 @@ index 8962cadea..5712b7d85 100644
          case GGML_OP_SET:
              {
                  n_fuse = ggml_metal_op_set(ctx, idx);
-@@ -3430,6 +3434,141 @@ size_t ggml_metal_op_flash_attn_ext_extra_idx(const ggml_tensor * op) {
-     return GGML_PAD(sizeof(int32_t)*(size_t) n_kv_max_padded*ne31*ne32*ne33, 16);
+@@ -3590,6 +3594,141 @@ size_t ggml_metal_op_flash_attn_ext_extra_rows(const ggml_tensor * op) {
+     return k_size + v_size;
  }
  
 +size_t ggml_metal_op_fused_attn_qjl_extra_q_sketch(const ggml_tensor * op) {
@@ -356,10 +356,10 @@ index 8962cadea..5712b7d85 100644
      ggml_tensor * op = ctx->node(idx);
  
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h
-index e14a2dd5f..2d386df04 100644
+index 47889fa..f824a45 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.h
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.h
-@@ -76,6 +76,7 @@ int ggml_metal_op_mul_mat           (ggml_metal_op_t ctx, int idx);
+@@ -78,6 +78,7 @@ int ggml_metal_op_mul_mat           (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_mul_mat_id        (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_add_id            (ggml_metal_op_t ctx, int idx);
  int ggml_metal_op_flash_attn_ext    (ggml_metal_op_t ctx, int idx);
@@ -369,7 +369,7 @@ index e14a2dd5f..2d386df04 100644
  int ggml_metal_op_l2_norm           (ggml_metal_op_t ctx, int idx);
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h.rej b/ggml/src/ggml-metal/ggml-metal-ops.h.rej
 new file mode 100644
-index 000000000..cc55f6e96
+index 0000000..cc55f6e
 --- /dev/null
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.h.rej
 @@ -0,0 +1,10 @@
@@ -384,12 +384,12 @@ index 000000000..cc55f6e96
 + int ggml_metal_op_repeat            (ggml_metal_op_t ctx, int idx);
 + int ggml_metal_op_acc               (ggml_metal_op_t ctx, int idx);
 diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
-index 9dfc89534..c2aeec67a 100644
+index d750e60..69a5a08 100644
 --- a/ggml/src/ggml-metal/ggml-metal.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal.cpp
-@@ -235,6 +235,10 @@ static size_t ggml_backend_metal_buffer_type_get_alloc_size(ggml_backend_buffer_
-                 res += ggml_metal_op_flash_attn_ext_extra_kv_f16(tensor);
+@@ -302,6 +302,10 @@ static size_t ggml_backend_metal_buffer_type_get_alloc_size(ggml_backend_buffer_
                  res += ggml_metal_op_flash_attn_ext_extra_idx(tensor);
+                 res += ggml_metal_op_flash_attn_ext_extra_rows(tensor);
              } break;
 +        case GGML_OP_FUSED_ATTN_QJL_TBQ:
 +            {
@@ -399,15 +399,15 @@ index 9dfc89534..c2aeec67a 100644
          case GGML_OP_ARGSORT:
              {
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 67582e65b..cfc08b198 100644
+index 7bcc9c7..d256aa0 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
-@@ -245,8 +245,6 @@ public:
+@@ -254,8 +254,6 @@ public:
      void set_input_k_shift(ggml_tensor * dst) const;
  
-     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
+     void set_input_attn_mask (const llm_attn_mask & attn_mask, const llama_ubatch * ubatch, bool causal_attn) const;
 -    // Dual Chunk Attention stage mask: dca_stage 0=intra, 1=succ, 2=inter
 -    void set_input_kq_mask_dca(ggml_tensor * dst, const llama_ubatch * ubatch, int dca_stage) const;
      void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
  
-     void set_input_k_rot(ggml_tensor * dst) const;
+     // true if llama_kv_cell_ext holds information that has to survive a state save/restore

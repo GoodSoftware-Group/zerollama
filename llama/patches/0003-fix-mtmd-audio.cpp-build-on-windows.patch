@@ -8,7 +8,7 @@ Subject: [PATCH] fix mtmd-audio.cpp build on windows
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/tools/mtmd/mtmd-audio.cpp b/tools/mtmd/mtmd-audio.cpp
-index 558475458..861a3397d 100644
+index 74d2655..78fe719 100644
 --- a/tools/mtmd/mtmd-audio.cpp
 +++ b/tools/mtmd/mtmd-audio.cpp
 @@ -1,6 +1,6 @@
@@ -16,6 +16,6 @@ index 558475458..861a3397d 100644
  #include "mtmd-audio.h"
  
 -#define _USE_MATH_DEFINES // for M_PI
+ #include <cfloat>
  #include <cmath>
  #include <cstdint>
- #include <cstring>

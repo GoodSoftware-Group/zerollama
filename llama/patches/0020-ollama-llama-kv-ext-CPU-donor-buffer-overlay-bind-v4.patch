@@ -6,12 +6,12 @@ Subject: [PATCH] ollama: llama-kv-ext CPU donor-buffer overlay bind (v48)
 ---
  include/llama-kv-ext.h      |  60 ++++++++++++++++
  src/CMakeLists.txt          |   2 +
- src/llama-kv-cache.cpp      |  61 +++++++++++++++-
+ src/llama-kv-cache.cpp      |  36 +++++++++-
  src/llama-memory-kv-ext.cpp | 137 ++++++++++++++++++++++++++++++++++++
- 4 files changed, 259 insertions(+), 1 deletion(-)
+ 4 files changed, 234 insertions(+), 1 deletion(-)
 
 diff --git a/include/llama-kv-ext.h b/include/llama-kv-ext.h
-index 32705a314..c95415fcb 100644
+index 32705a3..c95415f 100644
 --- a/include/llama-kv-ext.h
 +++ b/include/llama-kv-ext.h
 @@ -239,7 +239,67 @@ LLAMA_API int32_t llama_memory_kv_page_alias_validate(
@@ -83,7 +83,7 @@ index 32705a314..c95415fcb 100644
  #endif
  
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 0e7233924..12878ceda 100644
+index 0e72339..12878ce 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -83,3 +83,5 @@ target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_WRITABLE_PAGE_MAP=1)
@@ -93,7 +93,7 @@ index 0e7233924..12878ceda 100644
 +# zerollama Phase 15 v48: CPU-only donor-buffer overlay bind (opt-in, zero-copy KV cache alloc)
 +target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_DONOR_BUFFER=1)
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index df71dbac9..9c74fa5cc 100644
+index bb59ca5..c77acc3 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -4,6 +4,9 @@
@@ -106,73 +106,48 @@ index df71dbac9..9c74fa5cc 100644
  
  #include <algorithm>
  #include <cassert>
-@@ -282,7 +285,63 @@ llama_kv_cache::llama_kv_cache(
-                 t->buffer = buf; // set dummy buffer for KV cache so that the backend scheduler won't try to allocate it
-             }
-         } else {
--            buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft); // real buffer
-+            buf = nullptr;
+@@ -274,7 +277,38 @@ llama_kv_cache::llama_kv_cache(
+ 
+     // allocate the tensors and initialize the buffers to avoid NaNs in the padding
+     for (auto & [buft, ctx] : ctx_map) {
+-        ggml_backend_buffer_t buf = ctxs_bufs.emplace(std::move(ctx), buft, "kv cache");
++        ggml_backend_buffer_t buf = nullptr;
 +
-+            /*
-+             * Phase 15 v48 — CPU-only donor-buffer overlay bind.
-+             *
-+             * WHY only ggml_backend_buft_is_host(buft): device (Metal/CUDA) buft
-+             * groups never consult the donor registry — there is no upstream
-+             * primitive equivalent to ggml_backend_cpu_buffer_from_ptr for device
-+             * memory, so this stays a host-only zero-copy path (see
-+             * llama_kv_ext_donor_try_consume doc in llama-kv-ext.h).
-+             *
-+             * WHY query the size first: reusing the same size-query function the
-+             * normal path uses (ggml_backend_alloc_ctx_tensors_from_buft_size)
-+             * guarantees the donor-consume decision is judged against the exact
-+             * byte count ggml would otherwise allocate — an undersized donor is
-+             * rejected here and falls through to normal allocation rather than
-+             * partially binding.
-+             */
-+            if (ggml_backend_buft_is_host(buft)) {
-+                const size_t required_size = ggml_backend_alloc_ctx_tensors_from_buft_size(ctx.get(), buft);
-+                buf = llama_kv_ext_donor_try_consume(required_size);
-+                if (buf) {
-+                    LLAMA_LOG_INFO("%s: %10s KV buffer backed by external donor (zero-copy, %8.2f MiB)\n",
-+                            __func__, ggml_backend_buffer_name(buf), required_size/1024.0/1024.0);
-+                    // Wire tensor->data / tensor->buffer for every tensor in this
-+                    // ctx into the donor buffer, mirroring
-+                    // ggml_backend_alloc_ctx_tensors_from_buft_impl's own
-+                    // alloc_tensor_range (ggml-alloc.c): only real allocations
-+                    // (view_src == NULL) consume buffer space via ggml_tallocr_alloc;
-+                    // view tensors (k_stream/v_stream, created via ggml_view_2d in
-+                    // this ctor even when n_stream == 1) must instead derive their
-+                    // address from their view_src, exactly like ggml_backend_view_init
-+                    // does, or their pointers end up pointing at unrelated memory and
-+                    // every subsequent real tensor's offset is corrupted by the
-+                    // erroneously double-counted view size.
-+                    const size_t align = ggml_backend_buft_get_alignment(buft);
-+                    size_t offset = 0;
-+                    for (ggml_tensor * t = ggml_get_first_tensor(ctx.get()); t != nullptr; t = ggml_get_next_tensor(ctx.get(), t)) {
-+                        if (t->view_src != nullptr) {
-+                            // Deferred: view_src is guaranteed to already be placed
-+                            // because ggml contexts are append-only and llama_kv_cache
-+                            // always creates k/v before their k_stream/v_stream views.
-+                            t->buffer = t->view_src->buffer;
-+                            t->data   = (char *) t->view_src->data + t->view_offs;
-+                            continue;
-+                        }
-+                        offset = GGML_PAD(offset, align);
-+                        t->buffer = buf;
-+                        t->data   = (char *) ggml_backend_buffer_get_base(buf) + offset;
-+                        offset += ggml_backend_buft_get_alloc_size(buft, t);
++        // Phase 15 v48 — CPU-only donor-buffer overlay bind.
++        // no_alloc stays on llama_memory_bufs::emplace (dummy buffer). Device
++        // bufts are not handled here; a later patch adds the dev donor path.
++        if (!ctxs_bufs.no_alloc && ggml_backend_buft_is_host(buft)) {
++            const size_t required_size = ggml_backend_alloc_ctx_tensors_from_buft_size(ctx.get(), buft);
++            buf = llama_kv_ext_donor_try_consume(required_size);
++            if (buf) {
++                LLAMA_LOG_INFO("%s: %10s KV buffer backed by external donor (zero-copy, %8.2f MiB)\n",
++                        __func__, ggml_backend_buffer_name(buf), required_size/1024.0/1024.0);
++                const size_t align = ggml_backend_buft_get_alignment(buft);
++                size_t offset = 0;
++                for (ggml_tensor * t = ggml_get_first_tensor(ctx.get()); t != nullptr; t = ggml_get_next_tensor(ctx.get(), t)) {
++                    if (t->view_src != nullptr) {
++                        t->buffer = t->view_src->buffer;
++                        t->data   = (char *) t->view_src->data + t->view_offs;
++                        continue;
 +                    }
++                    offset = GGML_PAD(offset, align);
++                    t->buffer = buf;
++                    t->data   = (char *) ggml_backend_buffer_get_base(buf) + offset;
++                    offset += ggml_backend_buft_get_alloc_size(buft, t);
 +                }
++                ggml_backend_buffer_clear(buf, 0);
++                ctxs_bufs.bufs.emplace_back(std::move(ctx), buf);
 +            }
++        }
 +
-+            if (!buf) {
-+                buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft); // real buffer
-+            }
-         }
-         if (!buf) {
-             throw std::runtime_error("failed to allocate buffer for kv cache");
++        if (!buf) {
++            buf = ctxs_bufs.emplace(std::move(ctx), buft, "kv cache");
++        }
+ 
+         LLAMA_LOG_INFO("%s: %10s KV buffer size = %8.2f MiB\n", __func__, ggml_backend_buffer_name(buf), ggml_backend_buffer_get_size(buf)/1024.0/1024.0);
+     }
 diff --git a/src/llama-memory-kv-ext.cpp b/src/llama-memory-kv-ext.cpp
-index d4bef15b4..b33858223 100644
+index d4bef15..b338582 100644
 --- a/src/llama-memory-kv-ext.cpp
 +++ b/src/llama-memory-kv-ext.cpp
 @@ -18,10 +18,13 @@

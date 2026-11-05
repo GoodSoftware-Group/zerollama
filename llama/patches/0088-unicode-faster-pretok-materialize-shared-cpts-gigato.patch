@@ -10,7 +10,7 @@ Subject: [PATCH] unicode: faster pretok materialize + shared cpts (gigatoken
  create mode 100644 src/unicode.cpp.rej
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index 796f8e8fb..500b52d31 100644
+index 796f8e8..500b52d 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
 @@ -216,30 +216,27 @@ static std::vector<int> unicode_cpt_to_byte_map() {
@@ -219,7 +219,7 @@ index 796f8e8fb..500b52d31 100644
      }
 diff --git a/src/unicode.cpp.rej b/src/unicode.cpp.rej
 new file mode 100644
-index 000000000..70c722560
+index 0000000..70c7225
 --- /dev/null
 +++ b/src/unicode.cpp.rej
 @@ -0,0 +1,46 @@

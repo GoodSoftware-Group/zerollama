@@ -8,7 +8,7 @@ Subject: [PATCH] fix: close dequantize_fp8_e4m3 brace (0077 FP8 CUDA port)
  1 file changed, 2 insertions(+)
 
 diff --git a/ggml/src/ggml-cuda/dequantize.cuh b/ggml/src/ggml-cuda/dequantize.cuh
-index a13ce970c..3ca35b01b 100644
+index a13ce97..3ca35b0 100644
 --- a/ggml/src/ggml-cuda/dequantize.cuh
 +++ b/ggml/src/ggml-cuda/dequantize.cuh
 @@ -129,6 +129,8 @@ static __device__ __forceinline__ void dequantize_fp8_e4m3(const void * vx, cons

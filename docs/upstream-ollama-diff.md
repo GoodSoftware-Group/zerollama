@@ -25,7 +25,7 @@ Clone beside zerollama (no merge into this repo):
 # default: ../ollama-upstream
 ```
 
-**Last pulled:** 2026-10-17 — `../ollama-upstream` `main` @ **`d1ed3fd1`** (latest tag **v0.40.6**; tip **v0.40.6-1-gd1ed3fd1**; upstream `LLAMA_CPP_VERSION` tip **b11669** — zl stays **b11351**; MLX **`a59cc231`** / MLX-C **`ebc88f10`**). Previous triage tip was **`e3cddc3e`** / v0.40.1-rc0.
+**Last pulled:** 2026-11-04 — `../ollama-upstream` `main` @ **`a6d33251`** (latest release **v0.40.14**; tip **v0.40.15-rc1**). Selective bring-overs (no rebase): `OllamaCompat` 0.40.14, #19173 empty d3 state, #19192 Responses readable input, #19476 cloud web_search decode, #19228 qwen3coder literal `</function>`, #19312 Kimi empty `[]` tool turns. Previous triage tip was **`d1ed3fd1`** / v0.40.6.
 
 Build and run on a different port for A/B:
 

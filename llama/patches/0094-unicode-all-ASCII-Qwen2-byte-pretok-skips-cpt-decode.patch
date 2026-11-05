@@ -9,7 +9,7 @@ Subject: [PATCH] unicode: all-ASCII Qwen2 byte pretok skips cpt decode (0114)
  2 files changed, 176 insertions(+), 43 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index b9c250d30..1f1c68154 100644
+index b9c250d..1f1c681 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
 @@ -6,6 +6,7 @@
@@ -199,7 +199,7 @@ index b9c250d30..1f1c68154 100644
  static std::vector<size_t> unicode_regex_split_custom_gpt2(const std::vector<uint32_t> & cpts, const std::vector<size_t> & offsets) {
      std::vector<size_t> bpe_offsets; // store the offset of each word
 diff --git a/src/unicode.cpp.rej b/src/unicode.cpp.rej
-index 70c722560..d7eb2dd25 100644
+index 70c7225..d7eb2dd 100644
 --- a/src/unicode.cpp.rej
 +++ b/src/unicode.cpp.rej
 @@ -1,46 +1,14 @@

@@ -77,7 +77,10 @@ func systemOneEncodingFromDecisionType(dtype string) string {
 		return "clef"
 	case "strands":
 		return "strands"
-	case "tev1", "nimble", "kev", "pplx-decider", "vllm-d3", "d3":
+	case "vllm-d3", "d3":
+		// Preserve d3 identity for empty-state allowance; Compile still uses tev1 prompts.
+		return "vllm-d3"
+	case "tev1", "nimble", "kev", "pplx-decider":
 		// Rows / shared-prefix score encodings share the tev1 prompt compiler.
 		return "tev1"
 	default:
@@ -123,8 +126,8 @@ func decisionScoreEncoding(m *Model) string {
 	switch r := strings.ToLower(strings.TrimSpace(m.Config.Renderer)); r {
 	case "tev1", "clef", "strands":
 		return r
-	case "d3":
-		return "tev1"
+	case "d3", "vllm-d3":
+		return "vllm-d3"
 	}
 	fam := strings.ToLower(m.Config.ModelFamily)
 	if strings.Contains(fam, "clef") {
@@ -133,8 +136,11 @@ func decisionScoreEncoding(m *Model) string {
 	if strings.Contains(fam, "strands") {
 		return "strands"
 	}
+	if strings.Contains(fam, "d3") {
+		return "vllm-d3"
+	}
 	if strings.Contains(fam, "tev1") || strings.Contains(fam, "nimble") ||
-		strings.Contains(fam, "kev") || strings.Contains(fam, "pplx") || strings.Contains(fam, "d3") {
+		strings.Contains(fam, "kev") || strings.Contains(fam, "pplx") {
 		return "tev1"
 	}
 	if enc := systemOneEncodingFromDecisionType(ggufDecisionType(m)); enc != "" {

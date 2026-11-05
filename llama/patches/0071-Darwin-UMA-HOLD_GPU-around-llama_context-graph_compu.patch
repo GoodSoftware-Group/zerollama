@@ -5,14 +5,14 @@ Subject: [PATCH] Darwin UMA HOLD_GPU around llama_context::graph_compute
 
 ---
  src/CMakeLists.txt        | 11 +++++++++++
- src/llama-context.cpp     |  4 ++++
+ src/llama-context.cpp     |  5 ++++-
  src/llama-context.cpp.rej | 35 +++++++++++++++++++++++++++++++++++
  src/llama.cpp             | 28 ++++++++++++++++++++++++++++
- 4 files changed, 78 insertions(+)
+ 4 files changed, 78 insertions(+), 1 deletion(-)
  create mode 100644 src/llama-context.cpp.rej
 
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index a3c2fca14..d31856f22 100644
+index a3c2fca..d31856f 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -76,6 +76,17 @@ target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
@@ -34,13 +34,14 @@ index a3c2fca14..d31856f22 100644
      set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
      target_compile_definitions(llama PRIVATE LLAMA_BUILD)
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index f13c30580..e5fc3b315 100644
+index a246581..0ddb0a0 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -14,6 +14,10 @@
+@@ -14,7 +14,10 @@
  #include "llama-sampler.h"
  #include "llama.h"
  
+-#include <algorithm>
 +#if defined(ZEROLLAMA_UMA)
 +#include "uma_glue.h"
 +#endif
@@ -50,7 +51,7 @@ index f13c30580..e5fc3b315 100644
  #include <cstring>
 diff --git a/src/llama-context.cpp.rej b/src/llama-context.cpp.rej
 new file mode 100644
-index 000000000..e16946401
+index 0000000..e169464
 --- /dev/null
 +++ b/src/llama-context.cpp.rej
 @@ -0,0 +1,35 @@
@@ -90,7 +91,7 @@ index 000000000..e16946401
 + 
 +     return status;
 diff --git a/src/llama.cpp b/src/llama.cpp
-index 9beb14841..47fd9b572 100644
+index e3699ea..e123ab6 100644
 --- a/src/llama.cpp
 +++ b/src/llama.cpp
 @@ -16,6 +16,11 @@

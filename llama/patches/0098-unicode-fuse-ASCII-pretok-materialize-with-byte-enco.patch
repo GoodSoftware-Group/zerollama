@@ -12,7 +12,7 @@ Qwen2 ASCII; identity held. See docs/faster-bpe-tokenize.md (M15d / 0118).
  1 file changed, 70 insertions(+), 37 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index a14479093..a52f573ed 100644
+index a144790..a52f573 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
 @@ -217,36 +217,20 @@ static std::vector<int> unicode_cpt_to_byte_map() {

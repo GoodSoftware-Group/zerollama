@@ -9,10 +9,10 @@ Patches 0071 and 0073 each added ggml_vec_dot_tbq{3,4}_0_f32; keep one copy so M
  1 file changed, 48 deletions(-)
 
 diff --git a/ggml/src/ggml-cpu/quants.c b/ggml/src/ggml-cpu/quants.c
-index 6cdc1c3e9..a4e5a99cc 100644
+index da03575..13d590a 100644
 --- a/ggml/src/ggml-cpu/quants.c
 +++ b/ggml/src/ggml-cpu/quants.c
-@@ -700,54 +700,6 @@ void ggml_vec_dot_tbq4_0_f32(int n, float * GGML_RESTRICT s, size_t bs, const vo
+@@ -747,54 +747,6 @@ void ggml_vec_dot_tbq4_0_f32(int n, float * GGML_RESTRICT s, size_t bs, const vo
      *s = sumf;
  }
  

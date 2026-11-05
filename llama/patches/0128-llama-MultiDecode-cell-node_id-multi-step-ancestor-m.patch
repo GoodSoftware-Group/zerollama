@@ -12,7 +12,7 @@ Subject: [PATCH] llama: MultiDecode cell node_id + multi-step ancestor mask
  5 files changed, 214 insertions(+), 36 deletions(-)
 
 diff --git a/examples/multidecode/multidecode-exactness.cpp b/examples/multidecode/multidecode-exactness.cpp
-index ea2feb573..28cf43e93 100644
+index ea2feb5..28cf43e 100644
 --- a/examples/multidecode/multidecode-exactness.cpp
 +++ b/examples/multidecode/multidecode-exactness.cpp
 @@ -10,6 +10,7 @@
@@ -198,10 +198,10 @@ index ea2feb573..28cf43e93 100644
      return 0;
  }
 diff --git a/include/llama.h b/include/llama.h
-index b45d5e31e..b0d559409 100644
+index 449bfd1..a2fc8f3 100644
 --- a/include/llama.h
 +++ b/include/llama.h
-@@ -265,7 +265,10 @@ extern "C" {
+@@ -266,7 +266,10 @@ extern "C" {
      // - parent : MultiDecode ancestor mask (zerollama / WestCoastML). If non-NULL, length n_tokens;
      //            parent[i] is the batch index of token i's parent, or -1 for a root. pos[] should be
      //            tree depth for RoPE; KQ mask keeps only self+ancestors (siblings masked). NULL = off
@@ -213,7 +213,7 @@ index b45d5e31e..b0d559409 100644
      //
      typedef struct llama_batch {
          int32_t n_tokens;
-@@ -276,7 +279,9 @@ extern "C" {
+@@ -277,7 +280,9 @@ extern "C" {
          int32_t      *  n_seq_id;
          llama_seq_id ** seq_id;
          int8_t       *  logits;   // TODO: rename this to "output"
@@ -225,10 +225,10 @@ index b45d5e31e..b0d559409 100644
  
      enum llama_model_kv_override_type {
 diff --git a/src/llama-batch.cpp b/src/llama-batch.cpp
-index 01e1a6a0e..688b52c6e 100644
+index 04efb54..05760f7 100644
 --- a/src/llama-batch.cpp
 +++ b/src/llama-batch.cpp
-@@ -1012,6 +1012,8 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
+@@ -1041,6 +1041,8 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
      }
  
      int32_t * parent_ptr = batch.parent ? udata->parent.data() : nullptr;
@@ -237,7 +237,7 @@ index 01e1a6a0e..688b52c6e 100644
  
      llama_ubatch res {
          /*.b_equal_seqs =*/ equal_seqs,
-@@ -1143,6 +1145,8 @@ struct llama_batch llama_batch_get_one(
+@@ -1174,6 +1176,8 @@ struct llama_batch llama_batch_get_one(
          /*seq_id   =*/ nullptr,
          /*logits   =*/ nullptr,
          /*parent   =*/ nullptr,
@@ -246,7 +246,7 @@ index 01e1a6a0e..688b52c6e 100644
      };
  }
  
-@@ -1156,6 +1160,8 @@ struct llama_batch llama_batch_init(int32_t n_tokens_alloc, int32_t embd, int32_
+@@ -1187,6 +1191,8 @@ struct llama_batch llama_batch_init(int32_t n_tokens_alloc, int32_t embd, int32_
          /*seq_id   =*/ nullptr,
          /*logits   =*/ nullptr,
          /*parent   =*/ nullptr,
@@ -255,7 +255,7 @@ index 01e1a6a0e..688b52c6e 100644
      };
  
      if (embd) {
-@@ -1191,6 +1197,8 @@ void llama_batch_free(struct llama_batch batch) {
+@@ -1222,6 +1228,8 @@ void llama_batch_free(struct llama_batch batch) {
      }
      if (batch.logits)   free(batch.logits);
      if (batch.parent)   free(batch.parent);
@@ -265,7 +265,7 @@ index 01e1a6a0e..688b52c6e 100644
  
  
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 293454d39..c5d92f4bc 100644
+index 101017f..5516414 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -19,6 +19,7 @@
@@ -276,7 +276,7 @@ index 293454d39..c5d92f4bc 100644
  #include <vector>
  
  static bool ggml_is_power_of_2(int n) {
-@@ -1761,6 +1762,20 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch &
+@@ -1753,6 +1754,20 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch &
                  cells.ext_set(idx, ext);
              }
  
@@ -297,7 +297,7 @@ index 293454d39..c5d92f4bc 100644
              for (int32_t s = 0; s < ubatch.n_seq_id[i]; s++) {
                  cells.seq_add(idx, ubatch.seq_id[i][s]);
              }
-@@ -2643,7 +2658,7 @@ void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llam
+@@ -2771,7 +2786,7 @@ void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llam
  
      GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
      GGML_ASSERT(ubatch->parent != nullptr);
@@ -306,7 +306,7 @@ index 293454d39..c5d92f4bc 100644
      GGML_ASSERT(swa_type == LLAMA_SWA_TYPE_NONE);
  
      const int64_t n_kv     = dst->ne[0];
-@@ -2652,12 +2667,20 @@ void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llam
+@@ -2780,12 +2795,20 @@ void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llam
      GGML_ASSERT(n_tokens % n_stream == 0);
      GGML_ASSERT(sinfo.size() == n_tokens);
  
@@ -333,7 +333,7 @@ index 293454d39..c5d92f4bc 100644
      }
  
      auto fill = [&](auto * data) {
-@@ -2665,19 +2688,22 @@ void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llam
+@@ -2793,19 +2816,22 @@ void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llam
          const T mask_keep = llama_cast<T>(0.0f);
          const T mask_drop = llama_cast<T>(-INFINITY);
  
@@ -367,7 +367,7 @@ index 293454d39..c5d92f4bc 100644
                  ++depth;
              }
  
-@@ -2687,11 +2713,10 @@ void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llam
+@@ -2815,11 +2841,10 @@ void llama_kv_cache::set_input_kq_mask_multidecode(ggml_tensor * dst, const llam
                      data[idst + j] = mask_drop;
                      continue;
                  }
@@ -382,10 +382,10 @@ index 293454d39..c5d92f4bc 100644
                  }
              }
 diff --git a/src/llama-kv-cells.h b/src/llama-kv-cells.h
-index 83ea89405..2a5974a5f 100644
+index 0b01b19..f73f57d 100644
 --- a/src/llama-kv-cells.h
 +++ b/src/llama-kv-cells.h
-@@ -43,6 +43,8 @@ public:
+@@ -75,6 +75,8 @@ public:
              ext[i].reset();
              shift[i] =  0;
              seq[i].reset();
@@ -394,16 +394,16 @@ index 83ea89405..2a5974a5f 100644
          }
  
          has_shift = false;
-@@ -71,6 +73,8 @@ public:
+@@ -104,6 +106,8 @@ public:
          ext.resize(n);
          shift.resize(n);
          seq.resize(n);
 +        node_id.resize(n);
 +        parent_node_id.resize(n);
  
-         reset();
-     }
-@@ -85,6 +89,8 @@ public:
+         for (uint32_t s = 0; s < LLAMA_MAX_SEQ; ++s) {
+             seq_bits[s].clear();
+@@ -122,6 +126,8 @@ public:
          ext.resize(n);
          shift.resize(n, 0);
          seq.resize(n);
@@ -412,7 +412,7 @@ index 83ea89405..2a5974a5f 100644
      }
  
      // Drop empty tail. All used cells must already sit in [0, n).
-@@ -94,6 +100,8 @@ public:
+@@ -131,6 +137,8 @@ public:
          ext.resize(n);
          shift.resize(n);
          seq.resize(n);
@@ -421,7 +421,7 @@ index 83ea89405..2a5974a5f 100644
      }
  
      std::vector<uint32_t> used_idxs() const {
-@@ -161,6 +169,8 @@ public:
+@@ -198,6 +206,8 @@ public:
              res.pos[j] = pos[idx];
              res.ext[j] = ext[idx];
              res.seq[j] = seq[idx];
@@ -430,7 +430,7 @@ index 83ea89405..2a5974a5f 100644
  
              assert(shift[idx] == 0);
          }
-@@ -180,6 +190,8 @@ public:
+@@ -217,6 +227,8 @@ public:
              res.pos[j] = pos[idx];
              res.ext[j] = ext[idx];
              res.seq[j] = seq[idx];
@@ -439,7 +439,7 @@ index 83ea89405..2a5974a5f 100644
  
              assert(shift[idx] == 0);
          }
-@@ -209,6 +221,8 @@ public:
+@@ -246,6 +258,8 @@ public:
              pos[idx] = other.pos[j];
              ext[idx] = other.ext[j];
              seq[idx] = other.seq[j];
@@ -448,7 +448,7 @@ index 83ea89405..2a5974a5f 100644
  
              if (pos[idx] != -1) {
                  seq_pos_add(i + j);
-@@ -240,6 +254,8 @@ public:
+@@ -277,6 +291,8 @@ public:
              pos[idx] = other.pos[j];
              ext[idx] = other.ext[j];
              seq[idx] = other.seq[j];
@@ -457,7 +457,7 @@ index 83ea89405..2a5974a5f 100644
  
              if (pos[idx] != -1) {
                  seq_pos_add(idx);
-@@ -260,6 +276,8 @@ public:
+@@ -297,6 +313,8 @@ public:
          pos[i] = -1;
          ext[i].reset();
          shift[i] = 0;
@@ -466,7 +466,7 @@ index 83ea89405..2a5974a5f 100644
  
          used.erase(i);
      }
-@@ -279,6 +297,8 @@ public:
+@@ -316,6 +334,8 @@ public:
              pos[i] = -1;
              ext[i].reset();
              shift[i] = 0;
@@ -475,7 +475,7 @@ index 83ea89405..2a5974a5f 100644
  
              used.erase(i);
  
-@@ -309,6 +329,8 @@ public:
+@@ -346,6 +366,8 @@ public:
              pos[i] = -1;
              ext[i].reset();
              shift[i] = 0;
@@ -484,7 +484,7 @@ index 83ea89405..2a5974a5f 100644
  
              used.erase(i);
  
-@@ -467,6 +489,23 @@ public:
+@@ -561,6 +583,23 @@ public:
          ext[i] = p;
      }
  
@@ -508,7 +508,7 @@ index 83ea89405..2a5974a5f 100644
      // pos[i] = pos[i] + d
      // sets "has_shift" to true
      // note: call only if the cell is not empty
-@@ -485,6 +524,8 @@ public:
+@@ -579,6 +618,8 @@ public:
              seq[i].reset();
              pos[i] = -1;
              shift[i] = 0;
@@ -517,7 +517,7 @@ index 83ea89405..2a5974a5f 100644
  
              used.erase(i);
  
-@@ -526,6 +567,10 @@ private:
+@@ -620,6 +661,10 @@ private:
      // stores extra info per cell
      std::vector<llama_kv_cell_ext> ext;
  

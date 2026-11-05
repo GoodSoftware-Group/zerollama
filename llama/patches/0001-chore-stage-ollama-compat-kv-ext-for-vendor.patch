@@ -6,14 +6,14 @@ Subject: [PATCH] chore: stage ollama compat + kv-ext for vendor
 ---
  include/llama-kv-ext.h                        | 245 ++++++++
  src/CMakeLists.txt                            |   7 +
- src/llama-kv-cache.h                          |  47 +-
+ src/llama-kv-cache.h                          |  46 +-
  src/llama-memory-kv-ext.cpp                   | 553 ++++++++++++++++++
  .../llama-ollama-compat-util.cpp              |   1 +
  src/ollama-compat/llama-ollama-compat-util.h  |   1 +
  src/ollama-compat/llama-ollama-compat.cpp     |   1 +
  src/ollama-compat/llama-ollama-compat.h       |   1 +
  tools/mtmd/CMakeLists.txt                     |   4 +
- 9 files changed, 846 insertions(+), 14 deletions(-)
+ 9 files changed, 846 insertions(+), 13 deletions(-)
  create mode 100644 include/llama-kv-ext.h
  create mode 100644 src/llama-memory-kv-ext.cpp
  create mode 120000 src/ollama-compat/llama-ollama-compat-util.cpp
@@ -23,7 +23,7 @@ Subject: [PATCH] chore: stage ollama compat + kv-ext for vendor
 
 diff --git a/include/llama-kv-ext.h b/include/llama-kv-ext.h
 new file mode 100644
-index 000000000..32705a314
+index 0000000..32705a3
 --- /dev/null
 +++ b/include/llama-kv-ext.h
 @@ -0,0 +1,245 @@
@@ -273,7 +273,7 @@ index 000000000..32705a314
 +#endif
 +
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 97250c2e8..0e7233924 100644
+index 97250c2..0e72339 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -33,6 +33,7 @@ set(LLAMA_CORE_SOURCES
@@ -311,10 +311,10 @@ index 97250c2e8..0e7233924 100644
 +# zerollama Phase 15 v47: external buffer alias probe + validate (no tensor mutation)
 +target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_EXTERNAL_ALIAS=1)
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 9bfb8f231..40fc0ca52 100644
+index 9ed36c5..fe426a8 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
-@@ -93,12 +93,8 @@ public:
+@@ -93,9 +93,6 @@ public:
  
      using slot_info_vec_t = std::vector<slot_info>;
  
@@ -323,12 +323,9 @@ index 9bfb8f231..40fc0ca52 100644
 -    //       likely through `struct llama_memory_params`
      llama_kv_cache(
              const llama_model & model,
--          const llama_hparams & hparams,
-                     ggml_type   type_k,
-                     ggml_type   type_v,
-                          bool   v_trans,
-@@ -109,12 +105,12 @@ public:
-                      uint32_t   n_pad,
+                          bool   no_alloc,
+@@ -109,12 +106,12 @@ public:
+                      uint32_t   n_seq_max,
                       uint32_t   n_swa,
                 llama_swa_type   swa_type,
 -               llama_memory_t   mem_other,
@@ -342,7 +339,7 @@ index 9bfb8f231..40fc0ca52 100644
  
      ~llama_kv_cache() = default;
  
-@@ -158,14 +154,24 @@ public:
+@@ -158,14 +155,24 @@ public:
      uint32_t get_size()     const;
      uint32_t get_n_seq_max() const;
      uint32_t get_n_stream() const;
@@ -369,7 +366,7 @@ index 9bfb8f231..40fc0ca52 100644
  
      const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
  
-@@ -302,12 +308,7 @@ private:
+@@ -313,12 +320,7 @@ private:
      // note: this is not part of the KV state and it's only used to speed-up the find_slot() method
      std::vector<uint32_t> v_heads;
  
@@ -383,7 +380,7 @@ index 9bfb8f231..40fc0ca52 100644
  
      // maps from a sequence id to a stream id
      std::vector<uint32_t> seq_to_stream;
-@@ -317,6 +318,24 @@ private:
+@@ -328,6 +330,24 @@ private:
  
      std::vector<kv_layer> layers;
  
@@ -410,7 +407,7 @@ index 9bfb8f231..40fc0ca52 100644
  
 diff --git a/src/llama-memory-kv-ext.cpp b/src/llama-memory-kv-ext.cpp
 new file mode 100644
-index 000000000..d4bef15b4
+index 0000000..d4bef15
 --- /dev/null
 +++ b/src/llama-memory-kv-ext.cpp
 @@ -0,0 +1,553 @@
@@ -969,7 +966,7 @@ index 000000000..d4bef15b4
 +}
 diff --git a/src/ollama-compat/llama-ollama-compat-util.cpp b/src/ollama-compat/llama-ollama-compat-util.cpp
 new file mode 120000
-index 000000000..916a18ff8
+index 0000000..916a18f
 --- /dev/null
 +++ b/src/ollama-compat/llama-ollama-compat-util.cpp
 @@ -0,0 +1 @@
@@ -977,7 +974,7 @@ index 000000000..916a18ff8
 \ No newline at end of file
 diff --git a/src/ollama-compat/llama-ollama-compat-util.h b/src/ollama-compat/llama-ollama-compat-util.h
 new file mode 120000
-index 000000000..74c23f92d
+index 0000000..74c23f9
 --- /dev/null
 +++ b/src/ollama-compat/llama-ollama-compat-util.h
 @@ -0,0 +1 @@
@@ -985,7 +982,7 @@ index 000000000..74c23f92d
 \ No newline at end of file
 diff --git a/src/ollama-compat/llama-ollama-compat.cpp b/src/ollama-compat/llama-ollama-compat.cpp
 new file mode 120000
-index 000000000..9af5aa24f
+index 0000000..9af5aa2
 --- /dev/null
 +++ b/src/ollama-compat/llama-ollama-compat.cpp
 @@ -0,0 +1 @@
@@ -993,17 +990,17 @@ index 000000000..9af5aa24f
 \ No newline at end of file
 diff --git a/src/ollama-compat/llama-ollama-compat.h b/src/ollama-compat/llama-ollama-compat.h
 new file mode 120000
-index 000000000..05760aa00
+index 0000000..05760aa
 --- /dev/null
 +++ b/src/ollama-compat/llama-ollama-compat.h
 @@ -0,0 +1 @@
 +/Users/user1/Sites/inference/zerollama/llama/compat/llama-ollama-compat.h
 \ No newline at end of file
 diff --git a/tools/mtmd/CMakeLists.txt b/tools/mtmd/CMakeLists.txt
-index 8ca4ae3a4..0e9b016e1 100644
+index fc9f0bb..2ad8e97 100644
 --- a/tools/mtmd/CMakeLists.txt
 +++ b/tools/mtmd/CMakeLists.txt
-@@ -89,6 +89,10 @@ set_target_properties(mtmd PROPERTIES
+@@ -96,6 +96,10 @@ set_target_properties(mtmd PROPERTIES
  target_link_libraries     (mtmd PUBLIC ggml llama)
  target_link_libraries     (mtmd PRIVATE Threads::Threads vendor::hash vendor::miniaudio vendor::stb vendor::sheredom)
  target_include_directories(mtmd PUBLIC  .)

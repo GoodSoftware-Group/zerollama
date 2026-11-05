@@ -6,25 +6,25 @@ The Python runtime shells out to **`llama-server`** from a pinned llama.cpp tree
 
 | Field | Value |
 |-------|--------|
-| **Recommended build tree** | `vendor/llama-cpp-b11870/` (patched) — `./scripts/build/build_llama_server.sh` |
-| **Optional sibling** | `../llama.cpp` @ `LLAMA_CPP_COMMIT` (unpatched; prefer vendor) |
+| **Recommended build tree** | `vendor/llama-cpp-b12119/` — `./scripts/build/build_llama_server.sh` |
+| **Optional sibling** | `../llama.cpp` @ `LLAMA_CPP_COMMIT` (unpatched; the patched tree is `vendor/llama-cpp-b12119/`) |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` |
-| **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `74bca3950054eed1795f525cb9cf06bfe796492d` (ggml-org tag **b11870**; L6 tip / Ollama v0.40.x) |
+| **Runtime commit** | **`LLAMA_CPP_COMMIT`** → `6f1e6543704bc5b080c7a98e7b6f707b31f6ed51` (ggml-org tag **b12119**, 2026-11-04). Master is one CI commit ahead (`3de52ac`, #31439); the pin stays on the release tag. |
 | **Binary** | `build/bin/llama-server` — `./scripts/build/build_llama_server.sh` |
-| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (**157** on **b11870**, through **0157**; tip-port fixes **0146–0157** (UMA, MultiDecode ubatch, pretok `process_word`, milady dflash, Clef/Strands/DI7, FP8 x86 alias, ANE B7/CMake); MultiDecode **0126–0128**; Laya **0124–0125**/tip **0137**; Clef **0135** + ANE **0136**; Strands **0138**; Metal TQ2 **0139**; DI7 **0140**; DI3 `accept_by_pos` **0141**/tip-port; pretok/BPE/unicode mid-series; FP8 / Kokoro / Bee / DCA / UMA earlier). Apply by filename — numbers shift on ladder rungs. Container: `./scripts/vendor/build_llama_server_container.sh`. BPE: [docs/faster-bpe-tokenize.md](../docs/faster-bpe-tokenize.md). MultiDecode: [docs/multidecode-llama-cpp.md](../docs/multidecode-llama-cpp.md). DeepInfer: [docs/deepinfer-ladder.md](../docs/deepinfer-ladder.md). |
-| **Why ggml-org master** | Track upstream llama.cpp tip. Eliza QJL/Polar/TBQ applied as patches **0026–0030**; CUDA L2 completeness and Metal TBQ SET_ROWS follow in the mid series; native FP8 weights **0076–0079** (types 51/52 — see [native-fp8-gguf.md](../docs/native-fp8-gguf.md)); hardware PR ports **0080–0086**; Bee reasoning-loop guard **0087**; TBQ vec_dot dedupe **0088**; L3-R6b cell+tensor+pages COW **0089**; media-aware `/kv/seq-copy` **0090**; llama-bench Eliza L2 KV type names **0093**; native DCA **0094–0098**; Metal recoverable nil pipeline + bf16 library gate + Polar/QJL SET_ROWS + fused QJL+Polar attn **0096–0098** (Lab D — `speed` runs on Mac, tok/s FAIL merge); Kokoro **0100–0101**; Bee B1 adaptive draft-max **0102**. **Hedge:** do not assume [elizaOS/llama.cpp](https://github.com/elizaOS/llama.cpp) keeps rebasing onto latest ggml-org — this pin remains source of truth. Sibling scout: `../eliza-llama.cpp` @ `ad56033` (OmniVoice/FFI stay out of our binary; Kokoro optional via `LLAMA_BUILD_KOKORO=ON`). |
+| **Ollama patches** | `llama/patches/` via `Makefile.sync` + `./scripts/vendor/sync_vendor_llama.sh` (**161** files, **0001–0161**, formatted on **b12119**, vendor tip `9b9d55a`). Upstream unscaled `F8_E4M3` (type 43) stays beside block `FP8_E4M3` (type 51) and `FP8_E5M2` (type 52). Apply by filename — numbers shift on ladder rungs. Container: `./scripts/vendor/build_llama_server_container.sh`. BPE: [docs/faster-bpe-tokenize.md](../docs/faster-bpe-tokenize.md). MultiDecode: [docs/multidecode-llama-cpp.md](../docs/multidecode-llama-cpp.md). DeepInfer: [docs/deepinfer-ladder.md](../docs/deepinfer-ladder.md). |
+| **Why ggml-org master** | Track upstream llama.cpp tip. Ranges below are the pre-b12119 catalog; the formatted series is **0001–0161**. Eliza QJL/Polar/TBQ applied as patches **0026–0030**; CUDA L2 completeness and Metal TBQ SET_ROWS follow in the mid series; block FP8 weights are types 51/52 beside upstream F8 type 43 (see [native-fp8-gguf.md](../docs/native-fp8-gguf.md)); hardware PR ports **0080–0086**; Bee reasoning-loop guard **0087**; TBQ vec_dot dedupe **0088**; L3-R6b cell+tensor+pages COW **0089**; media-aware `/kv/seq-copy` **0090**; llama-bench Eliza L2 KV type names **0093**; native DCA **0094–0098**; Metal recoverable nil pipeline + bf16 library gate + Polar/QJL SET_ROWS + fused QJL+Polar attn **0096–0098** (Lab D — `speed` runs on Mac, tok/s FAIL merge); Kokoro **0100–0101**; Bee B1 adaptive draft-max **0102**. **Hedge:** do not assume [elizaOS/llama.cpp](https://github.com/elizaOS/llama.cpp) keeps rebasing onto latest ggml-org — this pin remains source of truth. Sibling scout: `../eliza-llama.cpp` @ `ad56033` (OmniVoice/FFI stay out of our binary; Kokoro optional via `LLAMA_BUILD_KOKORO=ON`). |
 
 ## In-process ggml (Go CGO) — unified with runtime
 
 | Field | Value |
 |-------|--------|
-| **Vendor pin** | **`b11870`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-b11870/` (rollback: `vendor/llama-cpp-b11351/`, also b11081/b10969/…) |
+| **Vendor pin** | **`b12119`** — `LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `vendor/llama-cpp-b12119/` (rollback pin files: **b11870** in `LLAMA_CPP_*.prev`; older trees: `vendor/llama-cpp-b11351/`, also b11232/b11081/b10969/…) |
 | **Upstream repo** | `https://github.com/ggml-org/llama.cpp.git` (same as runtime sibling) |
-| **Ollama patches** | Same series as runtime table (**157** format-patches on **b11870**; tip `common_batch` / `llama_process`; **0135** Clef + `ZEROLLAMA_CLEF_DIR`; **0136** ANE shim; **0137** Laya; **0138** Strands; **0139** Metal TQ2; **0140** DI7 join cadence; **0141**/tip-port DI3 `accept_by_pos`). Eliza QJL/Polar/TBQ shaders stay in `eliza-shipped/`. Pretok lives in **`src/unicode.*`**. Mac CGO: `llama/cgo_vendor_hash.cpp` + `llama_print_build_info(const char *, FILE *)`. Tip CGO also needs `ml/.../tiled/tiled.go` + `llama/.../parsers/parsers.go`. |
+| **Ollama patches** | Same series as the runtime table (**161** format-patches, **0001–0161**, on **b12119**). Eliza QJL/Polar/TBQ shaders stay in `eliza-shipped/`. Pretok lives in **`src/unicode.*`**. Mac CGO: `llama/cgo_vendor_hash.cpp` + `llama_print_build_info(const char *, FILE *)`. Tip CGO also needs `ml/.../tiled/tiled.go` + `llama/.../parsers/parsers.go`. |
 | **In-tree Metal dig** | Upstream split Metal kernels (`kernels/*.metal`). Eliza SET_ROWS + fused QJL+Polar attn remain as extra AIR objects. Native FP8 weight types **51/52**. FA-vec per-device tables are upstream. |
 | **Rebase helper** | `./scripts/vendor/rebase_vendor_unified.sh --sync` |
 
-Runtime `llama-server` and in-process ggml share **one ggml-org `b11870` base** + zerollama patches.
+Runtime `llama-server` and in-process ggml share **one ggml-org base** + zerollama patches. The pin base is **`b12119`**. After this rebase, `./scripts/vendor/sync_vendor_llama.sh` copies the patched tree into in-tree ggml (that rewrites `llama/build-info.cpp`).
 
 Upstream also ships **`llama/compat/`** — in-memory GGUF translation at CMake fetch time for **llama-server**. In-process **ggml** uses `llama/patches/` on a vendored tree synced via [docs/ggml-b9509-migration.md](../docs/ggml-b9509-migration.md).
 
@@ -58,25 +58,25 @@ See [docs/apple-silicon-metal.md](../docs/apple-silicon-metal.md#mlx-engine-opti
 | `LLAMA_SERVER_BIN` | Override path to `llama-server` executable |
 | `LLAMA_CPP_REPO` | Override clone URL (default historically elizaOS; **pin is ggml-org** via `Makefile.sync`) |
 | `ZEROLLAMA_ALLOW_ELIZA_VOICE` | `1` = allow `tools/omnivoice` in build tree (default refuse). Kokoro is allowed; enable with `LLAMA_BUILD_KOKORO=ON` |
-| `LLAMA_BUILD_KOKORO` | `ON` = mount `/v1/audio/speech` (patches **0100–0101**); default OFF |
+| `LLAMA_BUILD_KOKORO` | `ON` = mount `/v1/audio/speech` (Kokoro patches in the series); default OFF |
 | `ZEROLLAMA_SPEC_DM_ADAPTIVE` | `profit`/`1`/`on` = Bee B1 adaptive DFlash draft-max (**0102**); timings/slots expose DI3 verified `accept_by_pos` (**0141**); default off |
 | `ZEROLLAMA_LLAMA_FORK` | `0` = L1 q8_0 profiles; unset/`1` = auto-probe fork KV types |
 | `OLLAMA_MLX_SOURCE` / `OLLAMA_MLX_C_SOURCE` | Override MLX sibling paths |
 
 Rebuild llama.cpp when bumping `LLAMA_CPP_COMMIT`; run runtime integration tests on dual-GPU hosts.
 
-## L6 pin-debt ladder (ggml-org tip **b11870**)
+## L6 pin-debt ladder (ggml-org tip **b12119**)
 
-**Status:** **rung 6 tip chase on b11870** — **157** patches; Clef/Laya/MultiDecode/DI carried; `llama-server` builds on CUDA 12.8 (not default CUDA 13.3). Rollback **b11351**.
+**Status:** pin is **b12119** (2026-11-04) with **161** patch files (**0001–0161**) rebased onto that tag. Production `llama-server` is built with CUDA 12.8 / sm_120. Rollback pin files: **b11870**.
 
 | Item | Detail |
 |------|--------|
-| **Operator runbook** | [docs/llama-cpp-pin-ladder.md](../docs/llama-cpp-pin-ladder.md) — rungs `b10615 → … → b11351 → b11870` |
+| **Operator runbook** | [docs/llama-cpp-pin-ladder.md](../docs/llama-cpp-pin-ladder.md) — rungs `b10615 → … → b11351 → b11870 → b12119` |
 | **Status script** | `./scripts/phase/l6_pin_ladder_status.sh` |
 | **Clef staging** | `llama/clef/` — wire with `./scripts/phase/stage_clef_for_pin.sh --wire` |
 | **Clef compile check** | `./scripts/phase/l6_clef_compile_check.sh` |
 
-Clef **runtime wire + Cloudflare Flash product convert** are green; **production CT** runs tip `LLAMA_SERVER_BIN=…/llama-cpp-b11870` + `run/zerollama-lab` with `clef-flash` `/v1/decisions` smoke PASS. Rollback via `./scripts/phase/l6_promote_tip_env.sh --rollback`. Strands PointerRows on CUDA remain deferred (MLX on Mac). See [docs/system-one-score.md](../docs/system-one-score.md) · [docs/llama-cpp-pin-ladder.md](../docs/llama-cpp-pin-ladder.md).
+Clef **runtime wire + Cloudflare Flash product convert** are green on the previous tip. This pin bump does not redeploy production. Rollback via `LLAMA_CPP_*.prev` (**b11870**) and `./scripts/phase/l6_promote_tip_env.sh --rollback`. See [docs/system-one-score.md](../docs/system-one-score.md) · [docs/llama-cpp-pin-ladder.md](../docs/llama-cpp-pin-ladder.md).
 
 ## Bump checklist (runtime sibling)
 
@@ -85,7 +85,7 @@ Clef **runtime wire + Cloudflare Flash product convert** are green; **production
 3. `./scripts/phase/l2_fork_eval.sh` — profile argv smoke
 4. `./scripts/phase/l2_full_gate.sh` or `./scripts/phase/l2_cuda_full_gate.sh` on GPU hosts
 
-For a **pin-debt rung** (not tip chase), follow [docs/llama-cpp-pin-ladder.md](../docs/llama-cpp-pin-ladder.md) instead of jumping straight to **b11870**.
+For a **pin-debt rung** (not tip chase), follow [docs/llama-cpp-pin-ladder.md](../docs/llama-cpp-pin-ladder.md) instead of jumping straight to **b12119**. This pin's patch rebase is done; refresh in-tree ggml with `./scripts/vendor/sync_vendor_llama.sh` after the vendor tree changes.
 
 ## Bump checklist (in-process vendor — when rebasing)
 

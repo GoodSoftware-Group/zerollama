@@ -12,7 +12,7 @@ Subject: [PATCH] unicode: pretok blob + ASCII bulk cpt decode for mixed (0121)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
 deleted file mode 100644
-index 8e54f37ba..000000000
+index 8e54f37..0000000
 --- a/src/unicode.cpp
 +++ /dev/null
 @@ -1,2492 +0,0 @@
@@ -2510,7 +2510,7 @@ index 8e54f37ba..000000000
 -}
 diff --git a/src/unicode.h b/src/unicode.h
 deleted file mode 100644
-index afb50c49c..000000000
+index afb50c4..0000000
 --- a/src/unicode.h
 +++ /dev/null
 @@ -1,132 +0,0 @@

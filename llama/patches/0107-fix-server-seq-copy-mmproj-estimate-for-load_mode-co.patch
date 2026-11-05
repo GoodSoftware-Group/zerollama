@@ -9,10 +9,10 @@ Subject: [PATCH] fix: server seq-copy + mmproj estimate for load_mode /
  1 file changed, 7 insertions(+), 12 deletions(-)
 
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 8f4807b91..efd37e59a 100644
+index 6f9a9be..c8ad7a1 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -40,8 +40,7 @@ namespace {
+@@ -41,8 +41,7 @@ namespace {
  static uint64_t estimate_mmproj_file_bytes(const char * path) {
      llama_model_params mp = llama_model_default_params();
      mp.no_alloc  = true;
@@ -22,7 +22,7 @@ index 8f4807b91..efd37e59a 100644
  
      llama_model * model = llama_model_load_from_file(path, mp);
      if (model == nullptr) {
-@@ -3488,12 +3487,11 @@ private:
+@@ -3561,12 +3560,11 @@ private:
                      // WHY match copy_state_to: p0/p1 = -1,-1. Using 0,-1 left dst KV empty
                      // on some backends after slot release → prompt.tokens lie + pos_min==-1 abort
                      // in pre_decode (ggml-org/llama.cpp#13833).
@@ -40,7 +40,7 @@ index 8f4807b91..efd37e59a 100644
  
                      {
                          auto * mem = llama_get_memory(ctx_tgt);
-@@ -3506,10 +3504,7 @@ private:
+@@ -3579,10 +3577,7 @@ private:
                          const llama_pos pos_max = llama_memory_seq_pos_max(mem, id_dst);
                          const llama_pos eff_end = (llama_pos) n_copy;
                          if (pos_max >= eff_end) {

@@ -169,6 +169,33 @@ func TestFromChatRequest_JoinsTextParts(t *testing.T) {
 	}
 }
 
+func TestFromChatRequest_AssistantEmptyArrayContentWithToolCalls(t *testing.T) {
+	var req ChatCompletionRequest
+	if err := json.Unmarshal([]byte(`{"model":"test-model","messages":[
+		{"role":"user","content":"what is the weather?"},
+		{"role":"assistant","content":[],"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"call_1","content":"sunny"}
+	]}`), &req); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := FromChatRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result.Messages))
+	}
+	if user := result.Messages[0]; user.Role != "user" || len(user.ToolCalls) != 0 {
+		t.Errorf("expected user message without tool calls, got role=%q tool_calls=%d", user.Role, len(user.ToolCalls))
+	}
+	assistant := result.Messages[1]
+	if assistant.Role != "assistant" || len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].Function.Name != "get_weather" {
+		t.Errorf("expected assistant message with get_weather tool call, got role=%q tool_calls=%+v", assistant.Role, assistant.ToolCalls)
+	}
+}
+
 func TestFromChatRequest_WithVideoURL_MergeOrder(t *testing.T) {
 	imgData, _ := base64.StdEncoding.DecodeString(image)
 	vidBytes := []byte{0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70} // minimal ftyp-like prefix for parser

@@ -44,7 +44,7 @@ Subject: [PATCH] tools: kokoro TTS subtree from eliza (0100)
 
 diff --git a/tools/kokoro/CMakeLists.txt b/tools/kokoro/CMakeLists.txt
 new file mode 100644
-index 000000000..7c4be7e4d
+index 0000000..7c4be7e
 --- /dev/null
 +++ b/tools/kokoro/CMakeLists.txt
 @@ -0,0 +1,68 @@
@@ -118,7 +118,7 @@ index 000000000..7c4be7e4d
 +endif()
 diff --git a/tools/kokoro/convert_kokoro_pth_to_gguf.py b/tools/kokoro/convert_kokoro_pth_to_gguf.py
 new file mode 100644
-index 000000000..34303fd77
+index 0000000..34303fd
 --- /dev/null
 +++ b/tools/kokoro/convert_kokoro_pth_to_gguf.py
 @@ -0,0 +1,621 @@
@@ -745,7 +745,7 @@ index 000000000..34303fd77
 +    raise SystemExit(main())
 diff --git a/tools/kokoro/include/kokoro-istft.h b/tools/kokoro/include/kokoro-istft.h
 new file mode 100644
-index 000000000..f99c7bc79
+index 0000000..f99c7bc
 --- /dev/null
 +++ b/tools/kokoro/include/kokoro-istft.h
 @@ -0,0 +1,47 @@
@@ -798,7 +798,7 @@ index 000000000..f99c7bc79
 +} // namespace eliza_kokoro
 diff --git a/tools/kokoro/include/kokoro-layers.h b/tools/kokoro/include/kokoro-layers.h
 new file mode 100644
-index 000000000..52212bca4
+index 0000000..52212bc
 --- /dev/null
 +++ b/tools/kokoro/include/kokoro-layers.h
 @@ -0,0 +1,468 @@
@@ -1272,7 +1272,7 @@ index 000000000..52212bca4
 +} // namespace eliza_kokoro
 diff --git a/tools/kokoro/include/kokoro-phonemes.h b/tools/kokoro/include/kokoro-phonemes.h
 new file mode 100644
-index 000000000..cc9bb3fd6
+index 0000000..cc9bb3f
 --- /dev/null
 +++ b/tools/kokoro/include/kokoro-phonemes.h
 @@ -0,0 +1,37 @@
@@ -1315,7 +1315,7 @@ index 000000000..cc9bb3fd6
 +} // namespace eliza_kokoro
 diff --git a/tools/kokoro/include/kokoro-predictor.h b/tools/kokoro/include/kokoro-predictor.h
 new file mode 100644
-index 000000000..efea20d07
+index 0000000..efea20d
 --- /dev/null
 +++ b/tools/kokoro/include/kokoro-predictor.h
 @@ -0,0 +1,69 @@
@@ -1390,7 +1390,7 @@ index 000000000..efea20d07
 +} // namespace eliza_kokoro
 diff --git a/tools/kokoro/include/kokoro-server-mount.h b/tools/kokoro/include/kokoro-server-mount.h
 new file mode 100644
-index 000000000..1dbdb853c
+index 0000000..1dbdb85
 --- /dev/null
 +++ b/tools/kokoro/include/kokoro-server-mount.h
 @@ -0,0 +1,52 @@
@@ -1448,7 +1448,7 @@ index 000000000..1dbdb853c
 +#endif // LLAMA_BUILD_KOKORO
 diff --git a/tools/kokoro/include/kokoro.h b/tools/kokoro/include/kokoro.h
 new file mode 100644
-index 000000000..809362962
+index 0000000..8093629
 --- /dev/null
 +++ b/tools/kokoro/include/kokoro.h
 @@ -0,0 +1,143 @@
@@ -1597,7 +1597,7 @@ index 000000000..809362962
 +} // namespace eliza_kokoro
 diff --git a/tools/kokoro/src/kokoro-istft.cpp b/tools/kokoro/src/kokoro-istft.cpp
 new file mode 100644
-index 000000000..c6c34cea2
+index 0000000..c6c34ce
 --- /dev/null
 +++ b/tools/kokoro/src/kokoro-istft.cpp
 @@ -0,0 +1,114 @@
@@ -1717,7 +1717,7 @@ index 000000000..c6c34cea2
 +} // namespace eliza_kokoro
 diff --git a/tools/kokoro/src/kokoro-phonemes.cpp b/tools/kokoro/src/kokoro-phonemes.cpp
 new file mode 100644
-index 000000000..45cde3d20
+index 0000000..45cde3d
 --- /dev/null
 +++ b/tools/kokoro/src/kokoro-phonemes.cpp
 @@ -0,0 +1,104 @@
@@ -1827,7 +1827,7 @@ index 000000000..45cde3d20
 +} // namespace eliza_kokoro
 diff --git a/tools/kokoro/src/kokoro-predictor.cpp b/tools/kokoro/src/kokoro-predictor.cpp
 new file mode 100644
-index 000000000..ab345a04f
+index 0000000..ab345a0
 --- /dev/null
 +++ b/tools/kokoro/src/kokoro-predictor.cpp
 @@ -0,0 +1,751 @@
@@ -2584,7 +2584,7 @@ index 000000000..ab345a04f
 +} // namespace eliza_kokoro
 diff --git a/tools/kokoro/src/kokoro-server-mount.cpp b/tools/kokoro/src/kokoro-server-mount.cpp
 new file mode 100644
-index 000000000..e17b9c856
+index 0000000..e17b9c8
 --- /dev/null
 +++ b/tools/kokoro/src/kokoro-server-mount.cpp
 @@ -0,0 +1,218 @@
@@ -2808,7 +2808,7 @@ index 000000000..e17b9c856
 +#endif // LLAMA_BUILD_KOKORO
 diff --git a/tools/kokoro/src/kokoro.cpp b/tools/kokoro/src/kokoro.cpp
 new file mode 100644
-index 000000000..9e805ab67
+index 0000000..9e805ab
 --- /dev/null
 +++ b/tools/kokoro/src/kokoro.cpp
 @@ -0,0 +1,620 @@
@@ -3434,7 +3434,7 @@ index 000000000..9e805ab67
 +} // namespace eliza_kokoro
 diff --git a/tools/kokoro/tests/CMakeLists.txt b/tools/kokoro/tests/CMakeLists.txt
 new file mode 100644
-index 000000000..81cae041c
+index 0000000..81cae04
 --- /dev/null
 +++ b/tools/kokoro/tests/CMakeLists.txt
 @@ -0,0 +1,12 @@
@@ -3452,7 +3452,7 @@ index 000000000..81cae041c
 +add_test(NAME test-kokoro-istft COMMAND test-kokoro-istft)
 diff --git a/tools/kokoro/tests/test_kokoro_istft.cpp b/tools/kokoro/tests/test_kokoro_istft.cpp
 new file mode 100644
-index 000000000..20314f17f
+index 0000000..20314f1
 --- /dev/null
 +++ b/tools/kokoro/tests/test_kokoro_istft.cpp
 @@ -0,0 +1,53 @@
@@ -3511,7 +3511,7 @@ index 000000000..20314f17f
 +}
 diff --git a/tools/kokoro/tests/test_kokoro_phonemes.cpp b/tools/kokoro/tests/test_kokoro_phonemes.cpp
 new file mode 100644
-index 000000000..a8f603767
+index 0000000..a8f6037
 --- /dev/null
 +++ b/tools/kokoro/tests/test_kokoro_phonemes.cpp
 @@ -0,0 +1,43 @@
@@ -3560,7 +3560,7 @@ index 000000000..a8f603767
 +}
 diff --git a/tools/kokoro/tools/dump_reference_activations.py b/tools/kokoro/tools/dump_reference_activations.py
 new file mode 100644
-index 000000000..6ad91ab72
+index 0000000..6ad91ab
 --- /dev/null
 +++ b/tools/kokoro/tools/dump_reference_activations.py
 @@ -0,0 +1,140 @@
@@ -3706,7 +3706,7 @@ index 000000000..6ad91ab72
 +    raise SystemExit(main())
 diff --git a/tools/kokoro/tools/kokoro-tts.cpp b/tools/kokoro/tools/kokoro-tts.cpp
 new file mode 100644
-index 000000000..52d27da47
+index 0000000..52d27da
 --- /dev/null
 +++ b/tools/kokoro/tools/kokoro-tts.cpp
 @@ -0,0 +1,147 @@

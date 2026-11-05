@@ -13,10 +13,10 @@ Subject: [PATCH] server: Bee B1 adaptive DFlash draft-max (opt-in
  create mode 100644 tools/server/server-adaptive-dm.h
 
 diff --git a/common/arg.cpp b/common/arg.cpp
-index 89c2c6b8e..c3362076a 100644
+index 0b3493b..127bf7f 100644
 --- a/common/arg.cpp
 +++ b/common/arg.cpp
-@@ -4305,6 +4305,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+@@ -4251,6 +4251,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                  throw std::invalid_argument("invalid value");
              }
              params.speculative.draft.n_max = value;
@@ -24,7 +24,7 @@ index 89c2c6b8e..c3362076a 100644
          }
      ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_MAX"));
      add_opt(common_arg(
-@@ -4357,6 +4358,113 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+@@ -4303,6 +4304,113 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
          }
      ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_SYNTH_RATES"));
  
@@ -139,10 +139,10 @@ index 89c2c6b8e..c3362076a 100644
          {"--spec-draft-p-split", "--draft-p-split"}, "P",
          string_format("speculative decoding split probability (default: %.2f)", (double)params.speculative.draft.p_split),
 diff --git a/common/common.h b/common/common.h
-index ce5c5c932..982ccdfcd 100644
+index 152d2ff..5307c35 100644
 --- a/common/common.h
 +++ b/common/common.h
-@@ -375,6 +375,13 @@ struct common_params_speculative_ngram_cache {
+@@ -377,6 +377,13 @@ struct common_params_speculative_ngram_cache {
      std::string lookup_cache_dynamic; // path of dynamic ngram cache file for lookup decoding
  };
  
@@ -156,7 +156,7 @@ index ce5c5c932..982ccdfcd 100644
  struct common_params_speculative {
      std::vector<enum common_speculative_type> types = { COMMON_SPECULATIVE_TYPE_NONE };
  
-@@ -391,6 +398,17 @@ struct common_params_speculative {
+@@ -393,6 +400,17 @@ struct common_params_speculative {
  
      common_params_speculative_ngram_cache ngram_cache;
  
@@ -176,7 +176,7 @@ index ce5c5c932..982ccdfcd 100644
      }
 diff --git a/tools/server/server-adaptive-dm.h b/tools/server/server-adaptive-dm.h
 new file mode 100644
-index 000000000..55e741f0d
+index 0000000..55e741f
 --- /dev/null
 +++ b/tools/server/server-adaptive-dm.h
 @@ -0,0 +1,1596 @@
@@ -1777,10 +1777,10 @@ index 000000000..55e741f0d
 +
 +};
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 4b2f5c848..8f4807b91 100644
+index c784c0c..6f9a9be 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -11,6 +11,7 @@
+@@ -12,6 +12,7 @@
  #include "server-schema.h"
  #include "server-stream.h"
  #include "server-loop-guard.h"
@@ -1788,7 +1788,7 @@ index 4b2f5c848..8f4807b91 100644
  
  #include "build-info.h"
  #include "common.h"
-@@ -460,6 +461,12 @@ struct server_slot {
+@@ -464,6 +465,12 @@ struct server_slot {
      std::string loop_guard_action;
      std::string loop_guard_reason;
  
@@ -1801,7 +1801,7 @@ index 4b2f5c848..8f4807b91 100644
      std::function<void(int /* id_slot */)>   callback_on_release;
      std::function<void(const server_slot &)> callback_on_reset; // called before reset()
  
-@@ -640,6 +647,10 @@ struct server_slot {
+@@ -651,6 +658,10 @@ struct server_slot {
              n_draft_max = std::min(n_draft_max, n_remaining() - 1);
          }
  
@@ -1812,7 +1812,7 @@ index 4b2f5c848..8f4807b91 100644
          SLT_DBG(*this, "max possible draft: %d\n", n_draft_max);
  
          return n_draft_max;
-@@ -2147,6 +2158,32 @@ private:
+@@ -2188,6 +2199,32 @@ private:
          slot.loop_guard_action.clear();
          slot.loop_guard_reason.clear();
  
@@ -1845,7 +1845,7 @@ index 4b2f5c848..8f4807b91 100644
          // the per-request limit takes priority over the global one
          slot.n_predict_max = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
  
-@@ -2184,6 +2221,24 @@ private:
+@@ -2230,6 +2267,24 @@ private:
          return true;
      }
  
@@ -1870,7 +1870,7 @@ index 4b2f5c848..8f4807b91 100644
      bool process_token(completion_token_output & result, server_slot & slot) {
          // remember which tokens were sampled - used for repetition penalties during sampling
          const std::string token_str = result.text_to_send;
-@@ -3940,6 +3995,12 @@ private:
+@@ -4049,6 +4104,12 @@ private:
  
              generating.push_back(&slot);
  
@@ -1883,7 +1883,7 @@ index 4b2f5c848..8f4807b91 100644
              if (spec) {
                  common_speculative_get_draft_params(spec.get(), slot.id).drafting = false;
  
-@@ -3989,6 +4050,14 @@ private:
+@@ -4098,6 +4159,14 @@ private:
  
                          drafting.push_back(&slot);
                      }
@@ -1898,7 +1898,7 @@ index 4b2f5c848..8f4807b91 100644
                  }
              }
          });
-@@ -5099,6 +5168,24 @@ private:
+@@ -5210,6 +5279,24 @@ private:
              slot.stats.n_draft_accepted += n_accepted;
              slot.stats.n_draft_verif_steps += 1;
  
@@ -1924,7 +1924,7 @@ index 4b2f5c848..8f4807b91 100644
              if (n_accepted_per_pos.empty()) {
                  n_accepted_per_pos.resize(common_speculative_n_max(spec.get()), 0);
 diff --git a/tools/server/server-context.cpp.rej b/tools/server/server-context.cpp.rej
-index cadb91d47..47cf7d330 100644
+index cadb91d..47cf7d3 100644
 --- a/tools/server/server-context.cpp.rej
 +++ b/tools/server/server-context.cpp.rej
 @@ -1,58 +1,28 @@

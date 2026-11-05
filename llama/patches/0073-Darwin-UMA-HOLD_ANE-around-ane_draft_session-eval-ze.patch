@@ -9,7 +9,7 @@ Subject: [PATCH] Darwin UMA HOLD_ANE around ane_draft_session eval (zerollama
  2 files changed, 53 insertions(+), 17 deletions(-)
 
 diff --git a/common/CMakeLists.txt.rej b/common/CMakeLists.txt.rej
-index 7fd81b61e..b068dfc51 100644
+index 7fd81b6..b068dfc 100644
 --- a/common/CMakeLists.txt.rej
 +++ b/common/CMakeLists.txt.rej
 @@ -1,17 +1,13 @@
@@ -43,7 +43,7 @@ index 7fd81b61e..b068dfc51 100644
 ++endif()
 ++
 diff --git a/common/ane_draft_session.mm b/common/ane_draft_session.mm
-index 2215d5c23..ec550263f 100644
+index 2215d5c..ec55026 100644
 --- a/common/ane_draft_session.mm
 +++ b/common/ane_draft_session.mm
 @@ -14,6 +14,10 @@

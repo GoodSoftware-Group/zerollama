@@ -11,7 +11,7 @@ Subject: [PATCH] llama-vocab: id-pair BPE merge (gigatoken lessons)
  create mode 100644 src/llama-vocab.cpp.rej
 
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index 9c79ae509..a16c1578c 100644
+index a3b9db4..8ba0d8d 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
 @@ -13,6 +13,9 @@
@@ -24,7 +24,7 @@ index 9c79ae509..a16c1578c 100644
  #include <cstring>
  #include <cstdlib>
  #include <forward_list>
-@@ -84,6 +87,7 @@ struct llm_symbol {
+@@ -78,6 +81,7 @@ struct llm_symbol {
      index next;
      const char * text;
      size_t n;
@@ -32,7 +32,7 @@ index 9c79ae509..a16c1578c 100644
  };
  
  static_assert(std::is_trivially_copyable<llm_symbol>::value, "llm_symbol is not trivially copyable");
-@@ -261,6 +265,191 @@ public:
+@@ -262,6 +266,191 @@ public:
      void pop() =  delete;
  };
  
@@ -224,7 +224,7 @@ index 9c79ae509..a16c1578c 100644
  struct llm_bigram_bpe {
      struct comparator {
          bool operator()(const llm_bigram_bpe & l, const llm_bigram_bpe & r) const {
-@@ -272,9 +461,10 @@ struct llm_bigram_bpe {
+@@ -273,9 +462,10 @@ struct llm_bigram_bpe {
      using queue = llama_priority_queue<llm_bigram_bpe, queue_storage, comparator>;
      llm_symbol::index left;
      llm_symbol::index right;
@@ -237,7 +237,7 @@ index 9c79ae509..a16c1578c 100644
  };
  
  struct llm_tokenizer_bpe : llm_tokenizer {
-@@ -726,41 +916,57 @@ struct llm_tokenizer_bpe_session {
+@@ -734,41 +924,57 @@ struct llm_tokenizer_bpe_session {
                  offset += sym.n;
                  sym.prev = index - 1;
                  sym.next = offset == word.size() ? -1 : index + 1;
@@ -322,7 +322,7 @@ index 9c79ae509..a16c1578c 100644
              }
  
              // add the finished tokens to the final list keeping correct order for next and prev
-@@ -786,6 +992,11 @@ struct llm_tokenizer_bpe_session {
+@@ -794,6 +1000,11 @@ struct llm_tokenizer_bpe_session {
                      continue;
                  }
  
@@ -334,7 +334,7 @@ index 9c79ae509..a16c1578c 100644
                  const std::string str = std::string(symbol.text, symbol.n);
                  const auto token = vocab.text_to_token(str);
  
-@@ -816,29 +1027,167 @@ struct llm_tokenizer_bpe_session {
+@@ -824,29 +1035,167 @@ struct llm_tokenizer_bpe_session {
      }
  
  private:
@@ -515,7 +515,7 @@ index 9c79ae509..a16c1578c 100644
          work_queue.push(bigram);
      }
  
-@@ -2146,6 +2495,8 @@ struct llama_vocab::impl {
+@@ -2154,6 +2503,8 @@ struct llama_vocab::impl {
          }
      };
      std::unordered_map<std::pair<std::string, std::string>, int, pair_hash> bpe_ranks;
@@ -524,7 +524,7 @@ index 9c79ae509..a16c1578c 100644
  
      // set of all tokens that cause "end of generation"
      std::set<llama_token> special_eog_ids;
-@@ -4607,6 +4958,24 @@ int llama_vocab::find_bpe_rank(const std::string & token_left, const std::string
+@@ -4621,6 +4972,24 @@ int llama_vocab::find_bpe_rank(const std::string & token_left, const std::string
      return it->second;
  }
  
@@ -551,7 +551,7 @@ index 9c79ae509..a16c1578c 100644
      for (const auto & pair : pimpl->bpe_ranks) {
 diff --git a/src/llama-vocab.cpp.rej b/src/llama-vocab.cpp.rej
 new file mode 100644
-index 000000000..436a28c1c
+index 0000000..436a28c
 --- /dev/null
 +++ b/src/llama-vocab.cpp.rej
 @@ -0,0 +1,46 @@
@@ -602,10 +602,10 @@ index 000000000..436a28c1c
 + 
 +     // determine the newline token: LLaMA "<0x0A>" == 10 == '\n', Falcon 193 == '\n'
 diff --git a/src/llama-vocab.h b/src/llama-vocab.h
-index 14a90fbdb..6b880d92c 100644
+index 1ae5b65..ddbda93 100644
 --- a/src/llama-vocab.h
 +++ b/src/llama-vocab.h
-@@ -175,6 +175,14 @@ struct llama_vocab {
+@@ -176,6 +176,14 @@ struct llama_vocab {
      int find_bpe_rank(const std::string & token_left, const std::string & token_right) const;
      std::vector<std::string> get_bpe_merges() const;
  

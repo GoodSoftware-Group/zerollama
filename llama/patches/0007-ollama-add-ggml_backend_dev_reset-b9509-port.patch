@@ -15,10 +15,10 @@ Subject: [PATCH] ollama: add ggml_backend_dev_reset (b9509 port)
  8 files changed, 17 insertions(+)
 
 diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
-index c5c532afb..f5f032ac0 100644
+index 7a87569..56d6103 100644
 --- a/ggml/include/ggml-backend.h
 +++ b/ggml/include/ggml-backend.h
-@@ -187,6 +187,7 @@ extern "C" {
+@@ -190,6 +190,7 @@ extern "C" {
      GGML_API void                          ggml_backend_dev_get_props(ggml_backend_dev_t device, struct ggml_backend_dev_props * props);
      GGML_API ggml_backend_reg_t            ggml_backend_dev_backend_reg(ggml_backend_dev_t device);
      GGML_API ggml_backend_t                ggml_backend_dev_init(ggml_backend_dev_t device, const char * params);
@@ -27,10 +27,10 @@ index c5c532afb..f5f032ac0 100644
      GGML_API ggml_backend_buffer_type_t    ggml_backend_dev_host_buffer_type(ggml_backend_dev_t device);
      GGML_API ggml_backend_buffer_t         ggml_backend_dev_buffer_from_host_ptr(ggml_backend_dev_t device, void * ptr, size_t size, size_t max_tensor_size);
 diff --git a/ggml/src/ggml-backend-impl.h b/ggml/src/ggml-backend-impl.h
-index dc7367dec..f252a4c83 100644
+index 545880b..efb5f63 100644
 --- a/ggml/src/ggml-backend-impl.h
 +++ b/ggml/src/ggml-backend-impl.h
-@@ -216,6 +216,9 @@ extern "C" {
+@@ -224,6 +224,9 @@ extern "C" {
          ggml_backend_event_t (*event_new)         (ggml_backend_dev_t dev);
          void                 (*event_free)        (ggml_backend_dev_t dev, ggml_backend_event_t event);
          void                 (*event_synchronize) (ggml_backend_dev_t dev, ggml_backend_event_t event);
@@ -41,10 +41,10 @@ index dc7367dec..f252a4c83 100644
  
      struct ggml_backend_device {
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index b3a985fe9..2b4fee6eb 100644
+index 9d1274c..7ac5a0d 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
-@@ -752,6 +752,14 @@ ggml_backend_t ggml_backend_dev_init(ggml_backend_dev_t device, const char * par
+@@ -1009,6 +1009,14 @@ ggml_backend_t ggml_backend_dev_init(ggml_backend_dev_t device, const char * par
      return device->iface.init_backend(device, params);
  }
  
@@ -60,7 +60,7 @@ index b3a985fe9..2b4fee6eb 100644
      GGML_ASSERT(device);
      return device->iface.get_buffer_type(device);
 diff --git a/ggml/src/ggml-blas/ggml-blas.cpp b/ggml/src/ggml-blas/ggml-blas.cpp
-index 6feb370bb..321d83ee0 100644
+index 6feb370..321d83e 100644
 --- a/ggml/src/ggml-blas/ggml-blas.cpp
 +++ b/ggml/src/ggml-blas/ggml-blas.cpp
 @@ -471,6 +471,7 @@ static const struct ggml_backend_device_i ggml_backend_blas_device_i = {
@@ -72,7 +72,7 @@ index 6feb370bb..321d83ee0 100644
  
  // backend reg interface
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
-index 81ff5d79f..0c9a08e14 100644
+index 81ff5d7..0c9a08e 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.cpp
 +++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
 @@ -507,6 +507,7 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
@@ -84,10 +84,10 @@ index 81ff5d79f..0c9a08e14 100644
  
  // CPU backend - backend (reg)
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 879819395..92c127e81 100644
+index 802fc4d..262e4e6 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -6127,6 +6127,7 @@ static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
+@@ -6398,6 +6398,7 @@ static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
      /* .event_new               = */ ggml_backend_cuda_device_event_new,
      /* .event_free              = */ ggml_backend_cuda_device_event_free,
      /* .event_synchronize       = */ ggml_backend_cuda_device_event_synchronize,
@@ -96,10 +96,10 @@ index 879819395..92c127e81 100644
  
  // backend reg
 diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
-index d0771eb49..dd4901d28 100644
+index 9bed642..263e430 100644
 --- a/ggml/src/ggml-metal/ggml-metal.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal.cpp
-@@ -836,6 +836,7 @@ static ggml_backend_device_i ggml_backend_metal_device_i = {
+@@ -903,6 +903,7 @@ static ggml_backend_device_i ggml_backend_metal_device_i = {
      /* .event_new            = */ ggml_backend_metal_device_event_new,
      /* .event_free           = */ ggml_backend_metal_device_event_free,
      /* .event_synchronize    = */ ggml_backend_metal_device_event_synchronize,
@@ -108,10 +108,10 @@ index d0771eb49..dd4901d28 100644
  
  // backend registry
 diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-index 4087f9729..6e89046ce 100644
+index 89f0470..800a793 100644
 --- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -16254,6 +16254,7 @@ static const struct ggml_backend_device_i ggml_backend_vk_device_i = {
+@@ -16325,6 +16325,7 @@ static const struct ggml_backend_device_i ggml_backend_vk_device_i = {
      /* .event_new            = */ ggml_backend_vk_device_event_new,
      /* .event_free           = */ ggml_backend_vk_device_event_free,
      /* .event_synchronize    = */ ggml_backend_vk_device_event_synchronize,

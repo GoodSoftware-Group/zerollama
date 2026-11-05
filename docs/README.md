@@ -67,7 +67,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Launch model inventory](./launch-model-inventory.md) — **why** `zerollama launch` loads `/api/tags` once and passes `LaunchModel` metadata to agent configs (no N× Show).
 * [Model bench cache](./bench-cache.md) — **why** `zerollama bench` caches decode tok/s by digest and **`zerollama ls`** shows **TOK/S** without re-running inference.
 * [ggml @ b9509 migration](./ggml-b9509-migration.md) — **why** vendored ggml/llama.cpp rebased to real upstream tags (**current: b9781 / v0.30.11**); 16 patches; sync workflow; **why `make sync` must not reset vendor**.
-* [llama.cpp pin-debt ladder (L6)](./llama-cpp-pin-ladder.md) — tip **b11351** (137 patches); Clef floor **b11232+**; rollback via `vendor/llama-cpp-b11232/`.
+* [llama.cpp pin-debt ladder (L6)](./llama-cpp-pin-ladder.md) — pin **b12119**; patch series **0001–0161** rebased; Clef floor **b11232+**.
 * [llama.cpp backend (experimental)](./llama-cpp-backend.md) — route text GGUF through Python runtime + sibling llama.cpp; benchmark vs ggml.
 
 ### Apple Silicon (repo)

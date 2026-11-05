@@ -20,7 +20,7 @@ This stub is a placeholder until ggml-shaped wire lands; do not expect
 
 diff --git a/ml/backend/ggml/ggml/src/ggml-metal/m4-prefill-shipped/PATCH_0125.todo b/ml/backend/ggml/ggml/src/ggml-metal/m4-prefill-shipped/PATCH_0125.todo
 new file mode 100644
-index 000000000..7198d4ee5
+index 0000000..7198d4e
 --- /dev/null
 +++ b/ml/backend/ggml/ggml/src/ggml-metal/m4-prefill-shipped/PATCH_0125.todo
 @@ -0,0 +1,8 @@

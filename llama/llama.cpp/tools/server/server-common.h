@@ -424,9 +424,8 @@ struct server_slot_stats {
     uint64_t n_gen              = 0;
 
     // speculative decoding stats
-    // DI3 WHY on stats (not only slot): completion timings JSON is what lab A/B reads.
-    // Counts are per-request verified survival (accepted ≥ pos+1) — not a confidence head.
-    // Distinct from slots[].adaptive_dm.verified_accept_by_pos_ewma (cross-request controller).>>>>>>> eccd40f3 (Bump llama.cpp pin to ggml-org b11870 with tip-chase patches.)
+    // DI3: per-position verified accept counts ride on the task result so timings JSON
+    // can expose accept_rate + accept_by_pos (ex-post; not a confidence head).
     uint64_t n_draft_tokens      = 0;
     uint64_t n_draft_accepted    = 0;
     uint64_t n_draft_verif_steps = 0;
@@ -755,6 +754,7 @@ enum server_role_type {
     SERVER_ROLE_ROUTER,   // no model: lists the models, spawns instances on demand and proxies requests to them
     SERVER_ROLE_INSTANCE, // serves one model, standalone or as a child of a router
     SERVER_ROLE_DOWNLOAD, // child of a router: download a model, report the progress, exit
+    SERVER_ROLE_MEASURE,  // child of a router: report the memory the model needs without loading it, exit
 };
 
 static inline const char * server_role_type_to_str(server_role_type role) {
@@ -762,6 +762,7 @@ static inline const char * server_role_type_to_str(server_role_type role) {
         case SERVER_ROLE_ROUTER:   return "router";
         case SERVER_ROLE_INSTANCE: return "instance";
         case SERVER_ROLE_DOWNLOAD: return "download";
+        case SERVER_ROLE_MEASURE:  return "measure";
         default: GGML_ASSERT(false && "invalid server_role_type");
     }
 }
@@ -770,6 +771,9 @@ static inline const char * server_role_type_to_str(server_role_type role) {
 static inline server_role_type server_role_type_from_str(const std::string & str) {
     if (str == "download") {
         return SERVER_ROLE_DOWNLOAD;
+    }
+    if (str == "measure") {
+        return SERVER_ROLE_MEASURE;
     }
     return SERVER_ROLE_INSTANCE;
 }
@@ -790,6 +794,7 @@ static inline server_role_type server_role_type_from_str(const std::string & str
 // the states a child reports to the router
 enum server_state {
     SERVER_STATE_DOWNLOADING,
+    SERVER_STATE_MEASURING, // sent by a measure child, see server_run_measure
     SERVER_STATE_LOADING,
     SERVER_STATE_READY,
     SERVER_STATE_SLEEPING,
@@ -798,6 +803,7 @@ enum server_state {
 static inline std::string server_state_to_str(server_state state) {
     switch (state) {
         case SERVER_STATE_DOWNLOADING: return "downloading";
+        case SERVER_STATE_MEASURING:   return "measuring";
         case SERVER_STATE_LOADING:     return "loading";
         case SERVER_STATE_READY:       return "ready";
         case SERVER_STATE_SLEEPING:    return "sleeping";
@@ -807,6 +813,7 @@ static inline std::string server_state_to_str(server_state state) {
 
 static inline server_state server_state_from_str(const std::string & str) {
     if (str == "downloading") return SERVER_STATE_DOWNLOADING;
+    if (str == "measuring")   return SERVER_STATE_MEASURING;
     if (str == "loading")     return SERVER_STATE_LOADING;
     if (str == "ready")       return SERVER_STATE_READY;
     if (str == "sleeping")    return SERVER_STATE_SLEEPING;

@@ -13,7 +13,7 @@ docs/faster-bpe-tokenize.md (M15d / 0117).
  1 file changed, 57 insertions(+), 5 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index ddd88d991..a14479093 100644
+index ddd88d9..a144790 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
 @@ -218,16 +218,68 @@ static std::vector<int> unicode_cpt_to_byte_map() {

@@ -8,7 +8,7 @@ Subject: [PATCH] ggml-cuda: drop duplicate GDN fused-cache stub
  1 file changed, 9 insertions(+), 20 deletions(-)
 
 diff --git a/ggml/src/ggml-cuda/gated_delta_net.cu.rej b/ggml/src/ggml-cuda/gated_delta_net.cu.rej
-index eb89e48d4..ce8bb6976 100644
+index eb89e48..ce8bb69 100644
 --- a/ggml/src/ggml-cuda/gated_delta_net.cu.rej
 +++ b/ggml/src/ggml-cuda/gated_delta_net.cu.rej
 @@ -1,27 +1,16 @@

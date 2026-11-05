@@ -14,7 +14,7 @@ Subject: [PATCH] ggml: fix QJL OP_COUNT assert and TBQ quants corruption
 
 diff --git a/ggml/include/ggml-rpc.h.rej b/ggml/include/ggml-rpc.h.rej
 new file mode 100644
-index 000000000..32b89f104
+index 0000000..32b89f1
 --- /dev/null
 +++ b/ggml/include/ggml-rpc.h.rej
 @@ -0,0 +1,10 @@
@@ -29,10 +29,10 @@ index 000000000..32b89f104
 + 
 + #define GGML_RPC_MAX_SERVERS       16
 diff --git a/ggml/src/ggml-quants.c b/ggml/src/ggml-quants.c
-index 97acd3e64..61bf00336 100644
+index c0ea57c..97702c2 100644
 --- a/ggml/src/ggml-quants.c
 +++ b/ggml/src/ggml-quants.c
-@@ -2764,6 +2764,10 @@ static inline void tbq_decode_rotated_4(const block_tbq4_0 * x, float * y) {
+@@ -2779,6 +2779,10 @@ static inline void tbq_decode_rotated_4(const block_tbq4_0 * x, float * y) {
          memset(y, 0, QK_TBQ * sizeof(float));
          return;
      }
@@ -43,7 +43,7 @@ index 97acd3e64..61bf00336 100644
  
  void quantize_row_tbq3_0_ref(const float * GGML_RESTRICT x, block_tbq3_0 * GGML_RESTRICT y, int64_t k) {
      assert(k % QK_TBQ == 0);
-@@ -2899,20 +2903,6 @@ void quantize_row_tbq4_k_ref(const float * GGML_RESTRICT x, block_tbq4_k * GGML_
+@@ -2914,20 +2918,6 @@ void quantize_row_tbq4_k_ref(const float * GGML_RESTRICT x, block_tbq4_k * GGML_
      }
  }
  
@@ -64,7 +64,7 @@ index 97acd3e64..61bf00336 100644
  size_t quantize_tbq3_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
      (void) quant_weights;
      const size_t row_size = ggml_row_size(GGML_TYPE_TBQ3_0, n_per_row);
-@@ -3380,64 +3370,6 @@ size_t quantize_q4_polar(const float * GGML_RESTRICT src, void * GGML_RESTRICT d
+@@ -3395,64 +3385,6 @@ size_t quantize_q4_polar(const float * GGML_RESTRICT src, void * GGML_RESTRICT d
  }
  
  
@@ -130,10 +130,10 @@ index 97acd3e64..61bf00336 100644
  
  void dequantize_row_iq2_xxs(const block_iq2_xxs * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index 6515c2076..c9016bb63 100644
+index f71a48c..04fd16b 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
-@@ -1258,6 +1258,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+@@ -1265,6 +1265,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
  
      "flash_attn_ext(x)",
      "flash_attn_back(x)",
@@ -146,7 +146,7 @@ index 6515c2076..c9016bb63 100644
      "win_part(x)",
 diff --git a/ggml/src/ggml.c.rej b/ggml/src/ggml.c.rej
 new file mode 100644
-index 000000000..6219dd222
+index 0000000..6219dd2
 --- /dev/null
 +++ b/ggml/src/ggml.c.rej
 @@ -0,0 +1,19 @@

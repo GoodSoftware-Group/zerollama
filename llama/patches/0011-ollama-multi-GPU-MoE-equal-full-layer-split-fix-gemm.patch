@@ -9,10 +9,10 @@ Subject: [PATCH] ollama: multi-GPU MoE equal full-layer split (fix gemma4
  1 file changed, 50 insertions(+)
 
 diff --git a/common/fit.cpp b/common/fit.cpp
-index 7a0300829..8492414bf 100644
+index 55b457e..2649082 100644
 --- a/common/fit.cpp
 +++ b/common/fit.cpp
-@@ -732,6 +732,56 @@ static void common_params_fit_impl(
+@@ -813,6 +813,56 @@ static void common_params_fit_impl(
          return;
      }
  

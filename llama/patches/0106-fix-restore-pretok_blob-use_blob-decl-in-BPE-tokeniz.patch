@@ -65,7 +65,7 @@ Subject: [PATCH] fix: restore pretok_blob / use_blob decl in BPE tokenize
 
 diff --git a/common/CMakeLists.txt.rej b/common/CMakeLists.txt.rej
 deleted file mode 100644
-index b068dfc51..000000000
+index b068dfc..0000000
 --- a/common/CMakeLists.txt.rej
 +++ /dev/null
 @@ -1,13 +0,0 @@
@@ -84,7 +84,7 @@ index b068dfc51..000000000
 -+
 diff --git a/common/speculative.cpp.rej b/common/speculative.cpp.rej
 deleted file mode 100644
-index c90c3d945..000000000
+index c90c3d9..0000000
 --- a/common/speculative.cpp.rej
 +++ /dev/null
 @@ -1,37 +0,0 @@
@@ -127,7 +127,7 @@ index c90c3d945..000000000
 -     // dflash/dspark decode the whole noise block in a single pass and sample every block position on the backend
 diff --git a/conversion/base.py.rej b/conversion/base.py.rej
 deleted file mode 100644
-index 937b481f7..000000000
+index 937b481..0000000
 --- a/conversion/base.py.rej
 +++ /dev/null
 @@ -1,18 +0,0 @@
@@ -151,7 +151,7 @@ index 937b481f7..000000000
 -                             self._fp8_native_scales[weight_name] = s
 diff --git a/ggml/include/ggml-rpc.h.rej b/ggml/include/ggml-rpc.h.rej
 deleted file mode 100644
-index 32b89f104..000000000
+index 32b89f1..0000000
 --- a/ggml/include/ggml-rpc.h.rej
 +++ /dev/null
 @@ -1,10 +0,0 @@
@@ -167,7 +167,7 @@ index 32b89f104..000000000
 - #define GGML_RPC_MAX_SERVERS       16
 diff --git a/ggml/src/ggml-cpu/arch-fallback.h.rej b/ggml/src/ggml-cpu/arch-fallback.h.rej
 deleted file mode 100644
-index 0b1903e88..000000000
+index 0b1903e..0000000
 --- a/ggml/src/ggml-cpu/arch-fallback.h.rej
 +++ /dev/null
 @@ -1,9 +0,0 @@
@@ -182,7 +182,7 @@ index 0b1903e88..000000000
 - #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
 diff --git a/ggml/src/ggml-cuda/fattn.cu.rej b/ggml/src/ggml-cuda/fattn.cu.rej
 deleted file mode 100644
-index d90e72d9a..000000000
+index d90e72d..0000000
 --- a/ggml/src/ggml-cuda/fattn.cu.rej
 +++ /dev/null
 @@ -1,35 +0,0 @@
@@ -223,7 +223,7 @@ index d90e72d9a..000000000
 -     // If there are no tensor cores available, use the generic tile kernel:
 diff --git a/ggml/src/ggml-cuda/gated_delta_net.cu.rej b/ggml/src/ggml-cuda/gated_delta_net.cu.rej
 deleted file mode 100644
-index ce8bb6976..000000000
+index ce8bb69..0000000
 --- a/ggml/src/ggml-cuda/gated_delta_net.cu.rej
 +++ /dev/null
 @@ -1,16 +0,0 @@
@@ -245,7 +245,7 @@ index ce8bb6976..000000000
 -     ggml_tensor * src_k     = dst->src[1];
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu.rej b/ggml/src/ggml-cuda/ggml-cuda.cu.rej
 deleted file mode 100644
-index 3a0064278..000000000
+index 3a00642..0000000
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu.rej
 +++ /dev/null
 @@ -1,9 +0,0 @@
@@ -260,7 +260,7 @@ index 3a0064278..000000000
 - static bool ggml_cuda_topk_moe_fusion(const struct ggml_cgraph * cgraph, int node_idx, ggml_cuda_topk_moe_args & args) {
 diff --git a/ggml/src/ggml-cuda/mmq.cu.rej b/ggml/src/ggml-cuda/mmq.cu.rej
 deleted file mode 100644
-index 97ea21c98..000000000
+index 97ea21c..0000000
 --- a/ggml/src/ggml-cuda/mmq.cu.rej
 +++ /dev/null
 @@ -1,11 +0,0 @@
@@ -277,7 +277,7 @@ index 97ea21c98..000000000
 -             break;
 diff --git a/ggml/src/ggml-cuda/mmq.cuh.rej b/ggml/src/ggml-cuda/mmq.cuh.rej
 deleted file mode 100644
-index 309b9ef6d..000000000
+index 309b9ef..0000000
 --- a/ggml/src/ggml-cuda/mmq.cuh.rej
 +++ /dev/null
 @@ -1,27 +0,0 @@
@@ -310,7 +310,7 @@ index 309b9ef6d..000000000
 -             return ggml_cuda_mmq_util_funcs(
 diff --git a/ggml/src/ggml-metal/CMakeLists.txt.rej b/ggml/src/ggml-metal/CMakeLists.txt.rej
 deleted file mode 100644
-index a419c973c..000000000
+index a419c97..0000000
 --- a/ggml/src/ggml-metal/CMakeLists.txt.rej
 +++ /dev/null
 @@ -1,12 +0,0 @@
@@ -328,7 +328,7 @@ index a419c973c..000000000
 -     add_custom_target(
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp.rej b/ggml/src/ggml-metal/ggml-metal-ops.cpp.rej
 deleted file mode 100644
-index 4fa6e6325..000000000
+index 4fa6e63..0000000
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp.rej
 +++ /dev/null
 @@ -1,9 +0,0 @@
@@ -343,7 +343,7 @@ index 4fa6e6325..000000000
 -         const int nr1 = pipeline.nr1;
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h.rej b/ggml/src/ggml-metal/ggml-metal-ops.h.rej
 deleted file mode 100644
-index cc55f6e96..000000000
+index cc55f6e..0000000
 --- a/ggml/src/ggml-metal/ggml-metal-ops.h.rej
 +++ /dev/null
 @@ -1,10 +0,0 @@
@@ -359,7 +359,7 @@ index cc55f6e96..000000000
 - int ggml_metal_op_acc               (ggml_metal_op_t ctx, int idx);
 diff --git a/ggml/src/ggml.c.rej b/ggml/src/ggml.c.rej
 deleted file mode 100644
-index 6219dd222..000000000
+index 6219dd2..0000000
 --- a/ggml/src/ggml.c.rej
 +++ /dev/null
 @@ -1,19 +0,0 @@
@@ -384,7 +384,7 @@ index 6219dd222..000000000
 - 
 diff --git a/gguf-py/gguf/constants.py.rej b/gguf-py/gguf/constants.py.rej
 deleted file mode 100644
-index 37d191e70..000000000
+index 37d191e..0000000
 --- a/gguf-py/gguf/constants.py.rej
 +++ /dev/null
 @@ -1,13 +0,0 @@
@@ -403,7 +403,7 @@ index 37d191e70..000000000
 -             HEAD_COUNT = "{arch}.attention.indexer.head_count"
 diff --git a/src/llama-arch.cpp.rej b/src/llama-arch.cpp.rej
 deleted file mode 100644
-index b7abe8884..000000000
+index b7abe88..0000000
 --- a/src/llama-arch.cpp.rej
 +++ /dev/null
 @@ -1,23 +0,0 @@
@@ -432,7 +432,7 @@ index b7abe8884..000000000
 -     {LLM_TENSOR_DSPARK_MARKOV_W2,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
 diff --git a/src/llama-context.cpp.rej b/src/llama-context.cpp.rej
 deleted file mode 100644
-index e16946401..000000000
+index e169464..0000000
 --- a/src/llama-context.cpp.rej
 +++ /dev/null
 @@ -1,35 +0,0 @@
@@ -473,7 +473,7 @@ index e16946401..000000000
 -     return status;
 diff --git a/src/llama-graph.cpp.rej b/src/llama-graph.cpp.rej
 deleted file mode 100644
-index bdcbb25e2..000000000
+index bdcbb25..0000000
 --- a/src/llama-graph.cpp.rej
 +++ /dev/null
 @@ -1,9 +0,0 @@
@@ -488,7 +488,7 @@ index bdcbb25e2..000000000
 - #include "llama-kv-cache.h"
 diff --git a/src/llama-kv-cache.cpp.rej b/src/llama-kv-cache.cpp.rej
 deleted file mode 100644
-index 72277756b..000000000
+index 7227775..0000000
 --- a/src/llama-kv-cache.cpp.rej
 +++ /dev/null
 @@ -1,14 +0,0 @@
@@ -508,7 +508,7 @@ index 72277756b..000000000
 -     io.write(&n_stream, sizeof(n_stream));
 diff --git a/src/llama-model.cpp.rej b/src/llama-model.cpp.rej
 deleted file mode 100644
-index c6a4d1b87..000000000
+index c6a4d1b..0000000
 --- a/src/llama-model.cpp.rej
 +++ /dev/null
 @@ -1,55 +0,0 @@
@@ -569,7 +569,7 @@ index c6a4d1b87..000000000
 -         return 0;
 diff --git a/src/llama-model.h.rej b/src/llama-model.h.rej
 deleted file mode 100644
-index 3ddf5c0ad..000000000
+index 3ddf5c0..0000000
 --- a/src/llama-model.h.rej
 +++ /dev/null
 @@ -1,12 +0,0 @@
@@ -586,7 +586,7 @@ index 3ddf5c0ad..000000000
 -     std::vector<int32_t> target_layer_ids;
 - 
 diff --git a/src/llama-vocab.cpp.rej b/src/llama-vocab.cpp.rej
-index ac216dd3a..69afeb513 100644
+index ac216dd..69afeb5 100644
 --- a/src/llama-vocab.cpp.rej
 +++ b/src/llama-vocab.cpp.rej
 @@ -1,23 +1,16 @@
@@ -628,7 +628,7 @@ index ac216dd3a..69afeb513 100644
 +         auto tok_pre = vocab.get_pre_type();
 diff --git a/src/llama-vocab.cpp.rej.rej b/src/llama-vocab.cpp.rej.rej
 deleted file mode 100644
-index 216749cd0..000000000
+index 216749c..0000000
 --- a/src/llama-vocab.cpp.rej.rej
 +++ /dev/null
 @@ -1,101 +0,0 @@
@@ -735,7 +735,7 @@ index 216749cd0..000000000
 -+ int llama_vocab::max_token_len() const {
 diff --git a/src/unicode.cpp.rej b/src/unicode.cpp.rej
 deleted file mode 100644
-index d5fdf7191..000000000
+index d5fdf71..0000000
 --- a/src/unicode.cpp.rej
 +++ /dev/null
 @@ -1,38 +0,0 @@
@@ -779,7 +779,7 @@ index d5fdf7191..000000000
 -     if (unicode_want_ascii_pretok() && regex_exprs.size() == 1 && unicode_bytes_are_ascii(text)) {
 diff --git a/tools/server/server-context.cpp.rej b/tools/server/server-context.cpp.rej
 deleted file mode 100644
-index 47cf7d330..000000000
+index 47cf7d3..0000000
 --- a/tools/server/server-context.cpp.rej
 +++ /dev/null
 @@ -1,28 +0,0 @@
@@ -813,7 +813,7 @@ index 47cf7d330..000000000
 -                     if (!slot.spec_draft.empty()) {
 diff --git a/tools/server/server-context.h.rej b/tools/server/server-context.h.rej
 deleted file mode 100644
-index 95af1d646..000000000
+index 95af1d6..0000000
 --- a/tools/server/server-context.h.rej
 +++ /dev/null
 @@ -1,9 +0,0 @@
@@ -828,7 +828,7 @@ index 95af1d646..000000000
 - 
 diff --git a/tools/server/server-schema.cpp.rej b/tools/server/server-schema.cpp.rej
 deleted file mode 100644
-index 193af3a29..000000000
+index 193af3a..0000000
 --- a/tools/server/server-schema.cpp.rej
 +++ /dev/null
 @@ -1,49 +0,0 @@
@@ -883,7 +883,7 @@ index 193af3a29..000000000
 -     // debugging
 diff --git a/tools/server/server-task.h.rej b/tools/server/server-task.h.rej
 deleted file mode 100644
-index 8196a1420..000000000
+index 8196a14..0000000
 --- a/tools/server/server-task.h.rej
 +++ /dev/null
 @@ -1,9 +0,0 @@
@@ -898,7 +898,7 @@ index 8196a1420..000000000
 - };
 diff --git a/tools/server/server.cpp.rej b/tools/server/server.cpp.rej
 deleted file mode 100644
-index e0dff585a..000000000
+index e0dff58..0000000
 --- a/tools/server/server.cpp.rej
 +++ /dev/null
 @@ -1,15 +0,0 @@

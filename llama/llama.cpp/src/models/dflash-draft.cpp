@@ -279,7 +279,7 @@ llm_build_dflash_draft::llm_build_dflash_draft(
         ggml_build_forward_expand(gf, Kcur);
         ggml_build_forward_expand(gf, Vcur);
 
-        cur = build_attn_mha(Qcur, Kcur, Vcur, nullptr, kq_mask, nullptr, nullptr,
+        cur = build_attn_mha(Qcur, Kcur, Vcur, nullptr, kq_mask, nullptr, nullptr, nullptr,
                              /*n_kv_max=*/0, 1.0f / sqrtf(float(n_embd_head)), il);
         cb(cur, "kqv_out", il);
 

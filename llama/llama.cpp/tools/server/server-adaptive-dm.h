@@ -1168,9 +1168,7 @@ struct server_adaptive_dm_state {
         }
     }
 
-    // DI3: export verified per-position EWMA for /slots JSON.
-    // WHY export (not only use internally): decide_profit_n_max already consumed this
-    // curve; lab A/B needed the same numbers on the wire. Ex-post accept ≠ confidence head.>>>>>>> eccd40f3 (Bump llama.cpp pin to ggml-org b11870 with tip-chase patches.)
+    // DI3: export verified per-position EWMA (ex-post accept, not a confidence head).
     // Returns number of positions with samples > 0 written into out[].
     int export_verified_accept_by_pos(float * out, int out_cap) const {
         if (!out || out_cap <= 0) {

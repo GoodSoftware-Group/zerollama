@@ -12,7 +12,7 @@ See docs/faster-bpe-tokenize.md (M15d / 0109).
  1 file changed, 122 insertions(+), 41 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index 500b52d31..3a53a7d4f 100644
+index 500b52d..3a53a7d 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
 @@ -232,6 +232,66 @@ static std::vector<std::string> unicode_byte_encoding_process(const std::vector<

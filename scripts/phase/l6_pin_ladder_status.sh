@@ -30,6 +30,8 @@ LADDER=(
   "b11081|161755f29e415e2c33efe906e91843c068efd664|rung 3"
   "b11232|6f767fe960c3b97cf37fac4626c86400561ca1e4|rung 4 (ship / Clef floor)"
   "b11351|631109b34da437a3c4a5ebd75091d677671392e3|Ollama tip"
+  "b11870|74bca3950054eed1795f525cb9cf06bfe796492d|prior zerollama tip (patch series base)"
+  "b12119|6f1e6543704bc5b080c7a98e7b6f707b31f6ed51|current pin"
 )
 
 pin_ge_b11232=0
@@ -84,7 +86,7 @@ echo "Makefile.sync FETCH:   ${FETCH_HEAD}"
 echo "vendor dir:            ${VENDOR_DIR} ($([ -d "${VENDOR_DIR}" ] && echo present || echo missing))"
 echo "llama/patches count:   ${PATCH_COUNT}"
 echo ""
-echo "Ladder (Ollama tip trail → b11351):"
+echo "Ladder (Ollama tip trail → b12119):"
 for row in "${LADDER[@]}"; do
   IFS='|' read -r tag sha note <<<"${row}"
   mark="  "
@@ -111,7 +113,9 @@ else
 fi
 echo ""
 echo "Doc: docs/llama-cpp-pin-ladder.md · runtime/LLAMA_CPP_PIN.md · llama/clef/README.md"
-if [[ "${VERSION}" == "b11351" ]]; then
+if [[ "${VERSION}" == "b12119" ]]; then
+  echo "Next: patches rebased (161 files, 0001–0161). Production llama-server is vendor/llama-cpp-b12119 — rollback pin: LLAMA_CPP_*.prev (b11870)"
+elif [[ "${VERSION}" == "b11351" ]]; then
   echo "Next: Strands CUDA PointerRows (deferred) · tip prod live — rollback: l6_promote_tip_env.sh --rollback"
 else
   echo "Next: bump one rung via docs/llama-cpp-pin-ladder.md#operator-runbook-one-rung"
@@ -128,7 +132,7 @@ if [[ -n "${L6_PIN_OUT}" ]]; then
 import json, os, pathlib
 report = {
     "ladder": "L6",
-    "status": "tip_b11351" if os.environ.get("VERSION") == "b11351" else "enabler",
+    "status": "tip_b12119" if os.environ.get("VERSION") == "b12119" else "enabler",
     "llama_cpp_version": os.environ.get("VERSION", ""),
     "llama_cpp_commit": os.environ.get("COMMIT", ""),
     "fetch_head": os.environ.get("FETCH_HEAD", ""),
@@ -143,7 +147,7 @@ report = {
     "compat_clef_auto_apply_present": os.environ.get("compat_clef_present") == "1",
     "clef_patch_apply_check": os.environ.get("clef_apply", ""),
     "pin_ge_b11232": os.environ.get("pin_ge_b11232") == "1",
-    "tip_target": "b11351",
+    "tip_target": "b12119",
     "clef_floor": "b11232",
     "docs": [
         "docs/llama-cpp-pin-ladder.md",

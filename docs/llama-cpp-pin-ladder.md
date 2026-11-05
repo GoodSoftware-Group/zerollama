@@ -1,16 +1,17 @@
 # llama.cpp pin-debt ladder (L6 enabler)
 
-**Status (Oct 2026):** **rung 5 (tip) landed** — pin **b11870** + **157** patches
-(CUDA `llama-server` + Clef on tip `common_batch` API; **0136** ANE shim, **0137** Laya; **0140** DI7 join cadence; **0141**/tip-port DI3 `accept_by_pos`).
-Rollback: `vendor/llama-cpp-b11232/` + `LLAMA_CPP_*.prev`.
+**Status (Nov 2026):** pin identity is **b12119** (`6f1e6543704bc5b080c7a98e7b6f707b31f6ed51`, 2026-11-04, `server : realtime: send an error event instead of crashing on exceptions`).
+`vendor/llama-cpp-b12119/` is a shallow checkout of that tag. Master is one CI commit ahead (`3de52ac`, #31439); the pin stays on the release tag.
+The patch series is **161** files (**0001–0161**), formatted on **b12119**. Two empty tip-port commits were dropped during the rebase (`v_cells` was already a pointer). **0160–0161** are the compile fixes that let `llama-server` build (dflash `v_mla`, kv-cache bufs).
+Rollback pin files: `LLAMA_CPP_*.prev` → **b11870**.
 
 | Field | Value |
 |-------|--------|
-| **Current pin** | **b11870** (`74bca3950054eed1795f525cb9cf06bfe796492d`) |
-| **Previous (rollback)** | **b11232** (`6f767fe9…`) — keep `vendor/llama-cpp-b11232/` |
-| **Ollama tip pin** | **b11351** (matched) |
+| **Current pin** | **b12119** (`6f1e6543704bc5b080c7a98e7b6f707b31f6ed51`) |
+| **Previous (rollback)** | **b11870** (`74bca3950054eed1795f525cb9cf06bfe796492d`) — `LLAMA_CPP_*.prev` |
+| **Ollama tip pin** | **b11351** (last matched upstream Ollama pin; zerollama is ahead) |
 | **Clef runtime floor** | **b11232+** — tip wire uses `common_batch` / `batch.view` |
-| **Patch series** | `llama/patches/` through **0157** (157 commits on b11870) |
+| **Patch series** | `llama/patches/` **0001–0161** (161 files, formatted on **b12119**). Vendor tip `9b9d55a` (`LLAMA_CPP_VENDOR_HEAD`) |
 | **Pin truth** | [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) · `LLAMA_CPP_VERSION` / `LLAMA_CPP_COMMIT` · `Makefile.sync` |
 | **CUDA toolkit (5080 CT)** | Prefer **CUDA 12.8** (`CUDA_HOME=/usr/local/cuda-12.8`) — CUDA 13.3 `libcudart` aborts in `cudaGetDeviceCount` on this host |
 
@@ -33,7 +34,9 @@ conflicts stay reviewable.
 | **2** | **b10969** | `391fac16…` | Mid Sep tip (`#18446`) | **Done** — kept as `vendor/llama-cpp-b10969/` rollback |
 | **3** | **b11081** | `161755f2…` | Prior “skip until rebase” gate in [upstream-ollama-diff](./upstream-ollama-diff.md) | **Done** — kept as `vendor/llama-cpp-b11081/` rollback |
 | **4** | **b11232** | `6f767fe9…` | Clef floor (`#18652` / Clef `#18741`) | **Done** — kept as `vendor/llama-cpp-b11232/` rollback |
-| **5 (ship / tip)** | **b11351** | `631109b3…` | Match Ollama **v0.40.x** tip (`#18761`) | **Done (Oct 2026)** — 141 patches (through **0141** DI3); tip `common_batch` + Clef; lab chat smoke OK (CPU when VRAM held) |
+| **5** | **b11351** | `631109b3…` | Match Ollama **v0.40.x** tip (`#18761`) | **Done (Oct 2026)** — tip `common_batch` + Clef; kept as `vendor/llama-cpp-b11351/` |
+| **6** | **b11870** | `74bca395…` | Prior zerollama tip | **Done** — previous series formatted here. Rollback via `LLAMA_CPP_*.prev` |
+| **7 (pin)** | **b12119** | `6f1e6543…` | Latest ggml-org release tag (2026-11-04) | **Done** — 161 patches rebased; `llama-server` built (sm_120) and serving on CT 1564 |
 
 **Do not** jump 0 → 5 in one shot unless you have a clean worktree day and a
 rollback plan (`vendor/llama-cpp-b10615/` + `llama/patches/` backup).

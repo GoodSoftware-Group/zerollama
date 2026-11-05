@@ -1,13 +1,14 @@
 # Unified llama.cpp vendor sync (ggml-org master + Ollama/zerollama patches).
 # Runtime sibling and in-process ggml share LLAMA_CPP_COMMIT.
 UPSTREAM=https://github.com/ggml-org/llama.cpp.git
-WORKDIR=vendor/llama-cpp-b11870
-FETCH_HEAD=b11870
+WORKDIR=vendor/llama-cpp-b12119
+FETCH_HEAD=b12119
 # Full git ref for checkout / rev-list (see repo-root LLAMA_CPP_COMMIT).
-# ggml-org tag b11870 (tip chase from b11351) (Ollama tip trail rung 5; supersedes b11232).
-FETCH_REF=74bca3950054eed1795f525cb9cf06bfe796492d
-# build-info.cpp int field (release tag b11232).
-BUILD_NUMBER=11870
+# ggml-org tag b12119 (2026-11-04). Supersedes b11870.
+# Master is one CI commit ahead (3de52ac, #31439); the pin stays on the release tag.
+FETCH_REF=6f1e6543704bc5b080c7a98e7b6f707b31f6ed51
+# build-info.cpp int field (release tag b12119).
+BUILD_NUMBER=12119
 
 # WHY sync order matters: build-info.cpp only stamps FETCH_HEAD/BUILD_NUMBER via sed.
 # If rsync from vendor/ is skipped, binaries report the new pin while in-tree

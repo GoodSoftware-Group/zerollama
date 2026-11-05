@@ -10,7 +10,7 @@ Subject: [PATCH] ggml-cuda: row-per-warp kernel for GATED_DELTA_NET (upstream
  create mode 100644 ggml/src/ggml-cuda/gated_delta_net.cu.rej
 
 diff --git a/ggml/src/ggml-cuda/gated_delta_net.cu b/ggml/src/ggml-cuda/gated_delta_net.cu
-index ae2374cbc..d6a8a8b91 100644
+index ae2374c..d6a8a8b 100644
 --- a/ggml/src/ggml-cuda/gated_delta_net.cu
 +++ b/ggml/src/ggml-cuda/gated_delta_net.cu
 @@ -287,12 +287,12 @@ static void ggml_cuda_op_gated_delta_net_impl(
@@ -43,7 +43,7 @@ index ae2374cbc..d6a8a8b91 100644
      const int64_t sq2 = nbq2 / sizeof(float);
 diff --git a/ggml/src/ggml-cuda/gated_delta_net.cu.rej b/ggml/src/ggml-cuda/gated_delta_net.cu.rej
 new file mode 100644
-index 000000000..bca10222e
+index 0000000..bca1022
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/gated_delta_net.cu.rej
 @@ -0,0 +1,457 @@

@@ -5,14 +5,14 @@ Subject: [PATCH] fix: kv_layer k_idx, unicode include, LLAMA_VERSION for CGO
  on b10488
 
 ---
- src/llama-kv-cache.cpp | 10 +++++++++-
+ src/llama-kv-cache.cpp | 12 ++++++++++--
  src/llama-kv-cache.h   |  2 ++
  src/llama-vocab.cpp    |  2 +-
  src/llama.cpp          |  4 ++++
- 4 files changed, 16 insertions(+), 2 deletions(-)
+ 4 files changed, 17 insertions(+), 3 deletions(-)
 
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 3b9d05f57..410f33baa 100644
+index 852660e..e7029da 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -448,7 +448,15 @@ bool llama_kv_cache::ensure_unique_tensors(const char * reason) {
@@ -32,11 +32,20 @@ index 3b9d05f57..410f33baa 100644
      }
      for (auto & nb : new_bufs) {
          ctxs_bufs.emplace_back(std::move(nb));
+@@ -685,7 +693,7 @@ llama_kv_cache::llama_kv_cache(
+ 
+         map_layer_ids[il] = layers.size();
+ 
+-        layers.push_back({ il, k, v, k_stream, v_stream, });
++        layers.push_back({ il, k, v, /*k_idx*/ nullptr, k_stream, v_stream, });
+     }
+ 
+     if (reuse) {
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 2fde34870..bf8f9d758 100644
+index dc08cea..323efd8 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
-@@ -275,9 +275,11 @@ private:
+@@ -281,9 +281,11 @@ private:
  
          ggml_tensor * k;
          ggml_tensor * v;
@@ -45,11 +54,11 @@ index 2fde34870..bf8f9d758 100644
          std::vector<ggml_tensor *> k_stream;
          std::vector<ggml_tensor *> v_stream;
 +        std::vector<ggml_tensor *> k_idx_stream;
-     };
  
-     bool v_trans = true;  // the value tensor is transposed
+         ggml_tensor * k_rot = nullptr;
+         ggml_tensor * v_rot = nullptr;
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index e5cb60d1d..c653d1524 100644
+index f205504..ba1874d 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
 @@ -5,7 +5,7 @@
@@ -62,7 +71,7 @@ index e5cb60d1d..c653d1524 100644
  #include <algorithm>
  #include <cassert>
 diff --git a/src/llama.cpp b/src/llama.cpp
-index 47fd9b572..94c58562a 100644
+index e123ab6..6e6d8f5 100644
 --- a/src/llama.cpp
 +++ b/src/llama.cpp
 @@ -120,6 +120,10 @@ bool llama_supports_rpc(void) {

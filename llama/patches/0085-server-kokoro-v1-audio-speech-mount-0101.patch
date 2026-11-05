@@ -12,7 +12,7 @@ Subject: [PATCH] server: kokoro /v1/audio/speech mount (0101)
  5 files changed, 61 insertions(+), 8 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index d091a1411..e1a299844 100644
+index b8b40e7..b95977c 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -133,6 +133,10 @@ option(LLAMA_BUILD_TESTS     "llama: build tests"
@@ -27,7 +27,7 @@ index d091a1411..e1a299844 100644
  option(LLAMA_BUILD_UI        "llama: build the embedded Web UI for server"                                       OFF)
  option(LLAMA_USE_PREBUILT_UI "llama: use prebuilt UI from HF Bucket when available" ON)
 diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
-index 6a6592c7b..3861712e2 100644
+index 6a6592c..3861712 100644
 --- a/tools/CMakeLists.txt
 +++ b/tools/CMakeLists.txt
 @@ -24,6 +24,10 @@ else()
@@ -42,10 +42,10 @@ index 6a6592c7b..3861712e2 100644
      endif()
      add_subdirectory(tokenize)
 diff --git a/tools/server/CMakeLists.txt b/tools/server/CMakeLists.txt
-index 37ee5b8e0..974db8b2a 100644
+index a377aed..cf2d583 100644
 --- a/tools/server/CMakeLists.txt
 +++ b/tools/server/CMakeLists.txt
-@@ -71,3 +71,10 @@ install(TARGETS ${TARGET} RUNTIME)
+@@ -75,3 +75,10 @@ install(TARGETS ${TARGET} RUNTIME)
  
  target_link_libraries(${TARGET} PRIVATE llama-server-impl)
  target_compile_features(${TARGET} PRIVATE cxx_std_17)
@@ -57,7 +57,7 @@ index 37ee5b8e0..974db8b2a 100644
 +    target_compile_definitions(${TARGET} PRIVATE LLAMA_BUILD_KOKORO)
 +endif()
 diff --git a/tools/server/server.cpp b/tools/server/server.cpp
-index b6ebf7523..4306e6475 100644
+index 8b1d426..95d9f45 100644
 --- a/tools/server/server.cpp
 +++ b/tools/server/server.cpp
 @@ -13,11 +13,18 @@
@@ -79,7 +79,7 @@ index b6ebf7523..4306e6475 100644
  
  #if defined(_WIN32)
  #include <windows.h>
-@@ -743,6 +750,31 @@ int llama_server(int argc, char ** argv) {
+@@ -788,6 +795,31 @@ int llama_server(int argc, char ** argv) {
      // touch it. lifecycle is symmetric, stop_gc() runs in clean_up() before backend free
      server_stream_session_manager_start();
  
@@ -112,7 +112,7 @@ index b6ebf7523..4306e6475 100644
          return 1;
      }
 diff --git a/tools/server/server.cpp.rej b/tools/server/server.cpp.rej
-index 24f7dd885..e0dff585a 100644
+index 24f7dd8..e0dff58 100644
 --- a/tools/server/server.cpp.rej
 +++ b/tools/server/server.cpp.rej
 @@ -1,9 +1,15 @@

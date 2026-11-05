@@ -9,7 +9,7 @@ Subject: [PATCH] unicode: Qwen3.5 all-ASCII byte pretok via Qwen2 scanner
  2 files changed, 30 insertions(+), 20 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index a136427ea..ddd88d991 100644
+index a136427..ddd88d9 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
 @@ -505,6 +505,13 @@ static inline bool unicode_is_qwen2_regex_expr(const std::string & regex_expr) {
@@ -59,7 +59,7 @@ index a136427ea..ddd88d991 100644
  
          size_t _prev_end = offset_ini;
 diff --git a/src/unicode.cpp.rej b/src/unicode.cpp.rej
-index a96256533..1c7a89e65 100644
+index a962565..1c7a89e 100644
 --- a/src/unicode.cpp.rej
 +++ b/src/unicode.cpp.rej
 @@ -1,24 +1,19 @@

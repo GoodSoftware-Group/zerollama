@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/ollama/ollama/api"
 )
 
@@ -781,7 +783,7 @@ func TestFromResponsesRequest_FunctionCallMerge(t *testing.T) {
 			"model": "gpt-oss:20b",
 			"input": [
 				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "think and act"}]},
-				{"type": "reasoning", "id": "rs_1", "encrypted_content": "Let me think...", "summary": []},
+				{"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque", "summary": [{"type": "summary_text", "text": "Let me think..."}]},
 				{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "I thought about it."}]},
 				{"type": "function_call", "call_id": "call_1", "name": "do_thing", "arguments": "{}"}
 			]
@@ -826,7 +828,7 @@ func TestFromResponsesRequest_FunctionCallMerge(t *testing.T) {
 			"model": "gpt-oss:20b",
 			"input": [
 				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "complex task"}]},
-				{"type": "reasoning", "id": "rs_1", "encrypted_content": "Thinking first...", "summary": []},
+				{"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque", "summary": [{"type": "summary_text", "text": "Thinking first..."}]},
 				{"type": "message", "role": "assistant", "content": ""},
 				{"type": "function_call", "call_id": "call_1", "name": "think_action", "arguments": "{}"},
 				{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Now doing more."}]},
@@ -1175,8 +1177,8 @@ func TestFromResponsesRequest_ReasoningMerge(t *testing.T) {
 		if assistantMsg.Content != "The answer is 4" {
 			t.Errorf("Messages[1].Content = %q, want %q", assistantMsg.Content, "The answer is 4")
 		}
-		if assistantMsg.Thinking != "Let me think about this math problem..." {
-			t.Errorf("Messages[1].Thinking = %q, want %q", assistantMsg.Thinking, "Let me think about this math problem...")
+		if assistantMsg.Thinking != "Thinking about math" {
+			t.Errorf("Messages[1].Thinking = %q, want %q", assistantMsg.Thinking, "Thinking about math")
 		}
 	})
 
@@ -1185,7 +1187,7 @@ func TestFromResponsesRequest_ReasoningMerge(t *testing.T) {
 			"model": "qwen3",
 			"input": [
 				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "what is the weather?"}]},
-				{"type": "reasoning", "id": "rs_123", "encrypted_content": "I need to call a tool for this...", "summary": []},
+				{"type": "reasoning", "id": "rs_123", "encrypted_content": "opaque", "summary": [{"type": "summary_text", "text": "I need to call a tool for this..."}]},
 				{"type": "function_call", "call_id": "call_abc", "name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}
 			]
 		}`
@@ -1264,8 +1266,8 @@ func TestFromResponsesRequest_ReasoningMerge(t *testing.T) {
 		if chatReq.Messages[1].Content != "The answer is 4." {
 			t.Errorf("Messages[1].Content = %q, want \"The answer is 4.\"", chatReq.Messages[1].Content)
 		}
-		if chatReq.Messages[1].Thinking != "This is a simple arithmetic problem. 2+2=4." {
-			t.Errorf("Messages[1].Thinking = %q, want \"This is a simple arithmetic problem. 2+2=4.\"",
+		if chatReq.Messages[1].Thinking != "Calculating 2+2" {
+			t.Errorf("Messages[1].Thinking = %q, want \"Calculating 2+2\"",
 				chatReq.Messages[1].Thinking)
 		}
 
@@ -1282,10 +1284,10 @@ func TestFromResponsesRequest_ReasoningMerge(t *testing.T) {
 			"model": "qwen3",
 			"input": [
 				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "What is the weather in Paris?"}]},
-				{"type": "reasoning", "id": "rs_001", "encrypted_content": "I need to call the weather API for Paris.", "summary": []},
+				{"type": "reasoning", "id": "rs_001", "encrypted_content": "opaque", "summary": [{"type": "summary_text", "text": "I need to call the weather API for Paris."}]},
 				{"type": "function_call", "call_id": "call_abc", "name": "get_weather", "arguments": "{\"city\":\"Paris\"}"},
 				{"type": "function_call_output", "call_id": "call_abc", "output": "Sunny, 72°F"},
-				{"type": "reasoning", "id": "rs_002", "encrypted_content": "The weather API returned sunny and 72°F. I should format this nicely.", "summary": []},
+				{"type": "reasoning", "id": "rs_002", "encrypted_content": "opaque", "summary": [{"type": "summary_text", "text": "The weather API returned sunny and 72°F. I should format this nicely."}]},
 				{"type": "message", "role": "assistant", "content": [{"type": "input_text", "text": "It's sunny and 72°F in Paris!"}]},
 				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "What about London?"}]}
 			]
@@ -1356,7 +1358,7 @@ func TestFromResponsesRequest_ReasoningMerge(t *testing.T) {
 			"model": "qwen3",
 			"input": [
 				{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "think about this"}]},
-				{"type": "reasoning", "id": "rs_123", "encrypted_content": "Still thinking...", "summary": []}
+				{"type": "reasoning", "id": "rs_123", "encrypted_content": "opaque", "summary": [{"type": "summary_text", "text": "Still thinking..."}]}
 			]
 		}`
 
@@ -2310,5 +2312,56 @@ func TestFromResponsesRequest_extraBodyStore(t *testing.T) {
 	_, err := FromResponsesRequest(req)
 	if err == nil || !strings.Contains(err.Error(), "store:true") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestResponsesReadableContent(t *testing.T) {
+	const imageNotice = "\n\n[This image is unavailable. Attach the image again, or continue without the image.]\n\n"
+	for _, tt := range []struct {
+		name, item string
+		want       api.Message
+	}{
+		{"reasoning", `{"type":"reasoning","summary":[{"type":"summary_text","text":"Read safely."}],"content":[{"type":"reasoning_text","text":"Keep <note> intact."},{"type":"text","text":"雪"}],"encrypted_content":"opaque-state"}`, api.Message{Role: "assistant", Thinking: "Read safely.\nKeep <note> intact.\n雪"}},
+		{"reasoning without summary", `{"type":"reasoning","content":[{"type":"reasoning_text","text":"The note is intact."}]}`, api.Message{Role: "assistant", Thinking: "The note is intact."}},
+		{"refusal", `{"role":"assistant","content":[{"type":"output_text","text":"Checking. "},{"type":"refusal","refusal":"I cannot delete the note."}]}`, api.Message{Role: "assistant", Content: "Checking. I cannot delete the note."}},
+		{"unavailable image", `{"role":"user","content":[{"type":"input_text","text":"Before."},{"type":"input_image","file_id":"file_private"},{"type":"input_text","text":"After."}]}`, api.Message{Role: "user", Content: "Before." + imageNotice + "After."}},
+		{"unavailable tool image", `{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"Before."},{"type":"input_image","file_id":"file_private"},{"type":"input_text","text":"After."}]}`, api.Message{Role: "tool", ToolCallID: "call_1", Content: "Before." + imageNotice + "After."}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var req ResponsesRequest
+			if err := json.Unmarshal([]byte(`{"model":"test","input":[`+tt.item+`]}`), &req); err != nil {
+				t.Fatal(err)
+			}
+			chat, err := FromResponsesRequest(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff([]api.Message{tt.want}, chat.Messages); diff != "" {
+				t.Fatalf("content changed (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestResponsesRejectsUnrepresentableContent(t *testing.T) {
+	for _, tt := range []struct{ name, item, want string }{
+		{"missing image", `{"role":"user","content":[{"type":"input_image"}]}`, "image_url"},
+		{"blank image reference", `{"role":"user","content":[{"type":"input_image","file_id":"  "}]}`, "image_url"},
+		{"unknown reasoning", `{"type":"reasoning","content":[{"type":"future_reasoning","text":"private-content"}]}`, "unsupported reasoning content type"},
+		{"missing reasoning text", `{"type":"reasoning","content":[{"type":"reasoning_text"}]}`, "requires text"},
+		{"null reasoning text", `{"type":"reasoning","content":[{"type":"text","text":null}]}`, "requires text"},
+		{"missing refusal", `{"role":"assistant","content":[{"type":"refusal"}]}`, "requires refusal"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"model":"test","input":[{"role":"user","content":"Before."},` + tt.item + `,{"role":"user","content":"After."}]}`)
+			var req ResponsesRequest
+			err := json.Unmarshal(body, &req)
+			if err == nil {
+				_, err = FromResponsesRequest(req)
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) || strings.Contains(err.Error(), "private-content") || strings.Contains(err.Error(), "file_private") {
+				t.Fatalf("error = %v, want safe error containing %q", err, tt.want)
+			}
+		})
 	}
 }

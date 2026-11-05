@@ -20,10 +20,10 @@ Subject: [PATCH] ggml-cuda: FP8_E4M3 MMVQ + MMQ paths
  create mode 100644 ggml/src/ggml-cuda/template-instances/mmq-instance-fp8_e4m3.cu
 
 diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
-index 6b36ca90b..f17423731 100644
+index 00476f0..c4d7517 100644
 --- a/ggml/src/ggml-cuda/common.cuh
 +++ b/ggml/src/ggml-cuda/common.cuh
-@@ -874,6 +874,35 @@ static __device__ __forceinline__ float ggml_cuda_ue4m3_to_fp32(uint8_t x) {
+@@ -884,6 +884,35 @@ static __device__ __forceinline__ float ggml_cuda_ue4m3_to_fp32(uint8_t x) {
  #endif // defined(GGML_USE_HIP) && defined(CDNA3) && defined(FP8_AVAILABLE) && HIP_VERSION >= 60200000
  }
  
@@ -59,7 +59,7 @@ index 6b36ca90b..f17423731 100644
  static __device__ __forceinline__ uint8_t ggml_cuda_fp32_to_ue4m3(float x) {
  #if defined(BLACKWELL_MMA_AVAILABLE) // This is used for NVFP4 subblock scale quantizations only
      if (!(x > 0.0f)) {
-@@ -1037,6 +1066,13 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q8_0> {
+@@ -1047,6 +1076,13 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q8_0> {
      static constexpr int bs = sizeof(block_q8_0);
  };
  
@@ -74,7 +74,7 @@ index 6b36ca90b..f17423731 100644
  struct ggml_cuda_type_traits<GGML_TYPE_MXFP4> {
      static constexpr int qk = QK_MXFP4;
 diff --git a/ggml/src/ggml-cuda/dequantize.cuh b/ggml/src/ggml-cuda/dequantize.cuh
-index b5ca25a16..7de655b2c 100644
+index b5ca25a..7de655b 100644
 --- a/ggml/src/ggml-cuda/dequantize.cuh
 +++ b/ggml/src/ggml-cuda/dequantize.cuh
 @@ -119,35 +119,6 @@ static __device__ __forceinline__ void dequantize_q8_0(const void * vx, const in
@@ -114,10 +114,10 @@ index b5ca25a16..7de655b2c 100644
      const block_fp8_e4m3 * x = (const block_fp8_e4m3 *) vx;
  
 diff --git a/ggml/src/ggml-cuda/mmq-load-tiles.cuh b/ggml/src/ggml-cuda/mmq-load-tiles.cuh
-index 2c7f4cd0a..11d5e4365 100644
+index 4951db7..49054bd 100644
 --- a/ggml/src/ggml-cuda/mmq-load-tiles.cuh
 +++ b/ggml/src/ggml-cuda/mmq-load-tiles.cuh
-@@ -552,6 +552,99 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
+@@ -564,6 +564,99 @@ template <ggml_type type, int J, bool fallback, bool has_fusion> static __device
      }
  }
  
@@ -218,10 +218,10 @@ index 2c7f4cd0a..11d5e4365 100644
  
  template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_q2_K(
 diff --git a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu
-index 46efdfe0f..ad96808e0 100644
+index 49e0ce9..756b082 100644
 --- a/ggml/src/ggml-cuda/mmq.cu
 +++ b/ggml/src/ggml-cuda/mmq.cu
-@@ -367,7 +367,7 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
+@@ -394,7 +394,7 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
          case GGML_TYPE_Q5_0:
          case GGML_TYPE_Q5_1:
          case GGML_TYPE_Q8_0:
@@ -232,7 +232,7 @@ index 46efdfe0f..ad96808e0 100644
          case GGML_TYPE_Q4_K:
 diff --git a/ggml/src/ggml-cuda/mmq.cu.rej b/ggml/src/ggml-cuda/mmq.cu.rej
 new file mode 100644
-index 000000000..23bd597b7
+index 0000000..23bd597
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/mmq.cu.rej
 @@ -0,0 +1,12 @@
@@ -249,10 +249,10 @@ index 000000000..23bd597b7
 +             mul_mat_q_case<GGML_TYPE_Q2_K>(ctx, args, stream);
 +             break;
 diff --git a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh
-index 1375ba3e8..35c65a3d8 100644
+index 308968b..dc4bfb6 100644
 --- a/ggml/src/ggml-cuda/mmq.cuh
 +++ b/ggml/src/ggml-cuda/mmq.cuh
-@@ -70,6 +70,7 @@ static mmq_q8_1_ds_layout mmq_get_q8_1_ds_layout(const ggml_type type_x) {
+@@ -73,6 +73,7 @@ static mmq_q8_1_ds_layout mmq_get_q8_1_ds_layout(const ggml_type type_x) {
          case GGML_TYPE_Q5_1:
              return MMQ_Q8_1_DS_LAYOUT_DS4;
          case GGML_TYPE_Q8_0:
@@ -260,7 +260,7 @@ index 1375ba3e8..35c65a3d8 100644
              return MMQ_Q8_1_DS_LAYOUT_D4;
          case GGML_TYPE_MXFP4:
              return MMQ_Q8_1_DS_LAYOUT_D4;
-@@ -396,6 +397,7 @@ static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml
+@@ -404,6 +405,7 @@ static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml
          case GGML_TYPE_Q5_0:    return MMQ_DP4A_TXS_Q8_0;
          case GGML_TYPE_Q5_1:    return MMQ_DP4A_TXS_Q8_1;
          case GGML_TYPE_Q8_0:    return MMQ_DP4A_TXS_Q8_0;
@@ -268,7 +268,7 @@ index 1375ba3e8..35c65a3d8 100644
          case GGML_TYPE_MXFP4:   return MMQ_DP4A_TXS_Q8_1;
          case GGML_TYPE_NVFP4:   return MMQ_DP4A_TXS_Q8_0_16;
          case GGML_TYPE_Q2_K:    return MMQ_DP4A_TXS_Q2_K;
-@@ -1559,7 +1561,7 @@ extern DECL_MMQ_CASE(GGML_TYPE_Q4_1);
+@@ -1632,7 +1634,7 @@ extern DECL_MMQ_CASE(GGML_TYPE_Q4_1);
  extern DECL_MMQ_CASE(GGML_TYPE_Q5_0);
  extern DECL_MMQ_CASE(GGML_TYPE_Q5_1);
  extern DECL_MMQ_CASE(GGML_TYPE_Q8_0);
@@ -279,7 +279,7 @@ index 1375ba3e8..35c65a3d8 100644
  extern DECL_MMQ_CASE(GGML_TYPE_Q4_K);
 diff --git a/ggml/src/ggml-cuda/mmq.cuh.rej b/ggml/src/ggml-cuda/mmq.cuh.rej
 new file mode 100644
-index 000000000..86a476888
+index 0000000..86a4768
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/mmq.cuh.rej
 @@ -0,0 +1,27 @@
@@ -311,7 +311,7 @@ index 000000000..86a476888
 +         case GGML_TYPE_Q2_K:
 +             return ggml_cuda_mmq_util_funcs(
 diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
-index 930f1adc4..30d714be0 100644
+index 1a9cf55..e8dd961 100644
 --- a/ggml/src/ggml-cuda/mmvq.cu
 +++ b/ggml/src/ggml-cuda/mmvq.cu
 @@ -46,6 +46,7 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type)
@@ -353,7 +353,7 @@ index 930f1adc4..30d714be0 100644
                  (vx, vy, ids, fusion, dst, ncols_x, nrows_x, ncols_dst, stride_row_x, stride_col_y, stride_col_dst,
 diff --git a/ggml/src/ggml-cuda/template-instances/mmq-instance-fp8_e4m3.cu b/ggml/src/ggml-cuda/template-instances/mmq-instance-fp8_e4m3.cu
 new file mode 100644
-index 000000000..de604604a
+index 0000000..de60460
 --- /dev/null
 +++ b/ggml/src/ggml-cuda/template-instances/mmq-instance-fp8_e4m3.cu
 @@ -0,0 +1,5 @@
@@ -363,7 +363,7 @@ index 000000000..de604604a
 +
 +DECL_MMQ_CASE(GGML_TYPE_FP8_E4M3);
 diff --git a/ggml/src/ggml-cuda/vecdotq.cuh b/ggml/src/ggml-cuda/vecdotq.cuh
-index d5ff93b91..8dc83efd9 100644
+index d5ff93b..8dc83ef 100644
 --- a/ggml/src/ggml-cuda/vecdotq.cuh
 +++ b/ggml/src/ggml-cuda/vecdotq.cuh
 @@ -891,6 +891,30 @@ static __device__ __forceinline__ float vec_dot_q8_0_q8_1(
