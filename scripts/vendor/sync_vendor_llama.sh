@@ -49,6 +49,21 @@ rsync -a --delete \
   --exclude 'src/mem_hip.cpp' \
   "${VENDOR}/ggml/" "${ROOT}/ml/backend/ggml/ggml/"
 
+# WHY refuse: pin bumps rsync --delete from vendor onto llama/llama.cpp. A fix
+# that landed only in-tree (no llama/patches entry) is deleted. The b12119 bump
+# dropped the gemma4-assistant draft-stack load that way (expected 49, got 15).
+assistant_sentinel='hparams.n_layer_nextn = hparams.n_layer_all'
+vendor_asst="${VENDOR}/src/models/gemma4-assistant.cpp"
+if compgen -G "${ROOT}/llama/patches/*gemma4-assistant-draft-stack*.patch" >/dev/null; then
+  if ! grep -q "${assistant_sentinel}" "${vendor_asst}" 2>/dev/null; then
+    echo "error: refusing to rsync llama.cpp — vendor is missing patch 0163" >&2
+    echo "  ${vendor_asst} lacks: ${assistant_sentinel}" >&2
+    echo "  sync --delete would wipe the in-tree gemma4-assistant fix." >&2
+    echo "  git -C ${VENDOR} am ${ROOT}/llama/patches/*gemma4-assistant-draft-stack*.patch" >&2
+    exit 1
+  fi
+fi
+
 echo ">>> sync llama.cpp subset → llama/llama.cpp" >&2
 for dir in common include src tools vendor; do
   if [[ -d "${VENDOR}/${dir}" ]]; then

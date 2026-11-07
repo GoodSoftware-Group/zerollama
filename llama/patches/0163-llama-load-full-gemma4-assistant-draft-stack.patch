@@ -1,0 +1,35 @@
+From 933b71ffb239002ab3f1d31a7f9897bfd993a13b Mon Sep 17 00:00:00 2001
+From: root <root@ryzen7950x0.servers.moe>
+Date: Sat, 7 Nov 2026 14:34:53 -0800
+Subject: [PATCH] llama: load the full gemma4-assistant draft stack
+
+nextn_predict_layers is the MTP horizon, not block_count. Walking only
+the horizon left the Eliza 77M head at 15 of 49 tensors.
+---
+ src/models/gemma4-assistant.cpp | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/src/models/gemma4-assistant.cpp b/src/models/gemma4-assistant.cpp
+index 6ebc3c3..a3ed838 100644
+--- a/src/models/gemma4-assistant.cpp
++++ b/src/models/gemma4-assistant.cpp
+@@ -16,6 +16,16 @@ void llama_model_gemma4_assistant::load_arch_hparams(llama_model_loader & ml) {
+     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,  hparams.f_norm_rms_eps);
+     ml.get_key(LLM_KV_ATTENTION_KEY_LENGTH_SWA,     hparams.n_embd_head_k_swa);
+     ml.get_key(LLM_KV_ATTENTION_VALUE_LENGTH_SWA,   hparams.n_embd_head_v_swa);
++
++    // Standalone assistant GGUFs store the draft stack in block_count
++    // (blk.0 .. blk.N-1). nextn_predict_layers is the MTP horizon (often 1),
++    // not that stack depth. Tensor load and the graph both walk n_layer_nextn.
++    // Leaving the trunk split (n_layer = block_count - horizon) binds one SWA
++    // block and then done_getting_tensors fails ("expected 49, got 15" on the
++    // Eliza gemma4-assistant 77M head). There is no trunk in this file.
++    if (hparams.n_layer_all > 0) {
++        hparams.n_layer_nextn = hparams.n_layer_all;
++    }
+ }
+ 
+ void llama_model_gemma4_assistant::load_arch_tensors(llama_model_loader &) {
+-- 
+2.39.5
+

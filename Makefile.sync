@@ -70,9 +70,13 @@ apply-patches:
 	want_head=$$(tr -d '[:space:]' < LLAMA_CPP_VENDOR_HEAD 2>/dev/null || true); \
 	n_commits=$$(git -C $(WORKDIR) rev-list --count $(FETCH_REF)..HEAD 2>/dev/null || echo 0); \
 	n_patches=$$(ls llama/patches/*.patch 2>/dev/null | wc -l | tr -d ' '); \
-	if [ -n "$$want_head" ] && [ "$$vendor_head" = "$$want_head" ]; then \
+	if [ -n "$$want_head" ] && [ "$$vendor_head" = "$$want_head" ] && [ "$$n_commits" -ge "$$n_patches" ]; then \
 		echo ">>> vendor already at LLAMA_CPP_VENDOR_HEAD ($$want_head); stamping .patched markers"; \
 		$(MAKE) -f $(lastword $(MAKEFILE_LIST)) mark-patches-applied; \
+	elif [ -n "$$want_head" ] && [ "$$vendor_head" = "$$want_head" ] && [ "$$n_patches" -gt "$$n_commits" ]; then \
+		echo ">>> LLAMA_CPP_VENDOR_HEAD matches but patch files ($$n_patches) exceed commits ($$n_commits); applying"; \
+		echo ">>> a matching HEAD stamp must not mark new llama/patches as applied"; \
+		$(MAKE) -f $(lastword $(MAKEFILE_LIST)) $(PATCHED); \
 	elif [ "$$n_commits" = "$$n_patches" ] && [ "$$n_patches" != "0" ]; then \
 		echo ">>> vendor already has $$n_commits/$$n_patches patch commits; stamping .patched markers"; \
 		echo ">>> tip: echo \$$(git -C $(WORKDIR) rev-parse HEAD) > LLAMA_CPP_VENDOR_HEAD"; \

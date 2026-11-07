@@ -129,8 +129,12 @@ if _vendor_is_patched; then
   "${GIT_AM[@]}" am --abort 2>/dev/null || true
   rm -rf "${VENDOR}/.git/rebase-apply"
   patch_n="$(_patch_file_count)"
-  if _vendor_head_matches_pin_file; then
+  if _vendor_head_matches_pin_file && [[ "${existing_count}" -ge "${patch_n}" ]]; then
     _skip_am_already_complete "${existing_count}"
+  fi
+  if _vendor_head_matches_pin_file && [[ "${patch_n}" -gt "${existing_count}" ]]; then
+    echo ">>> LLAMA_CPP_VENDOR_HEAD matches but only ${existing_count}/${patch_n} commits; applying missing patches" >&2
+    echo ">>> a matching HEAD stamp must not mark new llama/patches as applied" >&2
   fi
   if [[ "${existing_count}" -ge "${patch_n}" ]]; then
     _skip_am_already_complete "${existing_count}"

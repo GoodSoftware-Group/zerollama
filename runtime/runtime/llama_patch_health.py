@@ -28,6 +28,7 @@ _REQUIRED_PATCH_SUBSTRINGS = (
     "ollama-kv-seq-copy-endpoint",  # numbered 0017/0018 historically; 0022 on 8f114a9b
     "cuda_graph_invalidate",  # 0075 — L3 decode-graph break for subprocess
     "kv-grow-shrink-in-place",  # 0133 — llama_n_ctx_grow/shrink + POST /kv/grow|/kv/shrink
+    "gemma4-assistant-draft-stack",  # 0163 — block_count is the draft stack, not nextn horizon
 )
 
 _IN_TREE_MARKERS = (
@@ -38,6 +39,10 @@ _IN_TREE_MARKERS = (
     ("llama/llama.cpp/include/llama.h", "llama_n_ctx_grow"),
     ("llama/llama.cpp/include/llama-kv-ext.h", "llama_memory_kv_ext_classify"),
     ("llama/llama.cpp/src/llama-memory-kv-ext.cpp", "llama_memory_kv_cell_for_pos"),
+    (
+        "llama/llama.cpp/src/models/gemma4-assistant.cpp",
+        "hparams.n_layer_nextn = hparams.n_layer_all",
+    ),
 )
 
 # WHY bytes needles: scan packaged/vendor libggml-cuda without loading CUDA.
@@ -422,6 +427,12 @@ def llama_patch_health(
         count = vendor.get("commits_on_pin")
         if count is None:
             warnings.append("vendor present but could not count commits on pin")
+        elif isinstance(count, int) and count < len(patches):
+            issues.append(
+                f"vendor has {count} commits on the pin but {len(patches)} patch files — "
+                "a new llama/patches entry was not git am'd (LLAMA_CPP_VENDOR_HEAD must not "
+                "stamp it applied). Run ./scripts/vendor/ensure_llama_vendor_patches.sh"
+            )
         elif count == 0 and bin_seq is not True and not fork_help and not vendor_synced:
             issues.append(
                 f"vendor at bare pin with zero patch commits — run "
@@ -431,6 +442,17 @@ def llama_patch_health(
             warnings.append(
                 "vendor synced from sibling (zero git am commits) — rebuild llama-server to pick up patches"
             )
+        assistant = Path(vendor["path"]) / "src" / "models" / "gemma4-assistant.cpp"
+        if assistant.is_file():
+            try:
+                text = assistant.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            if "hparams.n_layer_nextn = hparams.n_layer_all" not in text:
+                issues.append(
+                    "vendor gemma4-assistant.cpp lacks the draft-stack load "
+                    "(patch 0163). sync_vendor_llama.sh will refuse to rsync."
+                )
         head_check = vendor_head_matches(root)
         if head_check.get("matches") is False:
             warnings.append(

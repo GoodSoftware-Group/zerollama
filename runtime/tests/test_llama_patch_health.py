@@ -22,6 +22,7 @@ def test_list_patch_files_includes_required():
     assert any("ollama-kv-seq-copy-endpoint" in n for n in names)
     assert any("cuda_graph_invalidate" in n for n in names)
     assert any("kv-grow-shrink-in-place" in n for n in names)
+    assert any("gemma4-assistant-draft-stack" in n for n in names)
 
 
 def test_binary_embeds_seq_copy_checks_server_impl(tmp_path: Path):
@@ -115,6 +116,7 @@ def test_in_tree_seq_copy_markers_present():
     assert markers["llama/llama.cpp/tools/server/server.cpp#kv-shrink"] is True
     assert markers["llama/llama.cpp/include/llama.h"] is True
     assert markers["llama/llama.cpp/include/llama-kv-ext.h"] is True
+    assert markers["llama/llama.cpp/src/models/gemma4-assistant.cpp"] is True
 
 
 def test_llama_patch_health_passes_in_repo():
