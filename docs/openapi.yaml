@@ -11,10 +11,10 @@ info:
     Note (zerollama): the **served** OpenAPI document is
     `server/openapi/openapi.yaml` (`GET /openapi.json` / `/docs`). That file
     includes Hermes/M15e extensions (`timeout`, `/api/cache/pin`,
-    `/v1/chat/completions/batch`, can-load topology, `preempted_reason`).
-    This `docs/openapi.yaml` is the upstream-shaped reference and may lag.
+    `/v1/chat/completions/batch`, can-load topology, `preempted_reason`),
     LocalAI routes (`/api/aliases`, `/api/score`, `/api/router/*`, `/api/repair`,
-    experimental web_*) live only in the served spec.
+    experimental web_*), `/api/train/*`, realtime/duplex audio, and fleet holds.
+    This `docs/openapi.yaml` is the upstream-shaped reference and may lag.
 servers:
   - url: http://localhost:11434
     description: Ollama

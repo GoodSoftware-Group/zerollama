@@ -1,0 +1,15 @@
+{
+  "capabilities": ["audio"],
+  "modality_backends": {
+    "transcribe": "qwen3-asr"
+  },
+  "backend_paths": {
+    "qwen3_asr": "/mnt/ollama_img/speech/qwen3-asr/Qwen3-ASR-0.6B"
+  },
+  "architecture": "amd64",
+  "os": "linux",
+  "rootfs": {
+    "type": "layers",
+    "diff_ids": []
+  }
+}

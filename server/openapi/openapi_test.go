@@ -29,11 +29,13 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 	}
 	paths := doc["paths"].(map[string]any)
 	for _, p := range []string{
-		"/v1/audio/speech", "/v1/audio/voices", "/v1/audio/generations", "/openapi.json", "/docs",
+		"/v1/audio/speech", "/v1/audio/voices", "/v1/audio/generations", "/v1/audio/transcriptions", "/v1/realtime", "/openapi.json", "/docs",
 		"/api/status", "/api/can-load", "/api/load", "/backend/load", "/api/unload", "/api/propose-load", "/api/pin",
 		"/api/cache/pin", "/api/cache/warm", "/api/metrics", "/api/version",
 		"/api/aliases", "/api/score", "/api/router/decide", "/api/router/corpus", "/api/router/inventory", "/v1/route",
 		"/api/repair", "/api/experimental/web_search", "/api/experimental/web_fetch",
+		"/api/train/jobs", "/api/train/jobs/{id}", "/api/train/jobs/{id}/events", "/api/train/unload", "/api/train/status", "/api/train/recipes",
+		"/api/embeddings", "/api/rerank", "/v1/reranking", "/api/fleet/assign-hold", "/api/image/workflows",
 		"/v1/chat/completions", "/v1/chat/completions/batch",
 		"/v1/decisions", "/v1/systemone", "/v1/multidecode", "/v1/extract", "/v1/gliner", "/v1/gliner-decide",
 		"/v1/responses", "/v1/messages",
@@ -62,6 +64,8 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"ExtractRequest", "ExtractResponse", "ExtractEntity", "GlinerRequest",
 		"RouterCorpusEntry", "RepairRequest", "RepairResponse",
 		"LoadRequest", "LoadResponse", "UnloadRequest", "UnloadResponse",
+		"TrainJobSubmitRequest", "TrainJobSubmitResponse", "TrainJobStatus", "TrainJobStatusResponse",
+		"TrainRecipesRequest", "TrainRecipesResponse", "AssignHoldRequest", "AssignHoldResponse",
 	} {
 		if _, ok := schemas[s]; !ok {
 			t.Fatalf("missing schema %s", s)

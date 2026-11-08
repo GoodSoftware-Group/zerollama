@@ -9,8 +9,12 @@ info:
     Live OpenAPI for this zerollama server.
 
     Includes the native Ollama `/api/*` surface plus OpenAI-compatible
-    `/v1/*` routes (chat, responses, Anthropic messages, embeddings, images, audio speech/transcriptions,
-    voice catalog, and video generation).
+    `/v1/*` routes (chat, responses, Anthropic messages, embeddings, images,
+    audio speech/transcriptions/translations, `/v1/realtime` duplex, voice catalog,
+    music generations, and video generation).
+
+    GPU training (when the embed worker starts): `/api/train/*` (jobs, SSE events,
+    unload, status, T11 recipes). See docs/gpu-training.md.
 
     LocalAI control plane (LA7/LA9/LA11/LA11b/LA15/LA16/LA17/LA21/LA22): `/api/repair`,
     `/api/score`, `/v1/rerank`, `/v1/decisions`, `/v1/multidecode`, `/v1/extract`, `/v1/gliner`, `/v1/gliner-decide`, `/api/router/*`, `/api/aliases`, `/api/load`, `/api/unload`, experimental web_search/fetch.
@@ -3622,6 +3626,169 @@ components:
         error:
           type: string
           description: Error message describing what went wrong
+    TrainJobSubmitRequest:
+      type: object
+      description: >
+        Submit a GPU training / script job. Registered only when the embed
+        training worker started (`ZEROLLAMA_GPU_JOBS`, default on).
+      properties:
+        kind:
+          type: string
+          description: >
+            Job command. Empty / `train` / `sft` → SFT. `grpo` / `rl` → T10 GRPO.
+            `run_script` → video/music helper scripts. Unknown kinds are 400.
+          enum: [train, sft, run_script, grpo, rl]
+        payload:
+          type: object
+          additionalProperties: true
+          description: >
+            Kind-specific body (model_name, training_data / dataset, LoRA fields,
+            T7 export flags, T10 prompts/rewards, …). See docs/gpu-training.md,
+            docs/t10-grpo.md, docs/t11-recipes.md.
+        priority:
+          type: string
+          description: >
+            `high` / `interactive` bypass idle-wait and allowed window.
+            `low` / `batch` prefer the defer queue when busy. Default `normal`.
+          enum: [high, interactive, normal, low, batch]
+        slo:
+          type: string
+          description: Legacy alias for slo_class
+        slo_class:
+          type: string
+          description: Optional SLO class folded into priority resolution
+        queue_on_busy:
+          type: boolean
+          description: >
+            When true, policy rejects become `defer-*` jobs instead of 409
+            (same as ZEROLLAMA_TRAINING_QUEUE_ON_BUSY=1).
+    TrainJobSubmitResponse:
+      type: object
+      required: [job_id, priority]
+      properties:
+        job_id:
+          type: string
+          description: Python job id, or `defer-*` while waiting for inference idle / window
+        priority:
+          type: string
+        queued:
+          type: boolean
+          description: True when the job is deferred
+        state:
+          type: string
+          description: e.g. waiting_for_inference_idle when queued
+    TrainJobStatus:
+      type: object
+      description: >
+        Job object from the embed worker (protobuf-JSON field names). Deferred
+        jobs may include promotedJobId after promotion.
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          description: queued | running | completed | failed | cancelled | waiting_for_inference_idle
+        progress:
+          type: number
+        progressMessage:
+          type: string
+        progressMetrics:
+          type: object
+          additionalProperties: true
+          description: loss, tokens_per_sec, VRAM, …
+        promotedJobId:
+          type: string
+          description: After a defer-* job is promoted, the Python job id
+      additionalProperties: true
+    TrainJobStatusResponse:
+      type: object
+      properties:
+        job:
+          $ref: "#/components/schemas/TrainJobStatus"
+      additionalProperties: true
+    TrainJobListResponse:
+      type: object
+      description: Recent jobs (shape matches historical protobuf JSON list)
+      additionalProperties: true
+    TrainStatusResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        extras:
+          description: Queue / worker extras from the embed health payload
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+    TrainUnloadResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+    TrainCancelResponse:
+      type: object
+      properties:
+        cancelled:
+          type: boolean
+    TrainRecipesRequest:
+      type: object
+      description: >
+        T11c offline ingest. Does not enqueue a GPU job. Multipart form field
+        `file` is also accepted (plus format / preset / model_name fields).
+      properties:
+        content:
+          type: string
+          description: Raw CSV/JSONL/JSON/TXT (or chat export) body
+        filename:
+          type: string
+          description: Hint for format detection (default upload.json)
+        format:
+          type: string
+          description: auto | csv | jsonl | json | txt | …
+        preset:
+          type: string
+          description: auto | sharegpt | openai | alpaca | chatgpt_export | claude_export | …
+        model_name:
+          type: string
+        python:
+          type: string
+          description: Optional python binary override (lab)
+    TrainRecipesResponse:
+      type: object
+      description: Ingest result; merge training_data into POST /api/train/jobs
+      properties:
+        n_rows:
+          type: integer
+        training_data:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+      additionalProperties: true
+    AssignHoldRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: F5 assignment JWT
+    AssignHoldResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: held
+        jti:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        node_id:
+          type: string
+        model:
+          type: string
 paths:
   /api/generate:
     post:
@@ -5990,7 +6157,12 @@ paths:
     post:
       tags: [Audio]
       summary: Speech to text
-      description: Whisper backend or multimodal audio models.
+      description: |
+        Whisper (`modality_backends.transcribe=whisper`), Python Qwen3-ASR
+        (`transcribe=qwen3-asr`), or a file-audio / mtmd GGUF (voxtral, qwen2.5o,
+        qwen3a, ultravox, phi4, …) that takes a whole clip. Live-only tags
+        (`voxtral_rt`, LFM3 realtime) return 400 and stay on `GET /v1/realtime`.
+        Speech-only tags return 400 toward `POST /v1/audio/speech`.
       operationId: createTranscription
       requestBody:
         required: true
@@ -6466,6 +6638,351 @@ paths:
           description: Job not found and no durable mp4
         "202":
           description: Job still running (not ready)
+  /api/train/jobs:
+    post:
+      tags: [Training]
+      summary: Submit a training / GPU job
+      description: |
+        Async SFT, GRPO (`kind=grpo|rl`), or `run_script`. Returns 202 with
+        `job_id`. When inference-idle / window policy defers the job, `queued`
+        is true and `job_id` is a `defer-*` id — keep polling the same id
+        (`promotedJobId` after promotion). Routes exist only when the embed
+        training worker started. Operator guide: docs/gpu-training.md.
+      operationId: trainSubmitJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrainJobSubmitRequest"
+      responses:
+        "202":
+          description: Accepted (running or deferred)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainJobSubmitResponse"
+        "400":
+          description: Invalid kind / priority / body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Policy reject (inference busy / outside window) without queue_on_busy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Training misconfigured, unsupported, or defer queue full
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Embed worker error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      tags: [Training]
+      summary: List training jobs
+      description: >
+        Recent jobs from the embed worker. With
+        ZEROLLAMA_TRAINING_QUEUE_LIST_ALL, deferred terminal jobs are included;
+        default merges waiting defer jobs only.
+      operationId: trainListJobs
+      responses:
+        "200":
+          description: Job list JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainJobListResponse"
+        "502":
+          description: Embed worker error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/train/jobs/{id}:
+    get:
+      tags: [Training]
+      summary: Training job status
+      operationId: trainJobStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "Status wrapper with a job object"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainJobStatusResponse"
+        "404":
+          description: Unknown job id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Embed worker error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [Training]
+      summary: Cancel a training job
+      description: Cancels a Python job or a waiting `defer-*` job.
+      operationId: trainCancelJob
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cancel attempted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainCancelResponse"
+        "409":
+          description: Deferred job not cancellable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Embed worker error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/train/jobs/{id}/events:
+    get:
+      tags: [Training]
+      summary: Training job progress (SSE)
+      description: |
+        T3 server-sent events. `event: progress` / `done` / `error` with `data`
+        equal to the job object (loss, tok/s, VRAM in `progressMetrics`).
+        Keepalive comments every 15s. Polls the embed worker under the hood.
+      operationId: trainJobEvents
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /api/train/unload:
+    post:
+      tags: [Training]
+      summary: Unload the training model from GPU
+      operationId: trainUnload
+      responses:
+        "200":
+          description: Unloaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainUnloadResponse"
+        "502":
+          description: Embed worker error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/train/status:
+    get:
+      tags: [Training]
+      summary: Training worker health
+      operationId: trainStatus
+      responses:
+        "200":
+          description: Health + extras
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainStatusResponse"
+        "502":
+          description: Embed worker error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/train/recipes:
+    post:
+      tags: [Training]
+      summary: Ingest spreadsheet / chat export into SFT rows
+      description: |
+        T11c offline helper. Returns `{n_rows, training_data}` without enqueueing
+        a GPU job. JSON body or multipart `file`. Operators POST `training_data`
+        into `/api/train/jobs` when ready. Docs: docs/t11-recipes.md.
+      operationId: trainRecipes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrainRecipesRequest"
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                format:
+                  type: string
+                preset:
+                  type: string
+                model_name:
+                  type: string
+      responses:
+        "200":
+          description: Ingested rows
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainRecipesResponse"
+        "400":
+          description: Missing content / ingest failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/embeddings:
+    post:
+      tags: [Embeddings]
+      summary: Generate embeddings (legacy path)
+      description: >
+        Same handler as `POST /api/embed`. Prefer `/api/embed` or
+        `POST /v1/embeddings` for new clients.
+      operationId: embeddingsLegacy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Embedding vectors
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/rerank:
+    post:
+      tags: [Rerank]
+      summary: Rerank documents (alias)
+      description: Alias of `POST /v1/rerank`.
+      operationId: rerankApiAlias
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RerankRequest"
+      responses:
+        "200":
+          description: Documents sorted by relevance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RerankResponse"
+  /v1/reranking:
+    post:
+      tags: [Rerank]
+      summary: Rerank documents (alias)
+      description: Alias of `POST /v1/rerank` (Jina-style path).
+      operationId: rerankV1Alias
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RerankRequest"
+      responses:
+        "200":
+          description: Documents sorted by relevance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RerankResponse"
+  /api/fleet/assign-hold:
+    post:
+      tags: [Fleet]
+      summary: Register an F5 assignment soft hold
+      description: >
+        Validates an assignment JWT and registers a soft hold (`jti` → expiry)
+        counted in `/api/status` ggml assign_holds. Requires assignment tokens
+        enabled on the node.
+      operationId: fleetAssignHold
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignHoldRequest"
+      responses:
+        "200":
+          description: Hold registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssignHoldResponse"
+        "400":
+          description: token required
+        "401":
+          description: Invalid token
+        "409":
+          description: Expired token
+        "503":
+          description: Assignment tokens disabled
+  /api/image/workflows:
+    get:
+      tags: [Images]
+      summary: List ComfyUI workflows for a model
+      description: >
+        Discovery for agents before queuing a Comfy image job. Requires
+        `?model=` with `modality_backends.image=comfyui`.
+      operationId: imageWorkflows
+      parameters:
+        - name: model
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Workflow catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: Missing model or not a ComfyUI image tag
+        "404":
+          description: Model not found
   /openapi.yaml:
     get:
       tags: [Meta]

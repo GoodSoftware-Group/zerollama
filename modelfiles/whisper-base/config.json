@@ -1,9 +1,17 @@
 {
-  "modality_backends": { "transcribe": "whisper" },
+  "modality_backends": {
+    "transcribe": "whisper"
+  },
   "backend_paths": {
     "whisper_model": "/mnt/ollama_img/speech/whisper/ggml-base.en.bin"
   },
   "architecture": "amd64",
   "os": "linux",
-  "rootfs": { "type": "layers", "diff_ids": [] }
+  "rootfs": {
+    "type": "layers",
+    "diff_ids": []
+  },
+  "capabilities": [
+    "audio"
+  ]
 }
