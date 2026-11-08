@@ -262,6 +262,14 @@ peak memory  size=114.80 GiB
 
 **T=0 greedy trio (mtplx 2.9.2):** draft argmax stays on-device; accept is token equality. Fence 12288 (`ZEROLLAMA_MLX_GREEDY_TRIO_MAX_CONTEXT`; `0` unlimited). Kill: `ZEROLLAMA_MLX_GREEDY_DRAFT_CHAIN=off` / `ZEROLLAMA_MLX_BATCHED_GREEDY_ACCEPT=off`. Sampled requests unchanged. `*.last.json` stamps `greedy_coupled` when both gates fired on a T=0 request. Spec and AR share `prefillBodyLen` (leave one seed token).
 
+**Live MTP history reset (mtplx 2.10):** automatic — wipe draft KV at 16k generated tokens, or earlier when UMA is ≥75% of the recommended working set and draft fill is already a last_window (8192). Prompt tokens do not count. Escape: `ZEROLLAMA_MLX_MTP_HISTORY_LIVE_RESET=0` off, or `=N` to pin an interval.
+
+**Prefill fail-loud (mtplx 2.12.2):** automatic — chunk 1024 when RAM ≥75% of recommended working set, 512 at ≥90%. HTTP **507** only if already at the recommended size **and** remaining prompt &gt;512 — short continuations still run.
+
+**Stop-kind logs:** automatic — `inference response out` / agentstats `stop_kind` is `eos` / `stop_sequence` / `length` / `repetition_loop`. Public `done_reason` stays `stop`/`length`.
+
+**M5 fused-verify SDPA:** automatic from MLX `device_name` / architecture gen ≥17 (same chips ggml enables tensor API on: M5+/A19+). Skips the hd-192/256 Q split so fused verify uses stock MLX full/tensor SDPA. GQA overflow still splits. Do **not** vendor MTPLX TensorOps kernels. Hidden lab pin: `ZEROLLAMA_MLX_TENSOR_GPU=1|0`.
+
 **MTP norm convention (mtplx #301):** `+1.0` only when MTP q/k mean max < 1.25 **and** low-set mean min < 0.5. Missing either family or an already-absolute sidecar is left alone. Import no longer `+1`s `mtp.*` just because the tensors exist. Youssofal in-checkpoint packs (`Qwen3.8-27B-MTPLX-*`) can load on lab `:11435` after `zerollama create`; do not bolt their MTP sidecar onto a foreign trunk.
 
 **Draft LM requant (F0757):** do **not** enable draft-only 3/4-bit Unembed shrink as a default — catalog 9B Speed A3/A4 sat ~0.99× C0 (&lt;1.03× ship bar). Target head stays untouched either way.

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ollama/ollama/server/modality/kokoro"
 	"github.com/ollama/ollama/types/model"
 )
 
@@ -16,10 +17,14 @@ type SpeechVoice struct {
 	Name        string `json:"name,omitempty"`
 	Backend     string `json:"backend,omitempty"`
 	Description string `json:"description,omitempty"`
+	// SampleRate is the playback rate in Hz for a llama-server gen projector.
+	// PCM from that model is little-endian float32 at this rate.
+	SampleRate int `json:"sample_rate,omitempty"`
 }
 
-// ListSpeechVoices enumerates voices from Piper piper_voice_* keys, optional
-// tts_voices_file JSON, tts_default_voice, and a Piper model basename fallback.
+// ListSpeechVoices enumerates voices from Piper piper_voice_* keys, Kokoro
+// voices-v1.0.bin zip members, optional tts_voices_file JSON, tts_default_voice,
+// and a Piper model basename fallback.
 func ListSpeechVoices(cfg model.ConfigV2) []SpeechVoice {
 	backend := BackendFor(cfg, model.ModalitySpeech)
 	seen := map[string]struct{}{}
@@ -57,13 +62,18 @@ func ListSpeechVoices(cfg model.ConfigV2) []SpeechVoice {
 		}
 	}
 
+	kokoroList := backend == model.BackendKokoro || (backend == "" && PathFor(cfg, "piper_model") == "" && KokoroPathsSet(cfg))
+
 	if f := PathFor(cfg, "tts_voices_file"); f != "" {
 		for _, v := range loadVoicesFile(f) {
+			if kokoroList && !kokoro.EnglishVoice(v.ID) {
+				continue
+			}
 			add(v)
 		}
 	}
 
-	if d := PathFor(cfg, "tts_default_voice"); d != "" {
+	if d := PathFor(cfg, "tts_default_voice"); d != "" && (!kokoroList || kokoro.EnglishVoice(d)) {
 		add(SpeechVoice{ID: d, Backend: backend})
 	}
 
@@ -76,8 +86,50 @@ func ListSpeechVoices(cfg model.ConfigV2) []SpeechVoice {
 		}
 	}
 
+	// sample_rate on this struct is the llama-server float32 rate. Kokoro
+	// duplex clips carry their own int16 rate, so leave it unset.
+	// Fleet Kokoro env vars do not attach voices to a tag that left speech empty.
+	if kokoroList {
+		raw := kokoro.VoiceIDsFromBin(KokoroVoicesPath(cfg))
+		var ids []string
+		for _, id := range raw {
+			if kokoro.EnglishVoice(id) {
+				ids = append(ids, id)
+			}
+		}
+		for _, id := range ids {
+			add(SpeechVoice{ID: id, Backend: model.BackendKokoro})
+		}
+		// A zip of only non-English ids is not an English catalog.
+		// af_heart is the fallback when the file cannot be read.
+		if len(ids) == 0 && len(raw) == 0 {
+			if fallback := KokoroDefaultVoice(cfg); kokoro.EnglishVoice(fallback) {
+				add(SpeechVoice{ID: fallback, Backend: model.BackendKokoro})
+			}
+		}
+	}
+
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// KokoroVoiceCatalogAuthoritative is true when the voices zip or tts_voices_file
+// produced at least one English id. Non-English Kokoro prefixes do not count.
+// The hardcoded af_heart fallback is not authoritative.
+func KokoroVoiceCatalogAuthoritative(cfg model.ConfigV2) bool {
+	if PathFor(cfg, "tts_voices_file") != "" {
+		for _, v := range loadVoicesFile(PathFor(cfg, "tts_voices_file")) {
+			if kokoro.EnglishVoice(v.ID) {
+				return true
+			}
+		}
+	}
+	for _, id := range kokoro.VoiceIDsFromBin(KokoroVoicesPath(cfg)) {
+		if kokoro.EnglishVoice(id) {
+			return true
+		}
+	}
+	return false
 }
 
 func loadVoicesFile(path string) []SpeechVoice {

@@ -266,6 +266,34 @@ func TestDecideTranscribe(t *testing.T) {
 	if d.Model != "omni" {
 		t.Fatalf("audio chat fallback: got %q", d.Model)
 	}
+
+	parakeet := cand("parakeet-tdt", 2, []model.Capability{model.CapabilityCompletion, model.CapabilityAudio})
+	parakeet.Family = "parakeet"
+	d, err = Decide([]Candidate{parakeet, plain}, Signals{Surface: SurfaceTranscribe, HasAudio: true}, allCold)
+	if err != nil || d.Model != "parakeet-tdt" {
+		t.Fatalf("parakeet transcribe: got %q err %v", d.Model, err)
+	}
+	d, err = Decide([]Candidate{parakeet, plain}, Signals{Surface: SurfaceChat}, allCold)
+	if err != nil || d.Model != "plain" {
+		t.Fatalf("parakeet must not take chat: got %q err %v", d.Model, err)
+	}
+
+	voxtralRT := cand("voxtral-realtime", 4, []model.Capability{model.CapabilityCompletion, model.CapabilityAudio})
+	voxtralRT.Family = model.ProjVoxtralRT
+	d, err = Decide([]Candidate{voxtralRT, plain}, Signals{Surface: SurfaceChat}, allCold)
+	if err != nil || d.Model != "plain" {
+		t.Fatalf("voxtral realtime must not take chat: got %q err %v", d.Model, err)
+	}
+	d, err = Decide([]Candidate{voxtralRT, audioChat}, Signals{Surface: SurfaceTranscribe, HasAudio: true}, allCold)
+	if err != nil || d.Model != "omni" {
+		t.Fatalf("voxtral realtime must not take file transcription: got %q err %v", d.Model, err)
+	}
+
+	voxtral := cand("voxtral-small", 14, []model.Capability{model.CapabilityCompletion, model.CapabilityAudio})
+	d, err = Decide([]Candidate{voxtral, plain}, Signals{Surface: SurfaceTranscribe, HasAudio: true}, allCold)
+	if err != nil || d.Model != "voxtral-small" {
+		t.Fatalf("voxtral small file audio: got %q err %v", d.Model, err)
+	}
 }
 
 func TestDecidePinnedEmbedRefusesAmbiguity(t *testing.T) {

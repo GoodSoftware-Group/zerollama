@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"testing"
 
 	"github.com/ollama/ollama/envconfig"
@@ -66,6 +67,60 @@ func TestUseLlamaServerBackendDarwinSpecAuto(t *testing.T) {
 	cfg := LlamaServerConfig{SpecType: "draft-eagle3", DraftModelPath: "/cache/drafter.gguf"}
 	if !useLlamaServerBackendForModelGOOS("darwin", nil, true, cfg) {
 		t.Fatal("Darwin should auto-route speculative models when llama-server is discoverable")
+	}
+}
+
+func TestUseLlamaServerBackendDarwinRealtime(t *testing.T) {
+	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "")
+	cfg := LlamaServerConfig{Realtime: true}
+	if !useLlamaServerBackendForModelGOOS("darwin", nil, true, cfg) {
+		t.Fatal("Darwin realtime session must route through llama-server")
+	}
+}
+
+func TestRealtimeLoadContext(t *testing.T) {
+	if RealtimeLoadFromContext(context.Background()) {
+		t.Fatal("background")
+	}
+	ctx := WithRealtimeLoad(context.Background())
+	if !RealtimeLoadFromContext(ctx) {
+		t.Fatal("marked")
+	}
+}
+
+func TestUseLlamaServerBackendDarwinMTMDAudio(t *testing.T) {
+	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "")
+	cfg := LlamaServerConfig{Audio: true}
+	if !useLlamaServerBackendForModelGOOS("darwin", []string{"/models/mmproj-voxtral.gguf"}, true, cfg) {
+		t.Fatal("Darwin file-audio GGUF must route through llama-server, including with an audio projector")
+	}
+	rt := LlamaServerConfig{Realtime: true, SingleGPU: true}
+	if !useLlamaServerBackendForModelGOOS("darwin", []string{"/models/mmproj-voxtral-rt.gguf"}, true, rt) {
+		t.Fatal("Darwin realtime audio must route through llama-server")
+	}
+	if !useLlamaServerBackendForModelGOOS("darwin", []string{"/models/mmproj-lfm3.gguf"}, true, LlamaServerConfig{Speech: true}) {
+		t.Fatal("Darwin speech GGUF must route through llama-server")
+	}
+}
+
+func TestUseLlamaServerBackendDarwinASR(t *testing.T) {
+	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "")
+	cfg := LlamaServerConfig{ASR: true}
+	if !useLlamaServerBackendForModelGOOS("darwin", []string{"/models/parakeet-mmproj.gguf"}, true, cfg) {
+		t.Fatal("Darwin ASR GGUF must route through llama-server, including with an audio projector")
+	}
+	if useLlamaServerBackendForModelGOOS("darwin", nil, false, cfg) {
+		t.Fatal("ASR routing requires a discoverable llama-server")
+	}
+}
+
+func TestASRModelRequiresLlamaServerError(t *testing.T) {
+	t.Setenv("ZEROLLAMA_LLAMA_SERVER", "0")
+	if err := ASRModelRequiresLlamaServerError(LlamaServerConfig{ASR: true}); err == nil {
+		t.Fatal("expected error when ASR model and llama-server disabled")
+	}
+	if err := ASRModelRequiresLlamaServerError(LlamaServerConfig{}); err != nil {
+		t.Fatal(err)
 	}
 }
 

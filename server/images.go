@@ -234,6 +234,8 @@ func ggmlFloatGenerationDefault(v any) (float64, bool) {
 type ggufCapabilityFlags struct {
 	embedding, decision, vision, audio bool
 	rerank                             bool // pooling_type == RANK (llama.cpp enum 4)
+	llamaASR                           bool // parakeet / nemotron_transcribe projector or architecture
+	mtmd                               model.MTMDRole
 }
 
 type ggufCapabilityKey struct {
@@ -274,12 +276,22 @@ func ggufCapabilityFlagsFor(path string) (ggufCapabilityFlags, error) {
 	defer f.Close()
 	dt := f.KeyValue("decision.type")
 	pool := f.KeyValue("pooling_type")
+	llamaASR := false
+	var mtmd model.MTMDRole
+	for _, kv := range f.KeyValues() {
+		if model.LlamaASRKV(kv.Key, kv.String()) {
+			llamaASR = true
+		}
+		mtmd = mtmd.Merge(model.ClassifyMTMDKV(kv.Key, kv.String()))
+	}
 	flags = ggufCapabilityFlags{
 		embedding: pool.Valid(),
 		rerank:    pool.Valid() && pool.Uint() == 4, // llama.cpp pooling.TypeRANK
 		decision:  dt.Valid() && strings.TrimSpace(dt.String()) != "",
-		vision:    f.KeyValue("vision.block_count").Valid(),
-		audio:     f.KeyValue("audio.block_count").Valid(),
+		vision:    f.KeyValue("vision.block_count").Valid() || mtmd.Vision,
+		audio:     f.KeyValue("audio.block_count").Valid() || llamaASR || mtmd.Audio,
+		llamaASR:  llamaASR,
+		mtmd:      mtmd,
 	}
 
 	ggufCapabilityCache.Lock()
@@ -350,6 +362,13 @@ func (m *Model) Capabilities() []model.Capability {
 			capabilities = append(capabilities, model.CapabilityAudio)
 		}
 	}
+	if modelUsesLlamaASR(m) && !slices.Contains(capabilities, model.CapabilityAudio) {
+		capabilities = append(capabilities, model.CapabilityAudio)
+	}
+	capabilities = applyProjectorCapabilities(capabilities, m)
+	if modelMTMDRole(m).Speech && !slices.Contains(capabilities, model.CapabilitySpeech) {
+		capabilities = append(capabilities, model.CapabilitySpeech)
+	}
 
 	if len(capabilities) == 0 {
 		slog.Warn("unknown capabilities for model", "model", m.Name)
@@ -375,14 +394,6 @@ func (m *Model) Capabilities() []model.Capability {
 	// Check for insert capability
 	if slices.Contains(v, "suffix") || m.IsMLX() {
 		capabilities = append(capabilities, model.CapabilityInsert)
-	}
-
-	// Check for vision capability in projector-based models
-	if len(m.ProjectorPaths) > 0 {
-		capabilities = append(capabilities, model.CapabilityVision)
-		if !slices.Contains(capabilities, model.CapabilityVideo) {
-			capabilities = append(capabilities, model.CapabilityVideo)
-		}
 	}
 
 	// Skip the thinking check if it's already set

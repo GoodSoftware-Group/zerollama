@@ -85,6 +85,13 @@ components:
         (implicit `auto`) or `surface-fallback` (router.yaml pick could not serve the request).
       schema:
         type: string
+    SpeechCache:
+      description: >
+        `hit` when a short Piper or local Kokoro phrase (48 characters or fewer)
+        was returned from memory.
+      schema:
+        type: string
+        enum: [hit]
   schemas:
     ModelOptions:
       type: object
@@ -2987,41 +2994,116 @@ components:
       properties:
         model:
           type: string
-          description: Speech model tag (e.g. piper-lessac, chatterbox, orpheus, kokoro, irodori)
+          description: Speech model tag (piper-lessac, chatterbox, orpheus, kokoro, irodori, or a llama.cpp gen GGUF such as lfm3-audio)
         input:
           type: string
           description: Text to synthesize (4096 runes; 20000 when Music 3 instructions/duration/max_new_tokens are set)
         voice:
           type: string
-          description: Voice id from GET /v1/audio/voices (piper_voice_* or remote catalog)
+          description: Voice id from GET /v1/audio/voices. LFM3-Audio uses female or male. Not together with speaker_ref.
+        lang:
+          type: string
+          description: >
+            Optional language tag. A llama-server TTS template receives it.
+            Local Kokoro accepts `en`, `en-us`, `en-gb`, and `en-uk`
+            (`en` and `en-us` are en-us; `en-gb` and `en-uk` are en-gb).
+            Any other tag is 400. An omitted value follows the voice prefix
+            (`bf_` and `bm_` are en-gb; other English ids are en-us).
+            Piper ignores it.
+        speaker_ref:
+          type: string
+          description: Base64 audio (or a data URI) for a gen projector that clones a voice. Not together with voice. Max 8MiB decoded.
+        stream:
+          type: boolean
+          description: >
+            When true, audio is sent as it is synthesized. A llama-server gen
+            projector streams wav or pcm. Piper streams a WAV when the voice
+            JSON has audio.sample_rate, and otherwise returns the finished WAV.
+            Local Kokoro streams `audio/pcm;rate=24000;bits=16` after the first
+            chunk. remote-tts forwards the flag; an upstream that ignores it
+            still returns its whole body.
         response_format:
           type: string
           description: >
-            Optional OpenAI-compatible format hint. Piper always returns WAV and
-            ignores other values; remote-tts returns whatever the upstream sends
-            (Content-Type). No server-side transcoding.
+            wav or pcm for a llama-server gen projector. Piper and local Kokoro
+            accept wav. mp3, opus, aac, and flac are 400 on those backends
+            (no transcoding). remote-tts forwards the value and returns the
+            upstream Content-Type.
           enum: [mp3, opus, aac, flac, wav, pcm]
         speed:
           type: number
           minimum: 0.25
           maximum: 4.0
-          description: Speech rate (OpenAI-compatible)
+          description: >
+            Speech rate (OpenAI-compatible, 0.25–4). Piper maps it to
+            `--length_scale`. Local Kokoro keeps an omitted value at 1 and
+            returns 400 outside 0.5–2. `emotion` scales that requested speed
+            and can also push the product outside 0.5–2, which is 400.
+        sentence_silence:
+          type: number
+          minimum: 0
+          maximum: 5
+          description: Seconds of silence Piper adds after each sentence. An omitted value stays at 0.2. Other speech models return 400.
+        noise_scale:
+          type: number
+          minimum: 0
+          maximum: 2
+          description: Piper generator noise. 0 keeps the generator steady. An omitted value leaves the voice JSON, or 0.667 when that JSON omits it. Other speech models return 400.
+        noise_w:
+          type: number
+          minimum: 0
+          maximum: 2
+          description: Piper phoneme-width noise. 0 keeps each phoneme's length steady. An omitted value leaves the voice JSON, or 0.8 when that JSON omits it. Other speech models return 400.
+        speaker_id:
+          type: integer
+          minimum: 0
+          maximum: 4095
+          description: Piper speaker index on a multi-speaker voice. An omitted value, or 0, leaves the default speaker. A single-speaker voice leaves this unused. Other speech models return 400 when it is above 0.
+        phoneme_silence:
+          type: object
+          additionalProperties:
+            type: number
+            minimum: 0
+            maximum: 5
+          description: >
+            Seconds of silence after one character. Each key is a single
+            character. Each value is from 0 to 5. At most 32 entries.
+            Piper passes it as `--phoneme_silence`; a character already listed
+            in the voice JSON keeps that pause. Local Kokoro splits the text
+            on those characters, synthesizes each piece, and inserts that many
+            seconds of silence. Other speech models return 400 when the map is set.
         emotion:
           type: string
           description: >
-            zerollama extension for remote-tts. Chatterbox/Orpheus: expressive hint.
-            Irodori (`irodori:latest`): mapped to upstream `irodori.caption` (Japanese Voice Design).
-            Ignored by Piper.
+            zerollama extension. remote-tts forwards it. Chatterbox/Orpheus use
+            it as an expressive hint. Irodori (`irodori:latest`) maps it to
+            upstream `irodori.caption` (Japanese Voice Design). Local Kokoro has
+            no emotion head: `calm` 0.85, `sad` 0.80, `serious` 0.90,
+            `neutral` 1, `happy` 1.10, `excited` 1.20, `angry` 1.25 scale the
+            requested speed. Any other word is 400. Piper ignores it.
         instructions:
           type: string
           description: Music 3 caption (SGLang-Omni). Ignored by Piper. Raises lyrics cap to 20000 runes.
         seed:
           type: integer
           format: int64
-          description: Music 3 seed
+          description: Music 3 seed. A llama-server gen projector uses a non-negative value as the TTS RNG seed. Omit it, or send a negative value, for the server's random seed.
         max_new_tokens:
           type: integer
-          description: Music 3 AR frame cap (~25 fps)
+          description: Music 3 AR frame cap (~25 fps). A llama-server gen projector uses it as the maximum number of audio frames. -1 means no cap.
+        top_k:
+          type: integer
+          minimum: 0
+          description: Acoustic top-k for a llama-server gen projector. 0 uses the model default. Omit it to leave that default. Piper and Music 3 ignore it.
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Acoustic top-p for a llama-server gen projector. 0 uses the model default. Omit it to leave that default. Piper and Music 3 ignore it.
+        repeat_penalty:
+          type: number
+          exclusiveMinimum: 0
+          description: Backbone repetition penalty for a llama-server gen projector. Omit it to leave 1.05. Piper and Music 3 ignore it.
         duration:
           type: number
           description: Music 3 clip length in seconds (lab default 10)
@@ -3052,9 +3134,16 @@ components:
           type: string
         backend:
           type: string
-          description: piper or remote-tts
+          description: piper, kokoro, remote-tts, or llama-server
         description:
           type: string
+        sample_rate:
+          type: integer
+          description: >
+            Playback rate in Hz for a llama-server gen projector. PCM is
+            little-endian float32 at this rate. LFM3, Qwen3-TTS, Pocket TTS,
+            and Chatterbox are 24000. Soprano is 32000. Drama3 is 44100.
+            Local Kokoro leaves this unset; speech is 24000 Hz int16.
     VoicesListResponse:
       type: object
       properties:
@@ -3084,22 +3173,237 @@ components:
           description: Audio file to transcribe (multipart field name `file`)
         model:
           type: string
-          description: STT model (e.g. whisper-base) or multimodal chat model
+          description: STT model (whisper-base, Parakeet, or Nemotron-transcribe GGUF) or multimodal chat model
         language:
           type: string
-          description: Optional language hint (form field `language`)
+          description: Form field `language`. A whisper.cpp code, a language name such as `english`, or `auto`. An omitted value leaves whisper.cpp at English. `auto` detects the spoken language and still transcribes. `json`, `verbose_json`, and `diarized_json` include the detected code and `language_probability`. A translation keeps `language` as `en` and omits that score. An unknown code returns 400 on a Whisper model.
         prompt:
           type: string
-          description: Optional context prepended for transcription (form field `prompt`)
+          description: Optional context prepended for transcription (form field `prompt`). whisper.cpp receives it as --prompt. llama-server ASR receives the same form field.
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Optional sampling temperature. Omitted stays 0. whisper.cpp receives it as --temperature. llama-server ASR receives the same form field. A file-audio chat model uses it as the chat temperature.
+        max_tokens:
+          type: integer
+          minimum: 1
+          maximum: 1000000
+          description: Form field `max_tokens`. Caps llama-server ASR and a chat model that hears the clip. An omitted value leaves the cap off. Whisper returns 400.
+        grammar:
+          type: string
+          maxLength: 8192
+          description: Form field `grammar`. GBNF text for whisper.cpp. Requires `grammar_rule`. Tokens the grammar rejects lose `grammar_penalty` logit points. An omitted penalty stays at 100. A grammar uses beam search. A grammar whisper.cpp cannot parse fails the transcription. Other models return 400.
+        grammar_rule:
+          type: string
+          maxLength: 64
+          description: Form field `grammar_rule`. The GBNF rule decoding starts from. Required with `grammar`. A name that is not declared in the grammar is rejected.
+        grammar_penalty:
+          type: number
+          minimum: 0
+          maximum: 1000
+          description: Form field `grammar_penalty`. Logit points subtracted from each token the grammar rejects. An omitted value stays at 100. 0 leaves those logits unchanged. Other models return 400.
+        print_special:
+          type: boolean
+          description: Form field `print_special`. When true, whisper.cpp keeps special tokens, such as `<|nospeech|>` and timestamp marks, in the segment text. An omitted value leaves them out. Word timestamps and logprobs still leave them out. Other models return 400.
+        detect_language:
+          type: boolean
+          description: Form field `detect_language`. When true, whisper.cpp reports the spoken language and does not decode a transcript. The text is empty. `json`, `verbose_json`, and `diarized_json` include that language. A request language is left unused. An English-only model has no language tokens, so detection fails the transcription. Other models return 400.
+        dtw:
+          type: string
+          enum: [tiny, tiny.en, base, base.en, small, small.en, medium, medium.en, large.v1, large.v2, large.v3, large.v3.turbo]
+          description: Form field `dtw`. whisper.cpp alignment preset. It must match the loaded model. A mismatch fails the transcription. Flash attention is off for that request, because DTW timestamps require it. Word starts use the DTW time. An omitted value leaves flash attention on and keeps the token-offset word times. Other models return 400.
+        vad:
+          type: boolean
+          description: Form field `vad`. When true, whisper.cpp keeps speech and drops the rest. The Silero model comes from `backend_paths.vad_model` or `OLLAMA_WHISPER_VAD_MODEL`. Segment times are mapped back onto the original clip. No speech leaves the transcript empty. A missing model file fails the transcription. Other models return 400.
+        vad_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Form field `vad_threshold`. Silero probability that starts a speech region. Speech ends when the probability stays 0.15 below that value, floored at 0.01, for `vad_min_silence_duration_ms`. An omitted value stays at 0.5. 0 keeps a frame at any probability. A higher value keeps less audio. It requires `vad=true`. Other models return 400.
+        vad_min_speech_duration_ms:
+          type: integer
+          minimum: 0
+          maximum: 86400000
+          description: Form field `vad_min_speech_duration_ms`. A speech region of this many milliseconds or shorter is left out. An omitted value stays at 250. 0 keeps a region of any length. It requires `vad=true`. Other models return 400.
+        vad_min_silence_duration_ms:
+          type: integer
+          minimum: 0
+          maximum: 86400000
+          description: Form field `vad_min_silence_duration_ms`. A shorter pause stays inside the speech region. An omitted value stays at 100. 0 ends a region on the first frame below the end threshold. Whisper.cpp then joins neighboring regions when the gap is under 200 ms. It requires `vad=true`. Other models return 400.
+        vad_max_speech_duration_s:
+          type: number
+          minimum: 1
+          maximum: 100000
+          description: Form field `vad_max_speech_duration_s`. A speech region longer than this many seconds is split. Whisper.cpp uses the whole seconds, then subtracts one analysis window and twice the speech padding, so the cut lands earlier. The split prefers a silence longer than 98 ms. When no such silence exists, the region ends at the limit. An omitted value leaves the cap off. A value under 1 second leaves the cap off, so it is rejected. It requires `vad=true`. Other models return 400.
+        vad_speech_pad_ms:
+          type: integer
+          minimum: 0
+          maximum: 86400000
+          description: Form field `vad_speech_pad_ms`. Each speech region grows by this many milliseconds on each side, stopping at the clip edges. When the gap between two regions is shorter than twice this value, the regions meet in the middle of the gap. An omitted value stays at 30. 0 adds no padding. The same padding is subtracted twice from `vad_max_speech_duration_s`. It requires `vad=true`. Other models return 400.
+        vad_samples_overlap:
+          type: number
+          minimum: 0
+          maximum: 3600
+          description: Form field `vad_samples_overlap`. Except for the last region, the decoder hears this many extra seconds after the region, stopping at the clip edge. An omitted value stays at 0.1. 0 copies the region as detected. Whisper.cpp still inserts 100 ms of silence between regions. It requires `vad=true`. Other models return 400.
+        no_timestamps:
+          type: boolean
+          description: Form field `no_timestamps`. When true, whisper.cpp starts with the no-timestamps token and cannot emit timestamp tokens. Each segment advances 30 seconds. A first-release distilled model forces this on. Other models return 400.
+        offset_n:
+          type: integer
+          minimum: -1000000
+          maximum: 1000000
+          description: Form field `offset_n`. Added to each SRT cue number. An omitted value, or 0, starts at 1. VTT cues stay unnumbered. Other models return 400.
+        suppress_regex:
+          type: string
+          maxLength: 256
+          description: Form field `suppress_regex`. A C++ regular expression matched against each whole whisper.cpp token. A match is left out of the transcript. An invalid expression fails the transcription. Other models return 400.
+        duration_ms:
+          type: integer
+          minimum: 0
+          maximum: 86400000
+          description: Form field `duration_ms`. Milliseconds whisper.cpp transcribes, starting at `offset_t`. An omitted value, or 0, continues to the end of the clip. A window shorter than 100 ms yields an empty transcript. Other models return 400.
+        offset_t:
+          type: integer
+          minimum: 0
+          maximum: 86400000
+          description: Form field `offset_t`. Milliseconds from the start of the clip before whisper.cpp transcribes. An omitted value, or 0, starts at the beginning. A start that leaves less than 100 ms yields an empty transcript. Other models return 400.
+        audio_ctx:
+          type: integer
+          minimum: 0
+          maximum: 1500
+          description: Form field `audio_ctx`. The number of whisper.cpp encoder frames in each window. An omitted value, or 0, uses the full context. A standard Whisper model has 1500 frames. A value above the loaded model's audio context fails the transcription. Other models return 400.
+        max_context:
+          type: integer
+          minimum: -1
+          maximum: 16384
+          description: Form field `max_context`. The cap on earlier text tokens whisper.cpp keeps for the next window. An omitted value, or -1, leaves the library cap of 16384, which is also limited to half the model's text context. 0 leaves earlier text out of the next window. Other models return 400.
+        word_thold:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Form field `word_thold`. A whisper.cpp token timestamp is kept when its probability is above this value. An omitted value stays at 0.01. Other models return 400.
+        max_len:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          description: Form field `max_len`. The maximum characters in a whisper.cpp segment. An omitted value, or 0, leaves the cap off. A positive value wraps a longer segment. Word timestamps keep that wrap on a word. `split_on_word=true` does the same without word timestamps. Other models return 400.
+        split_on_word:
+          type: boolean
+          description: Form field `split_on_word`. When true, a `max_len` wrap waits for a whisper.cpp token that starts with a space, so the cut stays on a word. A segment can run past `max_len` until that token. It requires a positive `max_len`. Word timestamps already wrap this way. Other models return 400.
+        carry_initial_prompt:
+          type: boolean
+          description: Form field `carry_initial_prompt`. true asks whisper.cpp to keep the initial prompt in front of every window. An omitted value uses the prompt on the first window. Other models return 400.
+        best_of:
+          type: integer
+          minimum: 1
+          maximum: 16
+          description: Form field `best_of`. The number of whisper.cpp candidates when the temperature is above 0. An omitted value stays at 5. Other models return 400.
+        beam_size:
+          type: integer
+          minimum: 1
+          maximum: 16
+          description: Form field `beam_size`. The number of whisper.cpp beam-search candidates when the temperature is 0. A value of 1 decodes greedily. An omitted value stays at 5. Other models return 400.
+        no_speech_thold:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Form field `no_speech_thold`. A segment is silence when its no-speech probability is above this value and its average log probability is below `logprob_thold`. An omitted value stays at 0.6. Other models return 400.
+        logprob_thold:
+          type: number
+          minimum: -10
+          maximum: 0
+          description: Form field `logprob_thold`. A segment whose average log probability is below this value fails when the clip still looks like speech, and whisper.cpp retries. An omitted value stays at -1. Other models return 400.
+        entropy_thold:
+          type: number
+          minimum: 0
+          maximum: 4
+          description: Form field `entropy_thold`. A segment whose token entropy is below this value fails, and whisper.cpp retries at a hotter temperature. An omitted value stays at 2.4. Other models return 400.
+        temperature_inc:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Form field `temperature_inc`. The step whisper.cpp adds after a failed segment. An omitted value stays at 0.2. `no_fallback` leaves the step unused. Other models return 400.
+        no_fallback:
+          type: boolean
+          description: Form field `no_fallback`. true asks whisper.cpp to keep a failed segment at the requested temperature. An omitted value leaves the temperature retry on. Other models return 400.
+        suppress_nst:
+          type: boolean
+          description: Form field `suppress_nst`. true asks whisper.cpp to keep non-speech marks such as `[MUSIC]` and `[BLANK_AUDIO]` out of the transcript. Other models return 400.
+        diarize:
+          type: boolean
+          description: Form field `diarize`. true asks whisper.cpp to label a stereo clip by channel energy. The cue text keeps the "(speaker 0)", "(speaker 1)", or "(speaker ?)" prefix, and verbose_json sets speaker. A mono clip is unchanged. Other models return 400.
+        tinydiarize:
+          type: boolean
+          description: Form field `tinydiarize`. When true, a model trained for tinydiarize can end a segment with ` [SPEAKER_TURN]`, and verbose_json sets `speaker_turn_next`. It cannot be combined with `diarize` or `diarized_json`. Other models return 400.
         response_format:
           type: string
-          enum: [json, text, verbose_json]
-          description: Form field `response_format` (json default; text and verbose_json supported)
+          enum: [json, text, srt, verbose_json, vtt, diarized_json]
+          description: Form field `response_format` (json default). whisper.cpp verbose_json, srt, and vtt use segment offsets. verbose_json also fills avg_logprob and no_speech_prob from token probabilities, tokens when whisper.cpp wrote token ids, and speaker_turn_next when tinydiarize marked a speaker change. diarized_json asks whisper.cpp for --diarize. Each segment has id, type transcript.text.segment, start, end, text, and speaker when the cue was labeled. The spoken words are in text. The "(speaker N)" prefix stays on verbose_json text. Other models return 400. Other backends return one cue. Its end is the WAV length when that length is known.
+        include:
+          type: array
+          items:
+            type: string
+            enum: [logprobs]
+          description: Form field `include[]`. logprobs requires response_format json or verbose_json and a whisper model. Each item is token, logprob, and bytes.
+        stream:
+          type: boolean
+          description: Form field `stream`. true on Parakeet or Nemotron-transcribe returns text/event-stream. Each JSON object is preceded by event set to its type (transcript.text.delta, then transcript.text.done with usage), then data [DONE]. Requires response_format json. Other models return 400.
+        timestamp_granularities:
+          type: array
+          items:
+            type: string
+            enum: [segment, word]
+          description: Form field `timestamp_granularities[]`. word requires response_format=verbose_json, passes --split-on-word so segment text breaks on words, and adds a words array from whisper.cpp token times.
     TranscriptionResponse:
       type: object
       properties:
         text:
           type: string
+        language:
+          type: string
+          description: Spoken language. Set on json when Whisper detected it, including a detect_language request whose text is empty. verbose_json and diarized_json carry the same field on their own schemas.
+        language_probability:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Softmax score of the detected language. Set when whisper.cpp logged an auto-detected language and the response language is that code. Omitted for a fixed language and for a translation, whose language stays en.
+        logprobs:
+          type: array
+          description: Whisper token scores when include[]=logprobs. Each item has token, logprob, and bytes.
+          items:
+            type: object
+            properties:
+              token:
+                type: string
+              logprob:
+                type: number
+              bytes:
+                type: array
+                items:
+                  type: integer
+        usage:
+          type: object
+          description: Token counts from llama-server transcript.text.done on json and verbose_json. A WAV upload also sets seconds for Whisper, a chat model that hears, and llama-server ASR, including the streaming transcript.text.done event. Whisper and chat use type duration. llama-server ASR keeps type tokens and copies input_tokens_details.cached_tokens when that field is present. Omitted for text, srt, and vtt.
+          properties:
+            type:
+              type: string
+              description: tokens for llama-server ASR, duration for a Whisper WAV upload
+            seconds:
+              type: number
+              description: WAV duration in seconds. Set for a Whisper model when the upload has a fmt byte rate.
+            input_tokens:
+              type: integer
+            output_tokens:
+              type: integer
+            total_tokens:
+              type: integer
+            input_tokens_details:
+              type: object
+              description: Present when llama-server sent input_tokens_details.cached_tokens on transcript.text.done.
+              properties:
+                cached_tokens:
+                  type: integer
     VideoCreateRequest:
       type: object
       required: [model, prompt]
@@ -3918,7 +4222,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ScoreResponse"
         "400":
-          description: Missing model or candidates
+          description: Missing model or candidates, or the model only serves live audio or speech
           content:
             application/json:
               schema:
@@ -4939,7 +5243,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/CacheWarmResponse"
         "400":
-          description: Missing prompt / prompt_cache_key or invalid body
+          description: Missing prompt / prompt_cache_key, invalid body, or the model only serves live audio or speech
           content:
             application/json:
               schema:
@@ -5308,7 +5612,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/RerankResponse"
         "400":
-          description: Missing query/documents/model
+          description: Missing query/documents/model, or the model only serves live audio or speech
           content:
             application/json:
               schema:
@@ -5345,7 +5649,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/MultiDecodeResponse"
         "400":
-          description: Invalid forest arrays
+          description: Invalid forest arrays, or the model only serves live audio or speech
           content:
             application/json:
               schema:
@@ -5386,7 +5690,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/DecisionsResponse"
         "400":
-          description: Missing model/state/questions
+          description: Missing model/state/questions, or the model only serves live audio or speech
           content:
             application/json:
               schema:
@@ -5575,8 +5879,23 @@ paths:
       tags: [Audio]
       summary: Text to speech
       description: |
-        Piper (CPU) or remote-tts (Chatterbox/Orpheus/Kokoro/Irodori): returns audio bytes
-        (typically audio/wav). Optional `emotion` is a zerollama extension (Irodori → caption).
+        Piper (CPU), local Kokoro ONNX (`modality_backends.speech=kokoro`), or
+        remote-tts (Chatterbox/Orpheus/Kokoro/Irodori): returns audio bytes
+        (typically audio/wav). Optional `emotion` is a zerollama extension.
+        remote-tts forwards it (Irodori → caption). Local Kokoro scales speed
+        with `calm`, `sad`, `serious`, `neutral`, `happy`, `excited`, or `angry`.
+        `phoneme_silence` is Piper and local Kokoro. `lang` on local Kokoro is
+        `en`, `en-us`, `en-gb`, or `en-uk`. A short repeated phrase from Piper
+        or local Kokoro sets `X-Speech-Cache: hit`.
+
+        A llama.cpp gen GGUF (`lfm3a_gen`, `qwen3tts_gen`, `pockettts_gen`, `soprano`,
+        `drama3_gen`, `chatterbox`) returns wav or pcm. A live-only model is 400
+        and stays on GET /v1/realtime. A file-audio model without a gen tower is
+        400 and stays on POST /v1/audio/transcriptions. `lang` fills the TTS template.
+        `speaker_ref` is a base64 clone clip for Qwen3-TTS and Pocket TTS and is not
+        combined with `voice`. `stream: true` sends those audio bytes as they are
+        synthesized. Local Kokoro streams int16 PCM at 24000 Hz. Piper streams a
+        WAV when the voice JSON has a sample rate. remote-tts forwards the flag.
 
         Irodori (`irodori:latest`) is Japanese-only zero-shot clone / Voice Design via
         Irodori-TTS-Server on `:8088`. Use `voice=none` + `emotion` for caption-only;
@@ -5595,6 +5914,13 @@ paths:
             curl http://localhost:11434/v1/audio/speech \
               -H 'content-type: application/json' \
               -d '{"model":"piper-lessac","input":"Hello.","voice":"amy"}' \
+              -o speech.wav
+        - lang: bash
+          label: Local Kokoro
+          source: |
+            curl http://localhost:11434/v1/audio/speech \
+              -H 'content-type: application/json' \
+              -d '{"model":"kokoro","input":"Hello.","voice":"af_heart","lang":"en-us","emotion":"calm","phoneme_silence":{".":0.2}}' \
               -o speech.wav
         - lang: bash
           label: Orpheus emotion
@@ -5617,6 +5943,12 @@ paths:
             schema:
               $ref: "#/components/schemas/SpeechCreateRequest"
       responses:
+        "400":
+          description: The model is live-only, takes a whole clip, transcribes only, or does not support speech
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
         "202":
           description: Music 3 job queued (JSON); not audio bytes. Use /v1/audio/generations.
           content:
@@ -5624,9 +5956,29 @@ paths:
               schema:
                 $ref: "#/components/schemas/AudioGeneration"
         "200":
-          description: Synthesized audio (Piper / remote-tts only)
+          description: >
+            Synthesized audio. pcm from a gen projector is
+            audio/pcm;rate=<Hz>;encoding=float;bits=32. A rate llama-server
+            already set is kept. Local Kokoro `stream: true` is
+            audio/pcm;rate=24000;bits=16. A buffered wav or pcm response
+            includes X-Audio-Seconds. A repeated short Piper or local Kokoro
+            phrase includes X-Speech-Cache: hit. stream true on Piper sends
+            the WAV as audio is synthesized when the voice JSON has
+            audio.sample_rate; otherwise the finished WAV is returned.
+            stream true on remote-tts is forwarded and the upstream body is
+            relayed as it arrives. An upstream X-Audio-Seconds is kept when
+            it is a positive duration of at most one day. A streamed gen
+            projector omits Content-Length, flushes chunks, and sends
+            X-Audio-Seconds as a trailer when the clip length is known.
+          headers:
+            X-Speech-Cache:
+              $ref: "#/components/headers/SpeechCache"
           content:
             audio/wav:
+              schema:
+                type: string
+                format: binary
+            audio/pcm:
               schema:
                 type: string
                 format: binary
@@ -5648,7 +6000,7 @@ paths:
               $ref: "#/components/schemas/TranscriptionCreateRequest"
       responses:
         "200":
-          description: Transcript
+          description: Transcript. diarized_json returns task, duration, text, and segments with speaker when whisper.cpp labeled the cue.
           content:
             application/json:
               schema:
@@ -5656,6 +6008,146 @@ paths:
             text/plain:
               schema:
                 type: string
+  /v1/audio/translations:
+    post:
+      tags: [Audio]
+      summary: Translate speech to English
+      description: |
+        Same multipart body as transcription. A whisper model is run with --translate and the response language is en.
+        `language` is an optional source-language hint. Parakeet and Nemotron-transcribe return 400.
+        A file-audio chat model, and any other chat model that can hear the audio, is prompted to answer in English.
+      operationId: createTranslation
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/TranscriptionCreateRequest"
+      responses:
+        "200":
+          description: English transcript. verbose_json sets task to translate.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriptionResponse"
+            text/plain:
+              schema:
+                type: string
+  /v1/realtime:
+    get:
+      tags: [Audio]
+      summary: Realtime audio WebSocket
+      description: |
+        WebSocket proxy to the model's llama-server `/v1/realtime`.
+        Query `model` is the local GGUF tag. Query `intent=transcription` is a live
+        ASR session (`voxtral_rt`, or `lfm3a` including LFM3-Omni).
+        Other sessions are a realtime conversation. Commit ends the user turn;
+        the model answers after `response.create`. `response.cancel` stops that
+        reply. `conversation.item.create` adds a text turn. LFM3 can speak;
+        `audio.output.format.rate` on `session.created` is that PCM rate.
+        Offline audio (`voxtral`, `qwen2.5o`, `qwen3a`, `ultravox`, `phi4`) uses
+        `POST /v1/audio/transcriptions`. Images for those models go on a chat
+        turn. This socket carries PCM only.
+        `session.update` before the first audio or message sets `instructions`,
+        Responses-API `tools`, `tool_choice` (`auto`, `none`, `required`),
+        `max_output_tokens` (a positive integer or `inf`), and a live
+        transcription language at `audio.input.transcription.language`.
+        LFM3 folds that tag into the ASR prompt (`en` is English).
+        `intent=transcription` asks the client to set `session.type` to
+        `transcription` in that update; the conversation handler transcribes
+        on commit only after that.
+        A tool call arrives as
+        `response.function_call_arguments.done`. The client answers with
+        `conversation.item.create` (`type: function_call_output`, `call_id`, `output`)
+        and another `response.create`. The same fields cannot change
+        after the first turn.
+        Events follow llama-server's OpenAI realtime subset: `session.update`,
+        `input_audio_buffer.append` (base64 PCM16 mono), `input_audio_buffer.commit`
+        (`final: true` ends a transcription), `response.create`, `response.cancel`.
+        The input sample rate is `audio.input.format.rate` on `session.created`.
+        `turn=server_vad` commits after the PCM goes quiet, using that rate.
+        A conversation session also receives `response.create`. A transcription
+        session receives only the commit. Quiet audio during a reply is dropped.
+        A loud chunk sends `response.cancel`.
+
+        A speech model on this same socket speaks text. Query `voice` selects
+        the voice. Query `language` is forwarded to local Kokoro (`en`,
+        `en-us`, `en-gb`, or `en-uk`; any other tag is 400). Query `emotion`,
+        `session.emotion`, and an item's `emotion` use the same Kokoro speed
+        scale as POST /v1/audio/speech. Piper leaves that word unused.
+        `phoneme_silence` stays on the speech POST.
+
+        `pipeline=duplex` uses `model` as the chat model. `voice` is the speech
+        tag, `asr` is a whisper or llama-server ASR tag, and `rate` is the
+        input PCM16 rate in Hz. `speaker` selects that speech model's voice id.
+        `language` is forwarded to Kokoro and to the transcriber.
+      operationId: realtimeAudio
+      parameters:
+        - name: model
+          in: query
+          required: true
+          schema: {type: string}
+          description: Local model tag. A llama-server model is proxied. A speech model speaks on this socket. With pipeline=duplex this is the chat model.
+        - name: pipeline
+          in: query
+          required: false
+          schema: {type: string, enum: [duplex]}
+          description: duplex transcribes a committed clip, asks the chat model, and speaks the reply with the voice tag.
+        - name: voice
+          in: query
+          required: false
+          schema: {type: string}
+          description: Voice id when model is a speech tag. With pipeline=duplex, the speech model tag.
+        - name: speaker
+          in: query
+          required: false
+          schema: {type: string}
+          description: Voice id on the duplex speech model.
+        - name: asr
+          in: query
+          required: false
+          schema: {type: string}
+          description: Duplex transcriber. A whisper or llama-server ASR tag.
+        - name: rate
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 192000}
+          description: Duplex input PCM16 sample rate in Hz.
+        - name: emotion
+          in: query
+          required: false
+          schema: {type: string}
+          description: >
+            Kokoro delivery word for this socket (calm, sad, serious, neutral,
+            happy, excited, angry). session.update and conversation.item.create
+            can replace it. An unknown word is an error when the voice is Kokoro.
+            Piper leaves it unused. remote-tts forwards it.
+        - name: intent
+          in: query
+          required: false
+          schema: {type: string, enum: [transcription]}
+          description: Open a transcription session instead of a conversation
+        - name: language
+          in: query
+          required: false
+          schema: {type: string}
+          description: >
+            Live transcription language. With intent=transcription the proxy
+            sends session.update before client audio. LFM3 uses the tag in the
+            ASR prompt. On a speech or duplex socket it is forwarded to local
+            Kokoro (`en`, `en-us`, `en-gb`, or `en-uk`) and to the transcriber.
+        - name: turn
+          in: query
+          required: false
+          schema: {type: string, enum: [server_vad, none]}
+          description: server_vad commits the live buffer when PCM amplitude stays under 0.02 for 500 ms. The rate is session.created's audio.input.format.rate. A realtime session also gets response.create.
+      responses:
+        "101":
+          description: Switching Protocols. The socket then carries llama-server realtime events.
+        "400":
+          description: model missing, the request is not a WebSocket upgrade, the model takes a whole clip on POST /v1/audio/transcriptions, or it only speaks on POST /v1/audio/speech
+        "409":
+          description: The model is loaded on the ggml runner, which has no realtime socket
   /v1/audio/generations:
     post:
       tags: [Audio]
@@ -5719,7 +6211,10 @@ paths:
     get:
       tags: [Audio]
       summary: List speech voices
-      description: Voice catalog across speech models (piper_voice_* + tts_voices_file).
+      description: >
+        Voice catalog across speech models (piper_voice_*, a Kokoro voices zip, and tts_voices_file).
+        ?model= on a tag that cannot speak returns the same 400 as the other
+        audio routes (live socket, whole clip, or transcription).
       operationId: listVoices
       parameters:
         - name: model
@@ -5739,6 +6234,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/VoicesListResponse"
+        "400":
+          description: model is not a speech model, or it serves live audio, a whole clip, or transcription
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
   /v1/videos:
     post:
       tags: [Video]

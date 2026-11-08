@@ -232,7 +232,9 @@ func (r *Runner) prefill(ctx context.Context, request Request, session *cacheSes
 	})
 	before := cfg.chunkSize
 	if rec, err := mlx.MaxRecommendedWorkingSetSize(); err == nil {
-		cfg = capPrefillChunkForWorkingSet(cfg, mlx.ActiveMemory(), rec)
+		active := mlx.ActiveMemory()
+		cfg = capPrefillChunkForWorkingSet(cfg, active, rec)
+		cfg = shrinkPrefillChunkLadder(cfg, len(tokens), active, rec)
 		if cfg.chunkSize < before {
 			slog.Info("mlx tune",
 				"hint", "prefill chunk shrunk because unified memory is ≥75% of the recommended working set",
@@ -240,6 +242,10 @@ func (r *Runner) prefill(ctx context.Context, request Request, session *cacheSes
 				"was", before,
 				"tune", "unset OLLAMA_MLX_PREFILL_CHUNK; or raise RAM headroom / shorter prompt",
 			)
+		}
+		if err := refusePrefillIfNoFit(len(tokens), active, rec, cfg.chunkSize); err != nil {
+			slog.Warn("mlx prefill refused", "error", err, "tune", "shorter prompt or unload other MLX models")
+			return nil, 0, 0, err
 		}
 	}
 	prefillChunk := cfg.chunkSize
@@ -547,6 +553,7 @@ func (r *Runner) decode(ctx context.Context, request Request, session *cacheSess
 
 	final.EvalCount = generated
 	final.EvalDuration = time.Since(now)
+	final.StopKind = completionStopKind(final.DoneReason, final.FinishDetails, final.StopSequence)
 	if r.spec != nil && r.spec.depth != nil {
 		r.spec.depth.saveRoundCost(r.modelName)
 	}

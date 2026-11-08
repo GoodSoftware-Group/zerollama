@@ -381,7 +381,9 @@ type CompletionResponse struct {
 	// FinishDetails is mlx-serve loop-stop (repetition_loop); finish_reason stays length.
 	FinishDetails string `json:"finish_details,omitempty"`
 	// StopSequence is the matched request stop string (Anthropic stop_sequence echo).
-	StopSequence          string `json:"stop_sequence,omitempty"`
+	StopSequence string `json:"stop_sequence,omitempty"`
+	// StopKind is the operator-facing halt: eos | stop_sequence | length | repetition_loop.
+	StopKind              string `json:"stop_kind,omitempty"`
 	PrefillProcessed      int    `json:"prefill_processed,omitempty"`
 	PrefillTotal          int    `json:"prefill_total,omitempty"`
 	PromptEvalCount       int    `json:"prompt_eval_count"`

@@ -27,19 +27,22 @@ type inferenceQueueSnapshot struct {
 }
 
 type inferenceAccessMeta struct {
-	route              string
-	model              string
-	stream             bool
-	promptCacheKey     string
-	clientIP           string // HTTP client — ops attribution when project_id unset
-	start              time.Time
-	queueIn            inferenceQueueSnapshot
-	doneReason         string
-	promptEvalCount    int
-	evalCount          int
-	cachedPromptTokens int // L3 / llama-server cache_n; logged on inference response out
-	cachedTokensHost   int
-	cachedTokensStorage int
+	route                      string
+	model                      string
+	stream                     bool
+	promptCacheKey             string
+	clientIP                   string // HTTP client — ops attribution when project_id unset
+	start                      time.Time
+	queueIn                    inferenceQueueSnapshot
+	doneReason                 string
+	stopKind                   string
+	stopSequence               string
+	finishDetails              string
+	promptEvalCount            int
+	evalCount                  int
+	cachedPromptTokens         int // L3 / llama-server cache_n; logged on inference response out
+	cachedTokensHost           int
+	cachedTokensStorage        int
 	cachedTokensStorageBackend string
 	// Prompt sizing — set by routes after chatPrompt/tailTruncate.
 	promptTokens    int // tokens actually sent to runner (post-truncation)
@@ -50,8 +53,8 @@ type inferenceAccessMeta struct {
 	videoTokens int
 	audioTokens int
 	// Latest-user pretokenized layout length (SGLang padded_input_ids stub).
-	paddedInputIDsLen      int
-	paddedLayoutConsume    string
+	paddedInputIDsLen   int
+	paddedLayoutConsume string
 }
 
 func (s *Server) inferenceQueueSnapshot() inferenceQueueSnapshot {
@@ -219,10 +222,10 @@ func recordInferenceAccessCacheKey(c *gin.Context, key string) {
 	}
 	meta.promptCacheKey = key
 	agentstats.Record("request_parsed", map[string]any{
-		"route":              meta.route,
-		"model":              meta.model,
-		"stream":             meta.stream,
-		"prompt_cache_key":   key,
+		"route":            meta.route,
+		"model":            meta.model,
+		"stream":           meta.stream,
+		"prompt_cache_key": key,
 	})
 }
 
@@ -260,6 +263,45 @@ func recordInferenceCompletionDetails(c *gin.Context, doneReason string, promptE
 	meta.cachedTokensHost = cachedHost
 	meta.cachedTokensStorage = cachedStorage
 	meta.cachedTokensStorageBackend = storageBackend
+}
+
+// inferenceStopKind splits public done_reason (stop/length) into the
+// operator stamp: eos, stop_sequence, length, repetition_loop.
+func inferenceStopKind(doneReason, finishDetails, stopSequence string) string {
+	if finishDetails == "repetition_loop" {
+		return "repetition_loop"
+	}
+	if strings.TrimSpace(stopSequence) != "" {
+		return "stop_sequence"
+	}
+	switch doneReason {
+	case "stop":
+		return "eos"
+	case "length":
+		return "length"
+	default:
+		return doneReason
+	}
+}
+
+func recordInferenceStopKind(c *gin.Context, stopKind, stopSequence, finishDetails string) {
+	v, ok := c.Get(inferenceAccessLogKey)
+	if !ok {
+		return
+	}
+	meta, ok := v.(*inferenceAccessMeta)
+	if !ok {
+		return
+	}
+	if stopKind != "" {
+		meta.stopKind = stopKind
+	}
+	if stopSequence != "" {
+		meta.stopSequence = stopSequence
+	}
+	if finishDetails != "" {
+		meta.finishDetails = finishDetails
+	}
 }
 
 // recordInferenceMultimodalEstimate stores post-expand modality token heuristics on the
@@ -329,6 +371,15 @@ func (m *inferenceAccessMeta) logResponseOut(status int, queueOut inferenceQueue
 	}
 	if m.doneReason != "" {
 		attrs = append(attrs, "done_reason", m.doneReason)
+	}
+	if m.stopKind != "" {
+		attrs = append(attrs, "stop_kind", m.stopKind)
+	}
+	if m.stopSequence != "" {
+		attrs = append(attrs, "stop_sequence", m.stopSequence)
+	}
+	if m.finishDetails != "" {
+		attrs = append(attrs, "finish_details", m.finishDetails)
 	}
 	if m.promptTokens > 0 {
 		attrs = append(attrs, "prompt_tokens", m.promptTokens)
@@ -416,11 +467,20 @@ func recordAgentStatsResponseOut(m *inferenceAccessMeta) {
 		return
 	}
 	fields := map[string]any{
-		"route":        m.route,
-		"model":        m.model,
-		"stream":       m.stream,
-		"duration_ms":  time.Since(m.start).Milliseconds(),
-		"done_reason":  m.doneReason,
+		"route":       m.route,
+		"model":       m.model,
+		"stream":      m.stream,
+		"duration_ms": time.Since(m.start).Milliseconds(),
+		"done_reason": m.doneReason,
+	}
+	if m.stopKind != "" {
+		fields["stop_kind"] = m.stopKind
+	}
+	if m.stopSequence != "" {
+		fields["stop_sequence"] = m.stopSequence
+	}
+	if m.finishDetails != "" {
+		fields["finish_details"] = m.finishDetails
 	}
 	if key := strings.TrimSpace(m.promptCacheKey); key != "" {
 		fields["prompt_cache_key"] = key

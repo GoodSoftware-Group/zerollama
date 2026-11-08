@@ -150,6 +150,9 @@ func decisionScoreEncoding(m *Model) string {
 }
 
 func (s *Server) decisionsSystemOneScore(ctx context.Context, m *Model, name string, dreq decision.Request, requestOpts map[string]any, keepAlive *api.Duration) (api.DecisionsResponse, error) {
+	if msg := textRouteBlock(m); msg != "" {
+		return api.DecisionsResponse{}, decisionsErr(http.StatusBadRequest, errors.New(msg))
+	}
 	encoding := decisionScoreEncoding(m)
 	compiled, err := decision.Compile(dreq, encoding)
 	if err != nil {

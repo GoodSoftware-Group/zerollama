@@ -28,6 +28,7 @@ func (s *stubModel) Forward(*batch.Batch, []cache.Cache) *mlx.Array {
 	return nil
 }
 func (s *stubModel) Unembed(*mlx.Array) *mlx.Array   { return nil }
+func (s *stubModel) NumLayers() int                  { return 0 }
 func (s *stubModel) Tokenizer() *tokenizer.Tokenizer { return nil }
 func (s *stubModel) MaxContextLength() int           { return 8 }
 
@@ -185,7 +186,7 @@ type stubEmbedMediaModel struct {
 	stubEmbeddingModel
 
 	lastBatch *batch.Batch
-	prepared  *model.PreparedRequest
+	prepared  *base.PreparedRequest
 	// runEmbed scopes the forward: batch arrays are freed at scope exit,
 	// so the stub materializes its captures as CPU data instead.
 	capturedTokens []int32
@@ -204,8 +205,8 @@ func (s *stubEmbedMediaModel) MediaTokenStrings() (boi, eoi, image, boa, eoa, au
 func (s *stubEmbedMediaModel) SupportsImages() bool { return true }
 func (s *stubEmbedMediaModel) SupportsAudio() bool  { return false }
 
-func (s *stubEmbedMediaModel) PrepareMedia(segments []model.Segment) (*model.PreparedRequest, error) {
-	prepared := &model.PreparedRequest{}
+func (s *stubEmbedMediaModel) PrepareMedia(segments []base.Segment) (*base.PreparedRequest, error) {
+	prepared := &base.PreparedRequest{}
 	for _, seg := range segments {
 		switch seg.Kind {
 		case "":
@@ -215,7 +216,7 @@ func (s *stubEmbedMediaModel) PrepareMedia(segments []model.Segment) (*model.Pre
 			for range stubPlaceholdersN {
 				prepared.Tokens = append(prepared.Tokens, stubPlaceholderToken)
 			}
-			prepared.Items = append(prepared.Items, model.PreparedItem{
+			prepared.Items = append(prepared.Items, base.PreparedItem{
 				Range:  [2]int{start, start + stubPlaceholdersN},
 				Source: 0,
 			})
@@ -227,7 +228,7 @@ func (s *stubEmbedMediaModel) PrepareMedia(segments []model.Segment) (*model.Pre
 	return prepared, nil
 }
 
-func (s *stubEmbedMediaModel) EncodeMedia(prepared *model.PreparedRequest) ([]batch.MediaItem, error) {
+func (s *stubEmbedMediaModel) EncodeMedia(prepared *base.PreparedRequest) ([]batch.MediaItem, error) {
 	items := make([]batch.MediaItem, len(prepared.Items))
 	for i, item := range prepared.Items {
 		rows := item.Range[1] - item.Range[0]
@@ -250,7 +251,10 @@ func (s *stubEmbedMediaModel) Forward(b *batch.Batch, _ []cache.Cache) *mlx.Arra
 	// so copy what the assertions need as CPU data now.
 	ids := b.InputIDs.AsType(mlx.DTypeInt32)
 	mlx.Eval(ids)
-	s.capturedTokens = append(s.capturedTokens[:0], ids.Ints()...)
+	s.capturedTokens = s.capturedTokens[:0]
+	for _, id := range ids.Ints() {
+		s.capturedTokens = append(s.capturedTokens, int32(id))
+	}
 	for _, item := range b.Media {
 		cp := item
 		cp.Features = nil // shapes are captured separately below
@@ -277,71 +281,70 @@ func TestEmbedMediaRunEmbedExercises(t *testing.T) {
 	tok := miniEmbedTokenizer(t)
 
 	t.Run("marker-less text plus one image blob", func(t *testing.T) {
-		mlxtest.Run(t, func(t *mlxtest.T) {
-			m := &stubEmbedMediaModel{}
-			r := &Runner{Model: m, Tokenizer: tok}
-			req := EmbeddingRequest{
-				Content:        "ab",
-				Media:          [][]byte{stubPNG},
-				EmbedResponses: make(chan EmbedResponse, 1),
-				Ctx:            context.Background(),
-			}
-			if err := r.runEmbed(req.Ctx, req); err != nil {
-				t.Fatalf("runEmbed: %v", err)
-			}
-			resp := <-req.EmbedResponses
-			if resp.Error != nil {
-				t.Fatalf("unexpected error: %+v", resp.Error)
-			}
-			if len(resp.Embedding) != m.EmbeddingDim() {
-				t.Fatalf("embedding len %d, want %d", len(resp.Embedding), m.EmbeddingDim())
-			}
+		skipIfNoMLX(t)
+		m := &stubEmbedMediaModel{}
+		r := &Runner{Model: m, Tokenizer: tok}
+		req := EmbeddingRequest{
+			Content:        "ab",
+			Media:          [][]byte{stubPNG},
+			EmbedResponses: make(chan EmbedResponse, 1),
+			Ctx:            context.Background(),
+		}
+		if err := r.runEmbed(req.Ctx, req); err != nil {
+			t.Fatalf("runEmbed: %v", err)
+		}
+		resp := <-req.EmbedResponses
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %+v", resp.Error)
+		}
+		if len(resp.Embedding) != m.EmbeddingDim() {
+			t.Fatalf("embedding len %d, want %d", len(resp.Embedding), m.EmbeddingDim())
+		}
 
-			if m.prepared == nil || len(m.prepared.Items) != 1 {
-				t.Fatalf("PrepareMedia items = %+v, want exactly one", m.prepared)
+		if m.prepared == nil || len(m.prepared.Items) != 1 {
+			t.Fatalf("PrepareMedia items = %+v, want exactly one", m.prepared)
+		}
+		if m.lastBatch == nil {
+			t.Fatal("model Forward was never called")
+		}
+		if len(m.capturedMedia) != 1 {
+			t.Fatalf("Forward batch Media len %d, want 1", len(m.capturedMedia))
+		}
+		item := m.capturedMedia[0]
+		// The prepared tokens carry the placeholder run at item.Range;
+		// the batch's media Pos must point at that run's start, offset by
+		// the BOS token the runner prepends.
+		rng := m.prepared.Items[0].Range
+		wantPos := rng[0] + 1 // +1 for BOS
+		if item.Pos != wantPos {
+			t.Errorf("media Pos = %d, want %d (placeholder start after BOS)", item.Pos, wantPos)
+		}
+		// The token stream reaching Forward must be exactly BOS + prepared
+		// tokens + EOS, with the placeholder IDs at the media position.
+		// (Captured as CPU data inside the stub: runEmbed frees the batch
+		// arrays at scope exit.)
+		gotToks := m.capturedTokens
+		wantLen := 1 + len(m.prepared.Tokens) + 1 // BOS + prepared + EOS
+		if len(gotToks) != wantLen {
+			t.Fatalf("forward token len %d, want %d", len(gotToks), wantLen)
+		}
+		for i := rng[0]; i < rng[1]; i++ {
+			if gotToks[i+1] != stubPlaceholderToken {
+				t.Errorf("token at placeholder %d = %d, want %d", i+1, gotToks[i+1], stubPlaceholderToken)
 			}
-			if m.lastBatch == nil {
-				t.Fatal("model Forward was never called")
-			}
-			if len(m.capturedMedia) != 1 {
-				t.Fatalf("Forward batch Media len %d, want 1", len(m.capturedMedia))
-			}
-			item := m.capturedMedia[0]
-			// The prepared tokens carry the placeholder run at item.Range;
-			// the batch's media Pos must point at that run's start, offset by
-			// the BOS token the runner prepends.
-			rng := m.prepared.Items[0].Range
-			wantPos := rng[0] + 1 // +1 for BOS
-			if item.Pos != wantPos {
-				t.Errorf("media Pos = %d, want %d (placeholder start after BOS)", item.Pos, wantPos)
-			}
-			// The token stream reaching Forward must be exactly BOS + prepared
-			// tokens + EOS, with the placeholder IDs at the media position.
-			// (Captured as CPU data inside the stub: runEmbed frees the batch
-			// arrays at scope exit.)
-			gotToks := m.capturedTokens
-			wantLen := 1 + len(m.prepared.Tokens) + 1 // BOS + prepared + EOS
-			if len(gotToks) != wantLen {
-				t.Fatalf("forward token len %d, want %d", len(gotToks), wantLen)
-			}
-			for i := rng[0]; i < rng[1]; i++ {
-				if gotToks[i+1] != stubPlaceholderToken {
-					t.Errorf("token at placeholder %d = %d, want %d", i+1, gotToks[i+1], stubPlaceholderToken)
-				}
-			}
-			if gotToks[0] != tok.BOS() {
-				t.Errorf("first token %d, want BOS %d", gotToks[0], tok.BOS())
-			}
-			if gotToks[len(gotToks)-1] != tok.EOS() {
-				t.Errorf("last token %d, want EOS %d", gotToks[len(gotToks)-1], tok.EOS())
-			}
-			// Feature rows must equal the placeholder-run length. runEmbed
-			// frees the feature arrays at scope exit, so the stub captured
-			// only CPU data; assert the run length it was sliced from.
-			if got := rng[1] - rng[0]; got != stubPlaceholdersN {
-				t.Errorf("placeholder run %d, want %d", got, stubPlaceholdersN)
-			}
-		})
+		}
+		if gotToks[0] != tok.BOS() {
+			t.Errorf("first token %d, want BOS %d", gotToks[0], tok.BOS())
+		}
+		if gotToks[len(gotToks)-1] != tok.EOS() {
+			t.Errorf("last token %d, want EOS %d", gotToks[len(gotToks)-1], tok.EOS())
+		}
+		// Feature rows must equal the placeholder-run length. runEmbed
+		// frees the feature arrays at scope exit, so the stub captured
+		// only CPU data; assert the run length it was sliced from.
+		if got := rng[1] - rng[0]; got != stubPlaceholdersN {
+			t.Errorf("placeholder run %d, want %d", got, stubPlaceholdersN)
+		}
 	})
 }
 
@@ -371,17 +374,16 @@ func TestEmbedMediaRunEmbedNotSupported(t *testing.T) {
 // TestMeanPoolAndNormalize checks the ST module chain's math directly: mean
 // over the first seqLen token rows (pads excluded), then L2.
 func TestMeanPoolAndNormalize(t *testing.T) {
-	mlxtest.Run(t, func(t *mlxtest.T) {
-		// rows = [[1,0],[3,0],[99,99]] L=3 D=2, seqLen=2 → mean = [2,0], L2 → [1,0]
-		rows := mlx.FromValues([]float32{1, 0, 3, 0, 99, 99}, 3, 2)
-		got := meanPoolAndNormalize(rows, 2)
-		if len(got) != 2 {
-			t.Fatalf("len %d, want 2", len(got))
-		}
-		if got[0] < 0.9999 || got[1] > 1e-4 {
-			t.Errorf("got %v, want ~[1, 0]", got)
-		}
-	})
+	skipIfNoMLX(t)
+	// rows = [[1,0],[3,0],[99,99]] L=3 D=2, seqLen=2 → mean = [2,0], L2 → [1,0]
+	rows := mlx.FromValues([]float32{1, 0, 3, 0, 99, 99}, 3, 2)
+	got := meanPoolAndNormalize(rows, 2)
+	if len(got) != 2 {
+		t.Fatalf("len %d, want 2", len(got))
+	}
+	if got[0] < 0.9999 || got[1] > 1e-4 {
+		t.Errorf("got %v, want ~[1, 0]", got)
+	}
 }
 
 // stubLongEmbedModel raises MaxContextLength so the token-count gate passes
@@ -392,60 +394,58 @@ type stubLongEmbedModel struct{ stubEmbeddingModel }
 
 func (s *stubLongEmbedModel) MaxContextLength() int { return 1 << 24 }
 
-func (s *stubLongEmbedModel) Forward(b *batch.Batch, _ []cache.Cache) (*mlx.Array, *mlx.Array) {
+func (s *stubLongEmbedModel) Forward(b *batch.Batch, _ []cache.Cache) *mlx.Array {
 	L := b.InputIDs.Dim(1)
-	h := mlx.Zeros(mlx.DTypeFloat32, len(b.SeqOffsets), L, 1)
-	return h, h
+	return mlx.Zeros(mlx.DTypeFloat32, len(b.SeqOffsets), L, 1)
 }
 
 // TestRunEmbedRejectsOversizedAllocation: a token count whose predicted
 // allocations exceed the capacity budget must 413 BEFORE any forward work —
 // the failure mode that used to panic at metal::malloc.
 func TestRunEmbedRejectsOversizedAllocation(t *testing.T) {
+	skipIfNoMLX(t)
 	tok := miniEmbedTokenizer(t)
-	mlxtest.Run(t, func(t *mlxtest.T) {
-		r := &Runner{Model: &stubLongEmbedModel{}, Tokenizer: tok}
+	r := &Runner{Model: &stubLongEmbedModel{}, Tokenizer: tok}
 
-		// Token count guaranteeing predicted > budget: solve
-		// L*L*4 > budget for L (mask dominates).
-		budget := EmbedCapacityBudget()
-		L := int(math.Sqrt(float64(budget)/4)) + 64
-		content := strings.Repeat("ab ", L/2+1) // ~L tokens for this vocab
+	// Token count guaranteeing predicted > budget: solve
+	// L*L*4 > budget for L (mask dominates).
+	budget := EmbedCapacityBudget()
+	L := int(math.Sqrt(float64(budget)/4)) + 64
+	content := strings.Repeat("ab ", L/2+1) // ~L tokens for this vocab
 
-		req := EmbeddingRequest{
-			Content:        content,
-			EmbedResponses: make(chan EmbedResponse, 1),
-			Ctx:            context.Background(),
-		}
-		if err := r.runEmbed(req.Ctx, req); err != nil {
-			t.Fatalf("runEmbed: %v", err)
-		}
-		resp := <-req.EmbedResponses
-		if resp.Error == nil {
-			t.Fatal("oversized request produced no error")
-		}
-		if resp.Error.StatusCode != http.StatusRequestEntityTooLarge {
-			t.Errorf("status = %d, want 413; msg=%q", resp.Error.StatusCode, resp.Error.ErrorMessage)
-		}
-		if !strings.Contains(resp.Error.ErrorMessage, "would allocate") {
-			t.Errorf("message should name the allocation: %q", resp.Error.ErrorMessage)
-		}
+	req := EmbeddingRequest{
+		Content:        content,
+		EmbedResponses: make(chan EmbedResponse, 1),
+		Ctx:            context.Background(),
+	}
+	if err := r.runEmbed(req.Ctx, req); err != nil {
+		t.Fatalf("runEmbed: %v", err)
+	}
+	resp := <-req.EmbedResponses
+	if resp.Error == nil {
+		t.Fatal("oversized request produced no error")
+	}
+	if resp.Error.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413; msg=%q", resp.Error.StatusCode, resp.Error.ErrorMessage)
+	}
+	if !strings.Contains(resp.Error.ErrorMessage, "would allocate") {
+		t.Errorf("message should name the allocation: %q", resp.Error.ErrorMessage)
+	}
 
-		// A small request on the same runner still succeeds — the gate does
-		// not wedge the runner after a rejection.
-		ok := EmbeddingRequest{
-			Content:        "hello",
-			EmbedResponses: make(chan EmbedResponse, 1),
-			Ctx:            context.Background(),
-		}
-		if err := r.runEmbed(ok.Ctx, ok); err != nil {
-			t.Fatalf("runEmbed after reject: %v", err)
-		}
-		okResp := <-ok.EmbedResponses
-		if okResp.Error != nil {
-			t.Errorf("small request failed after rejection: %+v", okResp.Error)
-		}
-	})
+	// A small request on the same runner still succeeds — the gate does
+	// not wedge the runner after a rejection.
+	ok := EmbeddingRequest{
+		Content:        "hello",
+		EmbedResponses: make(chan EmbedResponse, 1),
+		Ctx:            context.Background(),
+	}
+	if err := r.runEmbed(ok.Ctx, ok); err != nil {
+		t.Fatalf("runEmbed after reject: %v", err)
+	}
+	okResp := <-ok.EmbedResponses
+	if okResp.Error != nil {
+		t.Errorf("small request failed after rejection: %+v", okResp.Error)
+	}
 }
 
 // TestPredictedEmbedAllocationBytes pins the dominant-allocation formula:
@@ -476,7 +476,7 @@ func TestPredictedEmbedAllocationBytes(t *testing.T) {
 // Without a device the function falls back to a constant; CI boxes have no
 // MLX dylib, so SkipIfUnavailable short-circuits before any cgo call.
 func TestEmbedCapacityBudget(t *testing.T) {
-	mlxtest.SkipIfUnavailable(t)
+	skipIfNoMLX(t)
 
 	b := EmbedCapacityBudget()
 	if b <= 0 {

@@ -12,11 +12,13 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/server/modality/whispercli"
 	"github.com/ollama/ollama/types/model"
 )
 
@@ -1774,13 +1776,45 @@ func ToImageGenerationResponse(resp api.GenerateResponse) ImageGenerationRespons
 
 // SpeechCreateRequest is an OpenAI-compatible POST /v1/audio/speech body.
 type SpeechCreateRequest struct {
-	Model          string   `json:"model"`
-	Input          string   `json:"input"`
-	Voice          string   `json:"voice,omitempty"`
+	Model string `json:"model"`
+	Input string `json:"input"`
+	Voice string `json:"voice,omitempty"`
+	// Lang is forwarded to a llama-server TTS template (LFM3). Kokoro accepts
+	// en, en-us, en-gb, and en-uk; any other tag is 400. Piper ignores it.
+	Lang string `json:"lang,omitempty"`
+	// SpeakerRef is base64 audio for a gen projector that clones a voice
+	// (qwen3tts, pockettts). Not used together with voice.
+	SpeakerRef string `json:"speaker_ref,omitempty"`
+	// Stream asks a llama-server gen projector, Piper when the voice JSON has
+	// audio.sample_rate, local Kokoro, or a remote-tts upstream to send audio
+	// as it is synthesized. Kokoro streams int16 PCM at 24000 Hz. Piper
+	// without a sample rate returns the finished WAV. A remote-tts upstream
+	// that ignores stream still returns its whole body.
+	Stream         bool     `json:"stream,omitempty"`
 	ResponseFormat string   `json:"response_format,omitempty"` // mp3, opus, aac, flac, wav, pcm
 	Speed          *float64 `json:"speed,omitempty"`
-	// Emotion is a zerollama extension for expressive engines (Chatterbox / Orpheus).
-	// Upstream OpenAI ignores unknown fields; remote-tts forwards it when set.
+	// SentenceSilence is seconds of silence Piper adds after each sentence.
+	// Nil leaves 0.2. Other speech models return 400.
+	SentenceSilence *float64 `json:"sentence_silence,omitempty"`
+	// NoiseScale is Piper generator noise. Nil leaves the voice JSON.
+	// Other speech models return 400.
+	NoiseScale *float64 `json:"noise_scale,omitempty"`
+	// NoiseW is Piper phoneme-width noise. Nil leaves the voice JSON.
+	// Other speech models return 400.
+	NoiseW *float64 `json:"noise_w,omitempty"`
+	// SpeakerID is the Piper --speaker index. Nil, or 0, leaves the default
+	// speaker. A single-speaker voice leaves it unused. Other speech models
+	// return 400 when it is set above 0.
+	SpeakerID *int `json:"speaker_id,omitempty"`
+	// PhonemeSilence is seconds of silence after one character. An empty map
+	// adds none. Piper keeps a pause already listed in the voice JSON and
+	// passes the rest as --phoneme_silence. Kokoro inserts that many seconds
+	// of silence after each matching character. Other speech models return
+	// 400 when the map is set.
+	PhonemeSilence map[string]float64 `json:"phoneme_silence,omitempty"`
+	// Emotion is a zerollama extension. remote-tts forwards it. Kokoro scales
+	// speed for calm, sad, serious, neutral, happy, excited, or angry.
+	// Piper ignores it.
 	Emotion string `json:"emotion,omitempty"`
 	// Instructions is the Music 3 caption (SGLang-Omni speech field). Ignored by Piper.
 	// Why a TTS field: Omni's /v1/audio/speech uses input=lyrics, instructions=caption;
@@ -1790,61 +1824,211 @@ type SpeechCreateRequest struct {
 	Seed *int64 `json:"seed,omitempty"`
 	// MaxNewTokens caps AR frames (~25 fps). Music jobs may also set duration.
 	MaxNewTokens *int `json:"max_new_tokens,omitempty"`
+	// TopK, TopP, and RepeatPenalty are llama-server acoustic sampler knobs.
+	// Omitted values stay at the server defaults (top_k 0, top_p 0, repeat_penalty 1.05).
+	TopK          *int     `json:"top_k,omitempty"`
+	TopP          *float64 `json:"top_p,omitempty"`
+	RepeatPenalty *float64 `json:"repeat_penalty,omitempty"`
 	// Duration seconds for Music 3 (lab). Ignored by Piper.
 	Duration *float64 `json:"duration,omitempty"`
 	// Steps is DiT Euler steps for Music 3 (default 30).
 	Steps *int `json:"steps,omitempty"`
 }
 
+// TranscriptionUsage is the token accounting llama-server returns on
+// transcript.text.done. Text, srt, and vtt responses omit it.
+type TranscriptionUsage struct {
+	Type               string                           `json:"type,omitempty"`
+	Seconds            float64                          `json:"seconds,omitempty"`
+	InputTokens        int                              `json:"input_tokens,omitempty"`
+	OutputTokens       int                              `json:"output_tokens,omitempty"`
+	TotalTokens        int                              `json:"total_tokens,omitempty"`
+	InputTokensDetails *TranscriptionInputTokensDetails `json:"input_tokens_details,omitempty"`
+}
+
+// TranscriptionInputTokensDetails is llama-server's input_tokens_details.
+type TranscriptionInputTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
 // TranscriptionResponse is the response format for /v1/audio/transcriptions.
 type TranscriptionResponse struct {
-	Text string `json:"text"`
+	Text                string                 `json:"text"`
+	Language            string                 `json:"language,omitempty"`
+	LanguageProbability *float64               `json:"language_probability,omitempty"`
+	Usage               *TranscriptionUsage    `json:"usage,omitempty"`
+	Logprobs            []TranscriptionLogprob `json:"logprobs,omitempty"`
+}
+
+// TranscriptionLogprob is one token score. Bytes are the token's UTF-8 bytes.
+type TranscriptionLogprob struct {
+	Token   string  `json:"token"`
+	Logprob float64 `json:"logprob"`
+	Bytes   []int   `json:"bytes"`
 }
 
 // TranscriptionVerboseResponse is a subset of the OpenAI verbose_json transcription shape.
-// Segment timestamps are omitted when the backend does not provide them.
+// whisper.cpp fills segment start and end. Other backends use one segment. Its
+// end is the WAV length when that length is known, and time 0 otherwise.
 type TranscriptionVerboseResponse struct {
-	Task     string                 `json:"task"`
-	Language string                 `json:"language,omitempty"`
-	Duration float64                `json:"duration"`
-	Text     string                 `json:"text"`
-	Segments []TranscriptionSegment `json:"segments"`
+	Task                string                 `json:"task"`
+	Language            string                 `json:"language,omitempty"`
+	LanguageProbability *float64               `json:"language_probability,omitempty"`
+	Duration            float64                `json:"duration"`
+	Text                string                 `json:"text"`
+	Segments            []TranscriptionSegment `json:"segments"`
+	Words               []TranscriptionWord    `json:"words,omitempty"`
+	Usage               *TranscriptionUsage    `json:"usage,omitempty"`
+	Logprobs            []TranscriptionLogprob `json:"logprobs,omitempty"`
+}
+
+// TranscriptionWord is one word and its time span, in seconds.
+type TranscriptionWord struct {
+	Word  string  `json:"word"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
 }
 
 // TranscriptionSegment mirrors OpenAI segment fields used by clients.
+// AvgLogprob and NoSpeechProb are set when whisper.cpp token probabilities are present.
+// Tokens are whisper.cpp token ids when the JSON wrote them.
+// Speaker is "0", "1", or "?" when diarize labeled the cue.
+// SpeakerTurnNext is true when a tinydiarize model ended the cue with a speaker change.
+// Text then ends with " [SPEAKER_TURN]".
 type TranscriptionSegment struct {
-	ID    int     `json:"id"`
-	Start float64 `json:"start"`
-	End   float64 `json:"end"`
-	Text  string  `json:"text"`
+	ID              int      `json:"id"`
+	Start           float64  `json:"start"`
+	End             float64  `json:"end"`
+	Text            string   `json:"text"`
+	Speaker         string   `json:"speaker,omitempty"`
+	SpeakerTurnNext bool     `json:"speaker_turn_next,omitempty"`
+	Tokens          []int    `json:"tokens,omitempty"`
+	AvgLogprob      *float64 `json:"avg_logprob,omitempty"`
+	NoSpeechProb    *float64 `json:"no_speech_prob,omitempty"`
 }
 
 // TranscriptionResult builds JSON/text/verbose payloads for a transcription.
-func TranscriptionResult(text, responseFormat, language string) (contentType string, body []byte, err error) {
+// usage is included on json and verbose_json when llama-server reported token counts.
+func TranscriptionResult(text, responseFormat, language, task string, usage *TranscriptionUsage, logprobs []TranscriptionLogprob, languageProbability *float64) (contentType string, body []byte, err error) {
 	text = strings.TrimSpace(text)
+	if task == "" {
+		task = "transcribe"
+	}
+	sec := 0.0
+	if usage != nil && usage.Seconds > 0 {
+		sec = usage.Seconds
+	}
+	cue := whispercli.CueSpan(text, sec)
 	switch responseFormat {
 	case "text":
 		return "text/plain", []byte(text), nil
+	case "srt":
+		return "text/plain", []byte(whispercli.WriteSRT([]whispercli.Segment{cue})), nil
+	case "vtt":
+		return "text/vtt", []byte(whispercli.WriteVTT([]whispercli.Segment{cue})), nil
 	case "verbose_json":
 		verbose := TranscriptionVerboseResponse{
-			Task:     "transcribe",
-			Language: language,
-			Duration: 0,
-			Text:     text,
+			Task:                task,
+			Language:            language,
+			LanguageProbability: languageProbability,
+			Duration:            sec,
+			Text:                text,
 			Segments: []TranscriptionSegment{
-				{ID: 0, Start: 0, End: 0, Text: text},
+				{ID: 0, Start: cue.Start, End: cue.End, Text: text},
 			},
+			Usage:    usage,
+			Logprobs: logprobs,
 		}
 		b, err := json.Marshal(verbose)
 		return "application/json", b, err
 	default:
-		// json, srt, vtt — only json is fully supported; others fall back to simple JSON text field.
+		// Unknown formats fall back to the JSON text field.
 		if responseFormat != "" && responseFormat != "json" {
 			slog.Debug("transcription response_format not fully implemented; returning json text field", "format", responseFormat)
 		}
-		b, err := json.Marshal(TranscriptionResponse{Text: text})
+		b, err := json.Marshal(TranscriptionResponse{Text: text, Language: language, LanguageProbability: languageProbability, Usage: usage, Logprobs: logprobs})
 		return "application/json", b, err
 	}
+}
+
+// TranscriptionDiarizedSegment is one cue in a diarized_json transcript.
+// Speaker is "0", "1", or "?" when whisper.cpp labeled the cue. Text is the
+// spoken words, without the "(speaker N)" prefix.
+type TranscriptionDiarizedSegment struct {
+	ID      string  `json:"id"`
+	Type    string  `json:"type"`
+	Speaker string  `json:"speaker,omitempty"`
+	Start   float64 `json:"start"`
+	End     float64 `json:"end"`
+	Text    string  `json:"text"`
+}
+
+// TranscriptionDiarizedResponse is response_format=diarized_json.
+type TranscriptionDiarizedResponse struct {
+	Task                string                         `json:"task"`
+	Language            string                         `json:"language,omitempty"`
+	LanguageProbability *float64                       `json:"language_probability,omitempty"`
+	Duration            float64                        `json:"duration"`
+	Text                string                         `json:"text"`
+	Segments            []TranscriptionDiarizedSegment `json:"segments"`
+	Usage               *TranscriptionUsage            `json:"usage,omitempty"`
+}
+
+// TranscriptionResultDiarized builds diarized_json. An empty segment list
+// becomes one cue covering duration when text is present.
+func TranscriptionResultDiarized(text, language, task string, segments []TranscriptionDiarizedSegment, duration float64, usage *TranscriptionUsage, languageProbability *float64) (contentType string, body []byte, err error) {
+	if task == "" {
+		task = "transcribe"
+	}
+	text = strings.TrimSpace(text)
+	if len(segments) == 0 && text != "" {
+		segments = []TranscriptionDiarizedSegment{{
+			ID:    "seg_0",
+			Type:  "transcript.text.segment",
+			Start: 0,
+			End:   duration,
+			Text:  text,
+		}}
+	}
+	if segments == nil {
+		segments = []TranscriptionDiarizedSegment{}
+	}
+	payload := TranscriptionDiarizedResponse{
+		Task:                task,
+		Language:            language,
+		LanguageProbability: languageProbability,
+		Duration:            duration,
+		Text:                text,
+		Segments:            segments,
+		Usage:               usage,
+	}
+	b, err := json.Marshal(payload)
+	return "application/json", b, err
+}
+
+// TranscriptionResultSegments builds verbose_json from timed segments.
+// An empty segment list falls back to one cue. Its end is usage.Seconds when set.
+func TranscriptionResultSegments(text, language string, segments []TranscriptionSegment, duration float64, words []TranscriptionWord, task string, usage *TranscriptionUsage, logprobs []TranscriptionLogprob, languageProbability *float64) (contentType string, body []byte, err error) {
+	if task == "" {
+		task = "transcribe"
+	}
+	if len(segments) == 0 {
+		return TranscriptionResult(text, "verbose_json", language, task, usage, logprobs, languageProbability)
+	}
+	text = strings.TrimSpace(text)
+	verbose := TranscriptionVerboseResponse{
+		Task:                task,
+		Language:            language,
+		LanguageProbability: languageProbability,
+		Duration:            duration,
+		Text:                text,
+		Segments:            segments,
+		Words:               words,
+		Usage:               usage,
+		Logprobs:            logprobs,
+	}
+	b, err := json.Marshal(verbose)
+	return "application/json", b, err
 }
 
 // TranscriptionRequest holds parsed fields from the multipart form.
@@ -1854,12 +2038,20 @@ type TranscriptionRequest struct {
 	ResponseFormat string // "json", "text", "verbose_json"
 	Language       string
 	Prompt         string
+	Temperature    string
+	// MaxTokens caps the chat transcription. Nil means no cap.
+	MaxTokens *int
 }
 
 // FromTranscriptionRequest converts a transcription request into a ChatRequest
 // by wrapping the audio with a system prompt for transcription.
-func FromTranscriptionRequest(r TranscriptionRequest) (*api.ChatRequest, error) {
+func FromTranscriptionRequest(r TranscriptionRequest, translate bool) (*api.ChatRequest, error) {
 	systemPrompt := "Transcribe the following audio exactly as spoken. Output only the transcription text, nothing else."
+	user := "Transcribe this audio."
+	if translate {
+		systemPrompt = "Translate the following audio into English. Output only the English text, nothing else."
+		user = "Translate this audio into English."
+	}
 	if r.Language != "" {
 		systemPrompt += " The audio is in " + r.Language + "."
 	}
@@ -1867,17 +2059,30 @@ func FromTranscriptionRequest(r TranscriptionRequest) (*api.ChatRequest, error) 
 		systemPrompt += " Context: " + r.Prompt
 	}
 
+	temperature := 0.0
+	if strings.TrimSpace(r.Temperature) != "" {
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(r.Temperature), 64)
+		if err != nil || parsed < 0 || parsed > 1 {
+			return nil, fmt.Errorf("temperature must be between 0 and 1")
+		}
+		temperature = parsed
+	}
+
 	stream := true
+	options := map[string]any{
+		"temperature": temperature,
+	}
+	if r.MaxTokens != nil {
+		options["num_predict"] = *r.MaxTokens
+	}
 	return &api.ChatRequest{
 		Model: r.Model,
 		Messages: []api.Message{
 			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: "Transcribe this audio.", Images: []api.ImageData{r.AudioData}},
+			{Role: "user", Content: user, Images: []api.ImageData{r.AudioData}},
 		},
-		Stream: &stream,
-		Options: map[string]any{
-			"temperature": 0,
-		},
+		Stream:  &stream,
+		Options: options,
 	}, nil
 }
 

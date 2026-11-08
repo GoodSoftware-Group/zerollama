@@ -29,6 +29,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
@@ -211,6 +212,235 @@ func (s *llamaServerRunner) Pid() int {
 
 func (s *llamaServerRunner) GetPort() int {
 	return s.port
+}
+
+// TranscribeAudio posts one audio file to this llama-server's OpenAI
+// transcription route. llama-server accepts response_format=json only and
+// returns {"type":"transcript.text.done","text":"..."}. stream returns that
+// route's text/event-stream body; the caller closes it to release the slot.
+func (s *llamaServerRunner) TranscribeAudio(ctx context.Context, audio []byte, filename, language, prompt, temperature, maxTokens string, stream bool) (string, io.ReadCloser, error) {
+	if s == nil || s.port <= 0 {
+		return "", nil, errors.New("llama-server ASR has no port")
+	}
+	if len(audio) == 0 {
+		return "", nil, errors.New("audio file is empty")
+	}
+	if err := s.sem.Acquire(ctx, 1); err != nil {
+		return "", nil, err
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { s.sem.Release(1) }) }
+	success := false
+	defer func() {
+		if !success {
+			release()
+		}
+	}()
+
+	status, err := s.getServerStatusRetry(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	if status != ServerStatusReady {
+		return "", nil, fmt.Errorf("unexpected server status: %s", status)
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	name := filepath.Base(filename)
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		name = "audio.wav"
+	}
+	part, err := mw.CreateFormFile("file", name)
+	if err != nil {
+		return "", nil, err
+	}
+	if _, err := part.Write(audio); err != nil {
+		return "", nil, err
+	}
+	if language != "" {
+		if err := mw.WriteField("language", language); err != nil {
+			return "", nil, err
+		}
+	}
+	if prompt != "" {
+		if err := mw.WriteField("prompt", prompt); err != nil {
+			return "", nil, err
+		}
+	}
+	// llama-server rejects every response_format except json.
+	if err := mw.WriteField("response_format", "json"); err != nil {
+		return "", nil, err
+	}
+	if stream {
+		if err := mw.WriteField("stream", "true"); err != nil {
+			return "", nil, err
+		}
+	}
+	// An omitted temperature stays 0 so a transcription stays deterministic.
+	if strings.TrimSpace(temperature) == "" {
+		temperature = "0"
+	}
+	if err := mw.WriteField("temperature", temperature); err != nil {
+		return "", nil, err
+	}
+	if strings.TrimSpace(maxTokens) != "" {
+		if err := mw.WriteField("max_tokens", strings.TrimSpace(maxTokens)); err != nil {
+			return "", nil, err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return "", nil, err
+	}
+
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/v1/audio/transcriptions", s.port)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &buf)
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	res, err := s.httpClient().Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("llama-server transcription: %w", err)
+	}
+	if res.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		res.Body.Close()
+		msg := strings.TrimSpace(string(body))
+		return "", nil, fmt.Errorf("llama-server transcription: %s", msg)
+	}
+	contentType := res.Header.Get("Content-Type")
+	if stream {
+		if contentType == "" {
+			contentType = "text/event-stream"
+		}
+		success = true
+		return contentType, &speechAudio{body: res.Body, release: release}, nil
+	}
+	body, err := io.ReadAll(res.Body)
+	res.Body.Close()
+	if err != nil {
+		return "", nil, err
+	}
+	success = true
+	release()
+	return contentType, io.NopCloser(bytes.NewReader(body)), nil
+}
+
+// Speak posts text to llama-server POST /tts. response_format is wav or pcm.
+// The reader is raw audio. Close it to release the runner slot. stream asks
+// llama-server to send chunks as they are synthesized.
+func (s *llamaServerRunner) Speak(ctx context.Context, text, voice, format, lang string, speakerRef []byte, stream bool, seed *int64, maxPredict *int, sample SpeechSample) (string, io.ReadCloser, error) {
+	if s == nil || s.port <= 0 {
+		return "", nil, errors.New("llama-server speech has no port")
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", nil, errors.New("speech input is empty")
+	}
+	if format != "pcm" {
+		format = "wav"
+	}
+	if err := s.sem.Acquire(ctx, 1); err != nil {
+		return "", nil, err
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { s.sem.Release(1) }) }
+	success := false
+	defer func() {
+		if !success {
+			release()
+		}
+	}()
+
+	status, err := s.getServerStatusRetry(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	if status != ServerStatusReady {
+		return "", nil, fmt.Errorf("unexpected server status: %s", status)
+	}
+
+	payload := map[string]any{
+		"input":           text,
+		"response_format": format,
+		"stream":          stream,
+	}
+	if len(speakerRef) > 0 {
+		payload["speaker_ref_b64"] = base64.StdEncoding.EncodeToString(speakerRef)
+	} else if strings.TrimSpace(voice) != "" {
+		payload["voice"] = strings.TrimSpace(voice)
+	}
+	if strings.TrimSpace(lang) != "" {
+		payload["lang"] = strings.TrimSpace(lang)
+	}
+	// llama-server stores the seed as uint32. A negative value is the random
+	// default, so it is left unset. maxPredict is n_predict (-1 means no cap).
+	if seed != nil && *seed >= 0 {
+		payload["seed"] = *seed
+	}
+	if maxPredict != nil {
+		payload["n_predict"] = *maxPredict
+	}
+	if sample.TopK != nil {
+		payload["top_k"] = *sample.TopK
+	}
+	if sample.TopP != nil {
+		payload["top_p"] = *sample.TopP
+	}
+	if sample.RepeatPenalty != nil {
+		payload["repeat_penalty"] = *sample.RepeatPenalty
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", nil, err
+	}
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/tts", s.port)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := s.httpClient().Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("llama-server speech: %w", err)
+	}
+	if res.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		res.Body.Close()
+		msg := strings.TrimSpace(string(body))
+		return "", nil, fmt.Errorf("llama-server speech: %s", msg)
+	}
+	contentType := res.Header.Get("Content-Type")
+	if contentType == "" {
+		if format == "pcm" {
+			contentType = "audio/pcm"
+		} else {
+			contentType = "audio/wav"
+		}
+	}
+	success = true
+	return contentType, &speechAudio{body: res.Body, release: release}, nil
+}
+
+// speechAudio holds the in-flight speech permit until the caller finishes the clip.
+type speechAudio struct {
+	body    io.ReadCloser
+	release func()
+	once    sync.Once
+}
+
+func (a *speechAudio) Read(p []byte) (int, error) { return a.body.Read(p) }
+
+func (a *speechAudio) Close() error {
+	var err error
+	a.once.Do(func() {
+		err = a.body.Close()
+		if a.release != nil {
+			a.release()
+		}
+	})
+	return err
 }
 
 func (s *llamaServerRunner) HasExited() bool {
@@ -863,7 +1093,11 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 		}
 	}
 
-	params = append(params, qwenVLServerArgs(launch.modelArch)...)
+	vlArch := launch.modelArch
+	if launch.config.QwenVL {
+		vlArch = "qwen3vl"
+	}
+	params = append(params, qwenVLServerArgs(vlArch)...)
 
 	// LoRA adapters
 	for _, adapter := range launch.adapters {
@@ -912,7 +1146,11 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 		params = append(params, "-t", strconv.Itoa(launch.opts.NumThread))
 	}
 
-	params = appendMainGPUArgs(params, launch.opts)
+	params = appendGPUPlacementArgs(params, launch.opts, launch.config.SingleGPU, len(launch.gpus))
+	if launch.config.ReasoningOff {
+		// LFM3-Omni's chat template opens a think block. The checkpoint does not fill it.
+		params = append(params, "--reasoning", "off")
+	}
 
 	params = appendContextShiftArgs(params, launch.opts, launch.config.ContextShift)
 
@@ -1144,6 +1382,46 @@ func appendMainGPUArgs(params []string, opts api.Options) []string {
 	}
 
 	return append(params, "--split-mode", "none", "--main-gpu", strconv.Itoa(opts.MainGPU))
+}
+
+// appendGPUPlacementArgs places a llama-server model across the visible GPUs.
+// main_gpu of 1 or higher pins any model to that device. SingleGPU pins a
+// realtime encoder to device 0 so it does not consume a dual-4090 pair.
+// Two or more GPUs with neither of those set pass --split-mode layer, which
+// is how a weight set past 24 GiB (Voxtral Small Q8, Qwen3-Omni Q8, Ultravox
+// 70B Q4) uses both cards.
+func appendGPUPlacementArgs(params []string, opts api.Options, singleGPU bool, gpuCount int) []string {
+	if singleGPU && opts.MainGPU <= 0 {
+		return append(params, "--split-mode", "none", "--main-gpu", "0")
+	}
+	if opts.MainGPU > 0 {
+		return appendMainGPUArgs(params, opts)
+	}
+	if gpuCount > 1 {
+		return append(params, "--split-mode", "layer")
+	}
+	return params
+}
+
+// llamaServerReportedDevices is the set the scheduler should charge for this
+// load. A layer split occupies every visible GPU. A pin occupies one.
+func llamaServerReportedDevices(gpus []ml.DeviceInfo, mainGPU int, singleGPU bool) []ml.DeviceID {
+	if len(gpus) == 0 {
+		return nil
+	}
+	pinned := singleGPU || (mainGPU > 0 && mainGPU < len(gpus))
+	if !pinned {
+		ids := make([]ml.DeviceID, len(gpus))
+		for i := range gpus {
+			ids[i] = gpus[i].DeviceID
+		}
+		return ids
+	}
+	idx := mainGPU
+	if idx < 0 || idx >= len(gpus) {
+		idx = 0
+	}
+	return []ml.DeviceID{gpus[idx].DeviceID}
 }
 
 // llamaServerNGLArg maps Ollama NumGPU to a llama-server -ngl value.
@@ -1810,17 +2088,7 @@ func (s *llamaServerRunner) Load(ctx context.Context, systemInfo ml.SystemInfo, 
 			"model", s.modelPath, "gpus", len(s.gpus))
 	}
 
-	if s.options.MainGPU >= 0 && s.options.MainGPU < len(gpus) {
-		return []ml.DeviceID{gpus[s.options.MainGPU].DeviceID}, nil
-	}
-
-	// Return device IDs for all GPUs when llama-server manages layer placement itself.
-	deviceIDs := make([]ml.DeviceID, len(gpus))
-	for i, g := range gpus {
-		deviceIDs[i] = g.DeviceID
-	}
-
-	return deviceIDs, nil
+	return llamaServerReportedDevices(gpus, s.options.MainGPU, s.launch.config.SingleGPU), nil
 }
 
 func (s *llamaServerRunner) retryWithMMProjCPUOffload(loadErr error) (bool, error) {
@@ -3164,7 +3432,15 @@ func llamaServerChatMessage(msg Message) (map[string]any, error) {
 }
 
 func llamaServerChatMediaPart(media MediaData) (map[string]any, error) {
-	if format, ok := AudioFormat(media.Data); ok {
+	format, isAudio := AudioFormat(media.Data)
+	if media.Kind == MediaKindAudio {
+		isAudio = true
+		if format == "" {
+			// llama-server sniffs the bytes; format is not checked.
+			format = "wav"
+		}
+	}
+	if isAudio {
 		return map[string]any{
 			"type": "input_audio",
 			"input_audio": map[string]any{

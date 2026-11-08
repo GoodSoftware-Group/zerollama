@@ -52,6 +52,7 @@ func (d *mtpDrafter) open(promptTokens int) *mtpDraftSession {
 		plan = mtpHistoryPlan{Policy: mtpHistoryCommitted}
 	}
 	s.history = plan
+	s.resetFrontier = s.frontier
 	// Next absolute look-ahead index eligible for a draft-KV pair write.
 	s.writeLookAheadAbs = s.committedDraftOffset + 1
 	if plan.Policy == mtpHistoryLastWindow && plan.HistoryStart > s.writeLookAheadAbs {
@@ -97,8 +98,12 @@ type mtpDraftSession struct {
 	// committedDraftOffset is the slot after the last pair written to the
 	// draft caches; later pairs wait pinned in the pending lists until
 	// flushed. pendingCount is the look-ahead tokens those lists hold, summed
-	// across the buffered runs.
+	// across the buffered runs. After a live history reset this is the
+	// cache-relative fill (0 after wipe); ropeBase holds the absolute RoPE
+	// of cache slot 0 so Draft SeqOffsets stay correct.
 	committedDraftOffset int
+	ropeBase             int
+	resetFrontier        int // frontier at open / last live wipe
 	pendingTokens        []*mlx.Array
 	pendingHiddens       []*mlx.Array
 	pendingCount         int
@@ -139,6 +144,53 @@ func (d *mtpDraftSession) committed(tokens, hiddens *mlx.Array, position int) {
 
 	d.frontier = position + n
 	d.setFrontierHidden(lastHiddenRow(hiddens))
+	d.maybeLiveReset()
+}
+
+// draftSeqOffset is the RoPE / batch SeqOffsets of the next draft-KV write.
+// Before a live reset it equals committedDraftOffset (absolute fill). After
+// a wipe, cache fill restarts at 0 and ropeBase carries the absolute slot.
+func (d *mtpDraftSession) draftSeqOffset() int {
+	return d.ropeBase + d.committedDraftOffset
+}
+
+// maybeLiveReset wipes draft KV every N generated tokens (mtplx 2.10 live
+// history reset). Restore(nil, offset) can only drop a tail, so the prefix
+// has to go: rewind to 0, keep absolute RoPE via ropeBase, write the next
+// pair at cache slot 0. Prompt tokens do not count — resetFrontier tracks
+// the last wipe (or open).
+func (d *mtpDraftSession) maybeLiveReset() {
+	enabled, override := mtpLiveResetPolicy()
+	if !enabled || len(d.drafter.spec.draftKV) == 0 {
+		return
+	}
+	generated := d.frontier - d.resetFrontier
+	draftFill := d.drafter.spec.draftKV[0].Offset()
+	active, recommended := 0, 0
+	if override == 0 {
+		if rec, err := mlx.MaxRecommendedWorkingSetSize(); err == nil {
+			recommended = rec
+			active = mlx.ActiveMemory()
+		}
+	}
+	if !liveResetDue(generated, draftFill, active, recommended, override) {
+		return
+	}
+	d.flush()
+	for _, c := range d.drafter.spec.draftKV {
+		if !c.Restore(nil, 0) {
+			slog.Warn("mtp live history reset rewind failed", "frontier", d.frontier)
+			return
+		}
+	}
+	d.ropeBase = d.draftSeqOffset()
+	d.committedDraftOffset = 0
+	d.resetFrontier = d.frontier
+	slog.Info("mtp live history reset",
+		"frontier", d.frontier,
+		"rope_base", d.ropeBase,
+		"generated", generated,
+		"draft_fill", draftFill)
 }
 
 // settle completes any open frontier pair with next — the token after the
@@ -195,7 +247,7 @@ func (d *mtpDraftSession) flush() {
 	hiddens := mlx.Concatenate(d.pendingHiddens, 1)
 	hidden, projected := spec.draft.Draft(&batch.Batch{
 		InputIDs:     ids,
-		SeqOffsets:   []int32{int32(d.committedDraftOffset)},
+		SeqOffsets:   []int32{int32(d.draftSeqOffset())},
 		SeqQueryLens: []int32{int32(ids.Dim(1))},
 		Hidden:       hiddens,
 	}, spec.caches)

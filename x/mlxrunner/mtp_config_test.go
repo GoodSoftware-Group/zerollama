@@ -124,3 +124,43 @@ func TestGreedyTrioFence(t *testing.T) {
 		t.Fatal("custom fence is exclusive")
 	}
 }
+
+func TestMTPLiveResetPolicy(t *testing.T) {
+	t.Setenv("ZEROLLAMA_MLX_MTP_HISTORY_LIVE_RESET", "")
+	on, n := mtpLiveResetPolicy()
+	if !on || n != 0 {
+		t.Fatalf("auto: enabled=%v override=%d", on, n)
+	}
+	t.Setenv("ZEROLLAMA_MLX_MTP_HISTORY_LIVE_RESET", "off")
+	on, n = mtpLiveResetPolicy()
+	if on || n != 0 {
+		t.Fatalf("off: enabled=%v override=%d", on, n)
+	}
+	t.Setenv("ZEROLLAMA_MLX_MTP_HISTORY_LIVE_RESET", "4096")
+	on, n = mtpLiveResetPolicy()
+	if !on || n != 4096 {
+		t.Fatalf("pin: enabled=%v override=%d", on, n)
+	}
+}
+
+func TestLiveResetDueAuto(t *testing.T) {
+	t.Parallel()
+	if liveResetDue(100, 20000, 8<<30, 8<<30, 0) {
+		t.Fatal("below 4k generated must not wipe")
+	}
+	if !liveResetDue(16384, 100, 1<<30, 8<<30, 0) {
+		t.Fatal("16k generated is the hard cap")
+	}
+	if !liveResetDue(8192, 8192, 7<<30, 8<<30, 0) {
+		t.Fatal("tight UMA + last_window fill should wipe early")
+	}
+	if liveResetDue(8192, 8192, 1<<30, 8<<30, 0) {
+		t.Fatal("roomy UMA should wait for the 16k cap")
+	}
+	if !liveResetDue(4, 0, 0, 0, 4) {
+		t.Fatal("lab pin every 4 tokens")
+	}
+	if liveResetDue(3, 0, 0, 0, 4) {
+		t.Fatal("lab pin not yet due")
+	}
+}

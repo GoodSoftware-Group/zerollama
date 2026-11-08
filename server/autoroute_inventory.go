@@ -38,11 +38,17 @@ func loadRouteCandidate(ref autoroute.Ref) (autoroute.Candidate, error) {
 	if isLayaDecisionModel(m) {
 		caps = []model.Capability{model.CapabilityDecision}
 	}
+	family := m.Config.ModelFamily
+	if modelMTMDRole(m).StreamOnly {
+		// The text GGUF is mistral3. The router has to see the projector,
+		// or a live-only checkpoint is offered as an ordinary chat model.
+		family = model.ProjVoxtralRT
+	}
 	c := autoroute.Candidate{
 		Capabilities:     caps,
 		Backends:         maps.Clone(m.Config.ModalityBackends),
 		Format:           m.Config.ModelFormat,
-		Family:           m.Config.ModelFamily,
+		Family:           family,
 		ContextLength:    modelMaxNumCtx(m),
 		SchedKey:         schedulerModelKey(m),
 		RuntimeInference: modelUsesRuntimeInference(m),
@@ -88,15 +94,28 @@ func routeCandidates() ([]autoroute.Candidate, map[string]error, error) {
 }
 
 // routeVoices returns the voices a speech model is known to own. Piper resolves voices from
-// backend_paths, so its list is authoritative; remote TTS only when a voices file is
-// configured — otherwise the upstream may accept voices zerollama never listed.
+// backend_paths, so its list is authoritative. Kokoro does too when the tag is kokoro or
+// both kokoro path keys are set. Remote TTS only when a voices file is configured —
+// otherwise the upstream may accept voices zerollama never listed. Fleet Kokoro env vars
+// do not make a catalog.
 func routeVoices(m *Model, caps []model.Capability) []string {
 	if !slices.Contains(caps, model.CapabilitySpeech) {
 		return nil
 	}
 	backend := modality.BackendFor(m.Config, model.ModalitySpeech)
-	if backend != model.BackendPiper && modality.PathFor(m.Config, "tts_voices_file") == "" {
-		return nil
+	if backend == "" && modality.PathFor(m.Config, "piper_model") == "" && modality.KokoroPathsSet(m.Config) {
+		backend = model.BackendKokoro
+	}
+	switch backend {
+	case model.BackendPiper:
+	case model.BackendKokoro:
+		if !modality.KokoroVoiceCatalogAuthoritative(m.Config) {
+			return nil
+		}
+	default:
+		if modality.PathFor(m.Config, "tts_voices_file") == "" {
+			return nil
+		}
 	}
 	var out []string
 	for _, v := range modality.ListSpeechVoices(m.Config) {

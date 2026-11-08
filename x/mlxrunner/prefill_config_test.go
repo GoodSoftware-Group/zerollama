@@ -1,6 +1,7 @@
 package mlxrunner
 
 import (
+	"errors"
 	"slices"
 	"testing"
 )
@@ -166,5 +167,45 @@ func TestCapPrefillChunkForWorkingSet(t *testing.T) {
 	kept := capPrefillChunkForWorkingSet(env, 7<<30, 8<<30)
 	if kept.chunkSize != 4096 {
 		t.Fatalf("env chunk must win, got %d", kept.chunkSize)
+	}
+}
+
+func TestShrinkPrefillChunkLadder(t *testing.T) {
+	t.Parallel()
+	base := prefillConfig{chunkSize: 1024}
+	mid := shrinkPrefillChunkLadder(base, 4096, 7<<30, 8<<30) // 87.5% — keep 1024
+	if mid.chunkSize != 1024 {
+		t.Fatalf("below 90%%: chunk=%d want 1024", mid.chunkSize)
+	}
+	hot := shrinkPrefillChunkLadder(base, 4096, 15<<30/2, 8<<30) // ~93%
+	if hot.chunkSize != 512 {
+		t.Fatalf("≥90%%: chunk=%d want 512", hot.chunkSize)
+	}
+	tiny := shrinkPrefillChunkLadder(base, 20, 8<<30, 8<<30)
+	if tiny.chunkSize != 1024 {
+		t.Fatalf("tiny tail must not shrink, chunk=%d", tiny.chunkSize)
+	}
+	env := prefillConfig{chunkSize: 4096, chunkSizeFromEnv: true}
+	kept := shrinkPrefillChunkLadder(env, 4096, 8<<30, 8<<30)
+	if kept.chunkSize != 4096 {
+		t.Fatalf("env chunk must win, got %d", kept.chunkSize)
+	}
+}
+
+func TestRefusePrefillIfNoFit(t *testing.T) {
+	t.Parallel()
+	if err := refusePrefillIfNoFit(20, 8<<30, 8<<30, 512); err != nil {
+		t.Fatalf("tiny tail must fit: %v", err)
+	}
+	if err := refusePrefillIfNoFit(4096, 6<<30, 8<<30, 1024); err != nil {
+		t.Fatalf("below recommended must run: %v", err)
+	}
+	err := refusePrefillIfNoFit(4096, 8<<30, 8<<30, 512)
+	if err == nil {
+		t.Fatal("full working set + long remaining must 507")
+	}
+	var mem *InsufficientMemoryError
+	if !errors.As(err, &mem) || mem.Remaining != 4096 {
+		t.Fatalf("want InsufficientMemoryError, got %v", err)
 	}
 }

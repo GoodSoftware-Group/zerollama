@@ -22,15 +22,23 @@ const (
 
 // Backend driver names for [ConfigV2.ModalityBackends].
 const (
-	BackendMLXImagegen      = "mlx-imagegen"      // default MLX pipeline in Ollama
-	BackendWhisper          = "whisper"           // whisper.cpp / compatible CLI
-	BackendPiper            = "piper"             // Piper TTS (CPU ONNX)
-	BackendMusic3           = "music3"            // MiniMax Music 3 (mlx-audio / later music-cli). Not Piper. Not H3 AudioVAE.
-	BackendRemoteTTS        = "remote-tts"        // OpenAI-compatible HTTP TTS (Chatterbox/Orpheus/Kokoro/…)
-	BackendExternalImage    = "external-image"    // user-provided command (see docs)
-	BackendOpenVINOImage    = "openvino-image"    // OpenVINO GenAI Text2ImagePipeline (see docs/sd-openvino-a380.md)
-	BackendVideoNative      = "native"            // ffmpeg frame sampling inside Ollama (default when unset)
-	BackendSGLang           = "sglang"            // forward OpenAI chat to SGLang HTTP API
+	BackendMLXImagegen = "mlx-imagegen" // default MLX pipeline in Ollama
+	BackendWhisper     = "whisper"      // whisper.cpp / compatible CLI
+	// BackendQwen3ASR is a resident Qwen3-ASR process (qwen-asr). Whisper CLI is
+	// the fallback when that process cannot start. See docs/multimodal-backends.md.
+	BackendQwen3ASR = "qwen3-asr"
+	// BackendLlamaASR is a Parakeet or Nemotron-transcribe GGUF served by llama-server
+	// POST /v1/audio/transcriptions. The encoder (and Sortformer fusion, on
+	// nemotron_transcribe) already lives in the vendored mtmd graph.
+	BackendLlamaASR      = "llama-asr"
+	BackendPiper         = "piper"          // Piper TTS (CPU ONNX)
+	BackendKokoro        = "kokoro"         // Local Kokoro ONNX TTS (CPU). Distinct from remote-tts kokoro tags.
+	BackendMusic3        = "music3"         // MiniMax Music 3 (mlx-audio / later music-cli). Not Piper. Not H3 AudioVAE.
+	BackendRemoteTTS     = "remote-tts"     // OpenAI-compatible HTTP TTS (Chatterbox/Orpheus/Kokoro/…)
+	BackendExternalImage = "external-image" // user-provided command (see docs)
+	BackendOpenVINOImage = "openvino-image" // OpenVINO GenAI Text2ImagePipeline (see docs/sd-openvino-a380.md)
+	BackendVideoNative   = "native"         // ffmpeg frame sampling inside Ollama (default when unset)
+	BackendSGLang        = "sglang"         // forward OpenAI chat to SGLang HTTP API
 	// BackendOpenAIRemote forwards OpenAI /v1/chat/completions to an external
 	// OpenAI-compatible server (e.g. glm-flash-lite EXL3 sidecar). Config-only
 	// tag — no GGUF load. See docs/glm-flash-lite-ladder.md GF3.
@@ -57,7 +65,7 @@ const (
 	// ZEROLLAMA_GLINER_DECIDE_URL (GD*). WHY not BackendGliner: Decide is triage
 	// (choice/score/noul), not span NER — see docs/gliner-decide.md.
 	BackendGlinerDecide = "gliner-decide"
-	BackendWan              = "wan"               // Wan2.x: Python generate.py, or video-cli when backend_paths.video_cli / ZEROLLAMA_VIDEO_CLI is set
+	BackendWan          = "wan" // Wan2.x: Python generate.py, or video-cli when backend_paths.video_cli / ZEROLLAMA_VIDEO_CLI is set
 	// BackendLTX is Wan2GP LTXV (13B distilled quanto or 2B distilled FP8) via scripts/video/ltx_video_generate.py.
 	// See docs/ltx-t2v.md — not LTX-2/Gemma on ≤24 GiB hosts.
 	BackendLTX = "ltx"

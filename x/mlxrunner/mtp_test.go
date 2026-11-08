@@ -1170,7 +1170,7 @@ type nopDrafter struct{}
 
 func (nopDrafter) propose(*mlx.Array, int) *draftCandidates { return nil }
 func (nopDrafter) committed(_, _ *mlx.Array, _ int)         {}
-func (nopDrafter) settle(*mlx.Array)                          {}
+func (nopDrafter) settle(*mlx.Array)                        {}
 func (nopDrafter) close()                                   {}
 
 // scriptedCandidates builds draft candidates by running the real drafter
@@ -1188,6 +1188,50 @@ func scriptedCandidates(r *Runner, tokens []int32) *draftCandidates {
 	d := (&mtpDrafter{spec: s}).open(0)
 	d.committed(mlx.FromValues([]int32{0}, 1, 1), mlx.Zeros(mlx.DTypeFloat32, 1, 1, mtpTestVocab), 0)
 	return d.propose(mlx.FromValues([]int32{0}, 1), len(tokens))
+}
+
+func TestMTPLiveHistoryResetRewindsDraftKV(t *testing.T) {
+	t.Setenv("ZEROLLAMA_MLX_MTP_HISTORY_LIVE_RESET", "4")
+	kv := &fakeRewindableCache{tokens: []int32{1, 2, 3, 4, 5, 6, 7, 8}}
+	s := &mtpDraftSession{
+		drafter:              &mtpDrafter{spec: &speculation{draftKV: []cache.Cache{kv}}},
+		frontier:             8,
+		resetFrontier:        0,
+		committedDraftOffset: 8,
+	}
+	s.maybeLiveReset()
+	if kv.Offset() != 0 {
+		t.Fatalf("after reset offset=%d want 0", kv.Offset())
+	}
+	if s.ropeBase != 8 || s.committedDraftOffset != 0 || s.resetFrontier != 8 {
+		t.Fatalf("ropeBase=%d committed=%d resetFrontier=%d", s.ropeBase, s.committedDraftOffset, s.resetFrontier)
+	}
+	if got := s.draftSeqOffset(); got != 8 {
+		t.Fatalf("draftSeqOffset=%d want 8 (absolute RoPE of next write)", got)
+	}
+
+	kv.tokens = []int32{9, 10}
+	s.committedDraftOffset = 2
+	s.frontier = 10
+	s.maybeLiveReset()
+	if kv.Offset() != 2 {
+		t.Fatalf("second wipe too early offset=%d", kv.Offset())
+	}
+
+	s.frontier = 12
+	s.maybeLiveReset()
+	if kv.Offset() != 0 || s.ropeBase != 10 || s.committedDraftOffset != 0 {
+		t.Fatalf("second reset ropeBase=%d committed=%d offset=%d", s.ropeBase, s.committedDraftOffset, kv.Offset())
+	}
+
+	t.Setenv("ZEROLLAMA_MLX_MTP_HISTORY_LIVE_RESET", "off")
+	kv.tokens = []int32{1, 2, 3}
+	s.committedDraftOffset = 3
+	s.frontier = 100
+	s.maybeLiveReset()
+	if kv.Offset() != 3 {
+		t.Fatalf("off must not wipe, offset=%d", kv.Offset())
+	}
 }
 
 // pinAcceptInputs pins the arrays accept's caller must keep alive across

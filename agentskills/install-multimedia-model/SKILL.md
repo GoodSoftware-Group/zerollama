@@ -157,6 +157,7 @@ Registered tags: `piper-lessac`, `whisper-base`, `chatterbox`, `orpheus`,
 |---|---|---|
 | `whisper-base` | Small GGML | **Default** transcription |
 | Larger Whisper GGML | Bigger | Better accuracy if disk allows |
+| Parakeet-TDT 0.6B / Nemotron-transcribe GGUF | ~1.4–2.5 GB | Highest open English quality that fits a 16 GB card beside the broker. `zerollama create` from the GGUF. Same `/v1/audio/transcriptions` route |
 | Multimodal chat w/ audio | Model-sized | Already have a VL/audio LLM |
 
 `install_speech_backends.sh` + `register_speech_models.sh` (above) register

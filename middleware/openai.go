@@ -18,6 +18,9 @@ import (
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/openai"
 	"github.com/ollama/ollama/server/media"
+	"github.com/ollama/ollama/server/modality/piperphrase"
+	"github.com/ollama/ollama/server/modality/transcript"
+	"github.com/ollama/ollama/server/modality/whispercli"
 )
 
 // maxDecompressedBodySize limits the size of a decompressed request body
@@ -903,6 +906,127 @@ const CtxKeyTranscriptionOriginalFilename = "ollama.transcription.original_filen
 // CtxKeyTranscriptionLanguage is the optional language hint from the multipart form ("language" field).
 const CtxKeyTranscriptionLanguage = "ollama.transcription.language"
 
+// CtxKeyTranscriptionPrompt is the optional biasing prompt from the multipart form ("prompt" field).
+const CtxKeyTranscriptionPrompt = "ollama.transcription.prompt"
+
+// CtxKeyTranscriptionTemperature is the optional sampling temperature ("temperature" field).
+// Empty means llama-server is asked for 0, the previous default.
+const CtxKeyTranscriptionTemperature = "ollama.transcription.temperature"
+
+// CtxKeyTranscriptionWords is true when timestamp_granularities includes word.
+const CtxKeyTranscriptionWords = "ollama.transcription.words"
+
+// CtxKeyTranscriptionStream is true when the form field stream is true.
+const CtxKeyTranscriptionStream = "ollama.transcription.stream"
+
+// CtxKeyTranscriptionLogprobs is true when include[] contains logprobs.
+const CtxKeyTranscriptionLogprobs = "ollama.transcription.logprobs"
+
+// CtxKeyTranscriptionDiarize is true when the form field diarize is true.
+const CtxKeyTranscriptionDiarize = "ollama.transcription.diarize"
+
+// CtxKeyTranscriptionTinyDiarize is true when the form field tinydiarize is true.
+const CtxKeyTranscriptionTinyDiarize = "ollama.transcription.tinydiarize"
+
+// CtxKeyTranscriptionSplitOnWord is true when the form field split_on_word is true.
+const CtxKeyTranscriptionSplitOnWord = "ollama.transcription.split_on_word"
+
+// CtxKeyTranscriptionSuppressNST is true when the form field suppress_nst is true.
+const CtxKeyTranscriptionSuppressNST = "ollama.transcription.suppress_nst"
+
+// CtxKeyTranscriptionNoFallback is true when the form field no_fallback is true.
+const CtxKeyTranscriptionNoFallback = "ollama.transcription.no_fallback"
+
+// CtxKeyTranscriptionCarryInitial is true when carry_initial_prompt is true.
+const CtxKeyTranscriptionCarryInitial = "ollama.transcription.carry_initial_prompt"
+
+// CtxKeyTranscriptionMaxLen is the optional max_len character cap. Empty means the cap is off.
+const CtxKeyTranscriptionMaxLen = "ollama.transcription.max_len"
+
+// CtxKeyTranscriptionWordThold is the optional word_thold probability. Empty means 0.01.
+const CtxKeyTranscriptionWordThold = "ollama.transcription.word_thold"
+
+// CtxKeyTranscriptionMaxContext is the optional max_context cap. Empty means the library cap.
+const CtxKeyTranscriptionMaxContext = "ollama.transcription.max_context"
+
+// CtxKeyTranscriptionAudioCtx is the optional audio_ctx frame count. Empty means the full context.
+const CtxKeyTranscriptionAudioCtx = "ollama.transcription.audio_ctx"
+
+// CtxKeyTranscriptionOffsetT is the optional offset_t start, in milliseconds. Empty starts at the beginning.
+const CtxKeyTranscriptionOffsetT = "ollama.transcription.offset_t"
+
+// CtxKeyTranscriptionDurationMS is the optional duration_ms window, in milliseconds. Empty continues to the end.
+const CtxKeyTranscriptionDurationMS = "ollama.transcription.duration_ms"
+
+// CtxKeyTranscriptionSuppressRegex is the optional suppress_regex pattern. Empty leaves every token available.
+const CtxKeyTranscriptionSuppressRegex = "ollama.transcription.suppress_regex"
+
+// CtxKeyTranscriptionOffsetN is the optional SRT cue-number offset. Zero starts at 1.
+const CtxKeyTranscriptionOffsetN = "ollama.transcription.offset_n"
+
+// CtxKeyTranscriptionNoTimestamps is true when the form field no_timestamps is true.
+const CtxKeyTranscriptionNoTimestamps = "ollama.transcription.no_timestamps"
+
+// CtxKeyTranscriptionGrammar is the optional GBNF grammar. Empty leaves sampling unguided.
+const CtxKeyTranscriptionGrammar = "ollama.transcription.grammar"
+
+// CtxKeyTranscriptionGrammarRule is the grammar rule decoding starts from.
+const CtxKeyTranscriptionGrammarRule = "ollama.transcription.grammar_rule"
+
+// CtxKeyTranscriptionGrammarPenalty is the logit points subtracted from tokens the grammar rejects. Empty means 100.
+const CtxKeyTranscriptionGrammarPenalty = "ollama.transcription.grammar_penalty"
+
+// CtxKeyTranscriptionPrintSpecial is true when the form field print_special is true.
+const CtxKeyTranscriptionPrintSpecial = "ollama.transcription.print_special"
+
+// CtxKeyTranscriptionDetectLanguage is true when the form field detect_language is true.
+const CtxKeyTranscriptionDetectLanguage = "ollama.transcription.detect_language"
+
+// CtxKeyTranscriptionDTW is the optional DTW alignment preset. Empty leaves flash attention on.
+const CtxKeyTranscriptionDTW = "ollama.transcription.dtw"
+
+// CtxKeyTranscriptionVAD is true when the form field vad is true.
+const CtxKeyTranscriptionVAD = "ollama.transcription.vad"
+
+// CtxKeyTranscriptionVADThreshold is the optional Silero speech probability. Empty stays at 0.5.
+const CtxKeyTranscriptionVADThreshold = "ollama.transcription.vad_threshold"
+
+// CtxKeyTranscriptionVADMinSpeechMS is the optional minimum speech length in milliseconds. Empty stays at 250.
+const CtxKeyTranscriptionVADMinSpeechMS = "ollama.transcription.vad_min_speech_duration_ms"
+
+// CtxKeyTranscriptionVADMinSilenceMS is the optional pause that ends a speech region. Empty stays at 100.
+const CtxKeyTranscriptionVADMinSilenceMS = "ollama.transcription.vad_min_silence_duration_ms"
+
+// CtxKeyTranscriptionVADMaxSpeechS is the optional cap on a speech region, in seconds. Empty leaves the cap off.
+const CtxKeyTranscriptionVADMaxSpeechS = "ollama.transcription.vad_max_speech_duration_s"
+
+// CtxKeyTranscriptionVADSpeechPadMS is the optional padding around a speech region. Empty stays at 30.
+const CtxKeyTranscriptionVADSpeechPadMS = "ollama.transcription.vad_speech_pad_ms"
+
+// CtxKeyTranscriptionVADSamplesOverlap is the extra audio after each speech region except the last. Empty stays at 0.1.
+const CtxKeyTranscriptionVADSamplesOverlap = "ollama.transcription.vad_samples_overlap"
+
+// CtxKeyTranscriptionTemperatureInc is the optional temperature_inc step. Empty means 0.2.
+const CtxKeyTranscriptionTemperatureInc = "ollama.transcription.temperature_inc"
+
+// CtxKeyTranscriptionEntropyThold is the optional entropy_thold cutoff. Empty means 2.4.
+const CtxKeyTranscriptionEntropyThold = "ollama.transcription.entropy_thold"
+
+// CtxKeyTranscriptionLogprobThold is the optional logprob_thold cutoff. Empty means -1.
+const CtxKeyTranscriptionLogprobThold = "ollama.transcription.logprob_thold"
+
+// CtxKeyTranscriptionNoSpeechThold is the optional no_speech_thold cutoff. Empty means 0.6.
+const CtxKeyTranscriptionNoSpeechThold = "ollama.transcription.no_speech_thold"
+
+// CtxKeyTranscriptionBeamSize is the optional beam_size width. Empty means 5.
+const CtxKeyTranscriptionBeamSize = "ollama.transcription.beam_size"
+
+// CtxKeyTranscriptionBestOf is the optional best_of count. Empty means 5.
+const CtxKeyTranscriptionBestOf = "ollama.transcription.best_of"
+
+// CtxKeyTranscriptionMaxTokens is the optional max_tokens cap. Unset means no cap.
+const CtxKeyTranscriptionMaxTokens = "ollama.transcription.max_tokens"
+
 // CtxKeySpeechRequest holds a validated [openai.SpeechCreateRequest] for SpeechHandler.
 const CtxKeySpeechRequest = "ollama.speech.request"
 
@@ -920,6 +1044,8 @@ type TranscriptionWriter struct {
 	BaseWriter
 	responseFormat string
 	language       string
+	task           string
+	usage          *openai.TranscriptionUsage
 	text           strings.Builder
 }
 
@@ -952,7 +1078,7 @@ func (w *TranscriptionWriter) Write(data []byte) (int, error) {
 	if chatResponse.Done {
 		text := strings.TrimSpace(w.text.String())
 
-		ct, body, err := openai.TranscriptionResult(text, w.responseFormat, w.language)
+		ct, body, err := openai.TranscriptionResult(text, w.responseFormat, w.language, w.task, w.usage, nil, nil)
 		if err != nil {
 			return 0, err
 		}
@@ -1001,15 +1127,220 @@ func TranscriptionMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		temperature, terr := openai.CleanTranscriptionTemperature(c.Request.FormValue("temperature"))
+		if terr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, terr.Error()))
+			return
+		}
+		maxTokens, merr := transcript.MaxTokens(c.Request.FormValue("max_tokens"))
+		if merr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, merr.Error()))
+			return
+		}
+		stream, serr := transcript.StreamFlag(c.Request.FormValue("stream"))
+		if serr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, serr.Error()))
+			return
+		}
 		req := openai.TranscriptionRequest{
 			Model:          model,
 			AudioData:      audioData,
 			ResponseFormat: c.Request.FormValue("response_format"),
 			Language:       c.Request.FormValue("language"),
 			Prompt:         c.Request.FormValue("prompt"),
+			Temperature:    temperature,
+			MaxTokens:      maxTokens,
+		}
+		gran := append([]string{}, c.Request.Form["timestamp_granularities[]"]...)
+		gran = append(gran, c.Request.Form["timestamp_granularities"]...)
+		words, gerr := whispercli.WordTimestamps(gran)
+		if gerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, gerr.Error()))
+			return
+		}
+		if words && req.ResponseFormat != "verbose_json" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "timestamp_granularities=word requires response_format=verbose_json"))
+			return
+		}
+		inc := append([]string{}, c.Request.Form["include[]"]...)
+		inc = append(inc, c.Request.Form["include"]...)
+		diarize, derr := whispercli.DiarizeFlag(c.Request.FormValue("diarize"))
+		if derr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, derr.Error()))
+			return
+		}
+		tinyDiarize, tderr := whispercli.TinyDiarizeFlag(c.Request.FormValue("tinydiarize"))
+		if tderr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, tderr.Error()))
+			return
+		}
+		suppressNST, nerr := whispercli.SuppressNSTFlag(c.Request.FormValue("suppress_nst"))
+		if nerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, nerr.Error()))
+			return
+		}
+		noFallback, ferr := whispercli.NoFallbackFlag(c.Request.FormValue("no_fallback"))
+		if ferr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, ferr.Error()))
+			return
+		}
+		carryInitial, cerr := whispercli.CarryInitialFlag(c.Request.FormValue("carry_initial_prompt"))
+		if cerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, cerr.Error()))
+			return
+		}
+		maxLen, mlerr := whispercli.MaxLen(c.Request.FormValue("max_len"))
+		if mlerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, mlerr.Error()))
+			return
+		}
+		splitOnWord, sowerr := whispercli.SplitOnWordFlag(c.Request.FormValue("split_on_word"))
+		if sowerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, sowerr.Error()))
+			return
+		}
+		wordThold, wterr := whispercli.WordThold(c.Request.FormValue("word_thold"))
+		if wterr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, wterr.Error()))
+			return
+		}
+		maxContext, cxerr := whispercli.MaxContext(c.Request.FormValue("max_context"))
+		if cxerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, cxerr.Error()))
+			return
+		}
+		audioCtx, acerr := whispercli.AudioCtx(c.Request.FormValue("audio_ctx"))
+		if acerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, acerr.Error()))
+			return
+		}
+		offsetT, oterr := whispercli.OffsetT(c.Request.FormValue("offset_t"))
+		if oterr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, oterr.Error()))
+			return
+		}
+		durationMS, dmerr := whispercli.DurationMS(c.Request.FormValue("duration_ms"))
+		if dmerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, dmerr.Error()))
+			return
+		}
+		suppressRegex, rxerr := whispercli.SuppressRegex(c.Request.FormValue("suppress_regex"))
+		if rxerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, rxerr.Error()))
+			return
+		}
+		offsetN, onerr := whispercli.OffsetN(c.Request.FormValue("offset_n"))
+		if onerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, onerr.Error()))
+			return
+		}
+		noTimestamps, nterr := whispercli.NoTimestampsFlag(c.Request.FormValue("no_timestamps"))
+		if nterr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, nterr.Error()))
+			return
+		}
+		printSpecial, pserr := whispercli.PrintSpecialFlag(c.Request.FormValue("print_special"))
+		if pserr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, pserr.Error()))
+			return
+		}
+		detectLanguage, dlerr := whispercli.DetectLanguageFlag(c.Request.FormValue("detect_language"))
+		if dlerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, dlerr.Error()))
+			return
+		}
+		dtw, dterr := whispercli.DTWPreset(c.Request.FormValue("dtw"))
+		if dterr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, dterr.Error()))
+			return
+		}
+		vad, verr := whispercli.VADFlag(c.Request.FormValue("vad"))
+		if verr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, verr.Error()))
+			return
+		}
+		vadThreshold, vterr := whispercli.VADThreshold(c.Request.FormValue("vad_threshold"))
+		if vterr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, vterr.Error()))
+			return
+		}
+		vadMinSpeech, vserr := whispercli.VADMinSpeechMS(c.Request.FormValue("vad_min_speech_duration_ms"))
+		if vserr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, vserr.Error()))
+			return
+		}
+		vadMinSilence, vsierr := whispercli.VADMinSilenceMS(c.Request.FormValue("vad_min_silence_duration_ms"))
+		if vsierr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, vsierr.Error()))
+			return
+		}
+		vadMaxSpeech, vmxerr := whispercli.VADMaxSpeechS(c.Request.FormValue("vad_max_speech_duration_s"))
+		if vmxerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, vmxerr.Error()))
+			return
+		}
+		vadSpeechPad, vperr := whispercli.VADSpeechPadMS(c.Request.FormValue("vad_speech_pad_ms"))
+		if vperr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, vperr.Error()))
+			return
+		}
+		vadOverlap, voerr := whispercli.VADSamplesOverlap(c.Request.FormValue("vad_samples_overlap"))
+		if voerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, voerr.Error()))
+			return
+		}
+		grammar, grammarRule, gerr := whispercli.Grammar(c.Request.FormValue("grammar"), c.Request.FormValue("grammar_rule"))
+		if gerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, gerr.Error()))
+			return
+		}
+		grammarPenalty, gperr := whispercli.GrammarPenalty(c.Request.FormValue("grammar_penalty"))
+		if gperr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, gperr.Error()))
+			return
+		}
+		temperatureInc, ierrInc := whispercli.TemperatureInc(c.Request.FormValue("temperature_inc"))
+		if ierrInc != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, ierrInc.Error()))
+			return
+		}
+		entropyThold, eerr := whispercli.EntropyThold(c.Request.FormValue("entropy_thold"))
+		if eerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, eerr.Error()))
+			return
+		}
+		logprobThold, lperr := whispercli.LogprobThold(c.Request.FormValue("logprob_thold"))
+		if lperr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, lperr.Error()))
+			return
+		}
+		noSpeechThold, nserr := whispercli.NoSpeechThold(c.Request.FormValue("no_speech_thold"))
+		if nserr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, nserr.Error()))
+			return
+		}
+		beamSize, berr := whispercli.BeamSize(c.Request.FormValue("beam_size"))
+		if berr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, berr.Error()))
+			return
+		}
+		bestOf, boerr := whispercli.BestOf(c.Request.FormValue("best_of"))
+		if boerr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, boerr.Error()))
+			return
+		}
+		logprobs, ierr := whispercli.IncludeLogprobs(inc)
+		if ierr != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, ierr.Error()))
+			return
+		}
+		if logprobs && req.ResponseFormat != "" && req.ResponseFormat != "json" && req.ResponseFormat != "verbose_json" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "include=logprobs requires response_format json or verbose_json"))
+			return
 		}
 
-		chatReq, err := openai.FromTranscriptionRequest(req)
+		translate := strings.HasSuffix(c.Request.URL.Path, "/translations")
+		chatReq, err := openai.FromTranscriptionRequest(req, translate)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 			return
@@ -1028,11 +1359,111 @@ func TranscriptionMiddleware() gin.HandlerFunc {
 		c.Set(CtxKeyTranscriptionResponseFormat, req.ResponseFormat)
 		c.Set(CtxKeyTranscriptionOriginalFilename, header.Filename)
 		c.Set(CtxKeyTranscriptionLanguage, req.Language)
+		c.Set(CtxKeyTranscriptionPrompt, req.Prompt)
+		c.Set(CtxKeyTranscriptionTemperature, req.Temperature)
+		c.Set(CtxKeyTranscriptionWords, words)
+		c.Set(CtxKeyTranscriptionStream, stream)
+		c.Set(CtxKeyTranscriptionLogprobs, logprobs)
+		c.Set(CtxKeyTranscriptionDiarize, diarize)
+		c.Set(CtxKeyTranscriptionTinyDiarize, tinyDiarize)
+		c.Set(CtxKeyTranscriptionSplitOnWord, splitOnWord)
+		c.Set(CtxKeyTranscriptionSuppressNST, suppressNST)
+		c.Set(CtxKeyTranscriptionNoFallback, noFallback)
+		c.Set(CtxKeyTranscriptionCarryInitial, carryInitial)
+		if maxLen != "" {
+			c.Set(CtxKeyTranscriptionMaxLen, maxLen)
+		}
+		if wordThold != "" {
+			c.Set(CtxKeyTranscriptionWordThold, wordThold)
+		}
+		if maxContext != "" {
+			c.Set(CtxKeyTranscriptionMaxContext, maxContext)
+		}
+		if audioCtx != "" {
+			c.Set(CtxKeyTranscriptionAudioCtx, audioCtx)
+		}
+		if offsetT != "" {
+			c.Set(CtxKeyTranscriptionOffsetT, offsetT)
+		}
+		if durationMS != "" {
+			c.Set(CtxKeyTranscriptionDurationMS, durationMS)
+		}
+		if suppressRegex != "" {
+			c.Set(CtxKeyTranscriptionSuppressRegex, suppressRegex)
+		}
+		if offsetN != 0 {
+			c.Set(CtxKeyTranscriptionOffsetN, offsetN)
+		}
+		c.Set(CtxKeyTranscriptionNoTimestamps, noTimestamps)
+		c.Set(CtxKeyTranscriptionPrintSpecial, printSpecial)
+		c.Set(CtxKeyTranscriptionDetectLanguage, detectLanguage)
+		if dtw != "" {
+			c.Set(CtxKeyTranscriptionDTW, dtw)
+		}
+		c.Set(CtxKeyTranscriptionVAD, vad)
+		if vadThreshold != "" {
+			c.Set(CtxKeyTranscriptionVADThreshold, vadThreshold)
+		}
+		if vadMinSpeech != "" {
+			c.Set(CtxKeyTranscriptionVADMinSpeechMS, vadMinSpeech)
+		}
+		if vadMinSilence != "" {
+			c.Set(CtxKeyTranscriptionVADMinSilenceMS, vadMinSilence)
+		}
+		if vadMaxSpeech != "" {
+			c.Set(CtxKeyTranscriptionVADMaxSpeechS, vadMaxSpeech)
+		}
+		if vadSpeechPad != "" {
+			c.Set(CtxKeyTranscriptionVADSpeechPadMS, vadSpeechPad)
+		}
+		if vadOverlap != "" {
+			c.Set(CtxKeyTranscriptionVADSamplesOverlap, vadOverlap)
+		}
+		if grammar != "" {
+			c.Set(CtxKeyTranscriptionGrammar, grammar)
+			c.Set(CtxKeyTranscriptionGrammarRule, grammarRule)
+		}
+		if grammarPenalty != "" {
+			c.Set(CtxKeyTranscriptionGrammarPenalty, grammarPenalty)
+		}
+		if temperatureInc != "" {
+			c.Set(CtxKeyTranscriptionTemperatureInc, temperatureInc)
+		}
+		if entropyThold != "" {
+			c.Set(CtxKeyTranscriptionEntropyThold, entropyThold)
+		}
+		if logprobThold != "" {
+			c.Set(CtxKeyTranscriptionLogprobThold, logprobThold)
+		}
+		if noSpeechThold != "" {
+			c.Set(CtxKeyTranscriptionNoSpeechThold, noSpeechThold)
+		}
+		if beamSize != "" {
+			c.Set(CtxKeyTranscriptionBeamSize, beamSize)
+		}
+		if bestOf != "" {
+			c.Set(CtxKeyTranscriptionBestOf, bestOf)
+		}
+		if maxTokens != nil {
+			c.Set(CtxKeyTranscriptionMaxTokens, *maxTokens)
+		}
 
+		respLang := req.Language
+		task := "transcribe"
+		if translate {
+			respLang = "en"
+			task = "translate"
+		}
+		var clipUsage *openai.TranscriptionUsage
+		if sec, ok := whispercli.WavSeconds(audioData); ok {
+			clipUsage = &openai.TranscriptionUsage{Type: "duration", Seconds: sec}
+		}
 		w := &TranscriptionWriter{
 			BaseWriter:     BaseWriter{ResponseWriter: c.Writer},
 			responseFormat: req.ResponseFormat,
-			language:       req.Language,
+			language:       respLang,
+			task:           task,
+			usage:          clipUsage,
 		}
 
 		c.Writer = w
@@ -1066,6 +1497,50 @@ func SpeechMiddleware() gin.HandlerFunc {
 		}
 		if req.Speed != nil && (*req.Speed < 0.25 || *req.Speed > 4.0) {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "speed must be between 0.25 and 4.0"))
+			return
+		}
+		if _, err := piperphrase.SentenceSilence(req.SentenceSilence); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		if _, err := piperphrase.NoiseScale(req.NoiseScale); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		if _, err := piperphrase.NoiseW(req.NoiseW); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		if _, err := piperphrase.SpeakerID(req.SpeakerID); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		if _, err := piperphrase.PhonemeSilence(req.PhonemeSilence); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		if strings.TrimSpace(req.Voice) != "" && strings.TrimSpace(req.SpeakerRef) != "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "voice and speaker_ref cannot be used together"))
+			return
+		}
+		if _, err := openai.CleanSpeechLang(req.Lang); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		if _, err := openai.DecodeSpeakerRef(req.SpeakerRef); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		if err := openai.CleanSpeechTopK(req.TopK); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		if err := openai.CleanSpeechTopP(req.TopP); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
+			return
+		}
+		if err := openai.CleanSpeechRepeatPenalty(req.RepeatPenalty); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))
 			return
 		}
 		c.Set(CtxKeySpeechRequest, req)

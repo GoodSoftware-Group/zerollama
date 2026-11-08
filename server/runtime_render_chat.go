@@ -10,10 +10,10 @@ import (
 )
 
 type renderChatRequest struct {
-	Model     string          `json:"model"`
-	Messages  []api.Message   `json:"messages"`
-	Tools     api.Tools       `json:"tools"`
-	Think     *api.ThinkValue `json:"think"`
+	Model      string          `json:"model"`
+	Messages   []api.Message   `json:"messages"`
+	Tools      api.Tools       `json:"tools"`
+	Think      *api.ThinkValue `json:"think"`
 	NumCtx     int             `json:"num_ctx"`
 	NumPredict int             `json:"num_predict"`
 	Truncate   *bool           `json:"truncate"`
@@ -34,6 +34,10 @@ func (s *Server) RenderChatHandler(c *gin.Context) {
 	m, err := GetModel(modelName)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if msg := textRouteBlock(m); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 		return
 	}
 	truncate := req.Truncate == nil || *req.Truncate

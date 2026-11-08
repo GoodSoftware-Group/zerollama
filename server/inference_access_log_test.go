@@ -51,3 +51,21 @@ func TestInferenceAccessLogMiddleware(t *testing.T) {
 		t.Fatalf("status=%d", w.Code)
 	}
 }
+
+func TestInferenceStopKind(t *testing.T) {
+	if got := inferenceStopKind("stop", "", ""); got != "eos" {
+		t.Fatalf("eos: %q", got)
+	}
+	if got := inferenceStopKind("stop", "", "\nUser:"); got != "stop_sequence" {
+		t.Fatalf("stop seq: %q", got)
+	}
+	if got := inferenceStopKind("length", "", ""); got != "length" {
+		t.Fatalf("length: %q", got)
+	}
+	if got := inferenceStopKind("length", "repetition_loop", ""); got != "repetition_loop" {
+		t.Fatalf("loop: %q", got)
+	}
+	if got := inferenceStopKind("preempted", "", ""); got != "preempted" {
+		t.Fatalf("other: %q", got)
+	}
+}

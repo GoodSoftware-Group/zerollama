@@ -65,6 +65,9 @@ func (s *Server) runtimeV1ChatCompletionsProxy() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		if abortTextRoute(c, oreq.Model) {
+			return
+		}
 		if !resolveRuntimeProxy(c, oreq.Model, proxyOptsFromV1Body(bodyMap)) {
 			c.Next()
 			return

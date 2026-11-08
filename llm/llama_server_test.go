@@ -2263,6 +2263,44 @@ func TestAppendMainGPUArgs(t *testing.T) {
 	}
 }
 
+func TestAppendGPUPlacementArgs(t *testing.T) {
+	if got := appendGPUPlacementArgs([]string{"base"}, api.Options{}, true, 2); !slices.Equal(got, []string{"base", "--split-mode", "none", "--main-gpu", "0"}) {
+		t.Fatalf("realtime default device: %v", got)
+	}
+	opts := api.Options{Runner: api.Runner{MainGPU: 1}}
+	if got := appendGPUPlacementArgs([]string{"base"}, opts, true, 2); !slices.Equal(got, []string{"base", "--split-mode", "none", "--main-gpu", "1"}) {
+		t.Fatalf("pinned realtime: %v", got)
+	}
+	if got := appendGPUPlacementArgs([]string{"base"}, api.Options{}, false, 2); !slices.Equal(got, []string{"base", "--split-mode", "layer"}) {
+		t.Fatalf("two GPUs layer-split a model past 24 GiB: %v", got)
+	}
+	if got := appendGPUPlacementArgs([]string{"base"}, api.Options{}, false, 1); !slices.Equal(got, []string{"base"}) {
+		t.Fatalf("one GPU has nothing to split: %v", got)
+	}
+	if got := appendGPUPlacementArgs([]string{"base"}, opts, false, 2); !slices.Equal(got, []string{"base", "--split-mode", "none", "--main-gpu", "1"}) {
+		t.Fatalf("offline audio honors main_gpu: %v", got)
+	}
+}
+
+func TestLlamaServerReportedDevices(t *testing.T) {
+	gpus := []ml.DeviceInfo{
+		{DeviceID: ml.DeviceID{ID: "0", Library: "CUDA"}},
+		{DeviceID: ml.DeviceID{ID: "1", Library: "CUDA"}},
+	}
+	got := llamaServerReportedDevices(gpus, 0, false)
+	if len(got) != 2 || got[0].ID != "0" || got[1].ID != "1" {
+		t.Fatalf("layer split should charge both GPUs: %+v", got)
+	}
+	got = llamaServerReportedDevices(gpus, 0, true)
+	if len(got) != 1 || got[0].ID != "0" {
+		t.Fatalf("realtime pin: %+v", got)
+	}
+	got = llamaServerReportedDevices(gpus, 1, false)
+	if len(got) != 1 || got[0].ID != "1" {
+		t.Fatalf("main_gpu 1: %+v", got)
+	}
+}
+
 func TestLlamaServerNGLArg(t *testing.T) {
 	tests := []struct {
 		numGPU int
@@ -3778,6 +3816,34 @@ func TestLlamaServerChatMessageConvertsMediaParts(t *testing.T) {
 		if audio["data"] == "" {
 			t.Fatalf("expected base64 audio data for %s", want)
 		}
+	}
+}
+
+func TestMessageFromAPIKeepsAudioClips(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\n")
+	wav := []byte("RIFF\x00\x00\x00\x00WAVE")
+	msg, err := llamaServerChatMessage(MessageFromAPI(api.Message{
+		Role:       "user",
+		Content:    "listen",
+		Images:     []api.ImageData{png},
+		AudioClips: []api.AudioData{wav},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, ok := msg["content"].([]map[string]any)
+	if !ok || len(parts) != 3 {
+		t.Fatalf("content = %#v", msg["content"])
+	}
+	if parts[1]["type"] != "image_url" {
+		t.Fatalf("image part %#v", parts[1])
+	}
+	if parts[2]["type"] != "input_audio" {
+		t.Fatalf("audio part %#v", parts[2])
+	}
+	audio := parts[2]["input_audio"].(map[string]any)
+	if audio["format"] != "wav" || audio["data"] == "" {
+		t.Fatalf("audio payload %#v", audio)
 	}
 }
 

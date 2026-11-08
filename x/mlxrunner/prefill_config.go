@@ -1,6 +1,7 @@
 package mlxrunner
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"slices"
@@ -13,7 +14,15 @@ const (
 	defaultPrefillSnapshotInt = 32768
 	defaultMTPMaxPromptTokens = 32768
 	longPrefillChunkCap       = 4096
+	// Tiny remaining tails still fit even when the working set is full
+	// (mtplx 2.12.2: do not 507 a 20-token continuation).
+	prefillRefuseMinRemaining = 512
 )
+
+// prefillChunkLadder is the working-set shrink sequence before a 507.
+// capPrefillChunkForWorkingSet already pins 1024 at 75%; the 90% step
+// walks down to 512.
+var prefillChunkLadder = []int{2048, 1024, 512}
 
 type prefillConfig struct {
 	chunkSize               int
@@ -134,6 +143,62 @@ func capPrefillChunkForWorkingSet(cfg prefillConfig, active, recommended int) pr
 		out.clearCacheEvery = 1
 	}
 	return out
+}
+
+// shrinkPrefillChunkLadder takes the last rung (512) when unified memory is
+// ≥90% of the recommended working set. capPrefillChunkForWorkingSet already
+// pinned 1024 at 75%. Env chunk overrides still win. Tiny remaining tails
+// are left alone so a short continuation does not 507 (mtplx 2.12.2).
+func shrinkPrefillChunkLadder(cfg prefillConfig, remaining, active, recommended int) prefillConfig {
+	if cfg.chunkSizeFromEnv || recommended <= 0 || remaining <= prefillRefuseMinRemaining {
+		return cfg
+	}
+	if active < recommended*9/10 {
+		return cfg
+	}
+	out := cfg
+	floor := prefillChunkLadder[len(prefillChunkLadder)-1]
+	if out.chunkSize > floor {
+		out.chunkSize = floor
+	}
+	return out
+}
+
+// InsufficientMemoryError is returned when prefill would start already at or
+// past the Metal recommended working set with more than a tiny tail left.
+// The runner maps it to HTTP 507 so clients fail loud instead of GPU timeout.
+type InsufficientMemoryError struct {
+	Remaining   int
+	Active      int
+	Recommended int
+	Chunk       int
+}
+
+func (e *InsufficientMemoryError) Error() string {
+	if e == nil {
+		return "insufficient memory for prefill"
+	}
+	return fmt.Sprintf("insufficient memory for prefill: remaining=%d tokens chunk=%d active=%d recommended=%d",
+		e.Remaining, e.Chunk, e.Active, e.Recommended)
+}
+
+// refusePrefillIfNoFit fails closed when the device is already at the
+// recommended working set and the remaining prompt is larger than a short
+// continuation. Below the recommended size, or with remaining ≤512, prefill
+// still runs (chunk ladder already tightened).
+func refusePrefillIfNoFit(remaining, active, recommended, chunk int) error {
+	if recommended <= 0 || remaining <= prefillRefuseMinRemaining {
+		return nil
+	}
+	if active < recommended {
+		return nil
+	}
+	return &InsufficientMemoryError{
+		Remaining:   remaining,
+		Active:      active,
+		Recommended: recommended,
+		Chunk:       chunk,
+	}
 }
 
 // prefillConfigForCachedTail relaxes allocator hygiene when most of a long prompt

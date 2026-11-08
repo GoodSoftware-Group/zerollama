@@ -55,6 +55,21 @@ static int test_schedule(void) {
   CHECK(close_enough(schedule.audio[7], 0.3, 1e-7));
   CHECK(close_enough(h3_time_shift_sigma(schedule.video[7], 12.0, 3.0),
                      schedule.audio[7], 1e-6));
+
+  /* zuiho-kai/h3-metal FastH3 distilled grid (4 forwards + terminal 0). */
+  CHECK(!h3_fasth3_schedule_build(NULL));
+  CHECK(h3_fasth3_schedule_build(&schedule));
+  CHECK(schedule.steps == 4);
+  CHECK(schedule.video[0] == 0.99992f);
+  CHECK(schedule.video[1] == 0.97283f);
+  CHECK(schedule.video[2] == 0.92308f);
+  CHECK(schedule.video[3] == 0.8f);
+  CHECK(schedule.video[4] == 0.0f);
+  CHECK(schedule.audio[0] == 0.99967f);
+  CHECK(schedule.audio[1] == 0.89952f);
+  CHECK(schedule.audio[2] == 0.75f);
+  CHECK(schedule.audio[3] == 0.5f);
+  CHECK(schedule.audio[4] == 0.0f);
   return 0;
 }
 

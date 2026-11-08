@@ -201,6 +201,18 @@ int h3_serving_schedule_build(int evaluations, h3_sigma_schedule *schedule) {
     return 1;
 }
 
+int h3_fasth3_schedule_build(h3_sigma_schedule *schedule) {
+    /* zuiho-kai/h3-metal h3_fasth3_schedule_build, FastVideo reference. */
+    static const float video[] = {0.99992f, 0.97283f, 0.92308f, 0.8f, 0.0f};
+    static const float audio[] = {0.99967f, 0.89952f, 0.75f, 0.5f, 0.0f};
+    if (!schedule) return 0;
+    memset(schedule, 0, sizeof(*schedule));
+    schedule->steps = 4;
+    memcpy(schedule->video, video, sizeof(video));
+    memcpy(schedule->audio, audio, sizeof(audio));
+    return 1;
+}
+
 typedef struct {
     h3_layout *layout;
     size_t position_capacity;

@@ -42,6 +42,11 @@ _ggml_metallib_fa_q8_0_start:
 .incbin "ggml-metal-embed-fa_q8_0.metal"
 .globl _ggml_metallib_fa_q8_0_end
 _ggml_metallib_fa_q8_0_end:
+.globl _ggml_metallib_fa_tensor_start
+_ggml_metallib_fa_tensor_start:
+.incbin "ggml-metal-embed-fa_tensor.metal"
+.globl _ggml_metallib_fa_tensor_end
+_ggml_metallib_fa_tensor_end:
 .globl _ggml_metallib_fa_vec_f16_start
 _ggml_metallib_fa_vec_f16_start:
 .incbin "ggml-metal-embed-fa_vec_f16.metal"
@@ -82,6 +87,11 @@ _ggml_metallib_mul_mv_start:
 .incbin "ggml-metal-embed-mul_mv.metal"
 .globl _ggml_metallib_mul_mv_end
 _ggml_metallib_mul_mv_end:
+.globl _ggml_metallib_mul_mv_mma_start
+_ggml_metallib_mul_mv_mma_start:
+.incbin "ggml-metal-embed-mul_mv_mma.metal"
+.globl _ggml_metallib_mul_mv_mma_end
+_ggml_metallib_mul_mv_mma_end:
 .globl _ggml_metallib_mul_mm_start
 _ggml_metallib_mul_mm_start:
 .incbin "ggml-metal-embed-mul_mm.metal"

@@ -100,6 +100,12 @@ func (s *Server) runtimeV1ChatCompletionsBatchProxy() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": errCloudUseOpenAICompat})
 			return
 		}
+		if name, nerr := getExistingName(modelRef.Name); nerr == nil {
+			if msg := textRouteMessage(name.String()); msg != "" {
+				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": msg})
+				return
+			}
+		}
 		// Silent MultiDecode pack when shared prefix is long enough (MD1).
 		// WHY before Python: same Hermes wire; no client PR. Falls through on miss.
 		if s.tryBatchMultidecode(c, model, reqs, bodyMap) {

@@ -142,6 +142,12 @@ func (s Signals) surfaceMismatch(c Candidate) (string, bool) {
 				return fmt.Sprintf("%s model cannot serve %s", x, s.Surface), true
 			}
 		}
+		if model.IsLlamaASRName(c.Family) || c.Backend(model.ModalityTranscribe) == model.BackendLlamaASR {
+			return "ASR model cannot serve " + string(s.Surface), true
+		}
+		if model.IsRealtimeStreamOnly(c.Family) {
+			return "realtime model cannot serve " + string(s.Surface), true
+		}
 	case SurfaceSpeech:
 		if c.Backend(model.ModalitySpeech) == model.BackendMusic3 {
 			return "music3 backend serves /v1/audio/generations, not speech", true
@@ -151,11 +157,17 @@ func (s Signals) surfaceMismatch(c Candidate) (string, bool) {
 			return "speech backend is not music3", true
 		}
 	case SurfaceTranscribe:
-		// TranscriptionHandler runs whisper for modality_backends.transcribe=whisper and
-		// otherwise falls through to ChatHandler, which needs an audio-capable chat model.
-		if c.Backend(model.ModalityTranscribe) != model.BackendWhisper &&
-			!c.Has(model.CapabilityCompletion, model.CapabilityAudio) {
-			return "neither a whisper transcribe backend nor an audio-capable chat model", true
+		// whisper.cpp, Parakeet/Nemotron GGUF on llama-server, or an audio chat model.
+		// voxtral_rt has no file transcription; it only serves GET /v1/realtime.
+		if model.IsRealtimeStreamOnly(c.Family) {
+			return "realtime model cannot serve " + string(s.Surface), true
+		}
+		b := c.Backend(model.ModalityTranscribe)
+		if b == model.BackendWhisper || b == model.BackendLlamaASR || b == model.BackendQwen3ASR || model.IsLlamaASRName(c.Family) {
+			return "", false
+		}
+		if !c.Has(model.CapabilityCompletion, model.CapabilityAudio) {
+			return "neither a whisper, qwen3-asr, or llama-asr transcribe backend nor an audio-capable chat model", true
 		}
 	case SurfaceEmbed, SurfaceRerank:
 		if slices.Contains(c.Capabilities, model.CapabilityDecision) {

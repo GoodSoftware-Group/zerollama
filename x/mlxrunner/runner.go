@@ -21,6 +21,7 @@ import (
 	"github.com/ollama/ollama/x/mlxrunner/model"
 	"github.com/ollama/ollama/x/mlxrunner/model/base"
 	"github.com/ollama/ollama/x/mlxrunner/sample"
+	"github.com/ollama/ollama/x/models/nn"
 	"github.com/ollama/ollama/x/tokenizer"
 	"github.com/ollama/ollama/x/uma"
 )
@@ -190,6 +191,7 @@ func (r *Runner) Load(modelName string) error {
 		// idle post-load memory matches the pinned weights (upstream b68b112b).
 		mlx.ClearCache()
 		configureWiredMemory()
+		logMLXDevice()
 
 		r.Model = m
 		r.Tokenizer = m.Tokenizer()
@@ -403,7 +405,13 @@ func (r *Runner) Run(host, port string, mux http.Handler) error {
 				if err != nil {
 					slog.Info("Request terminated", "error", err)
 					var statusErr api.StatusError
-					if !errors.As(err, &statusErr) {
+					var memErr *InsufficientMemoryError
+					if errors.As(err, &memErr) {
+						statusErr = api.StatusError{
+							StatusCode:   http.StatusInsufficientStorage,
+							ErrorMessage: memErr.Error(),
+						}
+					} else if !errors.As(err, &statusErr) {
 						statusErr = api.StatusError{
 							StatusCode:   http.StatusInternalServerError,
 							ErrorMessage: err.Error(),
@@ -447,4 +455,18 @@ func (r *Runner) runRequest(request Request) error {
 	return r.mlxThread.Do(request.Ctx, func() error {
 		return request.Pipeline(request.Ctx, request)
 	})
+}
+
+func logMLXDevice() {
+	if !mlx.MetalIsAvailable() {
+		return
+	}
+	attrs := []any{"tensor_sdpa", nn.UsingTensorSDPA()}
+	if name, err := mlx.DeviceInfoString("device_name"); err == nil && name != "" {
+		attrs = append(attrs, "name", name)
+	}
+	if arch, err := mlx.DeviceInfoString("architecture"); err == nil && arch != "" {
+		attrs = append(attrs, "architecture", arch)
+	}
+	slog.Info("mlx device", attrs...)
 }

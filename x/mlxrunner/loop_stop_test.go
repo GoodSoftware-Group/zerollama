@@ -107,3 +107,22 @@ func TestGenerationIsNearRepeatLoopNovel(t *testing.T) {
 		t.Fatal("unique tail is not a near-repeat")
 	}
 }
+
+func TestCompletionStopKind(t *testing.T) {
+	t.Parallel()
+	if got := completionStopKind(0, "", ""); got != stopKindEOS {
+		t.Fatalf("eos: %q", got)
+	}
+	if got := completionStopKind(0, "", "\nUser:"); got != stopKindStopSequence {
+		t.Fatalf("stop seq: %q", got)
+	}
+	if got := completionStopKind(1, "", ""); got != stopKindLength {
+		t.Fatalf("length: %q", got)
+	}
+	if got := completionStopKind(1, finishDetailsRepetitionLoop, ""); got != stopKindRepetition {
+		t.Fatalf("loop: %q", got)
+	}
+	if got := completionStopKind(0, finishDetailsRepetitionLoop, "STOP"); got != stopKindRepetition {
+		t.Fatalf("loop wins over stop seq: %q", got)
+	}
+}

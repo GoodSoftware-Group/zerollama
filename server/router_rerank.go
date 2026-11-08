@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -85,6 +86,9 @@ func decideRouterRerank(ctx context.Context, name string, spec RouterSpec, user 
 }
 
 func (s *Server) rerankRouterDocs(ctx context.Context, modelName, query string, docs []string) ([]llm.RerankHit, error) {
+	if msg := textRouteMessage(modelName); msg != "" {
+		return nil, errors.New(msg)
+	}
 	r, _, _, _, releaseQoS, err := s.scheduleRunner(ctx, modelName, []model.Capability{}, nil, nil, nil, nil, nil)
 	if err != nil {
 		return nil, err

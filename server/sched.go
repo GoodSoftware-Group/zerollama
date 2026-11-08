@@ -904,6 +904,9 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 			}
 			schedLogDebug("creating new llama server subprocess", req, "num_parallel", numParallel)
 			config := llamaServerConfigForModel(req.model, req.contextShift, req.opts)
+			if llm.RealtimeLoadFromContext(req.ctx) {
+				config.Realtime = true
+			}
 			llama, err = s.newServerFn(systemInfo, gpus, req.model.ModelPath, f, req.model.AdapterPaths, req.model.ProjectorPaths, req.opts, numParallel, config)
 			if err != nil {
 				// some older models are not compatible with newer versions of llama.cpp

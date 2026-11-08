@@ -92,6 +92,30 @@ func MaxRecommendedWorkingSetSize() (int, error) {
 	return int(size), nil
 }
 
+// DeviceInfoString returns a string property from MLX device_info
+// (device_name, architecture, …).
+func DeviceInfoString(key string) (string, error) {
+	info := mlxCheck(C.mlx_device_info_new())
+	if err := mlxError(C.mlx_device_info_get(&info, DefaultDevice().ctx)); err != nil {
+		freeDeviceInfo(info)
+		return "", err
+	}
+	defer freeDeviceInfo(info)
+
+	ckey := C.CString(key)
+	defer C.free(unsafe.Pointer(ckey))
+
+	var value *C.char
+	rc := C.mlx_device_info_get_string(&value, info, ckey)
+	if err := lastError(); err != nil {
+		return "", err
+	}
+	if rc != 0 || value == nil {
+		return "", fmt.Errorf("mlx: no %s in device info", key)
+	}
+	return C.GoString(value), nil
+}
+
 // SetWiredLimit sets the maximum amount of Metal memory MLX keeps resident and
 // returns the previous limit.
 func SetWiredLimit(limit int) (int, error) {

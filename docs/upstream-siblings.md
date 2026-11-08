@@ -24,6 +24,7 @@
 | **DeepInfer** (optional) | `../DeepInfer` (astra: `/mnt/ssd2/src/DeepInfer`) | [deepseek-ai/DeepInfer](https://github.com/deepseek-ai/DeepInfer) | [deepinfer-borrowings.md](./deepinfer-borrowings.md) · [deepinfer-ladder.md](./deepinfer-ladder.md) (**DI0–DI8**, **M29**) — schedule / MTP-varlen / YOCO ideas; **do not** vendor; **SM100-only** serve | As needed (serving-policy research) |
 | **Flare** (optional) | `../flare-local-inference` | [NVIDIA/flare-local-inference](https://github.com/NVIDIA/flare-local-inference) | [flare-borrowings.md](./flare-borrowings.md) — agent turn-boundary checkpoints / KV-limit mental model / host×GPU reuse metrics; **do not** vendor Helios/Ignition/FlashInfer | As needed (L3 policy rematch; SM120 research) |
 | **h3.c** | `../h3.c` | [antirez/h3.c](https://github.com/antirez/h3.c) | Metal MiniMax-H3 **C rematch** for [video-c.md](./video-c.md) (`--family h3`); not the product runner | As needed (H3 parity) |
+| **h3-metal** | `../h3-metal` | [zuiho-kai/h3-metal](https://github.com/zuiho-kai/h3-metal) | [h3-metal-borrowings.md](./h3-metal-borrowings.md) — FastH3 schedule in video-c; Metal binary is the Mac speed lab. Do not replace video-c or Wan2GP | As needed (H3 Mac speed) |
 | **minimax-h3-mlx** | `../minimax-h3-mlx` | [mrbizarro/minimax-h3-mlx](https://github.com/mrbizarro/minimax-h3-mlx) | MLX MiniMax-H3 **Python rematch oracle** (packing, AdaLN cache, TE layer-50, VAEs) for video-c Darwin | As needed (H3 parity / dumps) |
 | **ClipProj-MiniMax-H3** | `~/.zerollama/third_party/h3/clipproj/` | [NicoLab28/ClipProj-MiniMax-H3](https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3) | TE projection matrices (4B/8B → `[seq,5120]`); [h3-clipproj.md](./h3-clipproj.md) | Optional (Darwin TE shrink) |
 | **MiniMax-H3 (partial)** | `~/.zerollama/models/MiniMax-H3/` | [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3) | Mac lab: `FL2VA/audio_vae` + `video_vae` only (~10 GiB); DiT/TE (~62 GiB each) need more free disk | Operator-supplied |
@@ -67,6 +68,7 @@ Other checkouts under the same parent (`ggml/`, `shard/`, rotorquant labs, …) 
 | mlx-serve | README / `pld_index.zig` | 2026-08-24 | **Brought:** PLD + spec gates — [mlx-serve-borrowings.md](./mlx-serve-borrowings.md) |
 | Ollama `main` | `a6d33251` (latest release **v0.40.14**; tip **v0.40.15-rc1**) | 2026-11-04 | **Brought:** `OllamaCompat`→0.40.14, empty d3 state (#19173), Responses readable input (#19192), cloud web_search decode (#19476), qwen3coder literal `</function>` (#19228), Kimi empty `[]` tool turns (#19312) — [upstream-ollama-diff.md](./upstream-ollama-diff.md); prior Oct tip `e3cddc3e` / v0.40.0 |
 | Flare `main` | README + core-design / CLI / API skim (no local tip) | 2026-10-23 | **Bring next:** FL1–FL3 (turn-boundary checkpoints, KV-limit docs, host×GPU reuse metrics) — [flare-borrowings.md](./flare-borrowings.md); **do not** vendor Helios |
+| h3-metal | `4ba47a3` | 2026-10-28 | **Brought:** `h3_fasth3_schedule_build` only. Metal VSA stays in the sibling. — [h3-metal-borrowings.md](./h3-metal-borrowings.md) |
 
 ---
 

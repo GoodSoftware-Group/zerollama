@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### MTPLX 2.10–2.12 rematch (mlxrunner) — Oct 2026
+
+**Why not vendor:** MTPLX's Mac app, `mlx-mtplx` fork, TensorOps flash-decode kernels, Forge, and NOTICE banner stay out. Steal serving policy only; rematch M5 verify on **stock MLX**.
+
+| Piece | Detail |
+|-------|--------|
+| Live MTP history reset | Auto: wipe draft KV at 16k generated tokens, or earlier when UMA ≥75% working set and draft fill ≥8192. RoPE stays absolute via `ropeBase`. |
+| Prefill 507 | Auto: chunk ladder 1024@75% working set → 512@90%; HTTP **507** only when already at recommended RAM **and** remaining &gt;512. |
+| Stop-kind logs | Auto: `inference response out` stamps `stop_kind` = `eos` / `stop_sequence` / `length` / `repetition_loop`. |
+| M5 fused-verify SDPA | Auto from MLX device_name / arch gen ≥17 (ggml tensor-API chips). Skip hd-192/256 Q split. No MTPLX kernels. |
+
+Doc: [mlx-agent-prompts.md](docs/mlx-agent-prompts.md). No new doctor knobs — auto-detect; env only as a hidden lab pin. Lab `:11435` only.
+
 ### DeepGEMM borrowings rematch (M30) — Oct 2026
 
 **Why not vendor:** DeepGEMM targets **SM90/SM100** + optional Mega MoE EP; our lanes are ggml on **sm_89 / sm_120**. Ascend port is checklist-only.

@@ -90,6 +90,10 @@ func (s *Server) sglangChatCompletionsProxy() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		if msg := textRouteBlock(m); msg != "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
 
 		base := envconfig.SGLangURL()
 		target := strings.TrimSuffix(base, "/") + "/v1/chat/completions"

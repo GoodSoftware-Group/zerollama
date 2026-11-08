@@ -79,6 +79,7 @@ H3 rematch references (not product runners):
 | Sibling | Role |
 |---------|------|
 | [antirez/h3.c](https://github.com/antirez/h3.c) (`../h3.c`) | Native Metal/C — host layout we vendored; full Metal generate |
+| [zuiho-kai/h3-metal](https://github.com/zuiho-kai/h3-metal) (`../h3-metal`) | Metal speed fork of h3.c (FastH3 + VSA). Lab binary only. Portable piece in-tree: `h3_fasth3_schedule_build`. See [h3-metal-borrowings.md](./h3-metal-borrowings.md). |
 | [mrbizarro/minimax-h3-mlx](https://github.com/mrbizarro/minimax-h3-mlx) (`../minimax-h3-mlx`) | MLX Python — bit-exact packing/scheduler/AdaLN/VAE/TE vs diffusers; best dump source for video-c rematch |
 
 Weights (`MiniMaxAI/MiniMax-H3` / `FL2VA`) stay operator-supplied. FL2VA and Ref2VA share the same weight blobs (mlx README); only pipeline metadata differs.

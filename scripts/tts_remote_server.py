@@ -8,7 +8,10 @@ Select engine with TTS_ENGINE=chatterbox|orpheus|kokoro|echo (default: echo).
   TTS_PORT=8090 TTS_ENGINE=kokoro python3 scripts/tts_remote_server.py
 
 Upstream zerollama manifests point tts_url at this server (e.g. http://cozmic:8090).
-Emotion (JSON field emotion) and X-TTS-Ref-Audio are forwarded to engines that support them.
+Emotion (JSON field emotion) and X-TTS-Ref-Audio are forwarded to engines that
+support them. Kokoro has no emotion head: the same words as local Kokoro scale
+speed (calm 0.85, sad 0.80, serious 0.90, neutral 1, happy 1.10, excited 1.20,
+angry 1.25). An unknown word, or a product outside 0.5–2, is HTTP 400.
 """
 from __future__ import annotations
 
@@ -27,6 +30,40 @@ HOST = os.environ.get("TTS_HOST", "0.0.0.0")
 PORT = int(os.environ.get("TTS_PORT", "8090"))
 VOICES_DIR = Path(os.environ.get("TTS_VOICES_DIR", "/mnt/ollama_img/speech/voices"))
 REF_AUDIO = os.environ.get("TTS_REF_AUDIO", "")
+
+# Same scales as runtime.tts.kokoro.apply_emotion. Kokoro's graph has no emotion head.
+_KOKORO_EMOTION = {
+    "calm": 0.85,
+    "sad": 0.80,
+    "serious": 0.90,
+    "neutral": 1.00,
+    "happy": 1.10,
+    "excited": 1.20,
+    "angry": 1.25,
+}
+
+
+def kokoro_request_speed(speed: Any, emotion: str = "") -> float:
+    """Requested Kokoro speed after one emotion scale. Empty emotion leaves speed."""
+    if speed is None or speed == "":
+        speed = 1.0
+    try:
+        rate = float(speed)
+    except (TypeError, ValueError) as e:
+        raise ValueError("speed must be a number") from e
+    if not 0.5 <= rate <= 2.0:
+        raise ValueError("speed must be between 0.5 and 2")
+    word = (emotion or "").strip().lower()
+    if not word:
+        return rate
+    scale = _KOKORO_EMOTION.get(word)
+    if scale is None:
+        names = ", ".join(sorted(_KOKORO_EMOTION))
+        raise ValueError(f"kokoro emotion must be one of: {names}")
+    out = rate * scale
+    if not 0.5 <= out <= 2.0:
+        raise ValueError("kokoro emotion pushes speed outside 0.5 to 2")
+    return out
 
 
 def _pcm_wav(samples: bytes, rate: int = 24000) -> bytes:
@@ -51,8 +88,8 @@ def synthesize_echo(text: str, voice: str, emotion: str) -> bytes:
     return _pcm_wav(bytes(frames), 24000)
 
 
-def synthesize_kokoro(text: str, voice: str, emotion: str) -> bytes:
-    _ = emotion
+def synthesize_kokoro(text: str, voice: str, emotion: str, speed: Any = 1.0) -> bytes:
+    speed = kokoro_request_speed(speed, emotion)
     try:
         from kokoro_onnx import Kokoro  # type: ignore
     except ImportError as e:
@@ -65,7 +102,7 @@ def synthesize_kokoro(text: str, voice: str, emotion: str) -> bytes:
     if not model or not voices:
         raise RuntimeError("set KOKORO_MODEL and KOKORO_VOICES paths")
     k = Kokoro(model, voices)
-    samples, rate = k.create(text, voice=voice or "af_heart", speed=1.0)
+    samples, rate = k.create(text, voice=voice or "af_heart", speed=speed)
     # samples may be float32 numpy
     import numpy as np
 
@@ -132,11 +169,11 @@ def synthesize_orpheus(text: str, voice: str, emotion: str) -> bytes:
         raise
 
 
-def synthesize(text: str, voice: str, emotion: str, ref_audio: str) -> bytes:
+def synthesize(text: str, voice: str, emotion: str, ref_audio: str, speed: Any = None) -> bytes:
     if ENGINE in ("echo", "smoke"):
         return synthesize_echo(text, voice, emotion)
     if ENGINE == "kokoro":
-        return synthesize_kokoro(text, voice, emotion)
+        return synthesize_kokoro(text, voice, emotion, speed)
     if ENGINE == "chatterbox":
         return synthesize_chatterbox(text, voice, emotion, ref_audio)
     if ENGINE == "orpheus":
@@ -207,7 +244,10 @@ class Handler(BaseHTTPRequestHandler):
         emotion = (body.get("emotion") or "").strip()
         ref = self.headers.get("X-TTS-Ref-Audio") or REF_AUDIO
         try:
-            audio = synthesize(text, voice, emotion, ref)
+            audio = synthesize(text, voice, emotion, ref, body.get("speed"))
+        except ValueError as e:
+            self._json(400, {"error": str(e)})
+            return
         except Exception as e:  # noqa: BLE001 — surface to client
             self._json(500, {"error": str(e)})
             return

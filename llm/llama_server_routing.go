@@ -119,6 +119,13 @@ func useLlamaServerBackendForModelGOOS(goos string, projectors []string, discove
 	if envconfig.LlamaServerBackendExplicit() {
 		return true
 	}
+	// Parakeet / Nemotron-transcribe, mtmd file audio, and /v1/realtime encode
+	// in llama-server. Darwin must not keep these on the ggml runner, and an
+	// audio mmproj must not trip the vision-projector refusal below.
+	if (config.ASR || config.Audio || config.Realtime || config.Speech) && discoverable {
+		slog.Debug("routing audio GGUF through llama-server", "goos", goos, "asr", config.ASR, "audio", config.Audio, "realtime", config.Realtime, "speech", config.Speech)
+		return true
+	}
 	if len(projectors) > 0 && goos != "linux" {
 		return false
 	}
@@ -143,6 +150,30 @@ func useLlamaServerBackendForModelGOOS(goos string, projectors []string, discove
 	_ = projectors
 	slog.Debug("Phase 17: routing GGUF through llama-server (Linux auto-default)")
 	return true
+}
+
+// ASRModelRequiresLlamaServerError is returned when a llama.cpp audio GGUF
+// cannot load because llama-server is off or missing.
+func ASRModelRequiresLlamaServerError(config LlamaServerConfig) error {
+	if !config.ASR && !config.Audio && !config.Realtime && !config.Speech {
+		return nil
+	}
+	kind := "parakeet/nemotron ASR"
+	switch {
+	case config.Realtime && !config.ASR:
+		kind = "realtime audio"
+	case config.Speech && !config.ASR:
+		kind = "mtmd speech"
+	case config.Audio && !config.ASR:
+		kind = "mtmd audio"
+	}
+	if envconfig.LlamaServerBackendDisabled() {
+		return fmt.Errorf("%s requires llama-server but ZEROLLAMA_LLAMA_SERVER=0", kind)
+	}
+	if !LlamaServerDiscoverable() {
+		return fmt.Errorf("%s requires llama-server; build it (./scripts/build/build_llama_server.sh) or set LLAMA_SERVER_BIN", kind)
+	}
+	return nil
 }
 
 // SpecModelRequiresLlamaServerError is returned when a spec-tagged model cannot load on ggml.

@@ -294,6 +294,14 @@ func llamaServerConfigForModel(m *Model, contextShift bool, opts api.Options) ll
 	if llm.DisableDraftMTPForArchitecture(m.PrimaryFamily()) && (cfg.SpecType == "draft-mtp" || cfg.SpecType == "mtp") {
 		cfg.SpecType = ""
 	}
+	cfg.ASR = modelUsesLlamaASR(m)
+	role := modelMTMDRole(m)
+	cfg.Audio = role.FileAudio
+	cfg.Realtime = role.Stream
+	cfg.ReasoningOff = role.ReasoningOff()
+	cfg.SingleGPU = role.SingleGPU
+	cfg.QwenVL = role.QwenVL
+	cfg.Speech = role.Speech
 	return cfg
 }
 
@@ -688,6 +696,11 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			Done:       true,
 			DoneReason: "unload",
 		})
+		return
+	}
+
+	if msg := textRouteBlock(m); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 		return
 	}
 
@@ -1239,6 +1252,11 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 				applyGgmlNumCtxResponse(&res, ggmlCtx)
 				rememberMLXPromptChain(m, req.Options, prompt, generateChainMessages, r.Tokenize)
 				recordInferenceCompletionDetails(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount, cr.PromptEvalCachedCount, cr.PromptEvalCachedHost, cr.PromptEvalCachedStorage, cr.PromptEvalCachedStorageBackend)
+				stopKind := cr.StopKind
+				if stopKind == "" {
+					stopKind = inferenceStopKind(res.DoneReason, cr.FinishDetails, cr.StopSequence)
+				}
+				recordInferenceStopKind(c, stopKind, cr.StopSequence, cr.FinishDetails)
 				if cr.OriginalPromptTokens > 0 {
 					recordInferencePromptSize(c, cr.PromptEvalCount, cr.OriginalPromptTokens, messagesDropped)
 				}
@@ -1460,6 +1478,12 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model '%s' not found", req.Model)})
 		return
+	}
+	if m, gerr := GetModel(name.String()); gerr == nil {
+		if msg := textRouteBlock(m); msg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
 	}
 
 	r, m, opts, _, releaseQoS, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil, nil)
@@ -1753,6 +1777,12 @@ func (s *Server) EmbeddingsHandler(c *gin.Context) {
 	}
 
 	name := modelRef.Name
+	if m, gerr := GetModel(name.String()); gerr == nil {
+		if msg := textRouteBlock(m); msg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
+	}
 
 	r, _, _, _, releaseQoS, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil, nil, nil)
 	if err != nil {
@@ -2901,6 +2931,9 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/v1/images/edits", cloudPassthroughMiddleware(cloudErrRemoteInferenceUnavailable), cloudV1InferencePassthrough(cloudErrRemoteInferenceUnavailable), middleware.ImageEditsMiddleware(), s.GenerateHandler)
 	// OpenAI-compatible audio endpoints
 	r.POST("/v1/audio/transcriptions", middleware.TranscriptionMiddleware(), s.TranscriptionHandler)
+	r.POST("/v1/audio/translations", middleware.TranscriptionMiddleware(), s.TranscriptionHandler)
+	// llama-server WebSocket. model selects the GGUF; intent=transcription is live ASR.
+	r.GET("/v1/realtime", s.RealtimeHandler)
 	r.POST("/v1/audio/speech", middleware.SpeechMiddleware(), s.SpeechHandler)
 	r.GET("/v1/audio/voices", s.VoicesHandler)
 	r.POST("/v1/audio/generations", middleware.SpeechMiddleware(), s.MusicCreateHandler)
@@ -3219,6 +3252,8 @@ func Serve(listeners ...net.Listener) error {
 	// classifier: jev routers: load their deciders now so the first routed request does
 	// not spend its decider_timeout on a cold load (docs/auto-router.md AR4).
 	go s.prewarmJevDeciders()
+	go s.warmPiperPhrases(ctx)
+	go s.warmKokoroPhrases(ctx)
 
 	// register the experimental webp decoder
 	// so webp images can be used in multimodal inputs
@@ -3665,6 +3700,11 @@ func (s *Server) ChatHandler(c *gin.Context) {
 		return
 	}
 
+	if msg := textRouteBlock(m); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+
 	if m.Config.RemoteHost != "" && m.Config.RemoteModel != "" {
 		c.JSON(http.StatusForbidden, gin.H{"error": errCloudModelsNotSupported})
 		return
@@ -3748,6 +3788,19 @@ func (s *Server) ChatHandler(c *gin.Context) {
 	if err := modality.ExpandAudioClipsInChatRequest(c.Request.Context(), &req); err != nil {
 		c.JSON(modality.MediaHTTPStatus(err), gin.H{"error": err.Error()})
 		return
+	}
+	// Omni hears the video's soundtrack. Vision-only models stay frames.
+	if hasVideo && m.CheckCapabilities(model.CapabilityAudio) == nil {
+		if err := modality.AttachVideoSoundtracks(c.Request.Context(), &req); err != nil {
+			c.JSON(modality.MediaHTTPStatus(err), gin.H{"error": err.Error()})
+			return
+		}
+		if err := modality.PreflightLimitMMDataPerRequest(modality.LimitMMDataPerRequest{
+			Image: imgLim, Video: vidLim, Audio: audLim,
+		}, &req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	// SGLang #31417: client media → 400; missing ffmpeg / host IO → 500.
 	if err := modality.ExpandVideosInChatRequest(c.Request.Context(), policy, &req); err != nil {
@@ -4177,6 +4230,11 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				}
 				rememberMLXPromptChain(m, req.Options, prompt, msgs, runnerTokenize)
 				recordInferenceCompletionDetails(c, res.DoneReason, r.PromptEvalCount, r.EvalCount, r.PromptEvalCachedCount, r.PromptEvalCachedHost, r.PromptEvalCachedStorage, r.PromptEvalCachedStorageBackend)
+				stopKind := r.StopKind
+				if stopKind == "" {
+					stopKind = inferenceStopKind(res.DoneReason, r.FinishDetails, r.StopSequence)
+				}
+				recordInferenceStopKind(c, stopKind, r.StopSequence, r.FinishDetails)
 				if r.OriginalPromptTokens > 0 {
 					recordInferencePromptSize(c, r.PromptEvalCount, r.OriginalPromptTokens, messagesDropped)
 				}
@@ -4851,6 +4909,11 @@ func (s *Server) handleImageGenerate(c *gin.Context, req api.GenerateRequest, mo
 			res.Metrics.TotalDuration = time.Since(checkpointStart)
 			res.Metrics.LoadDuration = checkpointLoaded.Sub(checkpointStart)
 			recordInferenceCompletionDetails(c, res.DoneReason, cr.PromptEvalCount, cr.EvalCount, cr.PromptEvalCachedCount, cr.PromptEvalCachedHost, cr.PromptEvalCachedStorage, cr.PromptEvalCachedStorageBackend)
+			stopKind := cr.StopKind
+			if stopKind == "" {
+				stopKind = inferenceStopKind(res.DoneReason, cr.FinishDetails, cr.StopSequence)
+			}
+			recordInferenceStopKind(c, stopKind, cr.StopSequence, cr.FinishDetails)
 		}
 
 		if !isStreaming {

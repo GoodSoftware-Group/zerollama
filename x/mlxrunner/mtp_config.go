@@ -47,6 +47,12 @@ const (
 
 	defaultMTPHistoryLastWindow  = 8192
 	defaultMTPHistoryLWThreshold = 16384
+	// Live draft-KV wipe (mtplx 2.10). Auto: hard cap at 16k generated
+	// tokens, or earlier when UMA is ≥75% of the recommended working set
+	// and draft KV already holds a last_window's worth. Env is an escape
+	// hatch (0=off, N=force every N), not a doctor knob.
+	defaultMTPHistoryLiveReset = 16384
+	mtpLiveResetMinGenerated   = 4096
 )
 
 // mtpHistoryPlan is the resolved per-request history policy.
@@ -86,6 +92,46 @@ func mtpHistoryLastWindowTokens() int {
 
 func mtpHistoryLastWindowThreshold() int {
 	return envIntDefault("ZEROLLAMA_MLX_MTP_HISTORY_LAST_WINDOW_THRESHOLD", defaultMTPHistoryLWThreshold)
+}
+
+// mtpLiveResetPolicy is the hidden escape hatch. enabled=false means off;
+// override>0 forces a token interval; override=0 is auto (working set + cap).
+func mtpLiveResetPolicy() (enabled bool, override int) {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("ZEROLLAMA_MLX_MTP_HISTORY_LIVE_RESET")))
+	if raw == "0" || raw == "off" || raw == "false" || raw == "no" || raw == "none" {
+		return false, 0
+	}
+	if raw == "" {
+		return true, 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return true, 0
+	}
+	if n == 0 {
+		return false, 0
+	}
+	return true, n
+}
+
+// liveResetDue decides whether to wipe draft KV. override>0 is a lab pin
+// (every N generated tokens). Auto: never below 4k generated; always at
+// 16k; earlier when draft fill ≥ 8192 and unified memory is ≥75% of the
+// recommended working set.
+func liveResetDue(generated, draftFill, active, recommended, override int) bool {
+	if override > 0 {
+		return generated >= override
+	}
+	if generated < mtpLiveResetMinGenerated {
+		return false
+	}
+	if generated >= defaultMTPHistoryLiveReset {
+		return true
+	}
+	if draftFill >= defaultMTPHistoryLastWindow && recommended > 0 && active >= recommended*3/4 {
+		return true
+	}
+	return false
 }
 
 func envIntDefault(key string, def int) int {

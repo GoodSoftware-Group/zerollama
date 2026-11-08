@@ -89,6 +89,9 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 	if err := SpecModelRequiresLlamaServerError(config); err != nil {
 		return nil, err
 	}
+	if err := ASRModelRequiresLlamaServerError(config); err != nil {
+		return nil, err
+	}
 	if useLlamaServerBackendForModel(projectors, config) && !llamaServerBlockedByOllamaRawMXFP4(f) {
 		trainCtx := f.KV().ContextLength()
 		if opts.NumCtx > int(trainCtx) && trainCtx > 0 {

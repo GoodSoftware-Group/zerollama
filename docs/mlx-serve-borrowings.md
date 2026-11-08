@@ -21,8 +21,8 @@ Zig + mlx-c Mac server. **Do not vendor Zig or the MLX Core app.** Steal engine 
 | **Loop-stop** | `loop_stop.go` | Triple repeat of an 8–48 token cycle ends decode as length (`repetition_loop` log). |
 | **Draft load warn** | `loadDraftCompanion` | Broken in-manifest companion logs and keeps PLD/AR; `ZEROLLAMA_MLX_MTP=require` still fails closed. |
 | **Vision engine pixel cap** | `imageproc.EngineMaxPixels` | 1536² before the VL tower (Qwen 2.5/3, GlmOCR). Pack 16 Mpx bounds ignored; 1080p screenshots pass. |
-| **Prefill working-set cap** | `capPrefillChunkForWorkingSet` | When active RAM is ≥75% of recommended, auto 1024-token chunks + per-chunk eval/clear. |
-| **Split fused-verify SDPA** | `nn.runFastSDPA` | qL&gt;8 at hd 192/256 (or qL×GQA&gt;32) splits into vector-kernel passes so MLX does not take the slow unfused path. |
+| **Prefill working-set cap** | `capPrefillChunkForWorkingSet` | When active RAM is ≥75% of recommended, auto 1024-token chunks + per-chunk eval/clear. ≥90% walks to 512. HTTP **507** when already at recommended **and** remaining &gt;512. |
+| **Split fused-verify SDPA** | `nn.runFastSDPA` | qL&gt;8 at hd 192/256 (or qL×GQA&gt;32) splits into vector-kernel passes so MLX does not take the slow unfused path. **M5-class** (device_name / arch gen ≥17) skips the hd split automatically. |
 | **Continue final message** | `template.ApplyContinueFinal` | `/v1` + `/api/chat` `continue_final_message`: prompt ends on trailing assistant text (no new turn). Tool-call replies ignored. `/v1/messages` infers the same (mlx-serve). |
 | **Draft-head 4-bit at load** | `quantizeDraftCompanion` | Dense bf16/fp16 MTP/assistant linears become affine 4-bit; target still verifies. `ZEROLLAMA_MLX_DRAFT_QUANT=off` keeps checkpoint dtype. |
 | **Spec depth +1** | `depthSearchPastFrontier=2` | After split-SDPA verify, EV search may pick two past the trusted frontier (mlx-serve “one position deeper”). |

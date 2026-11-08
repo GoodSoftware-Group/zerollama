@@ -233,6 +233,12 @@ func (s *Server) runDecisions(ctx context.Context, call decisionsCall) (api.Deci
 			"images require a multimodal decision model (clef/tev1/nimble); Laya and text-only Deciders reject images"))
 	}
 
+	if m != nil {
+		if msg := textRouteBlock(m); msg != "" {
+			return api.DecisionsResponse{}, decisionsErr(http.StatusBadRequest, errors.New(msg))
+		}
+	}
+
 	caps := []model.Capability{}
 	if m != nil && capabilityContains(m.Config.Capabilities, model.CapabilityDecision) {
 		caps = append(caps, model.CapabilityDecision)

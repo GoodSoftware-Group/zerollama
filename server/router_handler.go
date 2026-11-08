@@ -23,6 +23,9 @@ type routerDecideRequest struct {
 }
 
 func (s *Server) scoreRouterPolicies(ctx context.Context, classifier, prompt string, candidates []string, lengthNorm bool) ([]llm.CandidateScore, error) {
+	if msg := textRouteMessage(classifier); msg != "" {
+		return nil, errors.New(msg)
+	}
 	r, _, _, _, releaseQoS, err := s.scheduleRunner(ctx, classifier, []model.Capability{}, nil, nil, nil, nil, nil)
 	if err != nil {
 		return nil, err
@@ -235,6 +238,9 @@ func stampRouterHeaders(c *gin.Context, dec *RouterDecision) {
 }
 
 func (s *Server) embedRouterText(ctx context.Context, embedder, text string) ([]float32, error) {
+	if msg := textRouteMessage(embedder); msg != "" {
+		return nil, errors.New(msg)
+	}
 	r, _, _, _, releaseQoS, err := s.scheduleRunner(ctx, embedder, []model.Capability{}, nil, nil, nil, nil, nil)
 	if err != nil {
 		return nil, err

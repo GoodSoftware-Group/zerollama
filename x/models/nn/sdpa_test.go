@@ -679,7 +679,34 @@ func TestSDPAMultiSequenceParity(t *testing.T) {
 	}
 }
 
+func TestTensorGPUName(t *testing.T) {
+	for _, name := range []string{"Apple M5 Max", "Apple M5", "Apple M6", "Apple A19 Pro"} {
+		if !tensorGPUName.MatchString(name) {
+			t.Fatalf("%q should be tensor GPU", name)
+		}
+	}
+	for _, name := range []string{"Apple M4 Max", "Apple M1 Pro", "Apple M3 Ultra"} {
+		if tensorGPUName.MatchString(name) {
+			t.Fatalf("%q is pre-M5", name)
+		}
+	}
+}
+
+func TestAppleGPUArchGen(t *testing.T) {
+	if got := appleGPUArchGen("applegpu_g16s"); got != 16 {
+		t.Fatalf("M4 arch gen=%d", got)
+	}
+	if got := appleGPUArchGen("applegpu_g17s"); got != 17 {
+		t.Fatalf("M5 arch gen=%d", got)
+	}
+	if appleGPUArchGen("cpu") != 0 {
+		t.Fatal("short arch")
+	}
+}
+
 func TestSDPAFastQChunk(t *testing.T) {
+	t.Setenv("ZEROLLAMA_MLX_TENSOR_GPU", "0")
+	t.Setenv("ZEROLLAMA_MLX_SDPA_VECTOR_MAX_Q", "")
 	if got := sdpaFastQChunk(9, 1, 1, 256); got != 8 {
 		t.Fatalf("hd256 L=9 chunk=%d want 8", got)
 	}
@@ -697,7 +724,19 @@ func TestSDPAFastQChunk(t *testing.T) {
 	}
 }
 
+func TestSDPAFastQChunkM5SkipsHdSplit(t *testing.T) {
+	t.Setenv("ZEROLLAMA_MLX_TENSOR_GPU", "1")
+	t.Setenv("ZEROLLAMA_MLX_SDPA_VECTOR_MAX_Q", "")
+	if got := sdpaFastQChunk(9, 1, 1, 256); got != 9 {
+		t.Fatalf("M5 hd256 L=9 should not split, chunk=%d", got)
+	}
+	if got := sdpaFastQChunk(6, 32, 4, 128); got != 4 {
+		t.Fatalf("M5 still splits GQA overflow, chunk=%d want 4", got)
+	}
+}
+
 func TestSDPASplitHd256CausalParity(t *testing.T) {
+	t.Setenv("ZEROLLAMA_MLX_TENSOR_GPU", "0")
 	skipIfNoMLX(t)
 	const L, K, D = 9, 24, 256
 	qVals := make([]float32, L*D)

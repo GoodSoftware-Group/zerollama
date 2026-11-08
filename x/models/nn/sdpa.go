@@ -3,6 +3,13 @@ package nn
 import (
 	"encoding/binary"
 	"math"
+	"os"
+	"os/exec"
+	"regexp"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
 
 	"github.com/ollama/ollama/x/mlxrunner/batch"
 	"github.com/ollama/ollama/x/mlxrunner/mlx"
@@ -105,10 +112,89 @@ func ScaledDotProductAttention(b *batch.Batch, q *mlx.Array, scale float32, opts
 
 // sdpaVectorMaxQ is MLX's vector SDPA query cap (mlx/backend/metal
 // scaled_dot_product_attention.cpp). Above it, hd 192/256 uses the slow
-// unfused path. mlx-serve splits verify (L=6–9) into two vector passes.
+// unfused path on M1–M4. mlx-serve splits verify (L=6–9) into two vector
+// passes there. M5-class tensor GPU skips the hd split so fused verify
+// rides stock MLX full/tensor SDPA (not MTPLX TensorOps kernels).
 const sdpaVectorMaxQ = 8
 
 const sdpaVectorMaxQGQA = 32
+
+// Same chip gate as ggml Metal tensor API (M5+/A19+). M4 Max is not included.
+var tensorGPUName = regexp.MustCompile(`(?i)\b(M[5-9]|A19|A20)\b`)
+
+var (
+	tensorGPUOnce sync.Once
+	tensorGPUAuto bool
+)
+
+func sdpaVectorMaxQEnv() int {
+	raw := strings.TrimSpace(os.Getenv("ZEROLLAMA_MLX_SDPA_VECTOR_MAX_Q"))
+	if raw == "" {
+		return sdpaVectorMaxQ
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return sdpaVectorMaxQ
+	}
+	return n
+}
+
+// metalTensorGPU reports Apple M5-class tensor GPU. Auto-detects from MLX
+// device_name / architecture (gen ≥ 17, same chips ggml enables tensor API
+// on). ZEROLLAMA_MLX_TENSOR_GPU is a hidden lab pin (1/0), not a doctor knob.
+func metalTensorGPU() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZEROLLAMA_MLX_TENSOR_GPU"))) {
+	case "1", "on", "true", "yes", "m5":
+		return true
+	case "0", "off", "false", "no":
+		return false
+	}
+	tensorGPUOnce.Do(func() {
+		tensorGPUAuto = detectMetalTensorGPU()
+	})
+	return tensorGPUAuto
+}
+
+// UsingTensorSDPA is true on M5-class GPUs (auto from device_name / arch gen
+// ≥17). Hidden lab pin: ZEROLLAMA_MLX_TENSOR_GPU=1|0.
+func UsingTensorSDPA() bool {
+	return metalTensorGPU()
+}
+
+func detectMetalTensorGPU() bool {
+	if mlx.CheckInit() == nil {
+		if name, err := mlx.DeviceInfoString("device_name"); err == nil && tensorGPUName.MatchString(name) {
+			return true
+		}
+		if arch, err := mlx.DeviceInfoString("architecture"); err == nil && appleGPUArchGen(arch) >= 17 {
+			return true
+		}
+	}
+	return detectAppleM5Brand()
+}
+
+func appleGPUArchGen(arch string) int {
+	if len(arch) < 3 {
+		return 0
+	}
+	tens := int(arch[len(arch)-3] - '0')
+	ones := int(arch[len(arch)-2] - '0')
+	if tens < 0 || tens > 9 || ones < 0 || ones > 9 {
+		return 0
+	}
+	return tens*10 + ones
+}
+
+func detectAppleM5Brand() bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	out, err := exec.Command("sysctl", "-n", "machdep.cpu.brand_string").Output()
+	if err != nil {
+		return false
+	}
+	return tensorGPUName.Match(out)
+}
 
 func sdpaFastQChunk(qL, qHeads, kvHeads, headDim int) int {
 	if qL <= 1 {
@@ -118,14 +204,17 @@ func sdpaFastQChunk(qL, qHeads, kvHeads, headDim int) int {
 	if kvHeads > 0 {
 		gqa = max(1, qHeads/kvHeads)
 	}
-	chunk := sdpaVectorMaxQ
+	vecMax := sdpaVectorMaxQEnv()
+	chunk := vecMax
 	if cap := sdpaVectorMaxQGQA / gqa; cap < chunk {
 		chunk = cap
 	}
 	if chunk < 1 {
 		return qL
 	}
-	need := (headDim == 192 || headDim == 256) && qL > sdpaVectorMaxQ
+	// M5: skip the hd-192/256 split (stock MLX full SDPA is the tensor path).
+	// Still split when qL×GQA exceeds the vector GQA cap.
+	need := !metalTensorGPU() && (headDim == 192 || headDim == 256) && qL > vecMax
 	if qL*gqa > sdpaVectorMaxQGQA && qL > chunk {
 		need = true
 	}

@@ -37,6 +37,9 @@ func (s *Server) tryBatchMultidecode(c *gin.Context, modelName string, reqs []an
 	if err != nil || m == nil {
 		return false
 	}
+	if textRouteBlock(m) != "" {
+		return false
+	}
 
 	var keepAlive *api.Duration
 	opts := map[string]any{}

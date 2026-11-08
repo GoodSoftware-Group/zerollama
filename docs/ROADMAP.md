@@ -306,7 +306,7 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 3. No regression on 5080 CUDA MLX build (still upstream sources only).
 4. cmake configure no longer requires fragile `go generate ./x/...` when using the fork as C source **or** upstream path is fixed independently.
 
-**Borrowings track:** Inference speed first — [Local voice & llama borrowings](#local-voice--llama-borrowings-eliza-v3) **L1–L3** (GPU profiles, fork kernels, KV prefix cache); voice **L5–L8** deferred.
+**Borrowings track:** Inference speed first — [Local voice & llama borrowings](#local-voice--llama-borrowings-eliza-v3) **L1–L3** (GPU profiles, fork kernels, KV prefix cache); voice **L5–L8** shipped (phrase cache, Qwen3-ASR, neural VAD + duplex MTP, local Kokoro ONNX).
 
 ---
 
@@ -435,10 +435,10 @@ INSTALL_PREFIX=dist/darwin-arm64 BUILD_MLX_V4=0 ./scripts/build/build_mlx_dylibs
 
 | Milestone | Goal | Owner | Exit criteria |
 |-----------|------|--------|----------------|
-| **L5** | **Voice phrase cache (Piper)** | Go | Pre-synthesize short fillers at serve/warm; masks TTS cold-start—not LLM tok/s. Ref: eliza `phrase-cache.ts`. |
-| **L6** | **Qwen3-ASR in-process** | Go + Python | `modality_backends.transcribe: qwen3-asr`; Whisper subprocess fallback. Removes ASR subprocess overhead only. |
-| **L7** | **Duplex voice pipeline** | Go + Python | Streaming ASR → LLM (MTP) → chunked TTS; VAD barge-in; MTP rollback on TTS. Ref: eliza `engine-bridge.ts`. |
-| **L8** | **Kokoro TTS backend (optional)** | Go | Lightweight ONNX TTS alongside Piper. Defer OmniVoice until **L7**. |
+| **L5** | **Voice phrase cache (Piper)** | Go | **Done** — short phrases stay in memory (48 characters, 32 clips). Serve pre-synthesizes five fillers when the ONNX is present (`ZEROLLAMA_PIPER_WARM=0` skips). A hit sets `X-Speech-Cache`. `stream: true` sends WAV as Piper synthesizes when the voice JSON has `audio.sample_rate`. Masks a repeat Piper start, not LLM tok/s. |
+| **L6** | **Qwen3-ASR in-process** | Go + Python | **Done** — `modality_backends.transcribe: qwen3-asr` starts one CPU `python3 -m runtime.asr.qwen3_serve` on a free loopback port and keeps the weights for every later clip (file transcription and duplex). `backend_paths.qwen3_asr` or `OLLAMA_QWEN3_ASR` must be an existing directory (never a Hub id). Missing Python, `qwen-asr`, or that directory falls back to the Whisper CLI. A clip the model rejects is an error. Language codes map to names such as `English`. |
+| **L7** | **Duplex voice pipeline** | Go + Python | **Done** — `GET /v1/realtime?pipeline=duplex&voice=&asr=&rate=` transcribes a committed clip, completes the chat model, and speaks sentences. Each reply includes up to 8 earlier turns from that socket. Thinking is off, and the chat template is rendered. The reply stops after 48 tokens. Earlier turns are prefilled while the next person is speaking. `turn=server_vad` commits on silence (amplitude by default). When `OLLAMA_NEURAL_VAD` points at a local Silero ONNX file, one CPU `python3 -m runtime.asr.vad_serve` process scores 8 kHz / 16 kHz packets with per-socket recurrent state (reset on commit or barge); a missing file, wrong rate, or slow window keeps amplitude at 0.02 (not the neural cutoff). Neural mode defaults threshold to 0.5 when omitted. The llama-server proxy and duplex socket share that process. Duplex prefix warmup and reply set the same MLX `EnableMTP` from draft-head presence (`qwen35` / `qwen35moe` force off); accepted tokens reach the sentence splitter. Quiet-tail / idle-commit / speculative ASR / Piper live / whisper-server / barge-in behavior from the prior partial ship stays. |
+| **L8** | **Kokoro TTS backend (optional)** | Go + Python | **Done** — `modality_backends.speech: kokoro` starts one CPU `python3 -m runtime.tts.kokoro_serve` on a free loopback port (`backend_paths.kokoro_model` + `kokoro_voices`; `OLLAMA_KOKORO_MODEL` / `OLLAMA_KOKORO_VOICES` fill those paths only after the tag is kokoro and do not take over a tag that left speech unset). Files must already exist; no download. Sample rate is 24000 Hz int16. Non-stream speech is WAV; `stream: true` is `audio/pcm;rate=24000;bits=16`. Duplex `SpeakMore` plays each phoneme-batch chunk as it arrives. Voice ids come from the voices zip (or `tts_voices_file`). `af_`/`am_` use `en-us` and `bf_`/`bm_` use `en-gb`; `lang` `en`, `en-us`, `en-gb`, or `en-uk` overrides the prefix, and duplex forwards its `language` query. Other languages and v1.1 voice prefixes are 400. Short phrases use the Piper memory cache (`X-Speech-Cache`; `ZEROLLAMA_KOKORO_WARM=0` skips the five fillers). `phoneme_silence` inserts PCM silence. `emotion` scales speed (`calm` 0.85 through `angry` 1.25); an unknown word is 400. The registered `kokoro:latest` tag stays remote-tts; its sidecar scales emotion the same way. llama-server `LLAMA_BUILD_KOKORO` stays unchanged. OmniVoice stays deferred. |
 
 **Non-goals (this track):**
 
@@ -766,6 +766,23 @@ Mixing “port Qwen-Image to MLX” with “agent needs ControlNet” hid the re
 
 **Non-goals:** shipping ComfyUI inside the Go binary; dropping MLX Z-Image/Klein; guaranteeing interactive latency for GLM-Image / FLUX.2-dev on 16 GB; replacing `external-image` (escape hatch remains).
 
+## Mesh / GLB generation — TRELLIS lab (HTTP not started)
+
+**Why a separate track from image gen and Wan:** A room prop is a **textured PBR GLB**. TRELLIS.2 is image-to-3D (mesh + metal/roughness/opacity). The M4 Max runs the object still **and** can finish a Metal TRELLIS.2 GLB; **one** astra 4090 (24 GB, sm_89) remains the CUDA reference. Do not treat dual 4090 as 48 GB. Do not use Blackwell sm_120 wheels on Ada.
+
+**Operator guide:** [mesh-gen.md](./mesh-gen.md). Scripts: `scripts/mesh/`. Lab artifacts: astra `/mnt/ssd2/zerollama/third_party/trellis/lab/out/`; Mac `~/.zerollama/third_party/trellis-mac/lab/out/trellis2-mps.glb`. **Service shape:** image still → rembg → TRELLIS.2 (PBR); text XL is compare-only.
+
+| Milestone | Goal | Why |
+|-----------|------|-----|
+| **g0** | sm_89 install + one `trellis2.glb` with PBR textures on astra | **Done** — Ada compile + room bake (~100k / 1024 PNG / `alphaMode` from alpha). Install script matches the working Ada path (C++20, no shim-first, stub rembg when still has alpha). |
+| **g0.1** | Same-prompt text XL compare | **Done** — color-only; does not replace the image→TRELLIS.2 path for rooms. Require `--still-source` on the compare script; rematch under HDRI before quality claims. |
+| **g0.2** | Mac PBR GLB via Metal stack | **Done** — pinned trellis-mac + Pedro `mtl*` backends; `trellis_mesh_generate_mac.py` (MPS, Metal baker required). Decode `Mesh.fill_holes` stays stubbed. Post-bake prune position-welds coincident verts and drops a cube-floor sheet only when a thicker piece remains (photo rematch: 8→2, largest piece min extent is the body). `--from-glb` writes a separate watertight voxel crust of that body; the welded PBR GLB stays open. |
+| **g1** | Service bake without nvdiffrast | Stock bake is research-only; cumesh + volume stay. |
+| **g2** | `POST /v1/meshes` + exclusive GPU hold | Same job ideas as video; short handler. |
+| **Later** | Lit Mac preview; Pixal3D / PartCrafter / … | Catalog in mesh-gen.md. |
+
+**Non-goals (g0):** shipping nvdiffrast in-tree; Hunyuan3D community-license weights; hosted Meshy/Tripo/Rodin proxies.
+
 ## Option 2 — Narrow the gap without SGLang (in-tree over time)
 
 **Execution checklist:** [video-parity.md](./video-parity.md) (reference workloads + parity matrix). **Shipped borrowings:** [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md).
@@ -875,9 +892,9 @@ Mixing “port Qwen-Image to MLX” with “agent needs ControlNet” hid the re
 | **Train → GGUF → serve** + efficient SFT | Training **T7–T8** | Close Unsloth-style deploy loop; packing/templates before kernel chase — **T7/T8 Done** |
 | Optional Unsloth-inspired stock Trainer / GRPO | Training **T9–T10** | Polish unified PEFT/`Trainer` path; GRPO on same backend — no Studio AGPL, no second backend |
 | **Fleet management + warm routing** | Fleet **F2–F6** | Many nodes, many agents—thin orchestrator, status, mDNS, playbooks; avoid scatter-gather on constrained GPUs |
-| **Local voice latency + duplex** | Borrowings **L5**, **L7** (Tier B) | Phrase cache + streaming pipeline after inference baseline |
+| **Local voice latency + duplex** | Borrowings **L5–L8** done (Tier B) | Phrase cache, resident Qwen3-ASR, neural VAD, duplex MLX MTP, local Kokoro ONNX shipped |
 | **LocalAI control-plane borrowings** | **LA1–LA10** | Fast GGUF read, guess hooks, watchdog, concurrency groups, fleet score, repair, HF pull, logprob score API, **bench cache** — [localai-borrowings.md](./localai-borrowings.md) |
-| **In-process ASR (Qwen3-ASR)** | Borrowings **L6** (Tier B) | ASR subprocess removal—not LLM tok/s |
+| **In-process ASR (Qwen3-ASR)** | Borrowings **L6** done | Resident `qwen-asr` process; Whisper CLI when it cannot start |
 | Eliza catalog / response mapping | Eliza follow-ups | Operator UX when local + cloud lists collide |
 | Video Option 2 A–D | Video track | Native VLM quality without SGLang dependency; **Jun 2026:** Tier 1 + audit fixes shipped — [sglang-multimodal-borrowings.md](./sglang-multimodal-borrowings.md) |
 | SSRF hardening | Security | High-assurance deployments |

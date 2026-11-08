@@ -91,6 +91,9 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		if abortTextRoute(c, req.Model) {
+			return
+		}
 
 		if !resolveRuntimeProxy(c, req.Model, req.Options) {
 			c.Next()

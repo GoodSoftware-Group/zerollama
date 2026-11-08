@@ -124,11 +124,11 @@ func (c *Client) WaitUntilRunning(ctx context.Context) error {
 }
 
 type CompletionRequest struct {
-	Prompt         string      `json:"prompt"`
-	Tokens         []int32     `json:"tokens,omitempty"`
-	PromptCacheKey string      `json:"prompt_cache_key,omitempty"`
-	CacheReset     bool        `json:"cache_reset,omitempty"`
-	Options        api.Options `json:"options"`
+	Prompt         string          `json:"prompt"`
+	Tokens         []int32         `json:"tokens,omitempty"`
+	PromptCacheKey string          `json:"prompt_cache_key,omitempty"`
+	CacheReset     bool            `json:"cache_reset,omitempty"`
+	Options        api.Options     `json:"options"`
 	Logprobs       bool            `json:"logprobs,omitempty"`
 	TopLogprobs    int             `json:"top_logprobs,omitempty"`
 	Format         json.RawMessage `json:"format,omitempty"`
@@ -143,6 +143,7 @@ type CompletionResponse struct {
 	DoneReason       int    `json:"done_reason,omitempty"`
 	FinishDetails    string `json:"finish_details,omitempty"`
 	StopSequence     string `json:"stop_sequence,omitempty"`
+	StopKind         string `json:"stop_kind,omitempty"`
 	PrefillProcessed int    `json:"prefill_processed,omitempty"`
 	PrefillTotal     int    `json:"prefill_total,omitempty"`
 
@@ -285,6 +286,7 @@ func (c *Client) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 			DoneReason:            llm.DoneReason(raw.DoneReason),
 			FinishDetails:         raw.FinishDetails,
 			StopSequence:          raw.StopSequence,
+			StopKind:              raw.StopKind,
 			PromptEvalCount:       raw.PromptEvalCount,
 			PromptEvalCachedCount: raw.PromptEvalCachedCount,
 			PromptEvalDuration:    raw.PromptEvalDuration,

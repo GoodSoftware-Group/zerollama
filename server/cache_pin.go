@@ -167,6 +167,10 @@ func (s *Server) CacheWarmHandler(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
+	if msg := textRouteBlock(m); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
 
 	var pinID string
 	var expires *time.Time

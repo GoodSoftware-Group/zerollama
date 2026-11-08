@@ -66,6 +66,72 @@ func TestLlamaServerConfigForModel(t *testing.T) {
 			want: llm.LlamaServerConfig{},
 		},
 		{
+			name: "parakeet forces llama-server ASR",
+			m: &Model{
+				Name: "parakeet-tdt:latest",
+				Config: model.ConfigV2{
+					ModelFamily:   "parakeet",
+					ModelFamilies: []string{"parakeet"},
+				},
+			},
+			want: llm.LlamaServerConfig{ASR: true},
+		},
+		{
+			name: "voxtral realtime stays on one gpu",
+			m: &Model{
+				Name: "voxtral-realtime:latest",
+				Config: model.ConfigV2{
+					ModelFamily:   "voxtral_rt",
+					ModelFamilies: []string{"voxtral_rt"},
+				},
+			},
+			want: llm.LlamaServerConfig{Realtime: true, SingleGPU: true},
+		},
+		{
+			name: "lfm3 omni disables reasoning",
+			m: &Model{
+				Name: "lfm3-omni:latest",
+				Config: model.ConfigV2{
+					ModelFamily:   "lfm3a",
+					ModelFamilies: []string{"lfm3a", "lfm3vl"},
+				},
+			},
+			want: llm.LlamaServerConfig{Audio: true, Realtime: true, ReasoningOff: true, SingleGPU: true},
+		},
+		{
+			name: "lfm3 gen projector speaks",
+			m: &Model{
+				Name: "lfm3-audio:latest",
+				Config: model.ConfigV2{
+					ModelFamily:   "lfm3a",
+					ModelFamilies: []string{"lfm3a", "lfm3a_gen"},
+				},
+			},
+			want: llm.LlamaServerConfig{Audio: true, Realtime: true, SingleGPU: true, Speech: true},
+		},
+		{
+			name: "qwen3 omni is file audio plus vision and may span gpus",
+			m: &Model{
+				Name: "qwen3-omni:latest",
+				Config: model.ConfigV2{
+					ModelFamily:   "qwen3a",
+					ModelFamilies: []string{"qwen3a", "qwen3vl_merger"},
+				},
+			},
+			want: llm.LlamaServerConfig{Audio: true, QwenVL: true},
+		},
+		{
+			name: "voxtral small is file audio and may span gpus",
+			m: &Model{
+				Name: "voxtral-small:latest",
+				Config: model.ConfigV2{
+					ModelFamily:   "voxtral",
+					ModelFamilies: []string{"voxtral"},
+				},
+			},
+			want: llm.LlamaServerConfig{Audio: true},
+		},
+		{
 			name: "eliza ngram requires env",
 			m: &Model{
 				Name: "eliza-1-2b:latest",
@@ -86,6 +152,9 @@ func TestLlamaServerConfigForModel(t *testing.T) {
 			}
 			if got.SpecType != tt.want.SpecType {
 				t.Fatalf("SpecType = %q, want %q", got.SpecType, tt.want.SpecType)
+			}
+			if got.ASR != tt.want.ASR || got.Audio != tt.want.Audio || got.Realtime != tt.want.Realtime || got.ReasoningOff != tt.want.ReasoningOff || got.SingleGPU != tt.want.SingleGPU || got.QwenVL != tt.want.QwenVL || got.Speech != tt.want.Speech {
+				t.Fatalf("config = %+v, want %+v", got, tt.want)
 			}
 		})
 	}

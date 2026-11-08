@@ -187,6 +187,8 @@ struct server_task {
     // used by SERVER_TASK_TYPE_INFERENCE
     task_params   params;
     server_tokens tokens;
+    // TRANSCRIBE_RT prompt for this socket. Empty keeps the asr template loaded with the model.
+    std::vector<llama_token> rt_prompt;
     common_json score_fields; // optional decision question and option spans (Clef)
     common_json pointer_rows; // optional Strands pointer-head rows
 

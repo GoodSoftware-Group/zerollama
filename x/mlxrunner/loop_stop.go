@@ -34,6 +34,28 @@ const (
 
 const finishDetailsRepetitionLoop = "repetition_loop"
 
+const (
+	stopKindEOS          = "eos"
+	stopKindStopSequence = "stop_sequence"
+	stopKindLength       = "length"
+	stopKindRepetition   = "repetition_loop"
+)
+
+// completionStopKind is the operator-facing halt for request logs. Public
+// done_reason stays stop/length; this splits EOS vs stop-sequence vs loop.
+func completionStopKind(doneReason int, finishDetails, stopSeq string) string {
+	if finishDetails == finishDetailsRepetitionLoop {
+		return stopKindRepetition
+	}
+	if stopSeq != "" {
+		return stopKindStopSequence
+	}
+	if doneReason == 0 {
+		return stopKindEOS
+	}
+	return stopKindLength
+}
+
 func generationShouldStop(toks []int32) bool {
 	return generationIsLoop(toks) || generationIsNearRepeatLoop(toks)
 }

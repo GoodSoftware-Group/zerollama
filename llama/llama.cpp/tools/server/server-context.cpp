@@ -2223,14 +2223,15 @@ private:
         // realtime transcription: the rows come from the audio stream, the helper may bias some tokens
         if (task.type == SERVER_TASK_TYPE_TRANSCRIBE_RT) {
             auto sparams = mtmd_audio_stream_params_default();
-            sparams.prompt   = asr_prompt.data();
-            sparams.n_prompt = asr_prompt.size();
+            const llama_tokens & rt_prompt = task.rt_prompt.empty() ? asr_prompt : task.rt_prompt;
+            sparams.prompt   = rt_prompt.data();
+            sparams.n_prompt = rt_prompt.size();
             slot.audio_stream.reset(mtmd_audio_stream_init(mctx, sparams));
             if (!slot.audio_stream) {
                 send_error(task, "failed to initialize the audio stream", ERROR_TYPE_SERVER);
                 return false;
             }
-            if (!asr_prompt.empty()) {
+            if (!rt_prompt.empty()) {
                 for (const auto & b : mtmd_helper::audio_stream_logit_bias(mctx, model_tgt)) {
                     task.params.sampling.logit_bias.push_back(b);
                 }
@@ -6714,13 +6715,18 @@ void server_routes::init_routes() {
         }
 
         const std::string session_id = "sess_" + random_string();
-        const json session_config = json {
+        const std::string language = req.get_param("language");
+        json transcription = {{"model", meta->model_name}};
+        if (!language.empty()) {
+            transcription["language"] = language;
+        }
+        json session_config = json {
             {"id",     session_id},
             {"object", "realtime.transcription_session"},
             {"type",   "transcription"},
             {"audio",  {{"input", {
                 {"format",          {{"type", "audio/pcm"}, {"rate", mtmd_get_audio_sample_rate(ctx_server.mctx)}}},
-                {"transcription",   {{"model", meta->model_name}}},
+                {"transcription",   transcription},
                 {"turn_detection",  nullptr},
                 {"noise_reduction", nullptr},
             }}}},
@@ -6731,6 +6737,9 @@ void server_routes::init_routes() {
         {
             server_task task(SERVER_TASK_TYPE_TRANSCRIBE_RT);
             task.id = rd.get_new_id();
+            if (!language.empty()) {
+                task.rt_prompt = server_chat_get_asr_prompt(model_tgt, language);
+            }
             task.params.sampling          = params.sampling;
             task.params.stream            = true;
             task.params.oaicompat_cmpl_id = session_id;
@@ -6795,6 +6804,17 @@ void server_routes::init_routes() {
                 }
                 const std::string type = json_value(ev, "type", std::string());
                 if (type == "session.update" || type == "transcription_session.update") {
+                    const json session = ev.value("session", json::object());
+                    const json audio = session.value("audio", json::object());
+                    const json in = audio.value("input", json::object());
+                    const json tr = in.value("transcription", json::object());
+                    if (tr.contains("language") && !tr["language"].is_null()) {
+                        const std::string next = json_value(tr, "language", std::string());
+                        if (!next.empty() && next != language) {
+                            send_error_event("language is fixed when the realtime stream opens; pass it on the URL", "invalid_request_error");
+                            continue;
+                        }
+                    }
                     send_event(json {{"type", "session.updated"}, {"session", session_config}});
                 } else if (type == "input_audio_buffer.append") {
                     std::string pcm;

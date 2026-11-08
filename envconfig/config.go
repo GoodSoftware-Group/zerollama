@@ -840,9 +840,21 @@ func WhisperBin() string {
 	return cmp.Or(Var("OLLAMA_WHISPER_BIN"), "whisper")
 }
 
+// WhisperServer is the path to whisper.cpp's whisper-server. A duplex call uses
+// it when the binary is present so the model stays loaded for every clip.
+// Missing falls back to WhisperBin for one clip at a time.
+func WhisperServer() string {
+	return cmp.Or(Var("OLLAMA_WHISPER_SERVER"), "whisper-server")
+}
+
 // WhisperModelPath is a default GGML model path when backend_paths.whisper_model is unset.
 func WhisperModelPath() string {
 	return Var("OLLAMA_WHISPER_MODEL")
+}
+
+// WhisperVADModel is a Silero VAD model path when backend_paths.vad_model is unset.
+func WhisperVADModel() string {
+	return Var("OLLAMA_WHISPER_VAD_MODEL")
 }
 
 // WhisperExtraArgs are extra CLI tokens appended to the whisper invocation (split on spaces).
@@ -850,9 +862,62 @@ func WhisperExtraArgs() string {
 	return Var("OLLAMA_WHISPER_EXTRA_ARGS")
 }
 
+// Qwen3ASRModelPath is a local Qwen3-ASR weight directory when
+// backend_paths.qwen3_asr is unset. A Hub id is not accepted; the directory
+// must already exist. Empty means the resident process cannot start.
+func Qwen3ASRModelPath() string {
+	return Var("OLLAMA_QWEN3_ASR")
+}
+
+// Qwen3ASRDevice is the device_map for Qwen3-ASR (default cpu). Set cuda:0 to
+// load on a GPU and leave CUDA_VISIBLE_DEVICES alone.
+func Qwen3ASRDevice() string {
+	return cmp.Or(Var("OLLAMA_QWEN3_ASR_DEVICE"), "cpu")
+}
+
+// NeuralVAD is a local Silero ONNX path for live turn-taking. Empty or a
+// missing file leaves duplex and the realtime proxy on amplitude. Distinct
+// from WhisperVADModel (whisper.cpp's ggml Silero bin).
+func NeuralVAD() string {
+	return Var("OLLAMA_NEURAL_VAD")
+}
+
 // PiperBin is the Piper TTS executable.
 func PiperBin() string {
 	return cmp.Or(Var("OLLAMA_PIPER_BIN"), "piper")
+}
+
+// PiperTashkeelModel is a libtashkeel ONNX path when backend_paths.tashkeel_model is unset.
+// An Arabic Piper voice uses it to add diacritics before phonemization.
+func PiperTashkeelModel() string {
+	return Var("OLLAMA_PIPER_TASHKEEL_MODEL")
+}
+
+// PiperESpeakData is an espeak-ng data directory when backend_paths.espeak_data is unset.
+// An eSpeak Piper voice uses it to turn text into phonemes.
+func PiperESpeakData() string {
+	return Var("OLLAMA_PIPER_ESPEAK_DATA")
+}
+
+// PiperPhraseWarm pre-synthesizes short Piper fillers when serve starts.
+// ZEROLLAMA_PIPER_WARM=0 skips that pass. A repeated short phrase still
+// comes from the phrase cache.
+func PiperPhraseWarm() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_PIPER_WARM"))
+	if v == "0" || strings.EqualFold(v, "false") || strings.EqualFold(v, "off") {
+		return false
+	}
+	return true
+}
+
+// KokoroPhraseWarm pre-synthesizes short Kokoro fillers when serve starts.
+// ZEROLLAMA_KOKORO_WARM=0 skips that pass. It is independent of PiperPhraseWarm.
+func KokoroPhraseWarm() bool {
+	v := strings.TrimSpace(Var("ZEROLLAMA_KOKORO_WARM"))
+	if v == "0" || strings.EqualFold(v, "false") || strings.EqualFold(v, "off") {
+		return false
+	}
+	return true
 }
 
 // ExternalImageBin is a user script or binary for modality_backends.image=external-image.
@@ -868,6 +933,23 @@ func ModalityWhisperTimeout() time.Duration {
 // ModalityPiperTimeout bounds Piper subprocess runtime (default 5m).
 func ModalityPiperTimeout() time.Duration {
 	return modalityTimeout("OLLAMA_PIPER_TIMEOUT", 5*time.Minute)
+}
+
+// KokoroModel is a local Kokoro ONNX path when the tag is already kokoro and
+// backend_paths.kokoro_model is unset. It does not select the speech backend.
+func KokoroModel() string {
+	return Var("OLLAMA_KOKORO_MODEL")
+}
+
+// KokoroVoices is a local voices-v1.0.bin path when the tag is already kokoro and
+// backend_paths.kokoro_voices is unset. It does not select the speech backend.
+func KokoroVoices() string {
+	return Var("OLLAMA_KOKORO_VOICES")
+}
+
+// ModalityKokoroTimeout bounds Kokoro load and speak (default 5m).
+func ModalityKokoroTimeout() time.Duration {
+	return modalityTimeout("OLLAMA_KOKORO_TIMEOUT", 5*time.Minute)
 }
 
 // TTSURL is a fleet-wide default base or full URL for modality_backends.speech=remote-tts

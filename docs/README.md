@@ -26,6 +26,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [video-c (Pure-C Wan + H3 stub)](./video-c.md) — Darwin UMA + CUDA twin lab; client-optional runner; [dit-pager](./dit-pager.md); [cuda-uma-toolkit](./cuda-uma-toolkit.md). ([wan-c.md](./wan-c.md) redirect.)
 * [music-c (MiniMax Music 3)](./music-c.md) — **why** mlx-audio first (no Comfy GPL runtime, no CUDA Omni to hear); C parked until a WAV; Omni rematch gold. [findings](./music-c-findings.md).
 * [H3 MLX borrowings](./h3-mlx-borrowings.md) — [minimax-h3-mlx](https://github.com/mrbizarro/minimax-h3-mlx) as rematch oracle (AdaLN drop, TE truncation, packing); not the product runner.
+* [H3 Metal borrowings](./h3-metal-borrowings.md) — [zuiho-kai/h3-metal](https://github.com/zuiho-kai/h3-metal) Mac speed lab; FastH3 sigma table only in video-c.
 * [H3 ClipProj](./h3-clipproj.md) — NicoLab28 small-Qwen3-VL → `[seq,5120]` TE map; video-c host load/apply.
 * [Wan text-to-video (T2V)](./wan-t2v.md) — **why** `/v1/videos` is async, **why** training `run_script` + wrapper, VRAM/defer queue, artifacts; TI2V keyframes.
 * [LTX text-to-video (v1.4)](./ltx-t2v.md) — **why** LTXV distilled+quanto first; **why** LTX-2.5 host floor 72 GiB (astra OOM); **why** dual-GPU best-fit + irodori migrate-only-on-contention; Wan2GP behind `/v1/videos`.
@@ -33,6 +34,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [Media uploads (`/v1/media`)](./media-uploads.md) — **why** session/label PUT + CAS (no client digests, no refcounts); **why** not model `blobs/`; keyframe workflow + `media_missing` recovery.
 * [wan-c vs Python MPS speed gap](./wan-c-speed-gap.md) — profile + Phase1 cuts + toolkit `DIT_BLOCK` / flash ATTN / feat_cache asks.
 * [MLX image generation (Z-Image Turbo)](./imagegen-zimage-turbo.md) — **why** a fourth VRAM stack (MLX subprocess); staged load on 16 GB CUDA; CPU VAE handoff; scheduler/broker integration; build + troubleshoot.
+* [Local GLB / mesh gen (TRELLIS lab)](./mesh-gen.md) — **why** M4 still + Metal TRELLIS.2, or astra CUDA reference; sm_89 compile (not Blackwell wheels); nvdiffrast / mtldiffrast lab-only; HTTP later.
 * [ComfyUI image backend](./comfyui-image-backend.md) — **why** orchestrate Comfy for agent edit/ControlNet/LoRA instead of porting every HF DiT to MLX; bindings, discovery, VRAM handoff, example workflow calibration.
 * [Optional multimodal backends](./multimodal-backends.md) — env + manifest; **why** both layers; image drivers (`mlx-imagegen`, `external-image`, `comfyui`).
 * [Quick voice stack](./quick-voice.md) — **why** `whisper-base` + a small chat tag + `piper-lessac` on one duplex socket; **why** a 300 ms quiet wait is `session.update`, not the URL.
