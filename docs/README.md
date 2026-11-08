@@ -35,6 +35,7 @@ These live in-repo (not only on docs.ollama.com) because they explain **design r
 * [MLX image generation (Z-Image Turbo)](./imagegen-zimage-turbo.md) — **why** a fourth VRAM stack (MLX subprocess); staged load on 16 GB CUDA; CPU VAE handoff; scheduler/broker integration; build + troubleshoot.
 * [ComfyUI image backend](./comfyui-image-backend.md) — **why** orchestrate Comfy for agent edit/ControlNet/LoRA instead of porting every HF DiT to MLX; bindings, discovery, VRAM handoff, example workflow calibration.
 * [Optional multimodal backends](./multimodal-backends.md) — env + manifest; **why** both layers; image drivers (`mlx-imagegen`, `external-image`, `comfyui`).
+* [Quick voice stack](./quick-voice.md) — **why** `whisper-base` + a small chat tag + `piper-lessac` on one duplex socket; **why** a 300 ms quiet wait is `session.update`, not the URL.
 * [Roadmap — local voice & llama borrowings (eliza-v3)](./ROADMAP.md#local-voice--llama-borrowings-eliza-v3) — **inference first:** GPU autotune profiles (**L1**), fork kernels (**L2**), KV prefix cache (**L3**); voice **L5+** later.
 * [L1 GPU profiles (autotune)](./gpu-profiles-l1.md) — **why** batch/parallel/MTP tuning is separate from Phase 13 VRAM estimates; **`l1_cuda_full_gate.sh`**; NVIDIA + Apple tiers; operator env.
 * [llama.cpp backend unification](./llama-cpp-unification.md) — **why** one elizaOS tree @ `LLAMA_CPP_COMMIT` replaces stock + eliza-llama siblings; discovery, doctor, vendor rebase plan.
