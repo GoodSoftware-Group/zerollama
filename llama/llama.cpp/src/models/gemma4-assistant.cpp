@@ -14,8 +14,19 @@ void llama_model_gemma4_assistant::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ROPE_FREQ_BASE_SWA,           hparams.rope_freq_base_train_swa, false);
     ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW,     hparams.n_swa);
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,  hparams.f_norm_rms_eps);
-    ml.get_key(LLM_KV_ATTENTION_KEY_LENGTH_SWA,     hparams.n_embd_head_k_swa);
-    ml.get_key(LLM_KV_ATTENTION_VALUE_LENGTH_SWA,   hparams.n_embd_head_v_swa);
+    // Eliza-1 e2b drafters omit the SWA head keys. Dense key_length is 512;
+    // the SWA head matches embedding_length (256). e4b publishes these keys.
+    {
+        uint32_t swa_k = 0;
+        if (!ml.get_key(LLM_KV_ATTENTION_KEY_LENGTH_SWA, swa_k, false)) {
+            hparams.n_embd_head_k_swa = hparams.n_embd;
+            hparams.n_rot_swa         = hparams.n_embd_head_k_swa;
+        }
+        uint32_t swa_v = 0;
+        if (!ml.get_key(LLM_KV_ATTENTION_VALUE_LENGTH_SWA, swa_v, false)) {
+            hparams.n_embd_head_v_swa = hparams.n_embd;
+        }
+    }
 
     // Standalone assistant GGUFs store the draft stack in block_count
     // (blk.0 .. blk.N-1). nextn_predict_layers is the MTP horizon (often 1),

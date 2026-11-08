@@ -66,7 +66,7 @@ try:
     )
 except ImportError as e:
     print(f"SKIP GPU: missing training deps ({e})")
-    print("  fix: TRAINING_UV_VENV=/mnt/nvme/zerollama/.venv-training \\")
+    print("  fix: TRAINING_UV_VENV=/mnt/ssd2/nvme/zerollama/.venv-training \\")
     print("       ./scripts/training/training_uv_venv.sh --verify")
     raise SystemExit(0)
 

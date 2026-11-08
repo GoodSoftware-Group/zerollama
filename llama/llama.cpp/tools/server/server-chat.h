@@ -25,9 +25,7 @@ json convert_transcriptions_to_chatcmpl(
     std::vector<raw_buffer> & out_files);
 
 // prompt of the "asr" chat template, live ASR models (e.g. LFM3-Audio live ASR) transcribe with it
-// language is passed into that template. When the template does not read it, the
-// same hint used for file ASR is appended. Empty language keeps the template as loaded.
-// empty tokens if the model has no such template, throws on a template error
-llama_tokens server_chat_get_asr_prompt(const llama_model * model, const std::string & language = "");
+// empty if the model has no such template, throws on a template error
+llama_tokens server_chat_get_asr_prompt(const llama_model * model);
 
 json server_chat_msg_diff_to_json_oaicompat(const common_chat_msg_diff & diff);

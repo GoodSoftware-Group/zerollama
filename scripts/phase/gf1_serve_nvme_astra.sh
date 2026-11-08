@@ -6,7 +6,11 @@ set -euo pipefail
 ROOT="${GLM_FLASH_LITE_ROOT:-/mnt/ssd2/src/glm-flash-lite}"
 VENV="${VENV:-/mnt/ssd2/venv-glm53}"
 MODEL="${GLM53_MODEL_DIR:-/mnt/ssd2/models/glm53}"
-STORE="${GLM53_NV_STORE:-/mnt/nvme/glm53/glm53_flash_exl3_3.05bpw_experts.bin}"
+# Expert store lives on ssd2; /mnt/nvme/glm53 is a compat symlink when present.
+STORE="${GLM53_NV_STORE:-/mnt/ssd2/nvme/glm53/glm53_flash_exl3_3.05bpw_experts.bin}"
+if [[ ! -f "$STORE" && -f /mnt/nvme/glm53/glm53_flash_exl3_3.05bpw_experts.bin ]]; then
+  STORE=/mnt/nvme/glm53/glm53_flash_exl3_3.05bpw_experts.bin
+fi
 PORT="${PORT:-30000}"
 
 if [[ ! -d "$ROOT/glm53" ]]; then

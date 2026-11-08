@@ -70,7 +70,7 @@
 | RAM | 125 GiB total, ~106 GiB MemAvailable | **`nvme` @ 55 g** (not `fast` — needs ~238 GiB free) |
 | CPU | i9-13900K, 32 logical; AVX2+FMA+F16C | OK; below their “40 logical” measured layout → derived pin layout |
 | Disk | `/mnt/ssd2` = **CT2000BX500 SATA** ext4 (~1.2 TiB free) | Weights OK; not true NVMe |
-| Real NVMe | `nvme0n1` Samsung **9100 PRO 2 TB** — **ext4** `/mnt/nvme` (operator-approved `mkfs`) | Expert store `/mnt/nvme/glm53` |
+| Real NVMe | `nvme0n1` Samsung **9100 PRO 2 TB** is now **`/`** (not a data volume) | Expert store parked at `/mnt/ssd2/nvme/glm53` (`/mnt/nvme/glm53` compat symlink) |
 | Docker | absent | Prefer venv/systemd |
 
 | Recipe (upstream) | RAM | Storage | astra |

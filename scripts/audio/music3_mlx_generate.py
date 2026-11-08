@@ -53,8 +53,48 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
+def _wan2gp_ckpt(model: str) -> Path | None:
+    path = Path(model).expanduser()
+    for name in (
+        "MiniMax_Music3_transformer_int8_convrot.safetensors",
+        "MiniMax_Music3_transformer_bf16.safetensors",
+    ):
+        if (path / name).is_file():
+            return path
+    return None
+
+
+def _dispatch_wan2gp(ckpt: Path) -> int:
+    """Re-exec the CUDA pack with the Wan2GP venv. MLX stays the Mac path."""
+    root = ckpt.parent
+    venv = Path(os.environ.get("WAN2GP_VENV") or (root / "venv"))
+    py = venv / "bin" / "python3"
+    script = Path(__file__).resolve().parent / "music3_wan2gp_generate.py"
+    if not py.is_file():
+        print(f"Wan2GP python missing: {py}", file=sys.stderr)
+        return 2
+    if not script.is_file():
+        print(f"Wan2GP music wrapper missing: {script}", file=sys.stderr)
+        return 2
+    os.environ["WAN2GP_CKPT_DIR"] = str(ckpt)
+    os.environ.setdefault("WAN2GP_REPO", str(root / "repo"))
+    os.environ.setdefault("WAN2GP_VENV", str(venv))
+    if Path(sys.executable).resolve() != py.resolve():
+        os.execv(str(py), [str(py), str(script)])
+    import runpy
+
+    runpy.run_path(str(script), run_name="__main__")
+    return 0
+
+
 def main() -> int:
     args = _parser().parse_args()
+    ckpt = _wan2gp_ckpt(args.model)
+    if ckpt is not None or os.environ.get("MUSIC3_BACKEND", "").lower() in ("wan2gp", "cuda"):
+        if ckpt is None:
+            raw = os.environ.get("WAN2GP_CKPT_DIR") or args.model
+            ckpt = Path(raw).expanduser()
+        return _dispatch_wan2gp(ckpt)
     lyrics = args.lyrics
     if args.lyrics_file is not None:
         lyrics = args.lyrics_file.read_text(encoding="utf-8")

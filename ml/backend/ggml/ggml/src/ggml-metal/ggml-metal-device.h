@@ -321,10 +321,6 @@ struct ggml_metal_device_props {
     enum ggml_metal_device_id device_id;
     int gpu_family;
 
-    // Used by ggml-metal-context.m to gate MTLDispatchTypeConcurrent (broken
-    // barriers on discrete AMD/Intel Metal; Apple7+ is safe).
-    bool supports_gpu_family_apple7;
-
     int op_offload_min_batch_size;
 };
 
