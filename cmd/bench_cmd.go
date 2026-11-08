@@ -468,8 +468,10 @@ func runBench(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		if br.rate <= 0 {
-			fmt.Fprintf(os.Stderr, "warning: %s: no valid tok/s metrics\n", m.Name)
+		// WHY: completion fills rate (tok/s); image/video_gen fill genSec only.
+		// Checking rate alone falsely rejects successful image benches as "no tok/s".
+		if br.rate <= 0 && br.genSec <= 0 {
+			fmt.Fprintf(os.Stderr, "warning: %s: no valid bench metrics\n", m.Name)
 			results = append(results, result{name: m.Name, kind: kind, err: fmt.Errorf("invalid metrics")})
 			benchUnloadAllLoaded(cmd.Context(), client, genTimeout)
 			continue

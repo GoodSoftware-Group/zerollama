@@ -14,9 +14,11 @@ a380_llama_vendor_root() {
     echo "${ZEROLLAMA_REPO}"
     return 0
   fi
+  # scripts/gpu → repo root (two levels up). WHY not one: that lands on scripts/ and
+  # Makefile.sync / vendor/ go missing, so install looks for vendor/llama-cpp-/…
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  echo "$(cd "${script_dir}/.." && pwd)"
+  echo "$(cd "${script_dir}/../.." && pwd)"
 }
 
 a380_llama_vendor_pin() {
@@ -65,13 +67,18 @@ a380_verify_fork_llama_server() {
     echo "a380: fork llama-server missing (run ./scripts/build/build_zerollama_a380.sh --llama)" >&2
     return 1
   fi
-  local help libdir
+  # WHY file not echo|grep: --help is large enough that `echo "$help"` hits ARG_MAX
+  # and falsely reports "stock upstream" (broken pipe on the echo).
+  local libdir helpf
   libdir="$(dirname "${bin}")"
-  help="$(LD_LIBRARY_PATH="${libdir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" "${bin}" --help 2>&1 || true)"
-  if echo "${help}" | grep -qE 'qjl1_256|tbq3_0|tbq4_0'; then
+  helpf="$(mktemp)"
+  LD_LIBRARY_PATH="${libdir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" "${bin}" --help >"${helpf}" 2>&1 || true
+  if grep -qE 'qjl1_256|tbq3_0|tbq4_0' "${helpf}"; then
+    rm -f "${helpf}"
     echo "a380: fork llama-server OK (${bin})"
     return 0
   fi
+  rm -f "${helpf}"
   echo "a380: ${bin} lacks fork KV types in --help (stock upstream?)" >&2
   return 1
 }
