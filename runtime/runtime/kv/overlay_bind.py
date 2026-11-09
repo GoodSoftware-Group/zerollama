@@ -43,7 +43,7 @@ this module's bind functions are reachable from the runtime's model-load path,
 and behavior is byte-for-byte identical to today (no registration call is ever
 made).
 
-Required load order (two-step, see ``docs/phase15-native-kv.md`` v48/v49
+Required load order (two-step, see ``docs/design/serving/phase15-native-kv.md`` v48/v49
 sections):
   1. Query the exact byte size ggml will request for a given model's KV cache
      (best done via a throwaway/dry-run construction, or an operator-supplied

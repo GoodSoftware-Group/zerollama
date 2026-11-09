@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run coordination + full runtime GPU/proxy smokes (see docs/testing-smoke.md).
+# Run coordination + full runtime GPU/proxy smokes (see docs/runbooks/testing-smoke.md).
 #
 #   export LLAMA_MODEL LLAMA_SERVER_BIN
 #   ./scripts/gpu/gpu_smoke_all.sh

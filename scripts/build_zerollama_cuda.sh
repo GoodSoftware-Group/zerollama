@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build zerollama on Linux CUDA (5080 / CT-class): Go binary + matching ggml CUDA
-# runners + optional llama-server. Counterpart to scripts/build_zerollama_mac.sh.
+# runners + optional llama-server. Counterpart to scripts/build/build_zerollama_mac.sh.
 #
 # WHY not plain `go build`: the daemon dlopens /usr/lib/ollama/cuda_v*/libggml-cuda.so.
 # Rebuilding only the Go binary against newer ggml headers (device_id props, etc.)
@@ -19,7 +19,7 @@
 #   ./scripts/build_zerollama_cuda.sh /path/to/output/binary
 #
 # After install, serve with OLLAMA_LLM_LIBRARY=cuda_v13 and /root/nvidia-host first
-# (see scripts/serve_gpu_example.sh / ~/bin/serve.sh).
+# (see scripts/serve/serve_gpu_example.sh / ~/bin/serve.sh).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -276,12 +276,8 @@ _should_build_llama_server() {
 }
 
 _build_llama_server() {
-	# Prefer scripts/build/ (current layout); fall back to legacy repo-root path.
 	local script="${ROOT}/scripts/build/build_llama_server.sh"
-	if [[ ! -x "${script}" ]]; then
-		script="${ROOT}/scripts/build_llama_server.sh"
-	fi
-	[[ -x "${script}" ]] || _die "missing build_llama_server.sh under scripts/build/ or scripts/"
+	[[ -x "${script}" ]] || _die "missing ${script}"
 	# WHY export: build_llama_server.sh defaults to 89-real; CT 1564 / 5080 needs
 	# the same CUDA_ARCHS as the ggml runners (120-real) or llama-server aborts
 	# with "no kernel image is available for execution on the device".

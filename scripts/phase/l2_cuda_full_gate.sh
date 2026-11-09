@@ -91,4 +91,4 @@ fi
 
 echo ""
 echo "L2 CUDA artifacts: ${OUT_DIR}/"
-echo "Doc: docs/gpu-profiles-l2.md"
+echo "Doc: docs/design/serving/gpu-profiles-l2.md"

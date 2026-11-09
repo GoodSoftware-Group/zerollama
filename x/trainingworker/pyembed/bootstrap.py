@@ -7,7 +7,7 @@ This is not an installable package. It exists to:
 
 Why BridgeState keeps _pending_oom_event: Go may ack VRAM relief immediately after fire_oom.
 The wait step must use the same threading.Event created *before* notify, or acks are lost
-and Python blocks until timeout. See docs/gpu-training.md (OOM synchronization).
+and Python blocks until timeout. See docs/design/training/gpu-training.md (OOM synchronization).
 """
 
 from __future__ import annotations

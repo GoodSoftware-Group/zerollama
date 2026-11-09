@@ -69,4 +69,4 @@ PY
 fi
 
 echo "PASS: phase15_upstream_kv_watch"
-echo "Doc: docs/phase15-llama-kv-ext-upstream.md"
+echo "Doc: docs/design/serving/phase15-llama-kv-ext-upstream.md"

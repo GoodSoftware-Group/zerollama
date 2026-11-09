@@ -16,7 +16,7 @@ import (
 	"github.com/ollama/ollama/types/model"
 )
 
-// Routing memory (docs/auto-router.md AR6).
+// Routing memory (docs/design/surfaces/auto-router.md AR6).
 //
 // Sticky: a conversation keeps its routed model across turns. WHY: switching models
 // mid-thread discards the KV / Radix prefix and changes the assistant's voice — for agent

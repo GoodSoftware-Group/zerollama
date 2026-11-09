@@ -1,4 +1,4 @@
-# Lab router.yaml for the AR4 A/B and the AR7 gate (docs/auto-router-findings.md Finding 10).
+# Lab router.yaml for the AR4 A/B and the AR7 gate (docs/design/surfaces/auto-router-findings.md Finding 10).
 #
 #   cp scripts/eval/router_lab.example.yaml ~/.ollama/router.yaml   # or ZEROLLAMA_ROUTER_CONFIG=…
 #   # edit the model tags below to what `zerollama ls` shows on the lab node

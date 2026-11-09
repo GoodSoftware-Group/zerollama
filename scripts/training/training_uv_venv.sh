@@ -11,7 +11,7 @@
 # and this helper prefer the binary.
 #
 # Legacy repo-root venv-training/ is ignored — only .venv-training is canonical (see
-# x/pyembed_common/embedded_pytorch_env.c and docs/gpu-training.md). WHY gitignored:
+# x/pyembed_common/embedded_pytorch_env.c and docs/design/training/gpu-training.md). WHY gitignored:
 # duplicate ~7GiB torch trees; operators should not recreate this path.
 #
 #   source ./scripts/training/training_uv_venv.sh && training_uv_venv

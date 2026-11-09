@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A/B two (or more) routers on a labeled prompt set via POST /api/router/decide.
 
-AR4 exit check (docs/auto-router.md): compare `classifier: jev` against `classifier: score`
+AR4 exit check (docs/design/surfaces/auto-router.md): compare `classifier: jev` against `classifier: score`
 on the same policies/candidates. Dry runs only — nothing generates, so it is safe on a lab
 node. Stdlib only.
 

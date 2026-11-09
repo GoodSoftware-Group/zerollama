@@ -26,4 +26,4 @@ echo "== Phase 16 edge smoke (serve --edge) =="
 
 echo ""
 echo "PASS: phase16_edge_smoke (${P16_OUT})"
-echo "Doc: docs/phase16-thin-edge.md"
+echo "Doc: docs/design/serving/phase16-thin-edge.md"

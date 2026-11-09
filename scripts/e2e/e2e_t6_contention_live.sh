@@ -9,7 +9,7 @@
 #   RUN_E2E_T6_LIVE=1 OLLAMA_HOST=http://127.0.0.1:11435 ./scripts/e2e/e2e_t6_contention_live.sh
 #     → asserts /api/status queue_policy.defer_pauses_ggml is present
 #
-# Doc: docs/t6-unified-queue.md § T6d
+# Doc: docs/design/training/t6-unified-queue.md § T6d
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"

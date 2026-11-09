@@ -1,4 +1,4 @@
-// Flash-MoE pull-time sidecar auto-extract (M16 open item — see docs/flash-moe.md).
+// Flash-MoE pull-time sidecar auto-extract (M16 open item — see docs/research/flash-moe.md).
 //
 // Why opt-in and pull-only: extraction reads the entire routed-expert GGUF
 // payload and can take minutes on 100GB+ MoE models. Operators who never
@@ -63,7 +63,7 @@ func AutoExtractFlashMoESidecarAfterPull(name model.Name, fn func(api.ProgressRe
 }
 
 // extractFlashMoESidecar shells out to anemll's flashmoe_sidecar.py extract —
-// same tool docs/flash-moe.md and flash_moe_extract_sidecar.sh use. Why
+// same tool docs/research/flash-moe.md and flash_moe_extract_sidecar.sh use. Why
 // reimplement the wrapper here instead of exec'ing the .sh: pull runs inside
 // the Go daemon with no shell/script dependency guarantees on non-dev hosts.
 func extractFlashMoESidecar(ggufPath, outDir string) error {

@@ -6,6 +6,6 @@
 // when agents cancel. This package polls peer GET /api/status (F2), builds a warm-model map,
 // and returns {url, node_id} for direct agent calls. It never loads models or evicts remotely.
 //
-// CLI: zerollama fleet serve — see docs/fleet-management.md.
+// CLI: zerollama fleet serve — see docs/design/training/fleet-management.md.
 // LAN discovery (F4): nodes advertise _zerollama._tcp; fleet manager browses and merges with static peers.
 package fleet

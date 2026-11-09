@@ -2,7 +2,7 @@
 //
 // Why a shared helper: ANE probe and Flash-MoE llama-server discovery both walk
 // executable dir, cwd→go.mod, and ZEROLLAMA_REPO — duplicating that logic caused
-// drift when one path gained an extra parent walk. See docs/flash-moe.md.
+// drift when one path gained an extra parent walk. See docs/research/flash-moe.md.
 package reporoots
 
 import (

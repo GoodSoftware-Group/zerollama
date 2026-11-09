@@ -5,7 +5,7 @@ package trainingworker
 // requires a genuine healthy response. It only runs when a CPU-only (or GPU) training venv
 // is provisioned and OLLAMA_TRAINING_PYTHONPATH/ZEROLLAMA_REPO points at training.py — see
 // scripts/training/training_uv_venv.sh (TRAINING_UV_CPU_ONLY=1 for a CI-friendly CPU torch
-// install) and docs/gpu-training.md.
+// install) and docs/design/training/gpu-training.md.
 //
 // WHY a separate opt-in test rather than changing the existing CI-friendly smoke
 // (server/training_ci_smoke_test.go): that test intentionally covers the "no embed available"

@@ -40,13 +40,13 @@ func runtimeProxyOptions(
 	if limited {
 		opts["num_predict"] = nPredict
 	}
-	clientGGUF := ""
-	if g, ok := opts["gguf"].(string); ok {
-		clientGGUF = strings.TrimSpace(g)
+	clientGGUF, _ := opts["gguf"].(string)
+	delete(opts, "gguf")
+	manifestPath := ""
+	if p, ok := runtimeGGUFPath(modelName); ok {
+		manifestPath = p
 	}
-	if clientGGUF != "" {
-		opts["gguf"] = clientGGUF
-	} else if p, ok := runtimeGGUFPath(modelName); ok {
+	if p := ProxyGGUFPath(manifestPath, strings.TrimSpace(clientGGUF)); p != "" {
 		opts["gguf"] = p
 	}
 	return opts

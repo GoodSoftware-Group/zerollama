@@ -129,6 +129,7 @@ func runStoragePull(ctx context.Context, auth *remotestore.Auth, base, modelName
 	var spinner *progress.Spinner
 
 	dec := json.NewDecoder(resp.Body)
+	sawSuccess := false
 	for {
 		var ev storaged.ProgressEvent
 		if err := dec.Decode(&ev); err == io.EOF {
@@ -144,6 +145,7 @@ func runStoragePull(ctx context.Context, auth *remotestore.Auth, base, modelName
 			return fmt.Errorf("storage pull: %s\nHint: check registry name / disk on storage host", msg)
 		}
 		if ev.Status == "success" {
+			sawSuccess = true
 			continue
 		}
 		if ev.Digest != "" {
@@ -175,6 +177,9 @@ func runStoragePull(ctx context.Context, auth *remotestore.Auth, base, modelName
 			spinner = progress.NewSpinner(status)
 			p.Add(status, spinner)
 		}
+	}
+	if err := remotestore.PullStreamComplete(sawSuccess); err != nil {
+		return fmt.Errorf("%w\nHint: the storage host may still be downloading; retry", err)
 	}
 	fmt.Fprintf(os.Stderr, "pulled %s onto %s\n", modelName, base)
 	return nil

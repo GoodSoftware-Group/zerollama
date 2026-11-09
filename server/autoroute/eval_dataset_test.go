@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// evalRow mirrors testdata/router_eval/prompts.jsonl (docs/auto-router.md AR7). Labels are
+// evalRow mirrors testdata/router_eval/prompts.jsonl (docs/design/surfaces/auto-router.md AR7). Labels are
 // model-agnostic so the same set scores any node's router.yaml.
 type evalRow struct {
 	ID         string   `json:"id"`

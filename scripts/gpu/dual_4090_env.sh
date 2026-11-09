@@ -7,7 +7,7 @@
 # Production (this host): sidecar at /opt/zerollama, Go on :2083.
 # Dev: external runtime on :8081 + ZEROLLAMA_RUNTIME_URL (edge build cannot embed).
 #
-# Doc: docs/cuda-lanes.md
+# Doc: docs/design/serving/cuda-lanes.md
 set -euo pipefail
 
 _Z4090_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")/../.." && pwd)"

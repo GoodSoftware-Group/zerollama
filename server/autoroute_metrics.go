@@ -9,7 +9,7 @@ import (
 	"github.com/ollama/ollama/server/autoroute"
 )
 
-// Router metrics for GET /api/metrics (docs/auto-router.md §13). Only in-band rewrites
+// Router metrics for GET /api/metrics (docs/design/surfaces/auto-router.md §13). Only in-band rewrites
 // count — dry runs (/v1/route, /api/router/decide) are probes, not traffic.
 //
 // WHY a mutex map, not atomics: labels are (router, surface, reason). Cardinality stays

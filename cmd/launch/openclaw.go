@@ -910,7 +910,7 @@ func registerWebSearchPlugin() {
 
 // openclawModelConfig builds an OpenClaw model config entry from launch inventory
 // metadata. WHY no Show call: capabilities and context length come from the single
-// /api/tags load in modelInventory.Resolve (see docs/launch-model-inventory.md).
+// /api/tags load in modelInventory.Resolve (see docs/design/serving/launch-model-inventory.md).
 func openclawModelConfig(launchModel LaunchModel) (map[string]any, bool) {
 	entry := map[string]any{
 		"id":    launchModel.Name,

@@ -17,7 +17,51 @@ import (
 	"github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/ml"
+	"github.com/ollama/ollama/server/remotestore"
 )
+
+func TestInFlightLoadIsNotExpired(t *testing.T) {
+	s := InitScheduler(t.Context())
+	loadDone := make(chan struct{})
+	m := &Model{ModelPath: "/tmp/in-flight.gguf"}
+	runner := &runnerRef{
+		model:     m,
+		modelPath: m.ModelPath,
+		modelKey:  schedulerModelKey(m),
+		loading:   true,
+		loadDone:  loadDone,
+		Options:   &api.Options{},
+	}
+	reqCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	req := &LlmRequest{ctx: reqCtx, model: m, errCh: make(chan error, 1)}
+
+	if !s.deferToInFlightLoad(t.Context(), req, runner) {
+		t.Fatal("in-flight load must keep the process")
+	}
+	if s.pending.Len() != 0 {
+		t.Fatal("request requeued before the load finished")
+	}
+	select {
+	case <-s.expiredCh:
+		t.Fatal("expired a runner the load still owns")
+	default:
+	}
+
+	close(loadDone)
+	deadline := time.Now().Add(2 * time.Second)
+	for s.pending.Len() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("request was not requeued after the load finished")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	select {
+	case <-s.expiredCh:
+		t.Fatal("finishing the load expired the runner")
+	default:
+	}
+}
 
 func TestMain(m *testing.M) {
 	// Why default no-cloud in tests: dev boxes with ELIZACLOUD_API_KEY merge live catalog
@@ -55,6 +99,16 @@ func TestMain(m *testing.M) {
 			"path", inherited)
 	}
 	_ = os.Unsetenv("OLLAMA_MODELS")
+	// GetModel refreshes a parsed tag from storage. An operator shell that
+	// exports the storage secret would make that refresh rewrite test manifests.
+	for _, k := range []string{
+		"ZEROLLAMA_STORAGE_SECRET",
+		"ZEROLLAMA_STORAGE_SECRET_FILE",
+		"ZEROLLAMA_STORAGE_SERVERS",
+	} {
+		_ = os.Unsetenv(k)
+	}
+	remotestore.ResetDefault()
 	os.Setenv("OLLAMA_DEBUG", "1")
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
@@ -812,6 +866,44 @@ func TestSchedPrematureExpired(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 }
 
+func TestUseLoadedRunnerKeepsLeaseWhenKeepAliveOmitted(t *testing.T) {
+	ctx, done := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer done()
+	req := &LlmRequest{
+		ctx:       ctx,
+		opts:      api.DefaultOptions(),
+		successCh: make(chan *runnerRef, 1),
+	}
+	finished := make(chan *LlmRequest, 1)
+	runner := &runnerRef{llama: &mockLlm{}, sessionDuration: time.Hour, numParallel: 1}
+	req.useLoadedRunner(runner, finished)
+	if runner.sessionDuration != time.Hour {
+		t.Fatalf("omitted keep_alive reset the lease to %s", runner.sessionDuration)
+	}
+}
+
+func TestEffectiveMaxRunnersSkipsDiscoveryBelowTheFloor(t *testing.T) {
+	s := InitScheduler(t.Context())
+	var calls int
+	s.getGpuFn = func(context.Context, []ml.FilteredRunnerDiscovery) []ml.DeviceInfo {
+		calls++
+		return []ml.DeviceInfo{{}, {}}
+	}
+	if got := s.effectiveMaxRunners(t.Context(), nil, nil, 0, 0); got != uint(defaultModelsPerGPU) || calls != 0 {
+		t.Fatalf("below the floor: got %d calls %d", got, calls)
+	}
+	want := uint(defaultModelsPerGPU * 2)
+	if got := s.effectiveMaxRunners(t.Context(), nil, nil, 0, defaultModelsPerGPU); got != want || calls != 1 {
+		t.Fatalf("at the floor: got %d calls %d", got, calls)
+	}
+	if got := s.effectiveMaxRunners(t.Context(), nil, nil, 0, defaultModelsPerGPU); got != want || calls != 1 {
+		t.Fatalf("cached: got %d calls %d", got, calls)
+	}
+	if got := s.effectiveMaxRunners(t.Context(), nil, nil, 4, defaultModelsPerGPU); got != 4 {
+		t.Fatalf("configured cap: got %d", got)
+	}
+}
+
 func TestSchedUseLoadedRunner(t *testing.T) {
 	ctx, done := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	req := &LlmRequest{
@@ -1322,7 +1414,7 @@ func (s *mockLlm) Load(ctx context.Context, sytemInfo ml.SystemInfo, gpus []ml.D
 	}
 	return gpuIDs, nil
 }
-func (s *mockLlm) Ping(ctx context.Context) error             { return s.pingResp }
+func (s *mockLlm) Ping(ctx context.Context) error { return s.pingResp }
 func (s *mockLlm) WaitUntilRunning(ctx context.Context) error {
 	if s.waitGate != nil {
 		select {

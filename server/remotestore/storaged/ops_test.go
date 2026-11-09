@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ollama/ollama/server/remotestore"
 )
@@ -122,7 +123,13 @@ func TestGCDryRunAndApply(t *testing.T) {
 	orphanPayload := []byte("orphan")
 	orphanSum := sha256.Sum256(orphanPayload)
 	orphanDig := "sha256-" + hex.EncodeToString(orphanSum[:])
-	_ = os.WriteFile(filepath.Join(dir, "blobs", orphanDig), orphanPayload, 0o644)
+	orphanPath := filepath.Join(dir, "blobs", orphanDig)
+	_ = os.WriteFile(orphanPath, orphanPayload, 0o644)
+	// GC keeps a blob written in the last hour so a push can still name it.
+	old := time.Now().Add(-2 * remotestore.BlobPublishGrace)
+	if err := os.Chtimes(orphanPath, old, old); err != nil {
+		t.Fatal(err)
+	}
 
 	mfDir := filepath.Join(dir, "manifests", "h", "n", "m")
 	_ = os.MkdirAll(mfDir, 0o755)
@@ -153,6 +160,13 @@ func TestGCDryRunAndApply(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "blobs", keepDig)); err != nil {
 		t.Fatal("keep blob deleted")
+	}
+}
+
+func TestExtractDigestsHyphenForm(t *testing.T) {
+	got := extractDigestsFromJSON(`{"digest":"sha256-` + strings.Repeat("ab", 32) + `"}`)
+	if len(got) != 1 || got[0] != "sha256-"+strings.Repeat("ab", 32) {
+		t.Fatalf("%v", got)
 	}
 }
 

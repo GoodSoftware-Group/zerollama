@@ -33,7 +33,6 @@ import (
 	"github.com/ollama/ollama/template"
 	"github.com/ollama/ollama/thinking"
 	"github.com/ollama/ollama/types/model"
-	"github.com/ollama/ollama/version"
 	"github.com/ollama/ollama/x/imagegen/transfer"
 	"github.com/ollama/ollama/x/mlxrunner/mlx"
 	"golang.org/x/sync/singleflight"
@@ -247,7 +246,7 @@ type ggufCapabilityKey struct {
 //
 // WHY: Capabilities runs on every scheduled request (CheckCapabilities) and gguf.Open
 // reads the whole KV section — 150k vocab strings included — just to test four keys:
-// ~17.5 ms per call for qwen3:8b, ~6.5 ms for Laya (docs/auto-router-findings.md
+// ~17.5 ms per call for qwen3:8b, ~6.5 ms for Laya (docs/design/surfaces/auto-router-findings.md
 // Finding 22). Size + mtime re-validate, so a rewritten file is read again.
 var ggufCapabilityCache struct {
 	sync.Mutex
@@ -613,7 +612,34 @@ func (m *Model) String() string {
 }
 
 func GetModel(name string) (*Model, error) {
+	refreshStoredManifest(model.ParseName(name))
 	return inferenceModelCacheDefault.Get(name)
+}
+
+func manifestNameParts(n model.Name) (host, ns, modelName, tag string) {
+	host, ns, modelName, tag = n.Host, n.Namespace, n.Model, n.Tag
+	if host == "" {
+		host = "registry.ollama.ai"
+	}
+	if ns == "" {
+		ns = "library"
+	}
+	if tag == "" {
+		tag = "latest"
+	}
+	return host, ns, modelName, tag
+}
+
+// refreshStoredManifest asks storage whether this tag changed. A local file
+// that already parses is replaced when the remote bytes differ. Storage being
+// down leaves the local tag in place.
+func refreshStoredManifest(n model.Name) {
+	r := remotestore.Default()
+	if r == nil || !r.Enabled() {
+		return
+	}
+	host, ns, modelName, tag := manifestNameParts(n)
+	_ = r.RefreshManifest(context.Background(), host, ns, modelName, tag)
 }
 
 func loadModelUncached(name string) (*Model, error) {
@@ -621,16 +647,7 @@ func loadModelUncached(name string) (*Model, error) {
 	mf, err := manifest.ParseNamedManifest(n)
 	if err != nil {
 		if r := remotestore.Default(); r != nil && r.Enabled() {
-			host, ns, modelName, tag := n.Host, n.Namespace, n.Model, n.Tag
-			if host == "" {
-				host = "registry.ollama.ai"
-			}
-			if ns == "" {
-				ns = "library"
-			}
-			if tag == "" {
-				tag = "latest"
-			}
+			host, ns, modelName, tag := manifestNameParts(n)
 			if _, ferr := r.FetchManifest(context.Background(), host, ns, modelName, tag); ferr == nil {
 				mf, err = manifest.ParseNamedManifest(n)
 			}
@@ -648,7 +665,7 @@ func loadModelUncached(name string) (*Model, error) {
 	}
 
 	if mf.Config.Digest != "" {
-		filename, err := ensureBlob(mf.Config.Digest)
+		filename, err := ensureBlob(mf.Config.Digest, mf.Config.Size)
 		if err != nil {
 			return nil, err
 		}
@@ -671,7 +688,7 @@ func loadModelUncached(name string) (*Model, error) {
 	var modelLayers []ggufModelLayer
 
 	for _, layer := range mf.Layers {
-		filename, err := ensureBlob(layer.Digest)
+		filename, err := ensureBlob(layer.Digest, layer.Size)
 		if err != nil {
 			return nil, err
 		}
@@ -814,6 +831,18 @@ func resolveGGUFModelPath(layers []ggufModelLayer) (modelPath, parent, metaDiges
 		}
 		return strings.Compare(a.base, b.base)
 	})
+	// create-from stamps the same model name on every layer. Identical basenames
+	// used to symlink every shard onto one path, so llama.cpp opened one file N times.
+	bases := make([]string, len(shards))
+	for i, s := range shards {
+		bases[i] = s.base
+	}
+	if ggufSplitBasesCollapse(bases) {
+		for i := range shards {
+			shards[i].idx = i + 1
+			shards[i].base = fmt.Sprintf("shard-%05d-of-%05d.gguf", i+1, len(shards))
+		}
+	}
 
 	idSum := sha256.New()
 	for _, s := range shards {
@@ -837,8 +866,25 @@ func resolveGGUFModelPath(layers []ggufModelLayer) (modelPath, parent, metaDiges
 	return first.blobPath, first.from, first.digest, nil
 }
 
+// ggufSplitBasesCollapse is true when the shard filenames are not unique
+// llama.cpp split names. Each shard then gets a generated name so the links
+// do not collapse onto one path.
+func ggufSplitBasesCollapse(bases []string) bool {
+	seen := map[string]struct{}{}
+	for _, base := range bases {
+		if _, ok := seen[base]; ok {
+			return true
+		}
+		seen[base] = struct{}{}
+		if _, _, ok := parseGGUFSplitName(base); !ok {
+			return true
+		}
+	}
+	return false
+}
+
 // parseGGUFSplitName parses llama.cpp split filenames: prefix-0000I-of-0000N.gguf.
-// Returns 1-based shard index, total count, and ok.
+// Returns the 1-based shard index, the total count, and ok.
 func parseGGUFSplitName(base string) (idx, n int, ok bool) {
 	const sep = "-of-"
 	if !strings.HasSuffix(base, ".gguf") {
@@ -879,16 +925,41 @@ func replaceSymlink(oldname, path string) error {
 // ensureBlob returns a local blob path, fetching from remote storage on miss when configured.
 // Why: GetModel already walks every layer digest; transparent miss-fetch means
 // run/chat keep working after storage push without a separate sync step.
-func ensureBlob(digest string) (string, error) {
+func ensureBlob(digest string, expect int64) (string, error) {
 	filename, err := manifest.BlobsPath(digest)
 	if err != nil {
 		return "", err
 	}
-	if _, err := os.Stat(filename); err == nil {
+	// An empty TEMPLATE or LICENSE is a real layer. Its digest is sha256 of
+	// nothing, so a zero-byte file is the blob, and a missing one is rewritten.
+	if remotestore.IsEmptyContentDigest(digest) {
+		if fi, statErr := os.Stat(filename); statErr == nil && fi.Size() == 0 {
+			return filename, nil
+		}
+		if err := os.WriteFile(filename, nil, 0o644); err != nil {
+			return "", err
+		}
 		return filename, nil
+	}
+	if fi, err := os.Stat(filename); err == nil {
+		if remotestore.BlobSizeMatches(fi.Size(), expect) {
+			trusted, herr := remotestore.BlobContentTrusted(filename, digest, fi)
+			if herr != nil {
+				return "", herr
+			}
+			if trusted {
+				return filename, nil
+			}
+		}
+		// Wrong size, or the right size with the wrong bytes.
+		_ = os.Remove(filename)
+		remotestore.RemoveBlobStamp(filename)
 	}
 	if r := remotestore.Default(); r != nil && r.Enabled() {
 		return r.Fetch(context.Background(), digest)
+	}
+	if _, err := os.Stat(filename); err != nil {
+		return "", err
 	}
 	return filename, nil
 }
@@ -1329,6 +1400,7 @@ func pullWithTransfer(ctx context.Context, n model.Name, layers []manifest.Layer
 		Token:      regOpts.Token,
 		GetToken:   getToken,
 		Logger:     slog.Default(),
+		UserAgent:  GalleryUserAgent(),
 	}); err != nil {
 		return err
 	}
@@ -1544,7 +1616,7 @@ func makeRequest(ctx context.Context, method string, requestURL *url.URL, header
 		}
 	}
 
-	req.Header.Set("User-Agent", version.HTTPUserAgent())
+	ApplyGalleryUserAgent(req.Header)
 
 	if s := req.Header.Get("Content-Length"); s != "" {
 		contentLength, err := strconv.ParseInt(s, 10, 64)

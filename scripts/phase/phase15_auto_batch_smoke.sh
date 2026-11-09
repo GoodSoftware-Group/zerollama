@@ -7,7 +7,7 @@
 #
 # Temp-0 note (minefield traps 91–92): temperature=0 in payloads is for short
 # stable smoke text under concurrency — not a bit-identical reproducibility
-# guarantee (continuous batching + shared cache). See docs/model-serving-minefield.md.
+# guarantee (continuous batching + shared cache). See docs/runbooks/model-serving-minefield.md.
 #
 # Prerequisites (sidecar must already be running):
 #   - kv_inprocess_n_seq_max >= 2

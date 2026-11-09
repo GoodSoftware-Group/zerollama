@@ -7,7 +7,7 @@ import (
 
 // Flash-MoE env helpers (anemll-flash-llama.cpp).
 // Why env + manifest: global enable for serve, per-model sidecar via Modelfile options.
-// See docs/flash-moe.md.
+// See docs/research/flash-moe.md.
 
 // FlashMoEEnabled is true when ZEROLLAMA_FLASH_MOE=1 (use anemll-flash-llama.cpp llama-server + sidecar flags).
 func FlashMoEEnabled() bool {
@@ -47,7 +47,7 @@ func FlashMoEPrefetchTemporal() bool {
 // (ZEROLLAMA_FLASH_MOE_AUTO_EXTRACT=1). Opt-in — why: extraction reads the
 // full GGUF and can take minutes on 100GB+ MoE models; pull must not
 // silently balloon in time for operators who never asked for slot-bank
-// streaming. See docs/flash-moe.md.
+// streaming. See docs/research/flash-moe.md.
 func FlashMoEAutoExtract() bool {
 	return Bool("ZEROLLAMA_FLASH_MOE_AUTO_EXTRACT")()
 }

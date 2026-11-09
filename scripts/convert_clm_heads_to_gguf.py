@@ -11,7 +11,7 @@ llm/clm_*.go over llama-server /v1/embeddings — no Torch at serve time.
 
 WHY custom (not convert_hf_to_gguf): checkpoint is a torch.save dict with
 state_head / action_head Linear MLPs, not an HF transformer tree.
-Docs: docs/clm.md
+Docs: docs/design/surfaces/clm.md
 """
 from __future__ import annotations
 

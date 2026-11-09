@@ -1,5 +1,5 @@
 // ANE dflash draft hook — packs Metal draft activations into in-process ANE IOSurface (lab).
-// See docs/ane-draft-inprocess.md. Env-gated: ZEROLLAMA_ANE_DRAFT=1 (default off).
+// See docs/research/ane-draft-inprocess.md. Env-gated: ZEROLLAMA_ANE_DRAFT=1 (default off).
 #include "ane_draft_hook.h"
 
 #include "ane_draft_session.h"
@@ -1479,7 +1479,7 @@ static bool load_matmul_golden_weights(const char * path, int ic, int oc, std::v
 // P70: was a naive scalar double-accum loop (single-threaded). For the FFN-sized shapes hit by
 // the dflash host_layer_tail/post_eval path (ic/oc up to ~17-25k), that took multiple seconds
 // per matmul — enough idle time on ctx_dft's Metal side to widen a resource-list race with the
-// ggml-metal residency heartbeat thread (see docs/ane-draft-inprocess.md handoff crash notes).
+// ggml-metal residency heartbeat thread (see docs/research/ane-draft-inprocess.md handoff crash notes).
 // Parallelize across output channels (float accum is fine here — accuracy vs the double-accum
 // version is not the bottleneck; wall-clock time closing the race window is). Falls back to the
 // single-threaded path for small shapes where thread setup overhead would dominate.

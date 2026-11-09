@@ -69,4 +69,4 @@ LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN}" \
 
 echo ""
 echo "PASS: phase16_edge_binary_smoke (${OUT})"
-echo "Doc: docs/phase16-thin-edge.md"
+echo "Doc: docs/design/serving/phase16-thin-edge.md"

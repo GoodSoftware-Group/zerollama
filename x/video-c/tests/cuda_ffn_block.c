@@ -1,6 +1,6 @@
 /* DiT FFN half-block on wan_backend + dit_pager — phase-2 unlock.
  * LN → AdaLN affine → GEMM up → GELU → GEMM down → gated residual.
- * See docs/cuda-uma-toolkit.md */
+ * See docs/design/serving/cuda-uma-toolkit.md */
 #include "dit_pager.h"
 #include "dit_resident.h"
 #include "wan_backend.h"

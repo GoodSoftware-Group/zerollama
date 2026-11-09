@@ -1,7 +1,7 @@
 # Apple Silicon (Metal unified memory). Autoconfig picks this on darwin when unset.
 # GPU profile autotune (ROADMAP L1): configs/gpu/apple_silicon_*.json by hw.memsize tier
 # (16g / 24g / 48g / 96g / 128g). WHY tiers: same chip SKU ships multiple RAM sizes.
-# Disable: ZEROLLAMA_GPU_PROFILE=0. Doc: docs/gpu-profiles-l1.md
+# Disable: ZEROLLAMA_GPU_PROFILE=0. Doc: docs/design/serving/gpu-profiles-l1.md
 # Profile ctx cap: ZEROLLAMA_GPU_PROFILE_CTX=0 or llama_profile.apply_ctx_size: false;
 # long-context override: LLAMA_SERVER_EXTRA_ARGS=-c 131072.
 # Why separate from single_gpu.yaml: no NVML framebuffer; admission uses metal-unified
@@ -10,7 +10,7 @@
 # GGUF text: ggml Metal runner (default) or runtime + llama-server (Metal build).
 # Safetensors: optional MLX engine (build MLX component) — not this YAML alone.
 #
-# Optional env (see docs/apple-silicon-metal.md):
+# Optional env (see docs/design/apple/apple-silicon-metal.md):
 #   ZEROLLAMA_AUTO_CONFIG=1
 #   ZEROLLAMA_RUNTIME_VRAM_PROBE=auto   # metal-unified on macOS when no NVIDIA
 # Go scheduler watchdog (source scripts/runtime/sched_watchdog_env.sh before serve):

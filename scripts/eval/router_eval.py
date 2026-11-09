@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AR7 router evaluation harness (docs/auto-router.md §13, findings: docs/auto-router-findings.md).
+"""AR7 router evaluation harness (docs/design/surfaces/auto-router.md §13, findings: docs/design/surfaces/auto-router-findings.md).
 
 Replays testdata/router_eval/prompts.jsonl through POST /v1/route (dry runs, route:"fresh"
 so sticky / cache memory never skews results) and scores each router:

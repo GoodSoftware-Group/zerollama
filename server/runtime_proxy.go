@@ -115,6 +115,8 @@ func forwardRuntimeNDJSON(
 	path string,
 	payload map[string]any,
 	compressionMeta *api.ChatCompressionMeta,
+	model string,
+	chat bool,
 ) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -147,10 +149,13 @@ func forwardRuntimeNDJSON(
 		return nil
 	}
 
-	c.Header("Content-Type", "application/x-ndjson")
-	c.Status(http.StatusOK)
+	// Status stays unset until the sidecar accepts. The accepted chunk is the
+	// first NDJSON line, and it is what commits HTTP 200.
 	if compressionMeta != nil {
 		c.Header("X-Zerollama-Compressed", "1")
+	}
+	if err := writeRuntimeStreamAccepted(c, model, chat); err != nil {
+		return err
 	}
 	if err := copyRuntimeNDJSONWithChatCompression(c.Writer, resp.Body, compressionMeta); err != nil {
 		metricsIncRequestResult("error")

@@ -42,7 +42,7 @@ export L2_NUM_PREDICT="${L1_NUM_PREDICT:-128}"
 export L2_BENCH_RUNS="${L1_BENCH_RUNS:-2}"
 export L2_SKIP_FORK=1
 export L2_SKIP_PREFILL=1
-# WHY stock cache only: L1 tunes batch/np/-fa — fork QJL is L2 (see docs/gpu-profiles-l1.md).
+# WHY stock cache only: L1 tunes batch/np/-fa — fork QJL is L2 (see docs/design/serving/gpu-profiles-l1.md).
 export ZEROLLAMA_LLAMA_FORK=0
 # WHY no profile -c: rtx-5080 default -c 32768 pre-allocates KV and regresses 8k bench vs OFF np=1.
 export ZEROLLAMA_GPU_PROFILE_CTX=0
@@ -143,4 +143,4 @@ PY
 
 echo ""
 echo "Next: edit runtime/configs/gpu/rtx-5080.json from best leg; rerun this script."
-echo "Doc: docs/gpu-profiles-l1.md"
+echo "Doc: docs/design/serving/gpu-profiles-l1.md"

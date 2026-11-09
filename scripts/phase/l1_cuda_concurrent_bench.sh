@@ -304,4 +304,4 @@ PY
 echo ""
 echo "Artifacts: ${OUT_DIR}/"
 echo "Next: review summary above; update runtime/configs/gpu/rtx-5080.json if concurrent regresses."
-echo "Doc: docs/gpu-profiles-l1.md"
+echo "Doc: docs/design/serving/gpu-profiles-l1.md"

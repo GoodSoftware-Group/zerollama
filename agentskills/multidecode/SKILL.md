@@ -26,8 +26,8 @@ single-stream.
 server may silently pack when LCP ≥ 32. Custom harnesses that already own
 token ids should call `/v1/multidecode` directly.
 
-Docs: [docs/multidecode-llama-cpp.md](../../docs/multidecode-llama-cpp.md) ·
-[findings](../../docs/multidecode-llama-cpp-findings.md) · OpenAPI
+Docs: [docs/design/surfaces/multidecode-llama-cpp.md](../../docs/design/surfaces/multidecode-llama-cpp.md) ·
+[findings](../../docs/design/surfaces/multidecode-llama-cpp-findings.md) · OpenAPI
 `MultiDecodeRequest`.
 
 ## Compatibility check

@@ -121,11 +121,7 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 			if len(req.Format) > 0 {
 				payload["format"] = json.RawMessage(req.Format)
 			}
-			if err := writeRuntimeStreamAccepted(c, req.Model, false); err != nil {
-				writeRuntimeProxyError(c, err)
-				return
-			}
-			if err := forwardRuntimeNDJSON(c, "/api/generate", payload, nil); err != nil {
+			if err := forwardRuntimeNDJSON(c, "/api/generate", payload, nil, req.Model, false); err != nil {
 				writeRuntimeProxyError(c, err)
 			}
 			return

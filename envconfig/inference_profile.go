@@ -134,7 +134,7 @@ func applyInferenceLane(lane string) []string {
 
 	switch lane {
 	case InferenceProfileAgent:
-		// Prefer one YAML over six RADIX_* exports (see docs/runtime-env.md).
+		// Prefer one YAML over six RADIX_* exports (see docs/runbooks/runtime-env.md).
 		set("ZEROLLAMA_L3_PROFILE", "agent")
 		set("ZEROLLAMA_RADIX_PREFIX_SHARE", "1")
 	case InferenceProfileVRAM:

@@ -9,7 +9,7 @@
 // Why layer-local compressor buffers: greedy decode first; cache.Cache
 // snapshots do not yet own CSA/HCA state (speculate rewind can desync).
 //
-// Docs: docs/mlx-deepseek-v4-flash.md · findings: docs/mlx-deepseek-v4-flash-findings.md
+// Docs: docs/research/mlx-deepseek-v4-flash.md · findings: docs/research/mlx-deepseek-v4-flash-findings.md
 package deepseekv4
 
 import (

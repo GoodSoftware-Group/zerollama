@@ -24,14 +24,14 @@ if [[ -z "${LLAMA_CPP_LIB:-}" ]]; then
   exit 1
 fi
 
-# shellcheck source=scripts/phase14_serve_env.sh
-source "${ROOT}/scripts/phase14_serve_env.sh"
+# shellcheck source=scripts/phase/phase14_serve_env.sh
+source "${ROOT}/scripts/phase/phase14_serve_env.sh"
 # shellcheck source=scripts/phase/phase15_runtime_kv_env.sh
 source "${ROOT}/scripts/phase/phase15_runtime_kv_env.sh"
-# shellcheck source=scripts/runtime_smoke_lib.sh
-source "${ROOT}/scripts/runtime_smoke_lib.sh"
-# shellcheck source=scripts/linux_runtime_serve_lib.sh
-source "${ROOT}/scripts/linux_runtime_serve_lib.sh"
+# shellcheck source=scripts/runtime/runtime_smoke_lib.sh
+source "${ROOT}/scripts/runtime/runtime_smoke_lib.sh"
+# shellcheck source=scripts/runtime/linux_runtime_serve_lib.sh
+source "${ROOT}/scripts/runtime/linux_runtime_serve_lib.sh"
 
 phase15_runtime_kv_env_apply
 phase15_runtime_auto_batch_env_apply

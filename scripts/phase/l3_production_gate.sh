@@ -238,4 +238,4 @@ trap - EXIT
 
 echo ""
 echo "Artifacts: ${L3_GATE_OUT}"
-echo "Doc: docs/gpu-profiles-l3.md"
+echo "Doc: docs/design/serving/gpu-profiles-l3.md"

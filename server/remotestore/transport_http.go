@@ -107,13 +107,14 @@ func GetCapability(ctx context.Context, auth *Auth, client *http.Client, baseURL
 		// Older peers without capability endpoint: assume TCP only.
 		return Capability{Transports: []string{"tcp"}}, nil
 	default:
-		// Non-fatal probe failure: fall back to TCP-only.
-		return Capability{Transports: []string{"tcp"}}, nil
+		// Do not report success. The resolver caches a nil error as TCP-only
+		// and would skip RDMA for the rest of the process after one 500.
+		return Capability{}, fmt.Errorf("capability probe: %s", resp.Status)
 	}
 	var cap Capability
 	dec := jsonDecoder(resp.Body)
 	if err := dec.Decode(&cap); err != nil {
-		return Capability{Transports: []string{"tcp"}}, nil
+		return Capability{}, err
 	}
 	if len(cap.Transports) == 0 {
 		cap.Transports = []string{"tcp"}
@@ -124,10 +125,24 @@ func GetCapability(ctx context.Context, auth *Auth, client *http.Client, baseURL
 func normalizeDigest(d string) string {
 	d = strings.TrimSpace(d)
 	d = strings.ReplaceAll(d, ":", "-")
+	d = strings.ToLower(d)
 	if !strings.HasPrefix(d, "sha256-") && len(d) == 64 {
 		d = "sha256-" + d
 	}
 	return d
+}
+
+// safeBlobDigest is the client-side match for storaged.blobDigestRe.
+func safeBlobDigest(d string) bool {
+	if len(d) != len("sha256-")+64 || !strings.HasPrefix(d, "sha256-") {
+		return false
+	}
+	for _, c := range d[len("sha256-"):] {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 // annotateMalformedHTTP adds an operator hint when a peer prepends non-HTTP

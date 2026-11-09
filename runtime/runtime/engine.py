@@ -99,6 +99,10 @@ class InferenceEngine:
 
     def __init__(self, config: RuntimeConfig | None = None) -> None:
         self.config = config or RuntimeConfig.from_env()
+        from runtime.invariants import runtime_port_conflict
+
+        if reason := runtime_port_conflict(self.config.port):
+            raise ValueError(reason)
         self._llama_backend_override: LlamaBackendKind | None = None
         # v48/v49/v50: donor-buffer overlay bind (opt-in, ZEROLLAMA_KV_OVERLAY_BIND=1).
         # v48 consumes CPU-host KV buft groups; v49 additionally consumes Metal
@@ -1177,12 +1181,10 @@ class InferenceEngine:
             resolved, num_ctx=num_ctx, options=options
         )
         loaded_ctx = self._loaded_vram_num_ctx
-        ctx_grew = (
-            proc_alive
-            and current == resolved
-            and needed_ctx is not None
-            and loaded_ctx is not None
-            and needed_ctx > loaded_ctx
+        from runtime.invariants import loaded_ctx_must_grow
+
+        ctx_grew = loaded_ctx_must_grow(
+            proc_alive, current == resolved, needed_ctx, loaded_ctx
         )
         if ctx_grew:
             from runtime.infer_trace import infer_trace
@@ -2773,10 +2775,13 @@ class InferenceEngine:
             options,
             parallel=self._effective_llama_parallel_slots(),
         )
+        from runtime.invariants import admit_token_budget
+
+        admit_tokens = admit_token_budget(n_predict)
         req = Request(
             request_id=uuid.uuid4().hex[:12],
             prompt_tokens=self._prompt_tokens_for_admit(prompt, gguf),
-            max_tokens=n_predict,
+            max_tokens=admit_tokens,
             priority=priority,
             gguf=resolved_gguf,
             num_ctx=resolved_ctx,
@@ -3407,6 +3412,7 @@ class InferenceEngine:
             apply_batch_invariant_options,
             batch_invariant_serializes_generate_batch,
         )
+        from runtime.invariants import admit_token_budget
 
         # DI5: do not multi-row decode under eval hygiene — serial generate().
         if batch_invariant_serializes_generate_batch():
@@ -3486,7 +3492,7 @@ class InferenceEngine:
             req = Request(
                 request_id=req_id,
                 prompt_tokens=self._prompt_tokens_for_admit(prompt, batch_gguf),
-                max_tokens=n_predict,
+                max_tokens=admit_token_budget(n_predict),
                 priority=priority,
                 gguf=resolved_batch_gguf,
                 num_ctx=batch_num_ctx,
@@ -3601,6 +3607,7 @@ class InferenceEngine:
             apply_batch_invariant_options,
             batch_invariant_serializes_generate_batch,
         )
+        from runtime.invariants import admit_token_budget
 
         # DI5: serial stream per prompt (same wire: request_id / seq_idx / response / done).
         if batch_invariant_serializes_generate_batch():
@@ -3696,7 +3703,7 @@ class InferenceEngine:
             req = Request(
                 request_id=req_id,
                 prompt_tokens=self._prompt_tokens_for_admit(prompt, batch_gguf),
-                max_tokens=n_predict,
+                max_tokens=admit_token_budget(n_predict),
                 priority=priority,
                 gguf=resolved_batch_gguf,
                 num_ctx=batch_num_ctx,

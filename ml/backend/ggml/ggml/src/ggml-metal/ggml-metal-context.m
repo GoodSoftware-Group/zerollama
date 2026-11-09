@@ -142,7 +142,8 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
         // Auto-disable concurrent dispatch on non-Apple GPUs (AMD/Intel).
         // MTLDispatchTypeConcurrent has broken memory barriers on these GPUs
         // (upstream #19527; concurrency alone fixed correctness on discrete Metal).
-        const bool is_apple_gpu = props_dev->supports_gpu_family_apple7;
+        // gpu_family is MTLGPUFamilyAppleN (1-based); Apple7+ is the discrete-vs-Apple concurrency gate.
+        const bool is_apple_gpu = props_dev->gpu_family >= 7;
         res->use_concurrency = is_apple_gpu && (getenv("GGML_METAL_CONCURRENCY_DISABLE") == nil);
 
         if (!is_apple_gpu && getenv("GGML_METAL_CONCURRENCY_DISABLE") == nil) {

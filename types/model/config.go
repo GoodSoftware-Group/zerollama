@@ -114,29 +114,29 @@ type ConfigV2 struct {
 	// BackendPaths passes filesystem paths / URLs to subprocess adapters (e.g. Whisper GGML, Piper ONNX).
 	// Keys include "whisper_model", "piper_model", "piper_config", "piper_voice_<name>",
 	// "tts_url", "tts_upstream_model", "tts_default_voice", "tts_voices_file", "tts_ref_audio",
-	// "openai_url" / "openai_model" (openai-remote inference sidecar — docs/glm-flash-lite-ladder.md),
+	// "openai_url" / "openai_model" (openai-remote inference sidecar — docs/research/glm-flash-lite-ladder.md),
 	// "wan_repo", "wan_ckpt_dir", "wan_venv", "wan_gguf_path",
-	// "video_cli" / "wan_cli" (optional Pure-C video-c binary — docs/video-c.md),
+	// "video_cli" / "wan_cli" (optional Pure-C video-c binary — docs/design/media/video-c.md),
 	// "h3_ckpt_dir" (MiniMax-H3 tree for Darwin video-cli h3),
-	// "wan2gp_repo", "wan2gp_venv", "wan2gp_ckpt_dir" (LTX + H3 CUDA via Wan2GP — docs/ltx-t2v.md, docs/h3-cuda-port.md),
-	// "ltx_mlx_model_dir", "ltx_mlx_venv" (Darwin ltx-mlx 2B/13B — docs/ltx-t2v.md),
+	// "wan2gp_repo", "wan2gp_venv", "wan2gp_ckpt_dir" (LTX + H3 CUDA via Wan2GP — docs/design/media/ltx-t2v.md, docs/design/media/h3-cuda-port.md),
+	// "ltx_mlx_model_dir", "ltx_mlx_venv" (Darwin ltx-mlx 2B/13B — docs/design/media/ltx-t2v.md),
 	// "sd_cli", "sd_model" (stable-diffusion.cpp binary and GGUF weights),
-	// "ov_model_dir", "ov_python", "external_image_bin" (OpenVINO GenAI; see docs/sd-openvino-a380.md),
+	// "ov_model_dir", "ov_python", "external_image_bin" (OpenVINO GenAI; see docs/design/media/sd-openvino-a380.md),
 	// "comfy_workflow_dir" (Comfy template directory; relative paths need OLLAMA_COMFYUI_WORKFLOWS_ROOT
-	// or an absolute/~/ path — see docs/comfyui-image-backend.md), "comfy_default_workflow" (name, not a path).
+	// or an absolute/~/ path — see docs/design/media/comfyui-image-backend.md), "comfy_default_workflow" (name, not a path).
 	BackendPaths map[string]string `json:"backend_paths,omitempty"`
 
-	// VideoGeneration presets for models with capability video_gen (see docs/wan-t2v.md, docs/ltx-t2v.md, docs/h3-cuda-port.md).
+	// VideoGeneration presets for models with capability video_gen (see docs/design/media/wan-t2v.md, docs/design/media/ltx-t2v.md, docs/design/media/h3-cuda-port.md).
 	VideoGeneration *VideoGenerationConfig `json:"video_generation,omitempty"`
 
-	// MusicGeneration presets for modality_backends.speech=music3 (see docs/music-c.md).
+	// MusicGeneration presets for modality_backends.speech=music3 (see docs/design/media/music-c.md).
 	MusicGeneration *MusicGenerationConfig `json:"music_generation,omitempty"`
 
 	// ImageGeneration presets for models with capability image and modality_backends.image=external-image
-	// or openvino-image (see docs/sd-vulkan-a380.md, docs/sd-openvino-a380.md).
+	// or openvino-image (see docs/design/media/sd-vulkan-a380.md, docs/design/media/sd-openvino-a380.md).
 	ImageGeneration *ImageGenerationConfig `json:"image_generation,omitempty"`
 
-	// VideoSampling overrides native ffmpeg sampling for video_understanding=native (see docs/video-parity.md).
+	// VideoSampling overrides native ffmpeg sampling for video_understanding=native (see docs/design/media/video-parity.md).
 	VideoSampling *VideoSampling `json:"video_sampling,omitempty"`
 	// TokensPerImage is an optional vision-token budget per raster frame for context preflight only.
 	// Default 768 matches server/prompt.go until projector metadata supplies a real per-image cost.

@@ -3,7 +3,7 @@ package server
 // MLX schedule helpers: context cap, prompt budget, PromptTokens passthrough, keep-alive floor.
 // Why separate file: agent clients send 100k+ token megaprompts to safetensors models;
 // HF config.json and VRAM tier defaults can inflate num_ctx beyond the real window.
-// See docs/mlx-agent-prompts.md.
+// See docs/design/apple/mlx-agent-prompts.md.
 
 import (
 	"fmt"

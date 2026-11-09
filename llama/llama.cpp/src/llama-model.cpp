@@ -3576,6 +3576,33 @@ int32_t llama_model_dflash_selector_top_k(const llama_model * model) {
     return model->hparams.dflash_selector_top_k;
 }
 
+int32_t llama_model_dflash_n_target_features(const llama_model * model) {
+    return (int32_t) model->hparams.dflash_n_target_features;
+}
+
+int32_t llama_model_dflash_mask_token_id(const llama_model * model) {
+    return (int32_t) model->hparams.dflash_mask_token_id;
+}
+
+int32_t llama_model_dflash_block_size(const llama_model * model) {
+    // Prefer milady dflash-draft block size; fall back to upstream LLM_ARCH_DFLASH.
+    if (model->hparams.dflash_draft_block_size != 0) {
+        return (int32_t) model->hparams.dflash_draft_block_size;
+    }
+    return (int32_t) model->hparams.dflash_block_size;
+}
+
+int32_t llama_model_dflash_n_target_layers(const llama_model * model) {
+    return (int32_t) model->hparams.dflash_n_target_layers;
+}
+
+int32_t llama_model_dflash_target_layer_id(const llama_model * model, int32_t i) {
+    if (i < 0 || (uint32_t) i >= model->hparams.dflash_n_target_layers || (uint32_t) i >= 8) {
+        return -1;
+    }
+    return (int32_t) model->hparams.dflash_target_layer_ids[i];
+}
+
 int32_t llama_model_n_head(const llama_model * model) {
     return model->hparams.n_head();
 }

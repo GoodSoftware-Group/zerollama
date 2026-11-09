@@ -8,7 +8,7 @@
 # WHY one file: A380 production path is Vulkan ggml, not CUDA runtime. Research lane
 # asm_lab/lanes/arc-a380 documents measured pitfalls (load_ms tax, partial num_gpu cliff).
 #
-# Doc: docs/a380-runbook.md
+# Doc: docs/runbooks/a380-runbook.md
 # Research: ~/bmtl/asm_lab/lanes/arc-a380 (override ZA380_RESEARCH_LANE)
 
 _ZA380_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")/../.." && pwd)"

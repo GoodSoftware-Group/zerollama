@@ -12,7 +12,7 @@
 #   RUN_E2E_GPU=1           — runtime generate/chat (needs serve + model)
 #   RUN_E2E_PROXY=1         — Go proxy smokes (needs OLLAMA_HOST)
 #
-# Doc: docs/cuda-lanes.md
+# Doc: docs/design/serving/cuda-lanes.md
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

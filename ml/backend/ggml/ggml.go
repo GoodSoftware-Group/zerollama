@@ -933,7 +933,7 @@ func (c *Context) ComputeWithNotify(cb func(), tensors ...ml.Tensor) {
 	}
 
 	// Darwin -tags uma: admit Metal graph compute + drain under HOLD_GPU so
-	// RELEASE cannot race sched_synchronize (M21 PoC; see docs/ggml-uma-sched.md).
+	// RELEASE cannot race sched_synchronize (M21 PoC; see docs/design/apple/ggml-uma-sched.md).
 	var computeErr error
 	run := func() {
 		if status := C.ggml_backend_sched_graph_compute_async(c.b.sched, c.graph); status != C.GGML_STATUS_SUCCESS {

@@ -48,12 +48,13 @@ type Resolver struct {
 	Chain      *TransportChain
 	HTTP       *http.Client
 
-	mu         sync.Mutex
-	caps       map[string]Capability
-	pinned     map[string]int       // digest → refcount of loaded models holding this blob
-	ephemeral  map[string]string    // digest → scratch path
-	peerFailAt map[string]time.Time // base URL → last soft-fail for cooldown
-	dlGroup    singleflight.Group   // deduplicates concurrent downloads of the same digest
+	mu              sync.Mutex
+	caps            map[string]Capability
+	pinned          map[string]int           // digest → refcount of loaded models holding this blob
+	ephemeral       map[string]string        // digest → scratch path
+	peerFailAt      map[string]time.Time     // base URL → last soft-fail for cooldown
+	manifestChecked map[string]manifestCheck // host/ns/model/tag → last refresh attempt
+	dlGroup         singleflight.Group       // deduplicates concurrent downloads of the same digest
 }
 
 // Config builds a Resolver from environment defaults.
@@ -159,16 +160,30 @@ func (r *Resolver) ReleaseModelBlobs(digests ...string) {
 		return
 	}
 	r.Unpin(digests...)
-	if r.Mode == CacheEphemeral {
-		for _, d := range digests {
-			r.ReleaseEphemeral(d)
+	if r.Mode != CacheEphemeral {
+		return
+	}
+	for _, d := range digests {
+		if d == "" {
+			continue
 		}
+		key := normalizeDigest(d)
+		r.mu.Lock()
+		pins := r.pinned[key]
+		r.mu.Unlock()
+		if !EphemeralMayDelete(pins) {
+			continue
+		}
+		r.ReleaseEphemeral(d)
 	}
 }
 
 // LocalBlobPath returns the on-disk path for a digest in the persist cache.
 func (r *Resolver) LocalBlobPath(digest string) (string, error) {
 	digest = normalizeDigest(digest)
+	if !safeBlobDigest(digest) {
+		return "", fmt.Errorf("remotestore: invalid digest %q", digest)
+	}
 	dir := filepath.Join(r.CacheDir, "blobs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
@@ -194,14 +209,14 @@ func (r *Resolver) fetchPersist(ctx context.Context, digest string) (string, err
 	if err != nil {
 		return "", err
 	}
-	if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
+	if fi, err := os.Stat(path); err == nil && LocalBlobComplete(fi.Size()) {
 		_ = os.Chtimes(path, time.Now(), time.Now())
 		return path, nil
 	}
 	// Coalesce concurrent fetches of the same digest to a single download.
 	_, dlErr, _ := r.dlGroup.Do(digest, func() (any, error) {
 		// Re-check inside the group in case a concurrent call already completed.
-		if fi, err2 := os.Stat(path); err2 == nil && fi.Size() > 0 {
+		if fi, err2 := os.Stat(path); err2 == nil && LocalBlobComplete(fi.Size()) {
 			_ = os.Chtimes(path, time.Now(), time.Now())
 			return nil, nil
 		}
@@ -241,7 +256,7 @@ func (r *Resolver) fetchEphemeral(ctx context.Context, digest string) (string, e
 		return "", err
 	}
 	path := filepath.Join(scratch, digest)
-	if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
+	if fi, err := os.Stat(path); err == nil && LocalBlobComplete(fi.Size()) {
 		r.mu.Lock()
 		r.ephemeral[digest] = path
 		r.mu.Unlock()
@@ -249,7 +264,7 @@ func (r *Resolver) fetchEphemeral(ctx context.Context, digest string) (string, e
 	}
 	// Coalesce concurrent downloads.
 	_, dlErr, _ := r.dlGroup.Do("eph:"+digest, func() (any, error) {
-		if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
+		if fi, err := os.Stat(path); err == nil && LocalBlobComplete(fi.Size()) {
 			return nil, nil
 		}
 		return nil, r.download(ctx, digest, path)
@@ -443,7 +458,7 @@ func (r *Resolver) evictIfNeeded() error {
 	r.mu.Unlock()
 
 	for _, e := range entries {
-		if e.IsDir() || strings.HasSuffix(e.Name(), ".partial") {
+		if e.IsDir() || strings.HasSuffix(e.Name(), ".partial") || strings.HasSuffix(e.Name(), ".verified") {
 			continue
 		}
 		p := filepath.Join(dir, e.Name())
@@ -457,6 +472,10 @@ func (r *Resolver) evictIfNeeded() error {
 	if total <= r.MaxBytes {
 		return nil
 	}
+	manifestBlobs := map[string]struct{}{}
+	if SameBlobDir(dir, filepath.Join(envconfig.Models(), "blobs")) {
+		manifestBlobs = ManifestReferencedDigests(envconfig.Models())
+	}
 	sort.Slice(stats, func(i, j int) bool {
 		return stats[i].atime.Before(stats[j].atime)
 	})
@@ -465,10 +484,14 @@ func (r *Resolver) evictIfNeeded() error {
 			break
 		}
 		name := filepath.Base(s.path)
-		if pinned[name] > 0 {
+		if pinned[name] > 0 || strings.HasSuffix(name, "-partial") {
+			continue
+		}
+		if _, referenced := manifestBlobs[name]; referenced {
 			continue
 		}
 		if err := os.Remove(s.path); err == nil {
+			RemoveBlobStamp(s.path)
 			total -= s.size
 			slog.Info("remotestore evicted blob", "path", s.path, "size", s.size)
 		}
@@ -514,13 +537,56 @@ func (r *Resolver) FetchManifest(ctx context.Context, host, ns, model, tag strin
 		// Manifests must land under OLLAMA_MODELS so ParseNamedManifest can find them,
 		// even when ZEROLLAMA_REMOTE_CACHE_DIR points blobs elsewhere.
 		dest := filepath.Join(envconfig.Models(), "manifests", host, ns, model, tag)
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			return b, nil // still return bytes
+		if existing, rerr := os.ReadFile(dest); rerr == nil && !ManifestBytesDiffer(existing, b) {
+			return b, nil
 		}
-		_ = os.WriteFile(dest, b, 0o644)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(dest, b, 0o644); err != nil {
+			return nil, err
+		}
 		return b, nil
 	}
 	return nil, last
+}
+
+type manifestCheck struct {
+	at time.Time
+	ok bool
+}
+
+// RefreshManifest pulls the storage manifest when the last check has expired.
+// A success stands for ManifestRefreshInterval. A failure stands for
+// ManifestRefreshRetry and does not count as a fresh tag. Identical bytes
+// are left in place by FetchManifest.
+func (r *Resolver) RefreshManifest(ctx context.Context, host, ns, model, tag string) error {
+	if !r.Enabled() {
+		return errors.New("remotestore: not configured")
+	}
+	key := strings.Join([]string{host, ns, model, tag}, "/")
+	now := time.Now()
+	r.mu.Lock()
+	if r.manifestChecked == nil {
+		r.manifestChecked = map[string]manifestCheck{}
+	}
+	if prev, ok := r.manifestChecked[key]; ok && ManifestCheckFresh(prev.ok, now.Sub(prev.at)) {
+		r.mu.Unlock()
+		return nil
+	}
+	r.mu.Unlock()
+
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, err := r.FetchManifest(checkCtx, host, ns, model, tag)
+
+	r.mu.Lock()
+	if r.manifestChecked == nil {
+		r.manifestChecked = map[string]manifestCheck{}
+	}
+	r.manifestChecked[key] = manifestCheck{at: time.Now(), ok: err == nil}
+	r.mu.Unlock()
+	return err
 }
 
 // PushBlob uploads a local file as digest to a storage server.

@@ -31,18 +31,18 @@ func glinerDecideExternalResolve(modelName string, m *Model) (string, error) {
 		if u := envconfig.GlinerDecideURL(); u != "" {
 			return u, nil
 		}
-		return "", fmt.Errorf("modality_backends.decisions=gliner-decide requires ZEROLLAMA_GLINER_DECIDE_URL; see docs/gliner-decide.md")
+		return "", fmt.Errorf("modality_backends.decisions=gliner-decide requires ZEROLLAMA_GLINER_DECIDE_URL; see docs/design/surfaces/gliner-decide.md")
 	}
 	if isGlinerDecideModelName(modelName) {
 		if u := envconfig.GlinerDecideURL(); u != "" {
 			return u, nil
 		}
-		return "", fmt.Errorf("model %q requires ZEROLLAMA_GLINER_DECIDE_URL; see docs/gliner-decide.md", modelName)
+		return "", fmt.Errorf("model %q requires ZEROLLAMA_GLINER_DECIDE_URL; see docs/design/surfaces/gliner-decide.md", modelName)
 	}
 	if u := envconfig.GlinerDecideURL(); u != "" && strings.TrimSpace(modelName) != "" {
 		return u, nil
 	}
-	return "", fmt.Errorf("set ZEROLLAMA_GLINER_DECIDE_URL for /v1/gliner-decide; see docs/gliner-decide.md")
+	return "", fmt.Errorf("set ZEROLLAMA_GLINER_DECIDE_URL for /v1/gliner-decide; see docs/design/surfaces/gliner-decide.md")
 }
 
 // GlinerDecideHandler serves POST /v1/gliner-decide (mechanical classify_text schema).

@@ -71,7 +71,7 @@ rather than assuming the request shape is wrong.
 
 On missing/evicted media, POST returns **400** with `error.code=media_missing` and `error.missing_labels` — re-PUT those labels and retry.
 
-**Why `/v1/media`:** keep create JSON small; server CAS-dedupes; no client digests; soft TTL state is not model `blobs/`. Full WHYs: [`docs/media-uploads.md`](../../docs/media-uploads.md).
+**Why `/v1/media`:** keep create JSON small; server CAS-dedupes; no client digests; soft TTL state is not model `blobs/`. Full WHYs: [`docs/design/media/media-uploads.md`](../../docs/design/media/media-uploads.md).
 
 ## How to Run
 

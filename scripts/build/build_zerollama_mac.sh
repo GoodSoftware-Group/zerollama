@@ -4,7 +4,7 @@
 # Why Metal embed regen runs here: ggml-metal-device.m JIT-compiles UTF-8
 # kernels/<kind>.metal via _ggml_metallib_*_{start,end}. Stale embeds miss
 # new kernels (TQ2/E8/unary) and first decode can crash.
-# See docs/qwen35-apple-silicon.md.
+# See docs/design/apple/qwen35-apple-silicon.md.
 #
 # MLX (safetensors): when ../mlx is present, BUILD_MLX=auto (default) installs
 # libmlx/libmlxc under build/metal-v*/lib/ollama/ so repo-root ./zerollama works.

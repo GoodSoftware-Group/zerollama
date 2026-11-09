@@ -64,6 +64,24 @@ func TestLlamaCompatSlotsFromLoadedRunner(t *testing.T) {
 	}
 }
 
+func TestLlamaCompatSlotsUsesFittedParallel(t *testing.T) {
+	t.Setenv("OLLAMA_NUM_PARALLEL", "8")
+	s := &Server{sched: InitScheduler(t.Context())}
+	runner := &runnerRef{
+		model:       &Model{Name: "qwen", ShortName: "qwen", Config: model.ConfigV2{ModelFormat: "gguf"}},
+		modelKey:    "digest:gguf",
+		Options:     &api.Options{Runner: api.Runner{NumCtx: 8192}},
+		numParallel: 2,
+	}
+	s.sched.loadedMu.Lock()
+	s.sched.loaded[runner.modelKey] = runner
+	s.sched.loadedMu.Unlock()
+	got := s.llamaCompatSlots()
+	if len(got) != 2 {
+		t.Fatalf("fitted -np is 2, env is 8, got %d slots", len(got))
+	}
+}
+
 func TestLlamaCompatSlotsLoadingMarksProcessing(t *testing.T) {
 	s := &Server{sched: InitScheduler(t.Context())}
 	runner := &runnerRef{

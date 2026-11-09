@@ -57,7 +57,7 @@ func doctorCheckTokenCeiling(base string, m doctorLoadedModel) doctorCheck {
 			Name:    name,
 			Status:  "warn",
 			Detail:  fmt.Sprintf("think=true num_predict=512: empty content, %d chars thinking, done_reason=%q (minefield trap 12)", len(thinking), doneReason),
-			FixHint: "raise max_tokens for thinking lanes; do not score empty content as capability collapse — see docs/model-serving-minefield.md",
+			FixHint: "raise max_tokens for thinking lanes; do not score empty content as capability collapse — see docs/runbooks/model-serving-minefield.md",
 		}
 	}
 	if content == "" && thinking == "" {

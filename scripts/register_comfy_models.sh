@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Register config-only ComfyUI image manifests (no weights in Ollama blobs; see
-# docs/comfyui-image-backend.md). With no args, registers the full default set.
+# docs/design/media/comfyui-image-backend.md). With no args, registers the full default set.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"

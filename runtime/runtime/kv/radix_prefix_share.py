@@ -15,7 +15,7 @@ WHY seq-copy policy is separate (L3-R5): block-pool planning is layout-agnostic;
 Gemma-style hybrid (full+SWA layers) is safe when copy fits the SWA window.
 Attn+recurrent layouts keep an env kill-switch until probed live.
 
-Product gaps (physical KV pages, blob federation): docs/radix-prefix-share.md
+Product gaps (physical KV pages, blob federation): docs/design/serving/radix-prefix-share.md
 """
 
 from __future__ import annotations

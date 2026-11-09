@@ -99,7 +99,7 @@ func (s *Server) decideAuto(ctx context.Context, router string, sig autoroute.Si
 // withoutRouterHelpers drops models that router.yaml routers use internally (score
 // classifier, jev decider, embedder, reranker) from implicit "auto" text candidates.
 //
-// WHY: found on real models (docs/auto-router-findings.md Finding 12) — the warm bonus made
+// WHY: found on real models (docs/design/surfaces/auto-router-findings.md Finding 12) — the warm bonus made
 // implicit auto send every prompt to the resident 1B score classifier, because it was the
 // only model loaded. Helpers stay eligible when a router also lists them as a candidate,
 // and the filter is soft: a node whose only models are helpers still gets an answer.

@@ -112,7 +112,7 @@ func buildModelInfo(config modelConfig, totalTensorBytes, tensorCount int64) map
 	// When text_config.max_position_embeddings equals vocab_size it is not a
 	// context length — fall back to the top-level max_position_embeddings.
 	// Why: agent megaprompts with num_ctx=262144 never tail-truncated when this
-	// field was treated as ctx; see docs/mlx-agent-prompts.md.
+	// field was treated as ctx; see docs/design/apple/mlx-agent-prompts.md.
 	hiddenSize := config.HiddenSize
 	maxPosEmbed := config.MaxPositionEmbeddings
 	numLayers := config.NumHiddenLayers

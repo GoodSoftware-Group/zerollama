@@ -30,6 +30,6 @@ echo "OK: no deep_gemm product imports"
 
 echo "== DeepGEMM: AGENTS + cuda-lanes cross-links =="
 grep -q 'deepgemm-borrowings.md' AGENTS.md
-grep -q 'deepgemm-borrowings.md' docs/cuda-lanes.md
+grep -q 'deepgemm-borrowings.md' docs/design/serving/cuda-lanes.md
 
 echo "PASS: deepgemm_borrowings_unit"

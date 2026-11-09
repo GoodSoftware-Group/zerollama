@@ -3,7 +3,7 @@
 #
 # WHY this script: CI proves parsers without a GPU; a 16GB host needs one repeatable gate
 # (Phase 10–13) with a JSON artifact + gpu_snapshot hints — not ad-hoc e2e flags.
-# Does NOT require gpt-oss harmony on host (needs ~40+ GiB RAM); see docs/gpu-5080-operator-guide.md
+# Does NOT require gpt-oss harmony on host (needs ~40+ GiB RAM); see docs/runbooks/gpu-5080-operator-guide.md
 #
 #   export LLAMA_MODEL LLAMA_SERVER_BIN RUN_E2E_GGUF
 #   export RUN_E2E_PROXY_MODEL=llama3.2:3B   # optional tools + proxy manifest

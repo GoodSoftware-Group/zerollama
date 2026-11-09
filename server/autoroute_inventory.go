@@ -12,7 +12,7 @@ import (
 	"github.com/ollama/ollama/types/model"
 )
 
-// routeInventory memoises per-model capabilities for the auto-router (docs/auto-router.md §5).
+// routeInventory memoises per-model capabilities for the auto-router (docs/design/surfaces/auto-router.md §5).
 var routeInventory = autoroute.NewInventory(loadRouteCandidate)
 
 // loadRouteCandidate is the expensive per-digest step: GetModel plus a GGUF open for the

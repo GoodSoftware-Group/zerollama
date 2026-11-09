@@ -1,6 +1,6 @@
 // gliner-server — sibling HTTP for GLiNER.cpp (GL1).
 // Dual wire: POST /v1/extract (abstract) + POST /v1/gliner (engine knobs).
-// Lab ports only. Docs: docs/gliner-cpp.md
+// Lab ports only. Docs: docs/design/surfaces/gliner-cpp.md
 
 #include <GLiNER/gliner_config.hpp>
 #include <GLiNER/model.hpp>

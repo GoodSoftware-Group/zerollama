@@ -9,7 +9,7 @@
 # outputs across runs. Prefix-cache state (prompt_cache_key) intentionally
 # carries across turns; do not use this script to assert deterministic decode
 # without isolating cache and stating a prompt-length regime. See
-# docs/model-serving-minefield.md and docs/testing-smoke.md.
+# docs/runbooks/model-serving-minefield.md and docs/runbooks/testing-smoke.md.
 #
 #   ./scripts/mlx/mlx_prefix_cache_smoke.sh
 #   MLX_SMOKE_START_SERVE=1 ./scripts/mlx/mlx_prefix_cache_smoke.sh

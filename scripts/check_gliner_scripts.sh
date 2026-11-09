@@ -28,8 +28,8 @@ need_file "gliner/server/CMakeLists.txt"
 need_file "gliner/server/gliner-server.cpp"
 need_file "gliner/patches/0001-token-logits-channel-first-transpose.patch"
 need_file "gliner/patches/README.md"
-need_file "docs/gliner-cpp.md"
-need_file "docs/gliner-cpp-findings.md"
+need_file "docs/design/surfaces/gliner-cpp.md"
+need_file "docs/design/surfaces/gliner-cpp-findings.md"
 need_file "agentskills/entity-extract/SKILL.md"
 
 SCRIPTS=(

@@ -225,4 +225,4 @@ trap - EXIT
 echo ""
 echo "PASS: l3_cache_smoke (${L3_OUT})"
 echo "Next: ./scripts/phase/l3_gate_report.sh ${L3_OUT}"
-echo "Doc: docs/gpu-profiles-l3.md"
+echo "Doc: docs/design/serving/gpu-profiles-l3.md"

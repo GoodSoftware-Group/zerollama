@@ -16,7 +16,7 @@ import (
 
 // mediaStoreMu guards lazy init of mediaStore (OLLAMA_MODELS must be read at first use).
 // WHY lazy: package init runs before some tests/wrappers set OLLAMA_MODELS; first
-// request builds the store against the live env (docs/media-uploads.md).
+// request builds the store against the live env (docs/design/media/media-uploads.md).
 var (
 	mediaStoreMu sync.Mutex
 	mediaStore   *media.Store

@@ -49,26 +49,38 @@ func (q *pendingQueue) Pop() *LlmRequest {
 	return req
 }
 
+// maxHotModelSkips is how many times the FIFO head may be passed over for a
+// model that is already loaded. After that the older request runs.
+const maxHotModelSkips = 2
+
 // PopPreferringKeys dequeues the oldest request whose model key is in prefer,
-// otherwise the FIFO head. Reduces evictions when a loaded model still has
-// queued work behind a different model at the head.
+// otherwise the FIFO head. A loaded model may skip the head a bounded number
+// of times so a hot tag cannot starve older work.
 func (q *pendingQueue) PopPreferringKeys(prefer map[string]struct{}) *LlmRequest {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.items) == 0 {
 		return nil
 	}
+	head := q.items[0]
 	if len(prefer) > 0 {
-		for i, req := range q.items {
-			if _, ok := prefer[schedulerModelKey(req.model)]; ok {
-				q.items = append(q.items[:i], q.items[i+1:]...)
-				return req
+		if _, ok := prefer[schedulerModelKey(head.model)]; ok {
+			q.items = q.items[1:]
+			return head
+		}
+		if head.hotSkips < maxHotModelSkips {
+			for i := 1; i < len(q.items); i++ {
+				req := q.items[i]
+				if _, ok := prefer[schedulerModelKey(req.model)]; ok {
+					head.hotSkips++
+					q.items = append(q.items[:i], q.items[i+1:]...)
+					return req
+				}
 			}
 		}
 	}
-	req := q.items[0]
 	q.items = q.items[1:]
-	return req
+	return head
 }
 
 // OldestFifoSeq returns the smallest positive fifoSeq in the queue, or 0 when empty.

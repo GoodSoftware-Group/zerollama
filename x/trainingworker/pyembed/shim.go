@@ -33,7 +33,7 @@ func InitAborted() bool {
 
 // InitEmbeddedPython starts embedded CPython, loads training.py via bootstrap, and releases the GIL.
 // Must be called once per process after training_preinit_native_module (done here).
-// Repo root must contain training.py; see OLLAMA_TRAINING_PYTHONPATH in docs/gpu-training.md.
+// Repo root must contain training.py; see OLLAMA_TRAINING_PYTHONPATH in docs/design/training/gpu-training.md.
 func InitEmbeddedPython(repoRoot string) error {
 	C.training_preinit_native_module()
 	root := C.CString(repoRoot)

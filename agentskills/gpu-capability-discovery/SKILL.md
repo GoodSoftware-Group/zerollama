@@ -101,7 +101,7 @@ Key `/health` fields:
   `llama_backend_fallback: true` or missing `libllama` are hard failures.
 - **Hardware tiers documented per platform, not universal** — CUDA arch
   flags (5080 = `120-real`, 4090 = `89`) and Apple tiers are host-specific;
-  check `docs/apple-silicon-metal.md` / `docs/cuda-lanes.md` rather than
+  check `docs/design/apple/apple-silicon-metal.md` / `docs/design/serving/cuda-lanes.md` rather than
   assuming one guidance fits all GPUs.
 
 ## Related

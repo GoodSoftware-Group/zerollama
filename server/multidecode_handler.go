@@ -17,7 +17,7 @@ import (
 // MultiDecodeHandler serves POST /v1/multidecode (forest decode via llama-server --multidecode).
 //
 // WHY dedicated: not chat, not batch chat — harnesses send tokens/pos/parent (or
-// parent_node_ids for sticky multi-step). See docs/multidecode-llama-cpp.md.
+// parent_node_ids for sticky multi-step). See docs/design/surfaces/multidecode-llama-cpp.md.
 func (s *Server) MultiDecodeHandler(c *gin.Context) {
 	var req api.MultiDecodeRequest
 	if err := c.ShouldBindJSON(&req); errors.Is(err, io.EOF) {

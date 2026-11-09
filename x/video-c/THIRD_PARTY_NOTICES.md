@@ -20,6 +20,6 @@ stage graph on CPU. AdaLN cache sizing in
 `sink_out`) projection from [NicoLab28/ClipProj-MiniMax-H3](https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3).
 Control matrices used in rematch tests are downloaded under
 `~/.zerollama/third_party/h3/clipproj/` (not vendored in-git). See
-[docs/h3-clipproj.md](../../docs/h3-clipproj.md).
+[docs/design/media/h3-clipproj.md](../../docs/design/media/h3-clipproj.md).
 
 Full upstream license: `../h3.c/LICENSE` when the sibling rematch tree is cloned.

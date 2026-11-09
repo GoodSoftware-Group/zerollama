@@ -4,7 +4,7 @@
 
 struct llama_context;
 
-// Lab-only hooks for ZEROLLAMA_ANE_DRAFT hybrid draft-on-ANE research (see docs/ane-draft-inprocess.md).
+// Lab-only hooks for ZEROLLAMA_ANE_DRAFT hybrid draft-on-ANE research (see docs/research/ane-draft-inprocess.md).
 //
 // Why default off: production dflash must not pay ANE map+eval overhead or depend on libane_bridge
 // until B7 routes draft tokens from ANE. IOSurface handoff requires same PID as ane_draft_session.

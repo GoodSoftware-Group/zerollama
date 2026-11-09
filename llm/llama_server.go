@@ -2008,11 +2008,8 @@ func NewLlamaServerRunner(
 	// Point the memory parsing writer at this runner so values are updated as logs stream in
 	memWriter.runner = s
 
-	if err := s.startProcess(); err != nil {
-		msg := s.lastErrMsg()
-		return nil, fmt.Errorf("error starting llama-server: %v %s", err, msg)
-	}
-
+	// The process starts in Load, after the requireFull fit check. Starting here
+	// would hold VRAM for a probe the scheduler is about to reject.
 	return s, nil
 }
 
@@ -2138,8 +2135,21 @@ func qwenVLServerArgs(modelArch string) []string {
 // the model at startup and auto-detects GPU layers, so this just waits for
 // health to report ready. The scheduler handles full-fit preflight for
 // llama-server before this point.
-func (s *llamaServerRunner) Load(ctx context.Context, systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, _ bool) ([]ml.DeviceID, error) {
-	slog.Info("loading model via llama-server", "model", s.modelPath)
+func (s *llamaServerRunner) Load(ctx context.Context, systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, requireFull bool) ([]ml.DeviceID, error) {
+	slog.Info("loading model via llama-server", "model", s.modelPath, "require_full", requireFull)
+
+	// The scheduler calls Load(requireFull=true) as a fit probe beside a resident
+	// model. Starting anyway and returning nil told it the second model fit.
+	if requireFull && !s.fullOffloadFits(gpus) {
+		slog.Info("llama-server does not fully fit; asking scheduler to evict", "model", s.modelPath)
+		return nil, ErrLoadRequiredFull
+	}
+	if s.cmd == nil {
+		if err := s.startProcess(); err != nil {
+			msg := s.lastErrMsg()
+			return nil, fmt.Errorf("error starting llama-server: %v %s", err, msg)
+		}
+	}
 
 	if err := s.WaitUntilRunning(ctx); err != nil {
 		retried, retryErr := s.retryWithMMProjCPUOffload(err)
@@ -3989,16 +3999,56 @@ func (s *llamaServerRunner) MemorySize() (total, vram uint64) {
 	return total, vram
 }
 
+// fullOffloadFits reports whether PredictServerVRAM fits in free device memory.
+// No devices means CPU-only; there is nothing to evict for a GPU fit.
+func (s *llamaServerRunner) fullOffloadFits(gpus []ml.DeviceInfo) bool {
+	if s == nil || len(gpus) == 0 || s.ggml == nil {
+		return true
+	}
+	numCtx := s.options.NumCtx
+	if numCtx <= 0 {
+		numCtx = 4096
+	}
+	need := PredictServerVRAM(s.modelPath, s.ggml, numCtx, s.launch.kvCacheType)
+	if need == 0 {
+		return true
+	}
+	np := s.launch.numParallel
+	if np > 1 {
+		var weights uint64
+		if info, err := os.Stat(s.modelPath); err == nil {
+			weights = uint64(info.Size())
+		}
+		if need > weights {
+			need += (need - weights) * uint64(np-1)
+		}
+	}
+	var free uint64
+	for _, g := range gpus {
+		avail := g.FreeMemory
+		reserve := envconfig.GpuOverhead() + g.MinimumMemory()
+		if avail > reserve {
+			avail -= reserve
+		} else {
+			avail = 0
+		}
+		free += avail
+	}
+	return OffloadFits(need, free)
+}
+
 // PredictServerVRAM estimates VRAM usage for a model without spawning llama-server.
 // Uses model file size as a proxy for weights plus a rough KV cache estimate.
 // This is intentionally conservative — it overestimates to avoid VRAM contention.
-func PredictServerVRAM(modelPath string, f *ggml.GGML, numCtx int) uint64 {
+func PredictServerVRAM(modelPath string, f *ggml.GGML, numCtx int, kvType string) uint64 {
 	var weights uint64
 	if info, err := os.Stat(modelPath); err == nil {
 		weights = uint64(info.Size())
 	}
 
-	// KV cache: 2 (K+V) * layers * kv_heads * head_dim * context * 2 bytes (f16)
+	// KV cache: 2 (K+V) * layers * kv_heads * head_dim * context, times the
+	// element width. f16 is 2 bytes. A quantized cache is smaller, and treating
+	// it as f16 asks the scheduler to evict a model that would have fit.
 	layers := f.KV().BlockCount()
 	kvHeads := f.KV().HeadCountKVMin()
 	if kvHeads == 0 {
@@ -4008,9 +4058,30 @@ func PredictServerVRAM(modelPath string, f *ggml.GGML, numCtx int) uint64 {
 	if f.KV().HeadCountMax() > 0 {
 		headDim = f.KV().EmbeddingLength() / f.KV().HeadCountMax()
 	}
-	kvCache := 2 * layers * kvHeads * headDim * uint64(numCtx) * 2
+	elements := 2 * layers * kvHeads * headDim * uint64(numCtx)
+	return weights + kvCacheBytes(elements, kvType)
+}
 
-	return weights + kvCache
+// kvCacheBytes is elements times the ggml block size. The numerator is bytes
+// per 32 values (f16 = 64). Unknown types stay at f16 so the estimate does not
+// undershoot a cache we cannot name.
+func kvCacheBytes(elements uint64, kind string) uint64 {
+	per32 := uint64(64)
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "f32":
+		per32 = 128
+	case "q8_0":
+		per32 = 34
+	case "q5_1":
+		per32 = 24
+	case "q5_0":
+		per32 = 22
+	case "q4_1":
+		per32 = 20
+	case "q4_0", "iq4_nl":
+		per32 = 18
+	}
+	return elements * per32 / 32
 }
 
 // memoryParsingWriter wraps an io.Writer and parses llama-server log output

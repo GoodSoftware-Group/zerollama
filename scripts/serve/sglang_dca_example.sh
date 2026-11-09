@@ -6,7 +6,7 @@
 # Stock vLLM removed the V0 DCA backend; SGLang still has dual_chunk_flash_attn.
 # Zerollama can still proxy /v1/chat/completions when modality_backends.inference=sglang.
 #
-# Doc: docs/dca-dual-chunk-attention.md
+# Doc: docs/design/serving/dca-dual-chunk-attention.md
 set -euo pipefail
 
 SGLANG_ROOT="${SGLANG_ROOT:-/var/lib/vz/private/1564/root/sglang}"

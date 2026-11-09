@@ -101,16 +101,16 @@ Don't try to hold the full variable list in context. Route by goal instead:
 | Category | Env prefix / example | Doc |
 |---|---|---|
 | Core daemon (host, models dir, keep-alive, parallelism, queue) | `OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_NUM_PARALLEL`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_MAX_QUEUE` | `zerollama serve --help` |
-| Runtime sidecar / L3 prefix cache | `ZEROLLAMA_L3_PROFILE`, `ZEROLLAMA_LLAMA_CACHE*`, `ZEROLLAMA_RADIX_*` | `docs/runtime-env.md`, `docs/gpu-profiles-l3.md` |
-| Phase 15 in-process KV decode | `ZEROLLAMA_KV_NATIVE_*`, `ZEROLLAMA_KV_AUTO_BATCH*` | `docs/runtime-env.md`, `docs/phase15-native-kv.md` |
-| VRAM / admission policy | `ZEROLLAMA_RUNTIME_VRAM_*`, `ZEROLLAMA_RUNTIME_INFERENCE_POLICY` | `docs/runtime-env.md`, `docs/phase13-runtime-vram.md`, `docs/scheduling-vram-policy.md` |
-| Training queue / VRAM handoff | `OLLAMA_TRAINING*`, `ZEROLLAMA_TRAINING_*`, `ZEROLLAMA_BLOCK_INFERENCE_DURING_TRAINING` | `docs/gpu-training.md` |
-| Multimodal backends (image/video/audio) | `OLLAMA_COMFYUI_*`, `OLLAMA_VIDEO_*`, `OLLAMA_SGLANG_URL`, `TTS`/Whisper binaries | `docs/multimodal-backends.md`, `docs/comfyui-image-backend.md`, `docs/video-understanding.md` |
-| Fleet / multi-node | `ZEROLLAMA_FLEET_*` | `docs/fleet-management.md`, `docs/fleet-scheduling.md` |
-| Cloud proxy (Eliza) | `ELIZACLOUD_API_KEY`, `OLLAMA_CLOUD_BASE_URL`, `OLLAMA_NO_CLOUD` | `docs/eliza-cloud.md` |
-| llama.cpp vendor/build | `LLAMA_CPP_ROOT`, `LLAMA_SERVER_BIN`, `LLAMA_CPP_LIB`, `LLAMA_CPP_REPO` | `docs/runtime-env.md`, `docs/llama-cpp-unification.md` |
-| LM Studio cache import | `OLLAMA_LMSTUDIO_*` | `docs/lmstudio-import.md` |
-| Edge/thin deploy | `ZEROLLAMA_EDGE`, `--edge` build tag | `docs/phase16-thin-edge.md` |
+| Runtime sidecar / L3 prefix cache | `ZEROLLAMA_L3_PROFILE`, `ZEROLLAMA_LLAMA_CACHE*`, `ZEROLLAMA_RADIX_*` | `docs/runbooks/runtime-env.md`, `docs/design/serving/gpu-profiles-l3.md` |
+| Phase 15 in-process KV decode | `ZEROLLAMA_KV_NATIVE_*`, `ZEROLLAMA_KV_AUTO_BATCH*` | `docs/runbooks/runtime-env.md`, `docs/design/serving/phase15-native-kv.md` |
+| VRAM / admission policy | `ZEROLLAMA_RUNTIME_VRAM_*`, `ZEROLLAMA_RUNTIME_INFERENCE_POLICY` | `docs/runbooks/runtime-env.md`, `docs/design/serving/phase13-runtime-vram.md`, `docs/design/serving/scheduling-vram-policy.md` |
+| Training queue / VRAM handoff | `OLLAMA_TRAINING*`, `ZEROLLAMA_TRAINING_*`, `ZEROLLAMA_BLOCK_INFERENCE_DURING_TRAINING` | `docs/design/training/gpu-training.md` |
+| Multimodal backends (image/video/audio) | `OLLAMA_COMFYUI_*`, `OLLAMA_VIDEO_*`, `OLLAMA_SGLANG_URL`, `TTS`/Whisper binaries | `docs/design/media/multimodal-backends.md`, `docs/design/media/comfyui-image-backend.md`, `docs/design/media/video-understanding.md` |
+| Fleet / multi-node | `ZEROLLAMA_FLEET_*` | `docs/design/training/fleet-management.md`, `docs/design/training/fleet-scheduling.md` |
+| Cloud proxy (Eliza) | `ELIZACLOUD_API_KEY`, `OLLAMA_CLOUD_BASE_URL`, `OLLAMA_NO_CLOUD` | `docs/design/surfaces/eliza-cloud.md` |
+| llama.cpp vendor/build | `LLAMA_CPP_ROOT`, `LLAMA_SERVER_BIN`, `LLAMA_CPP_LIB`, `LLAMA_CPP_REPO` | `docs/runbooks/runtime-env.md`, `docs/design/serving/llama-cpp-unification.md` |
+| LM Studio cache import | `OLLAMA_LMSTUDIO_*` | `docs/design/surfaces/lmstudio-import.md` |
+| Edge/thin deploy | `ZEROLLAMA_EDGE`, `--edge` build tag | `docs/design/serving/phase16-thin-edge.md` |
 
 `docs/README.md` in the repo is the master index if a category above isn't
 enough — grep it for the feature name before inventing a variable name.

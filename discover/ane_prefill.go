@@ -136,7 +136,7 @@ func ProbeANEPrefillBench(ctx context.Context, ic, oc, seq int, quick bool) (ANE
 func ProbeANEPrefillBenchVariant(ctx context.Context, ic, oc, seq int, quick bool, variant string) (ANEPrefillBenchResult, error) {
 	bin := FindANEPrefillBenchBin()
 	if bin == "" {
-		return ANEPrefillBenchResult{}, fmt.Errorf("ane-prefill-bench not found — run ./scripts/ane_probe_build.sh")
+		return ANEPrefillBenchResult{}, fmt.Errorf("ane-prefill-bench not found — run ./scripts/ane/ane_probe_build.sh")
 	}
 	out, err := runANETool(ctx, bin, anePrefillBenchArgsVariant(ic, oc, seq, quick, variant))
 	if err != nil && len(out) == 0 {
@@ -168,7 +168,7 @@ func FindMetalPrefillBenchBin() string {
 func ProbeMetalPrefillBench(ctx context.Context, ic, oc, seq int, quick bool) (MetalPrefillBenchResult, error) {
 	bin := FindMetalPrefillBenchBin()
 	if bin == "" {
-		return MetalPrefillBenchResult{}, fmt.Errorf("metal-prefill-bench not found — run ./scripts/ane_probe_build.sh")
+		return MetalPrefillBenchResult{}, fmt.Errorf("metal-prefill-bench not found — run ./scripts/ane/ane_probe_build.sh")
 	}
 	out, err := runANETool(ctx, bin, anePrefillBenchArgs(ic, oc, seq, quick))
 	if err != nil && len(out) == 0 {
@@ -244,7 +244,7 @@ func FindMetalMPSPrefillBenchBin() string {
 func ProbeMetalMPSPrefillBench(ctx context.Context, ic, oc, seq int, quick bool) (MetalPrefillBenchResult, error) {
 	bin := FindMetalMPSPrefillBenchBin()
 	if bin == "" {
-		return MetalPrefillBenchResult{}, fmt.Errorf("metal-prefill-mps-bench not found — run ./scripts/ane_probe_build.sh")
+		return MetalPrefillBenchResult{}, fmt.Errorf("metal-prefill-mps-bench not found — run ./scripts/ane/ane_probe_build.sh")
 	}
 	out, err := runANETool(ctx, bin, anePrefillBenchArgs(ic, oc, seq, quick))
 	if err != nil && len(out) == 0 {
@@ -565,7 +565,7 @@ func RunANEPrefillHandoffSmoke(ctx context.Context, w io.Writer, ic, oc, seq int
 func ProbeANEPrefillHandoffSmoke(ctx context.Context, ic, oc, seq int, quick bool, variant string, steady bool) (ANEPrefillHandoffResult, error) {
 	bin := FindANEPrefillHandoffSmokeBin()
 	if bin == "" {
-		return ANEPrefillHandoffResult{}, fmt.Errorf("ane-prefill-handoff-smoke not found — run ./scripts/ane_probe_build.sh")
+		return ANEPrefillHandoffResult{}, fmt.Errorf("ane-prefill-handoff-smoke not found — run ./scripts/ane/ane_probe_build.sh")
 	}
 	out, err := runANETool(ctx, bin, anePrefillToolArgs(ic, oc, seq, quick, variant, steady))
 	if err != nil && len(out) == 0 {

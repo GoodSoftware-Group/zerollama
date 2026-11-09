@@ -17,6 +17,7 @@ from runtime.server.chat_tools import (
     stream_tool_chat_chunks,
 )
 from runtime.server.gguf_path import pop_gguf_path
+from runtime.invariants import apply_tool_choice, completion_cap, shared_completion_cap
 from runtime.server.runtime_chat import chat_needs_legacy, resolve_chat_prompt
 
 
@@ -32,15 +33,9 @@ def _positive_int(value: Any) -> int | None:
 
 
 def v1_max_tokens(body: dict[str, Any]) -> int:
-    """Completion cap from OpenAI max_tokens, else options.num_predict, else 128."""
-    n = _positive_int(body.get("max_tokens"))
-    if n is not None:
-        return n
+    """Completion cap. See runtime.invariants.completion_cap."""
     opts = v1_request_options(body)
-    n = _positive_int(opts.get("num_predict"))
-    if n is not None:
-        return n
-    return 128
+    return completion_cap(body.get("max_tokens"), opts.get("num_predict"))
 
 
 def _v1_think_needs_legacy(think: Any) -> bool:
@@ -129,7 +124,7 @@ def prepare_v1_chat(engine: Any, body: dict[str, Any]) -> V1ChatPrepared:
         format_value=body.get("format"),
         response_format=body.get("response_format"),
     )
-    tools = normalize_tools(body.get("tools"))
+    tools = apply_tool_choice(normalize_tools(body.get("tools")), body.get("tool_choice"))
     if tools and parse_format_constraint(
         body.get("format"), response_format=body.get("response_format")
     ):
@@ -404,7 +399,7 @@ def run_v1_chat_completions_batch(
 
     model = ""
     prompts: list[str] = []
-    n_predict = 128
+    caps: list[int] = []
     shared_opts: dict[str, Any] = {}
     for i, item in enumerate(requests):
         if not isinstance(item, dict):
@@ -435,7 +430,7 @@ def run_v1_chat_completions_batch(
         if not prompt.strip():
             raise ValueError(f"requests[{i}]: empty messages")
         prompts.append(prompt)
-        n_predict = max(n_predict, item_predict)
+        caps.append(item_predict)
         if i == 0:
             shared_opts = opts
         else:
@@ -463,7 +458,7 @@ def run_v1_chat_completions_batch(
 
     results = engine.generate_batch(
         prompts,
-        n_predict=n_predict,
+        n_predict=shared_completion_cap(caps),
         max_admit=min(cap, len(prompts)),
         options=shared_opts,
     )

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/internal/slurm"
 )
 
 const deferredJobIDPrefix = "defer-"
@@ -45,6 +46,8 @@ type deferredTrainingJob struct {
 	errMsg      string
 	retryCount  int
 	fifoSeq     uint64
+	// slurm, when set, promotes into sbatch instead of the embedded trainer.
+	slurm *slurm.Request
 }
 
 type trainingDeferQueue struct {
@@ -80,6 +83,10 @@ func (q *trainingDeferQueue) start(ctx context.Context) {
 }
 
 func (q *trainingDeferQueue) enqueue(kind string, payload json.RawMessage, priority TrainingPriority) (string, error) {
+	return q.enqueueSpec(kind, payload, priority, nil)
+}
+
+func (q *trainingDeferQueue) enqueueSpec(kind string, payload json.RawMessage, priority TrainingPriority, spec *slurm.Request) (string, error) {
 	if q == nil {
 		return "", errors.New("training defer queue unavailable")
 	}
@@ -99,6 +106,11 @@ func (q *trainingDeferQueue) enqueue(kind string, payload json.RawMessage, prior
 	if err != nil {
 		return "", err
 	}
+	var specCopy *slurm.Request
+	if spec != nil {
+		cp := *spec
+		specCopy = &cp
+	}
 	q.items[id] = &deferredTrainingJob{
 		id:         id,
 		kind:       kind,
@@ -107,6 +119,7 @@ func (q *trainingDeferQueue) enqueue(kind string, payload json.RawMessage, prior
 		enqueuedAt: time.Now(),
 		state:      deferredStateWaiting,
 		fifoSeq:    AllocCrossQueueSeq(),
+		slurm:      specCopy,
 	}
 	q.order = append(q.order, id)
 	return id, nil
@@ -286,7 +299,12 @@ func (q *trainingDeferQueue) evictExpired() {
 }
 
 func (q *trainingDeferQueue) drainOnce(ctx context.Context) {
-	if q == nil || q.srv == nil || q.srv.training == nil {
+	if q == nil || q.srv == nil {
+		return
+	}
+	// Slurm promotion does not need the embedded trainer. Bailing here left
+	// ZEROLLAMA_SLURM_SUBMIT=1 with no embed unable to drain its defer queue.
+	if q.srv.training == nil && !envconfig.SlurmSubmit() {
 		return
 	}
 	for {
@@ -310,8 +328,41 @@ func (q *trainingDeferQueue) drainOnce(ctx context.Context) {
 			continue
 		}
 		kind, payload := j.kind, j.payload
+		priority := j.priority
+		var spec *slurm.Request
+		if j.slurm != nil {
+			cp := *j.slurm
+			spec = &cp
+		}
 		q.mu.Unlock()
 
+		if spec != nil {
+			res, err := q.srv.submitSlurmNow(ctx, kind, payload, priority, *spec)
+			if err != nil {
+				if TrainingSubmitConflict(err) {
+					return
+				}
+				slog.Warn("deferred slurm submit failed", "defer_id", id, "error", err)
+				q.mu.Lock()
+				q.markFailedOrRetryLocked(id, err.Error())
+				q.mu.Unlock()
+				continue
+			}
+			q.mu.Lock()
+			q.markPromotedLocked(id, res.JobID)
+			q.mu.Unlock()
+			slog.Info("deferred training job submitted to slurm", "defer_id", id, "job_id", res.JobID, "slurm_job_id", res.SlurmJobID)
+			q.srv.syncRuntimeCoordinationAndPauses(ctx)
+			continue
+		}
+
+		if q.srv.training == nil {
+			slog.Warn("deferred training submit failed", "defer_id", id, "error", "training worker not available")
+			q.mu.Lock()
+			q.markFailedOrRetryLocked(id, "training worker not available")
+			q.mu.Unlock()
+			continue
+		}
 		jobID, err := q.srv.training.SubmitTrainingJobDirect(ctx, kind, payload)
 		if err != nil {
 			if TrainingSubmitConflict(err) {

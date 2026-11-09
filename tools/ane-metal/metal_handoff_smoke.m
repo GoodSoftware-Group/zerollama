@@ -204,7 +204,7 @@ int main(int argc, const char *argv[]) {
         uint32_t inSID = ane_bridge_input_surface_id(kernel, 0);
         if (inSID == 0) {
             ane_bridge_free(kernel);
-            emitJSON(NO, "ane_bridge_input_surface_id unavailable — run scripts/ane_bridge_patch.sh",
+            emitJSON(NO, "ane_bridge_input_surface_id unavailable — run scripts/ane/ane_bridge_patch.sh",
                        @{@"mode": @"metal_iosurface_handoff"});
             return 1;
         }

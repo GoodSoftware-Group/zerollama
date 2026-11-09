@@ -22,8 +22,8 @@ need_exec() {
   fi
 }
 
-need_file "docs/gliner-decide.md"
-need_file "docs/gliner-decide-findings.md"
+need_file "docs/design/surfaces/gliner-decide.md"
+need_file "docs/design/surfaces/gliner-decide-findings.md"
 need_file "gliner/decide_server/app.py"
 need_file "gliner/decide_server/requirements.txt"
 need_file "agentskills/typed-decisions/SKILL.md"

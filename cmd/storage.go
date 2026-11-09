@@ -43,7 +43,7 @@ fetch on miss. Lab listen defaults to :18090 — never bind :11434/:8081.
   storage pull  — registry → storage host (POST /v1/pull)
   storage run   — storage host → this machine, then chat (like zerollama run)
 
-See docs/remote-model-storage.md.`,
+See docs/design/surfaces/remote-model-storage.md.`,
 	}
 	cmd.AddCommand(newStorageServeCommand())
 	cmd.AddCommand(newStoragePushCommand())
@@ -92,7 +92,12 @@ func newStorageServeCommand() *cobra.Command {
 			}
 			srv := storaged.New(models, auth)
 			srv.Peers = envconfig.ParseStoragePeers()
-			srv.Pull = storageServePull
+			srv.Pull = func(ctx context.Context, modelName string, opts storaged.PullOptions, fn func(storaged.ProgressEvent)) error {
+				if err := remotestore.PullWritesServedTree(models, envconfig.Models()); err != nil {
+					return err
+				}
+				return storageServePull(ctx, modelName, opts, fn)
+			}
 			httpSrv := &http.Server{
 				Addr:              listen,
 				Handler:           srv,
@@ -670,8 +675,10 @@ func runStoragePush(ctx context.Context, auth *remotestore.Auth, base, modelsDir
 			}
 			tcp := remotestore.NewTCPTransport(auth)
 			tcp.Client = client
-			_, ok, herr := tcp.HeadBlob(ctx, base, dig)
-			if herr == nil && ok {
+			fi, _ := os.Stat(bp)
+			remoteSize, ok, herr := tcp.HeadBlob(ctx, base, dig)
+			// HEAD 200 is not "same bytes". Skip upload only when sizes match.
+			if herr == nil && ok && fi != nil && remotestore.RemoteBlobMatchesLocal(remoteSize, fi.Size()) {
 				skipped++
 				blobOK[dig] = true
 			} else {

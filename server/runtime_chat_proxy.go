@@ -133,13 +133,7 @@ func (s *Server) runtimeChatProxy() gin.HandlerFunc {
 		req.Messages = msgs
 		payload := runtimeChatPayload(req, rtOpts, stream)
 		if stream {
-			if err := writeRuntimeStreamAccepted(c, req.Model, true); err != nil {
-				writeRuntimeProxyError(c, err)
-				return
-			}
-		}
-		if stream {
-			if err := forwardRuntimeNDJSON(c, "/api/chat", payload, compressionMeta); err != nil {
+			if err := forwardRuntimeNDJSON(c, "/api/chat", payload, compressionMeta, req.Model, true); err != nil {
 				writeRuntimeProxyError(c, err)
 			}
 			return

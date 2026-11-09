@@ -42,6 +42,7 @@ import (
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/fs/ggml"
 	internalcloud "github.com/ollama/ollama/internal/cloud"
+	"github.com/ollama/ollama/internal/slurm"
 	"github.com/ollama/ollama/internal/ssrf"
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/logutil"
@@ -126,7 +127,12 @@ type Server struct {
 	requestLogger *inferenceRequestLogger
 	training      *trainingworker.Client
 	trainingDefer *trainingDeferQueue
-	runtimeEmbed  *runtimeworker.Client
+
+	// slurm queue client (SL2). slurmCLI is nil until the first submit; tests inject a fake.
+	slurmMu      sync.Mutex
+	slurmCLI     *slurm.Client
+	slurmJobs    *slurmJobStore
+	runtimeEmbed *runtimeworker.Client
 
 	trainingVRAMMu      sync.Mutex
 	trainingVRAMBlocked bool
@@ -728,7 +734,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 	// Why order matters: Init previously ran with Think=nil. For PARSER
 	// qwen3-thinking, nil → defaultThinking=true → CollectingThinking, so
 	// /api/generate answers landed in Thinking with empty Response (harness
-	// trap 12/64 / milkey-class). See docs/doctor-model-repair.md.
+	// trap 12/64 / milkey-class). See docs/runbooks/doctor-model-repair.md.
 	modelCaps := m.Capabilities()
 	if slices.Contains(modelCaps, model.CapabilityThinking) {
 		if req.Think == nil && thinkingMeta == nil {
@@ -3113,6 +3119,12 @@ func Serve(listeners ...net.Listener) error {
 	} else {
 		slog.Info("GPU job worker disabled", "env", "ZEROLLAMA_GPU_JOBS=false")
 	}
+	// The embed failed to start, or GPU jobs are off, but this host still
+	// submits to Slurm. The defer queue is what holds a job until idle.
+	if s.trainingDefer == nil && envconfig.SlurmSubmit() {
+		s.trainingDefer = newTrainingDeferQueue(s)
+		go s.trainingDefer.start(ctx)
+	}
 
 	// Prune unclaimed /v1/videos artifacts under $OLLAMA_MODELS/generated (TTL).
 	go s.runVideoArtifactPruner(ctx)
@@ -3250,7 +3262,7 @@ func Serve(listeners ...net.Listener) error {
 
 	s.sched.Run(schedCtx)
 	// classifier: jev routers: load their deciders now so the first routed request does
-	// not spend its decider_timeout on a cold load (docs/auto-router.md AR4).
+	// not spend its decider_timeout on a cold load (docs/design/surfaces/auto-router.md AR4).
 	go s.prewarmJevDeciders()
 	go s.warmPiperPhrases(ctx)
 	go s.warmKokoroPhrases(ctx)
@@ -3272,16 +3284,8 @@ func Serve(listeners ...net.Listener) error {
 		totalVRAM += gpu.TotalMemory - envconfig.GpuOverhead()
 	}
 
-	// Set default context based on VRAM tier
-	// Use slightly lower thresholds (47/23 GiB vs. 48/24 GiB) to account for small differences in the exact value
-	switch {
-	case totalVRAM >= 47*format.GibiByte:
-		s.defaultNumCtx = 262144
-	case totalVRAM >= 23*format.GibiByte:
-		s.defaultNumCtx = 32768
-	default:
-		s.defaultNumCtx = 4096
-	}
+	// DefaultNumCtx is the tier rule, including the unified-memory cap.
+	s.defaultNumCtx = DefaultNumCtx(totalVRAM, gpusAllIntegrated(gpus))
 	slog.Info("vram-based default context", "total_vram", format.HumanBytes2(totalVRAM), "default_num_ctx", s.defaultNumCtx)
 
 	guardAddrs := make([]string, 0, len(extras))

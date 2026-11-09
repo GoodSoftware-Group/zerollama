@@ -49,7 +49,17 @@ func finalizeBlobPartial(tmp, path, digest string, h hash.Hash) error {
 		return fmt.Errorf("fsync partial: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		return err
+		// Windows refuses to rename over an existing file. Only that case may
+		// remove the published blob; a permission or I/O error must leave it.
+		if !os.IsExist(err) {
+			return err
+		}
+		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+			return err
+		}
+		if err2 := os.Rename(tmp, path); err2 != nil {
+			return err2
+		}
 	}
 	if err := fsyncPath(path); err != nil {
 		return fmt.Errorf("fsync final: %w", err)

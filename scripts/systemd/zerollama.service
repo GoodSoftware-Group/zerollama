@@ -13,7 +13,7 @@
 [Unit]
 Description=Zerollama API
 After=network-online.target
-Documentation=file:///opt/zerollama/docs/cuda-lanes.md
+Documentation=file:///opt/zerollama/docs/design/serving/cuda-lanes.md
 
 [Service]
 ExecStart=/usr/local/bin/zerollama serve

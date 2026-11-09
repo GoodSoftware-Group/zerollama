@@ -52,7 +52,7 @@ func isCLMModelName(name string) bool {
 //
 // WHY keep the "openjev" name while the engine is DiffusionGemma: public wire is
 // Jev-shaped (/v1/systemone); agents already say model=openjev. Docs must say
-// DG2 v0 is uncalibrated — see docs/diffusion-gemma-llama-cpp-findings.md Finding 6.
+// DG2 v0 is uncalibrated — see docs/design/surfaces/diffusion-gemma-llama-cpp-findings.md Finding 6.
 func isOpenJevModelName(name string) bool {
 	n := strings.ToLower(strings.TrimSpace(name))
 	if n == "" {
@@ -109,7 +109,7 @@ func decisionsExternalResolve(modelName string, m *Model) (base string, err erro
 			if nativeCLM {
 				return "", nil
 			}
-			return "", fmt.Errorf("modality_backends.decisions=clm requires ZEROLLAMA_CLM_HEADS+ZEROLLAMA_CLM_EMB_URL (native) or ZEROLLAMA_CLM_URL (clm-serve fallback); see docs/clm.md")
+			return "", fmt.Errorf("modality_backends.decisions=clm requires ZEROLLAMA_CLM_HEADS+ZEROLLAMA_CLM_EMB_URL (native) or ZEROLLAMA_CLM_URL (clm-serve fallback); see docs/design/surfaces/clm.md")
 		case model.BackendLaya:
 			if u := envconfig.LayaURL(); u != "" {
 				return u, nil
@@ -119,12 +119,12 @@ func decisionsExternalResolve(modelName string, m *Model) (base string, err erro
 			if u := envconfig.OpenJevURL(); u != "" {
 				return u, nil
 			}
-			return "", fmt.Errorf("modality_backends.decisions=openjev requires ZEROLLAMA_OPENJEV_URL (llama-diffusion-gemma-server); see docs/diffusion-gemma-llama-cpp.md")
+			return "", fmt.Errorf("modality_backends.decisions=openjev requires ZEROLLAMA_OPENJEV_URL (llama-diffusion-gemma-server); see docs/design/surfaces/diffusion-gemma-llama-cpp.md")
 		case model.BackendGlinerDecide:
 			if u := envconfig.GlinerDecideURL(); u != "" {
 				return u, nil
 			}
-			return "", fmt.Errorf("modality_backends.decisions=gliner-decide requires ZEROLLAMA_GLINER_DECIDE_URL; see docs/gliner-decide.md")
+			return "", fmt.Errorf("modality_backends.decisions=gliner-decide requires ZEROLLAMA_GLINER_DECIDE_URL; see docs/design/surfaces/gliner-decide.md")
 		}
 	}
 	if isCLMModelName(modelName) {
@@ -134,19 +134,19 @@ func decisionsExternalResolve(modelName string, m *Model) (base string, err erro
 		if nativeCLM {
 			return "", nil
 		}
-		return "", fmt.Errorf("model %q requires ZEROLLAMA_CLM_HEADS+ZEROLLAMA_CLM_EMB_URL (native Go) or ZEROLLAMA_CLM_URL; see docs/clm.md", modelName)
+		return "", fmt.Errorf("model %q requires ZEROLLAMA_CLM_HEADS+ZEROLLAMA_CLM_EMB_URL (native Go) or ZEROLLAMA_CLM_URL; see docs/design/surfaces/clm.md", modelName)
 	}
 	if isOpenJevModelName(modelName) {
 		if u := envconfig.OpenJevURL(); u != "" {
 			return u, nil
 		}
-		return "", fmt.Errorf("model %q requires ZEROLLAMA_OPENJEV_URL (DiffusionGemma server); see docs/diffusion-gemma-llama-cpp.md", modelName)
+		return "", fmt.Errorf("model %q requires ZEROLLAMA_OPENJEV_URL (DiffusionGemma server); see docs/design/surfaces/diffusion-gemma-llama-cpp.md", modelName)
 	}
 	if isGlinerDecideModelName(modelName) {
 		if u := envconfig.GlinerDecideURL(); u != "" {
 			return u, nil
 		}
-		return "", fmt.Errorf("model %q requires ZEROLLAMA_GLINER_DECIDE_URL; see docs/gliner-decide.md", modelName)
+		return "", fmt.Errorf("model %q requires ZEROLLAMA_GLINER_DECIDE_URL; see docs/design/surfaces/gliner-decide.md", modelName)
 	}
 	return "", nil
 }
@@ -351,7 +351,7 @@ type openJevTokKey struct{ base, model, text string }
 // WHY: the slot and gather builders tokenize every option (and each question marker)
 // with one HTTP call apiece, twice per request, and those strings are label text that
 // repeats across requests — the same per-call /tokenize cost fixed for Laya and System
-// One (docs/auto-router-findings.md Finding 25). Bounded; reset on overflow.
+// One (docs/design/surfaces/auto-router-findings.md Finding 25). Bounded; reset on overflow.
 var openJevTokCache struct {
 	sync.Mutex
 	m map[openJevTokKey][]int

@@ -38,6 +38,10 @@ def test_v1_max_tokens_from_options():
     assert v1_max_tokens({"options": {"num_predict": 32}}) == 32
 
 
+def test_v1_max_tokens_omitted_is_unlimited():
+    assert v1_max_tokens({"messages": []}) == -1
+
+
 def test_v1_needs_legacy_reasoning_effort():
     assert v1_needs_legacy({"messages": [], "reasoning_effort": "high"})
 

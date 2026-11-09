@@ -1609,7 +1609,7 @@ func pullFixHint(err error) error {
 	case strings.Contains(low, "not found"), strings.Contains(low, "404"):
 		return fmt.Errorf("%w\nHint: check model name; for LAN blobs: zerollama storage doctor", err)
 	default:
-		return fmt.Errorf("%w\nHint: zerollama doctor — or docs/mac-dev-setup.md tier 1", err)
+		return fmt.Errorf("%w\nHint: zerollama doctor — or docs/runbooks/mac-dev-setup.md tier 1", err)
 	}
 }
 

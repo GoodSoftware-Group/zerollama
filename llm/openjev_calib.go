@@ -2,7 +2,7 @@ package llm
 
 // OpenJevCalibGate is the DG7/DG9 checklist for considering calibrated:true.
 // WHY a struct (not auto-flip): holdout ranking alone is not a calibration study;
-// operator_signoff must stay manual (see docs/diffusion-gemma-readout-design.md).
+// operator_signoff must stay manual (see docs/design/surfaces/diffusion-gemma-readout-design.md).
 // Serve still requires ZEROLLAMA_OPENJEV_CALIBRATED (+ NOUL_CALIBRATED for noul).
 type OpenJevCalibGate struct {
 	ChoiceHoldoutN        int     `json:"choice_holdout_n"`

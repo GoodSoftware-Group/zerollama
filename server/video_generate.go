@@ -65,7 +65,7 @@ const (
 	ltxMlx13BDefaultFrames = 41
 	ltxMlx13BTimeoutSec    = 1800
 	ltxMlxTimeoutSec       = 600
-	ltx2bMinHostGiB        = 8 // 2B fp8 + T5; see docs/ltx-t2v.md
+	ltx2bMinHostGiB        = 8 // 2B fp8 + T5; see docs/design/media/ltx-t2v.md
 	h3TinyFrames           = 5
 	h3TinyDefaultSteps     = 2
 	h3768DefaultSteps      = 8
@@ -82,7 +82,7 @@ const (
 	h3Wan2GPDefaultSize    = "480x832" // Wan2GP H3 common portrait-ish
 	h3Wan2GPMinHostGiB     = 32         // DiT+TE staging; astra has ~125 GiB
 	h3Wan2GPPrunedMinHostGiB = 24
-	ltxDefaultMinHostGiB   = 12 // Wan mmgp+GPU-VAE class; see docs/ltx-t2v.md
+	ltxDefaultMinHostGiB   = 12 // Wan mmgp+GPU-VAE class; see docs/design/media/ltx-t2v.md
 )
 
 type wanVideoJobPayload struct {

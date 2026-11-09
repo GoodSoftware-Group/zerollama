@@ -24,7 +24,7 @@
 #   curl -s http://127.0.0.1:8080/api/version | jq .
 #   curl -s http://127.0.0.1:8081/health | jq '{status, profile: .gpu_profile.id}'
 #
-# Doc: docs/5080-runbook.md#production-serve-binserve-sh
+# Doc: docs/runbooks/5080-runbook.md#production-serve-binserve-sh
 set -euo pipefail
 
 export ZEROLLAMA_REPO="${ZEROLLAMA_REPO:-${HOME}/zerollama}"

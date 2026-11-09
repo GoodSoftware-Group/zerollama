@@ -22,6 +22,7 @@ def test_chat_needs_legacy_ollama_images():
 
 def test_chat_needs_legacy_think():
     assert chat_needs_legacy([], think=True)
+    assert not chat_needs_legacy([], think=False)
 
 
 def test_chat_needs_legacy_tool_calls():

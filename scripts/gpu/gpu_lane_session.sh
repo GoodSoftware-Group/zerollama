@@ -12,7 +12,7 @@
 #   CUDA_LANE=dual_4090 ./scripts/gpu/gpu_lane_session.sh
 #   RUN_E2E_L1=1 RUN_E2E_L3=1 ./scripts/gpu/gpu_lane_session.sh   # 5080 lane only today
 #
-# Doc: docs/cuda-lanes.md
+# Doc: docs/design/serving/cuda-lanes.md
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

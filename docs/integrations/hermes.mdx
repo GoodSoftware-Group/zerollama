@@ -132,5 +132,5 @@ Hermes talks OpenAI `/v1` by default. On this fork:
 | Fan-out decode | `POST /v1/chat/completions/batch` — same model, text-only, ≤8; response `{object:"chat.completion.batch", completions[]}` with order preserved. **Group by model client-side** (mixed models → 400). Not OpenAI async `/v1/batches`. |
 | Capacity dry-run | Native `POST /api/can-load` (topology fields for multi-GPU hosts) |
 
-**Why these matter:** see [hermes-zerollama-gap.md](../hermes-zerollama-gap.md) and [hermes-gap-closure-findings.md](../hermes-gap-closure-findings.md). OpenAPI: `GET http://127.0.0.1:11434/openapi.json`.
+**Why these matter:** see [hermes-zerollama-gap.md](../design/surfaces/hermes-zerollama-gap.md) and [hermes-gap-closure-findings.md](../design/surfaces/hermes-gap-closure-findings.md). OpenAPI: `GET http://127.0.0.1:11434/openapi.json`.
 

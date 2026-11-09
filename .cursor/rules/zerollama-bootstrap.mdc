@@ -15,9 +15,9 @@ You are working in the **zerollama** repo (Ollama fork): local GGUF inference + 
 - **CLI name:** `zerollama` (plain `go build` may emit `ollama` unless `-o zerollama`)
 - **Python runtime package:** `runtime/` — install with `cd runtime && pip install -e ".[serve]"` (FastAPI/uvicorn). Tests: `cd runtime && PYTHONPATH=. python3 -m pytest tests/` (needs pytest in env)
 - **Embedded CPython (training):** `x/trainingworker/pyembed` — CGO links libpython3; needs `python3-dev` + `pkg-config python3-embed`. Loads repo-root `training.py` in-process (not a separate training daemon on a public port).
-- **llama.cpp:** sibling checkout e.g. `~/llama.cpp` or Mac lab `../llama.cpp`; build `llama-server` via `scripts/build_llama_server.sh` with correct `CMAKE_CUDA_ARCHITECTURES` for the GPU (5080 = `120-real`, 4090 = `89`). Set `LLAMA_SERVER_BIN` to `.../build/bin/llama-server`.
-- **Weekly upstream siblings (vLLM / LocalAI / SGLang / …):** repo-root [AGENTS.md](../../AGENTS.md) + [docs/upstream-siblings.md](../../docs/upstream-siblings.md) — Mac lab parent `~/Sites/inference/` (`../vllm`, `../LocalAI`, …).
-- **Ollama gallery stamp:** [`version.OllamaCompat`](../../version/version.go) → registry `User-Agent: ollama/<semver>`; bump on upstream Ollama sync / pull 412 — [ollama-compat-version.mdc](./ollama-compat-version.mdc).
+- **llama.cpp:** sibling checkout e.g. `~/llama.cpp` or Mac lab `../llama.cpp`; build `llama-server` via `scripts/build/build_llama_server.sh` with correct `CMAKE_CUDA_ARCHITECTURES` for the GPU (5080 = `120-real`, 4090 = `89`). Set `LLAMA_SERVER_BIN` to `.../build/bin/llama-server`.
+- **Weekly upstream siblings (vLLM / LocalAI / SGLang / …):** repo-root [AGENTS.md](../../AGENTS.md) + [docs/upstream/siblings.md](../../docs/upstream/siblings.md) — Mac lab parent `~/Sites/inference/` (`../vllm`, `../LocalAI`, …).
+- **Ollama gallery stamp:** [`version.OllamaCompat`](../../version/version.go) → registry `User-Agent: ollama/<semver>`; bump on upstream Ollama sync / pull 412 — [ollama-compat-version.mdc](ollama-compat-version.mdc).
 
 ## Process layout when serving
 
@@ -35,7 +35,7 @@ You are working in the **zerollama** repo (Ollama fork): local GGUF inference + 
 
 **Phase 9 shipped:** Go proxy sets `options.gguf` from manifest (`server/runtime_manifest.go`); Python `ensure_gguf_loaded()` in `runtime/runtime/engine.py`.
 
-**Phase 11 (partial):** opinionated runtime admission — `INFERENCE_POLICY`, `CHECK_GPU_VRAM`; constants in `runtime/runtime/gpu/admission.py`. Doc: `docs/phase11-runtime-admission.md`.
+**Phase 11 (partial):** opinionated runtime admission — `INFERENCE_POLICY`, `CHECK_GPU_VRAM`; constants in `runtime/runtime/gpu/admission.py`. Doc: `docs/design/serving/phase11-runtime-admission.md`.
 
 **Scheduler / admission:** Go `pending_queue.go` (drain + `PopPreferringKeys`); Python `model_swap.py`, `gpu/admission.py` (opinionated policy: `INFERENCE_POLICY`, `CHECK_GPU_VRAM`; optional `MAX_QUEUE` cap); `autoconfig.py` → `configs/single_gpu.yaml` when 1 GPU; `host_memory.check_gguf_host_budget()` before load. CI: `.github/workflows/zerollama-regression.yaml`.
 
@@ -55,12 +55,12 @@ You are working in the **zerollama** repo (Ollama fork): local GGUF inference + 
 ## Tests & smoke
 
 - **CI (Phase 10):** `.github/workflows/zerollama-regression.yaml` — `go test ./server/... ./envconfig/...` + runtime pytest + `scripts/check_gpu_scripts.sh`
-- **GPU smoke:** `docs/testing-smoke.md`, `scripts/gpu_smoke_all.sh`, `scripts/e2e_runtime_smoke.sh` (`RUN_E2E_GPU=1`, `RUN_E2E_PROXY=1`, optional `RUN_E2E_TOOLS=1`, `RUN_E2E_VRAM_CLAMP=1` when clamp on serve), `scripts/gpu_health_report.sh`
+- **GPU smoke:** `docs/runbooks/testing-smoke.md`, `scripts/gpu_smoke_all.sh`, `scripts/e2e_runtime_smoke.sh` (`RUN_E2E_GPU=1`, `RUN_E2E_PROXY=1`, optional `RUN_E2E_TOOLS=1`, `RUN_E2E_VRAM_CLAMP=1` when clamp on serve), `scripts/gpu_health_report.sh`
 
 ## Roadmap status (read `docs/ROADMAP.md`)
 
 - **Done:** Phases 0–10 (CI gate), 8–9 (VRAM broker, manifest→gguf), 11 (admission; 5080 keep defaults), 12 tools path, 13 core VRAM/autotune (5080 production calibrate), training T1
-- **Partial / next:** Phase 15 / L3 polish; Phase 12 tokenize-accurate render; optional Phase 13 clamp-on smoke; training **T6** + **T9** + **T10** GRPO ([docs/t10-grpo.md](../../docs/t10-grpo.md)) + **T11** recipes ([docs/t11-recipes.md](../../docs/t11-recipes.md)); DeepInfer **M29** done (**DI8** skip — [docs/deepinfer-ladder.md](../../docs/deepinfer-ladder.md))
+- **Partial / next:** Phase 15 / L3 polish; Phase 12 tokenize-accurate render; optional Phase 13 clamp-on smoke; training **T6** + **T9** + **T10** GRPO ([docs/design/training/t10-grpo.md](../../docs/design/training/t10-grpo.md)) + **T11** recipes ([docs/design/training/t11-recipes.md](../../docs/design/training/t11-recipes.md)); DeepInfer **M29** done (**DI8** skip — [docs/upstream/deepinfer-ladder.md](../../docs/upstream/deepinfer-ladder.md))
 - **Product model:** many stakeholders → inference queues (Go + Python schedulers) + separate training job queue; unified “train when idle” orchestrator is **not** shipped yet (T6 + Phase 11)
 
 ## Important code paths
@@ -68,7 +68,7 @@ You are working in the **zerollama** repo (Ollama fork): local GGUF inference + 
 - **Go proxy:** `server/runtime_*_proxy.go`, `server/runtime_manifest.go`, `server/vram/`
 - **Python:** `runtime/runtime/engine.py`, `runtime/runtime/server/app.py`, `runtime/runtime/worker/llama_server.py`
 - **Training:** `x/trainingworker/client.go`, `training.py`
-- **Docs:** `docs/ROADMAP.md`, `docs/python-migration.md`, `docs/testing-smoke.md`, `docs/gpu-training.md`, `docs/runtime-embed.md`, `docs/deepinfer-ladder.md`, `docs/t10-grpo.md`, `docs/t11-recipes.md`
+- **Docs:** `docs/ROADMAP.md`, `docs/design/serving/python-migration.md`, `docs/runbooks/testing-smoke.md`, `docs/design/training/gpu-training.md`, `docs/design/serving/runtime-embed.md`, `docs/upstream/deepinfer-ladder.md`, `docs/design/training/t10-grpo.md`, `docs/design/training/t11-recipes.md`
 
 ## Constraints for the agent
 

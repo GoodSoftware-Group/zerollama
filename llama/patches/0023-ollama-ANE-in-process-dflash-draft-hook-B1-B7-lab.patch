@@ -28,7 +28,7 @@ index 0000000..b57ab1e
 +++ b/common/ane_draft_hook.cpp
 @@ -0,0 +1,7056 @@
 +// ANE dflash draft hook — packs Metal draft activations into in-process ANE IOSurface (lab).
-+// See docs/ane-draft-inprocess.md. Env-gated: ZEROLLAMA_ANE_DRAFT=1 (default off).
++// See docs/research/ane-draft-inprocess.md. Env-gated: ZEROLLAMA_ANE_DRAFT=1 (default off).
 +#include "ane_draft_hook.h"
 +
 +#include "ane_draft_session.h"
@@ -7095,7 +7095,7 @@ index 0000000..ea7576d
 +
 +struct llama_context;
 +
-+// Lab-only hooks for ZEROLLAMA_ANE_DRAFT hybrid draft-on-ANE research (see docs/ane-draft-inprocess.md).
++// Lab-only hooks for ZEROLLAMA_ANE_DRAFT hybrid draft-on-ANE research (see docs/research/ane-draft-inprocess.md).
 +//
 +// Why default off: production dflash must not pay ANE map+eval overhead or depend on libane_bridge
 +// until B7 routes draft tokens from ANE. IOSurface handoff requires same PID as ane_draft_session.

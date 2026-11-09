@@ -99,7 +99,7 @@ func doctorCheckHistoryAssembly(base string, m doctorLoadedModel) doctorCheck {
 		status = "warn"
 		parts = append(parts, "prior-turn thinking marker absent from assembled prompt (trap 04 — template strips history reasoning)")
 		if fixHint == "" {
-			fixHint = "multi-turn thinking studies need a template that emits prior .Thinking, or measure single-turn only; see docs/model-serving-minefield.md"
+			fixHint = "multi-turn thinking studies need a template that emits prior .Thinking, or measure single-turn only; see docs/runbooks/model-serving-minefield.md"
 		}
 	} else {
 		parts = append(parts, "prior-turn thinking marker preserved (trap 04)")

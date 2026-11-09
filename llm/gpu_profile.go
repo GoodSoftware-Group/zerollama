@@ -345,7 +345,7 @@ func primaryGPUIdentity(gpus []ml.DeviceInfo) (name string, vramGB float64) {
 // num_ctx clamp builds its load profile with nil devices on every scheduled request. On
 // an NVIDIA node that spawned nvidia-smi per request; elsewhere the failed PATH lookup
 // alone cost ~35 ms on WSL (23 /mnt/c PATH entries) — a third of a Laya router decision
-// (docs/auto-router-findings.md). The GPU's name and size do not change while we run, so
+// (docs/design/surfaces/auto-router-findings.md). The GPU's name and size do not change while we run, so
 // a hit is kept for the process; a miss is retried after nvidiaSMIRetry so one slow probe
 // during startup does not disable profile matching until restart.
 var nvidiaSMIIdentity struct {

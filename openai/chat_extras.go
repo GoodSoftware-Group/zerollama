@@ -15,7 +15,7 @@ import (
 // OpenAI Python SDK flattens extra_body onto the HTTP root (flat qos_class /
 // project_name / zerollama). All must fold into options.zerollama rather than 400.
 // Precedence (strongest → weakest): options.zerollama → top-level zerollama
-// object → flat aliases. See docs/openai-harness-qos-wire-shapes.md.
+// object → flat aliases. See docs/design/serving/openai-harness-qos-wire-shapes.md.
 func BindChatCompletionRequest(body []byte) (ChatCompletionRequest, error) {
 	var req ChatCompletionRequest
 	if len(body) == 0 {

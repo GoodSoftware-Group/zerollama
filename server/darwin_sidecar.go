@@ -34,7 +34,7 @@ const (
 
 // DarwinSidecar manages a child runtime sidecar started by zerollama serve on macOS.
 type DarwinSidecar struct {
-	cmd     *exec.Cmd
+	cmd      *exec.Cmd
 	stopOnce sync.Once
 }
 
@@ -82,8 +82,8 @@ func darwinSidecarBuildSha(ctx context.Context, baseURL string) string {
 	}
 	defer resp.Body.Close()
 	var body struct {
-		KvNativeBuildSha  string `json:"kv_native_build_sha"`
-		KvPageBind        *struct {
+		KvNativeBuildSha string `json:"kv_native_build_sha"`
+		KvPageBind       *struct {
 			NativeExtAvailable bool `json:"native_ext_available"`
 		} `json:"kv_page_bind"`
 	}
@@ -391,7 +391,7 @@ func ensureDarwinTrainingVenv(ctx context.Context, repoRoot string) error {
 		slog.Info("darwin training: .venv-training already ready", "python", py)
 		return applyDarwinTrainingPYTHONPATH(ctx, repoRoot)
 	}
-	if err := runRepoBash(ctx, repoRoot, "source scripts/training_uv_venv.sh && training_uv_venv"); err != nil {
+	if err := runRepoBash(ctx, repoRoot, "source scripts/training/training_uv_venv.sh && training_uv_venv"); err != nil {
 		return err
 	}
 	return applyDarwinTrainingPYTHONPATH(ctx, repoRoot)
@@ -433,9 +433,10 @@ func waitRuntimeHealth(ctx context.Context, baseURL string, perReq time.Duration
 		}
 		resp, err := client.Do(req)
 		if err == nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
+			// Any HTTP 200 on the port used to count, including a foreign listener.
+			if IsZerollamaRuntimeHealth(resp.StatusCode, body) {
 				return nil
 			}
 		}

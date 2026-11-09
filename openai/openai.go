@@ -61,7 +61,7 @@ type ErrorResponse struct {
 
 // NewMediaMissingError is returned when POST /v1/videos references expired or evicted media labels.
 // WHY a dedicated code + missing_labels: agents can re-PUT without scraping English text
-// or inventing digests (server hashes on PUT). See docs/media-uploads.md.
+// or inventing digests (server hashes on PUT). See docs/design/media/media-uploads.md.
 func NewMediaMissingError(session string, missing []string) ErrorResponse {
 	code := "media_missing"
 	msg := "media missing — re-upload PUT /v1/media/{session}/{label}"

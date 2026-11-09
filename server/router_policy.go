@@ -47,7 +47,7 @@ type RouterSpec struct {
 
 	// Multi-question jev (AR5, opt-in: only when Questions is non-empty). Answers drive a
 	// fit score over Candidates (strengths, difficulty bands, tiers) on top of the
-	// deterministic engine; see router_jev_multi.go and docs/auto-router.md §7.
+	// deterministic engine; see router_jev_multi.go and docs/design/surfaces/auto-router.md §7.
 	Questions        []RouterQuestion `yaml:"questions" json:"questions,omitempty"`
 	Weights          *RouterWeights   `yaml:"weights" json:"weights,omitempty"`
 	EscalateBelow    float64          `yaml:"escalate_below" json:"escalate_below,omitempty"`         // default 0.55

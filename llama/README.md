@@ -7,7 +7,7 @@
 | **In-process ggml** (`llamarunner`) | `ml/backend/ggml/ggml/` + `llama/llama.cpp/` | `llama/patches/` + **`llama/compat/` (CGO)** | elizaOS kernels (QJL, dflash) + Ollama deltas |
 | **llama-server** (Phase 17 / Python runtime) | Sibling `../llama.cpp` | same commit; `llama/compat/` at CMake fetch | Same binary as vendor sync source |
 
-Both pins align on **`LLAMA_CPP_COMMIT`** (**`c84b3020`** — elizaOS/llama.cpp). Vendor materialization: `vendor/llama-cpp-c84b3020/` + `./scripts/vendor/sync_vendor_llama.sh`. See [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) and [docs/llama-cpp-unification.md](../docs/llama-cpp-unification.md).
+Both pins align on **`LLAMA_CPP_COMMIT`** (**`b12119`** / `6f1e6543` — ggml-org/llama.cpp). Vendor materialization: `vendor/llama-cpp-b12119/` + `./scripts/vendor/sync_vendor_llama.sh`. See [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) and [docs/design/serving/llama-cpp-unification.md](../docs/design/serving/llama-cpp-unification.md).
 
 **Why pin file can lead vendor tree:** bumping `LLAMA_CPP_VERSION` documents upstream intent immediately; `./scripts/vendor/sync_vendor_llama.sh` and Metal sign-off run on a separate cadence so daily Mac dev is not blocked on every upstream tag.
 
@@ -15,7 +15,7 @@ Both pins align on **`LLAMA_CPP_COMMIT`** (**`c84b3020`** — elizaOS/llama.cpp)
 
 `llama.go` sets `#cgo darwin|linux LDFLAGS: -lc++` because **common/** (jinja) is C++. Plain `go test ./discover/` links that object graph without `build_production_mac.sh` `CGO_LDFLAGS`. **Why:** dev/CI unit tests must not require a full Metal release build.
 
-Phase 17 operator doc: [docs/phase17-llama-server.md](../docs/phase17-llama-server.md).
+Phase 17 operator doc: [docs/design/serving/phase17-llama-server.md](../docs/design/serving/phase17-llama-server.md).
 
 ### In-process compat (Mac llamarunner)
 
@@ -23,7 +23,7 @@ Phase 17 operator doc: [docs/phase17-llama-server.md](../docs/phase17-llama-serv
 
 **What we did:** `llama/compat/compat.go` links the compat `.cpp` files into the Go binary; hook call sites live in patch **0015** (`llama/patches/0015-ollama-compat-loader-hook-call-sites-b9611.patch`, symlinked as `llama/compat/001-llama-cpp-hooks.patch` for CMake fetch). Blank import: `_ "github.com/ollama/ollama/llama/compat"` from `llama/llama.go`.
 
-**Operator doc:** [docs/qwen35-apple-silicon.md](../docs/qwen35-apple-silicon.md).
+**Operator doc:** [docs/design/apple/qwen35-apple-silicon.md](../docs/design/apple/qwen35-apple-silicon.md).
 
 ## Updating llama.cpp
 

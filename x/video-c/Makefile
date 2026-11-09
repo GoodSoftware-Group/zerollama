@@ -8,7 +8,7 @@
 # wan-cli is a symlink to video-cli (compat). x/wan-c → x/video-c symlink.
 # Links libuma_client from bmtl uma_toolkit (broker protocol only).
 # Host kernels: compiles uma_wan_ops.c from the toolkit tree.
-# Darwin (this track) vs CUDA lab targets (other owner) — see docs/video-c.md.
+# Darwin (this track) vs CUDA lab targets (other owner) — see docs/design/media/video-c.md.
 
 BMTL_ROOT ?= $(abspath $(CURDIR)/../../../bmtl)
 BMTL_UMA ?= $(BMTL_ROOT)/targets/m4-max/hardware/uma_toolkit

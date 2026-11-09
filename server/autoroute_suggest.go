@@ -10,7 +10,7 @@ import (
 	"github.com/ollama/ollama/server/autoroute"
 )
 
-// Cross-modal advisory (docs/auto-router.md §9, AR8). When a chat turn really asks for an
+// Cross-modal advisory (docs/design/surfaces/auto-router.md §9, AR8). When a chat turn really asks for an
 // image, speech, video or music, the router suggests the endpoint, a local model that can
 // serve it, and a ready request body — via X-Zerollama-Route-Suggest and /v1/route. The
 // chat response itself never changes shape (handoff is AR9, opt-in).

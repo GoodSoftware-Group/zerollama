@@ -9,14 +9,14 @@
 # gpu-profiles-l3, and serve_gpu_example — missing PYTHONPATH or RUN_E2E_PREFLIGHT caused
 # false FAILs. Override any variable after sourcing.
 #
-# Doc: docs/5080-runbook.md
+# Doc: docs/runbooks/5080-runbook.md
 
 _Z5080_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")/../.." && pwd)"
 export Z5080_ROOT="${Z5080_ROOT:-$_Z5080_ROOT}"
 export ZEROLLAMA_REPO="${ZEROLLAMA_REPO:-${Z5080_ROOT}}"
 export CUDA_LANE="${CUDA_LANE:-rtx_5080}"
 
-# Shared CUDA vars (libs, CGO, llama-server discovery) — docs/cuda-lanes.md
+# Shared CUDA vars (libs, CGO, llama-server discovery) — docs/design/serving/cuda-lanes.md
 # shellcheck source=scripts/gpu/cuda_common_env.sh disable=SC1091
 source "${Z5080_ROOT}/scripts/gpu/cuda_common_env.sh"
 

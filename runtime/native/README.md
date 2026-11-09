@@ -249,4 +249,4 @@ cd runtime && PYTHONPATH=. python3 -m pytest tests/test_kv_native_parity.py test
 
 CI: `./scripts/phase/phase15_kv_native_ci.sh` — build native + KV pytest bundle.
 
-See [docs/phase15-native-kv.md](../../docs/phase15-native-kv.md).
+See [docs/design/serving/phase15-native-kv.md](../../docs/design/serving/phase15-native-kv.md).

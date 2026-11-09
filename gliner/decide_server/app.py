@@ -5,7 +5,7 @@ Dual wire:
   POST /v1/systemone  — Jev DecisionsRequest → DecisionsResponse (calibrated:false)
   POST /v1/gliner-decide — mechanical {text, schema} → classify_text result
 
-Lab only. Docs: docs/gliner-decide.md
+Lab only. Docs: docs/design/surfaces/gliner-decide.md
 """
 from __future__ import annotations
 

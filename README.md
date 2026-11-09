@@ -42,7 +42,7 @@ zerollama launch hermes
 # Grok Bot — set its local / OpenAI-compatible provider to http://127.0.0.1:11434
 ```
 
-Same [ollama-python](https://github.com/ollama/ollama-python) / [ollama-js](https://github.com/ollama/ollama-js) clients. Community catalog: [ollama/ollama § Integrations](https://github.com/ollama/ollama#community-integrations). Cloud tags: **[Eliza Cloud](https://www.elizacloud.ai)** — [eliza-cloud.md](docs/eliza-cloud.md).
+Same [ollama-python](https://github.com/ollama/ollama-python) / [ollama-js](https://github.com/ollama/ollama-js) clients. Community catalog: [ollama/ollama § Integrations](https://github.com/ollama/ollama#community-integrations). Cloud tags: **[Eliza Cloud](https://www.elizacloud.ai)** — [eliza-cloud.md](docs/design/surfaces/eliza-cloud.md).
 
 ## Features
 
@@ -57,7 +57,7 @@ Huge prompts get chewed up faster (~3–7× in our labs). The next message remem
 | Keep the cache warm the right way | Chat compression (auto on tool/think threads): peel fat tool bodies from the newest end first so the shared opening stays identical; sticky `elide_from` stops the next turn from re-pasting full tools and splitting the cache |
 | Many questions, one shared story | MultiDecode — keep one copy of the shared start in GPU memory and branch answers from it (`POST /v1/multidecode`). Hermes batch can do this automatically when questions share a long opening |
 
-→ [readme-marketing-benches.md](docs/readme-marketing-benches.md) · [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md) · [gpu-profiles-l3.md](docs/gpu-profiles-l3.md) · [multidecode-llama-cpp.md](docs/multidecode-llama-cpp.md)
+→ [readme-marketing-benches.md](docs/design/serving/readme-marketing-benches.md) · [faster-bpe-tokenize.md](docs/upstream/faster-bpe-tokenize.md) · [gpu-profiles-l3.md](docs/design/serving/gpu-profiles-l3.md) · [multidecode-llama-cpp.md](docs/design/surfaces/multidecode-llama-cpp.md)
 
 ### Draw it, clip it, say it — same place as chat
 
@@ -73,7 +73,7 @@ Generate images, short videos, and spoken replies from the daemon you already po
 | Song (lab) | `POST /v1/audio/generations` — Mac mlx-audio |
 | Don’t kick the agent offline | Image/video gen defaults to **background** priority |
 
-→ [wan-t2v.md](docs/wan-t2v.md) · [ltx-t2v.md](docs/ltx-t2v.md) · [h3-cuda-port.md](docs/h3-cuda-port.md) · [media-uploads.md](docs/media-uploads.md) · [music-c.md](docs/music-c.md)
+→ [wan-t2v.md](docs/design/media/wan-t2v.md) · [ltx-t2v.md](docs/design/media/ltx-t2v.md) · [h3-cuda-port.md](docs/design/media/h3-cuda-port.md) · [media-uploads.md](docs/design/media/media-uploads.md) · [music-c.md](docs/design/media/music-c.md)
 
 ### Pull names and make snap judgments
 
@@ -85,7 +85,7 @@ Generate images, short videos, and spoken replies from the daemon you already po
 | Yes/no, route, score | `POST /v1/decisions` · `/v1/systemone` | Laya · CLM · OpenJev (opt-in calibrated) · GLiNER-Decide |
 | Rank candidates | `POST /v1/rerank` · `/api/score` | LocalAI-style control plane |
 
-→ [gliner-cpp.md](docs/gliner-cpp.md) · [gliner-decide.md](docs/gliner-decide.md) · [laya-llama-cpp.md](docs/laya-llama-cpp.md) · [clm.md](docs/clm.md)
+→ [gliner-cpp.md](docs/design/surfaces/gliner-cpp.md) · [gliner-decide.md](docs/design/surfaces/gliner-decide.md) · [laya-llama-cpp.md](docs/design/surfaces/laya-llama-cpp.md) · [clm.md](docs/design/surfaces/clm.md)
 
 ### One GPU, many agents, less drama
 
@@ -101,17 +101,17 @@ Live chat jumps ahead of background jobs. You can see *who* is holding the card.
 | Load / pin / batch | `/api/can-load`, `/api/propose-load`, **`POST /api/load`**, `/api/pin`, `/api/cache/pin`, Hermes batch |
 | “Broken model” that’s a template | `zerollama doctor --repair-models` |
 | Fine-tune without killing chat | `/api/train/*` + idle-wait / defer — submit; runs when the GPU is quiet |
-| GRPO / RL job kind (lab) | `kind=grpo` dry-run by default; `grpo_run=true` needs `trl` — [t10-grpo.md](docs/t10-grpo.md) |
-| Spreadsheet → SFT rows | `zerollama train recipe data.csv -o sft.jsonl` — [t11-recipes.md](docs/t11-recipes.md) |
+| GRPO / RL job kind (lab) | `kind=grpo` dry-run by default; `grpo_run=true` needs `trl` — [t10-grpo.md](docs/design/training/t10-grpo.md) |
+| Spreadsheet → SFT rows | `zerollama train recipe data.csv -o sft.jsonl` — [t11-recipes.md](docs/design/training/t11-recipes.md) |
 | Share models across machines | `zerollama fleet serve` · `zerollama storage serve` (lab `:18090`) |
 
 ```bash
 curl -s http://127.0.0.1:11434/api/version | jq '{distribution, capabilities: .zerollama.capabilities}'
 ```
 
-→ [agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md) · [hermes-zerollama-gap.md](docs/hermes-zerollama-gap.md) · [doctor-model-repair.md](docs/doctor-model-repair.md) · [t6-unified-queue.md](docs/t6-unified-queue.md) · [gpu-training.md](docs/gpu-training.md) · [t10-grpo.md](docs/t10-grpo.md) · [t11-recipes.md](docs/t11-recipes.md)
+→ [agent-qos-and-project-tracking.md](docs/design/serving/agent-qos-and-project-tracking.md) · [hermes-zerollama-gap.md](docs/design/surfaces/hermes-zerollama-gap.md) · [doctor-model-repair.md](docs/runbooks/doctor-model-repair.md) · [t6-unified-queue.md](docs/design/training/t6-unified-queue.md) · [gpu-training.md](docs/design/training/gpu-training.md) · [t10-grpo.md](docs/design/training/t10-grpo.md) · [t11-recipes.md](docs/design/training/t11-recipes.md)
 
-Vs upstream matrix: [upstream-ollama-diff.md](docs/upstream-ollama-diff.md)
+Vs upstream matrix: [upstream-ollama-diff.md](docs/upstream/ollama-diff.md)
 
 ## CLI
 
@@ -128,7 +128,7 @@ NAME                       PROJECT                                       SESSION
 ornith-35b-optiq:latest    hermes-lean/discord:dm:1516015052568793098    hermes:agent:main:discord:dm:…                      27 GB    100% GPU     29 minutes from now
 ```
 
-Filters: `zerollama ls image` / `zerollama ls video_gen` · docs: [bench-cache.md](docs/bench-cache.md)
+Filters: `zerollama ls image` / `zerollama ls video_gen` · docs: [bench-cache.md](docs/design/serving/bench-cache.md)
 
 ## Usage
 
@@ -158,17 +158,17 @@ from ollama import chat
 print(chat(model='gemma3', messages=[{'role': 'user', 'content': 'Why is the sky blue?'}]).message.content)
 ```
 
-[docs.ollama.com/api](https://docs.ollama.com/api) · harness contract: [agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md)
+[docs.ollama.com/api](https://docs.ollama.com/api) · harness contract: [agent-qos-and-project-tracking.md](docs/design/serving/agent-qos-and-project-tracking.md)
 
-**Backends:** llama.cpp (ggml Metal/CUDA or Go→llama-server), MLX safetensors, Python runtime (`:8081`). Optional: [Flash-MoE](docs/flash-moe.md).
+**Backends:** llama.cpp (ggml Metal/CUDA or Go→llama-server), MLX safetensors, Python runtime (`:8081`). Optional: [Flash-MoE](docs/research/flash-moe.md).
 
 ## Building
 
 | Platform | Start here |
 |----------|------------|
-| **Apple Silicon** | [mac-dev-setup.md](docs/mac-dev-setup.md) → `./scripts/runtime/dev_bootstrap.sh` |
-| **CUDA** | [cuda-lanes.md](docs/cuda-lanes.md) · [5080-runbook.md](docs/5080-runbook.md) |
-| **Arc** | [a380-runbook.md](docs/a380-runbook.md) |
+| **Apple Silicon** | [mac-dev-setup.md](docs/runbooks/mac-dev-setup.md) → `./scripts/runtime/dev_bootstrap.sh` |
+| **CUDA** | [cuda-lanes.md](docs/design/serving/cuda-lanes.md) · [5080-runbook.md](docs/runbooks/5080-runbook.md) |
+| **Arc** | [a380-runbook.md](docs/runbooks/a380-runbook.md) |
 
 ```bash
 ./scripts/build/build_zerollama_mac.sh
@@ -183,26 +183,26 @@ Vendor pin: **`6f1e6543` / b12119** — [runtime/LLAMA_CPP_PIN.md](runtime/LLAMA
 
 | Area | Docs |
 |------|------|
-| Harness / Hermes | [agent-qos-and-project-tracking.md](docs/agent-qos-and-project-tracking.md) · [hermes-zerollama-gap.md](docs/hermes-zerollama-gap.md) |
-| MultiDecode | [multidecode-llama-cpp.md](docs/multidecode-llama-cpp.md) |
-| Decide / extract | [laya-llama-cpp.md](docs/laya-llama-cpp.md) · [clm.md](docs/clm.md) · [gliner-cpp.md](docs/gliner-cpp.md) · [gliner-decide.md](docs/gliner-decide.md) |
-| Speed | [faster-bpe-tokenize.md](docs/faster-bpe-tokenize.md) · [gpu-profiles-l3.md](docs/gpu-profiles-l3.md) |
-| Media | [wan-t2v.md](docs/wan-t2v.md) · [ltx-t2v.md](docs/ltx-t2v.md) · [h3-cuda-port.md](docs/h3-cuda-port.md) · [music-c.md](docs/music-c.md) |
-| Train / idle queue | [gpu-training.md](docs/gpu-training.md) · [t6-unified-queue.md](docs/t6-unified-queue.md) · [t10-grpo.md](docs/t10-grpo.md) · [t11-recipes.md](docs/t11-recipes.md) |
-| Serving ideas (not vendor) | [deepinfer-borrowings.md](docs/deepinfer-borrowings.md) · [deepinfer-ladder.md](docs/deepinfer-ladder.md) · [vllm-borrowings.md](docs/vllm-borrowings.md) |
-| Doctor | [model-serving-minefield.md](docs/model-serving-minefield.md) · [doctor-model-repair.md](docs/doctor-model-repair.md) |
-| Storage / fleet | [remote-model-storage.md](docs/remote-model-storage.md) · [fleet-management.md](docs/fleet-management.md) |
+| Harness / Hermes | [agent-qos-and-project-tracking.md](docs/design/serving/agent-qos-and-project-tracking.md) · [hermes-zerollama-gap.md](docs/design/surfaces/hermes-zerollama-gap.md) |
+| MultiDecode | [multidecode-llama-cpp.md](docs/design/surfaces/multidecode-llama-cpp.md) |
+| Decide / extract | [laya-llama-cpp.md](docs/design/surfaces/laya-llama-cpp.md) · [clm.md](docs/design/surfaces/clm.md) · [gliner-cpp.md](docs/design/surfaces/gliner-cpp.md) · [gliner-decide.md](docs/design/surfaces/gliner-decide.md) |
+| Speed | [faster-bpe-tokenize.md](docs/upstream/faster-bpe-tokenize.md) · [gpu-profiles-l3.md](docs/design/serving/gpu-profiles-l3.md) |
+| Media | [wan-t2v.md](docs/design/media/wan-t2v.md) · [ltx-t2v.md](docs/design/media/ltx-t2v.md) · [h3-cuda-port.md](docs/design/media/h3-cuda-port.md) · [music-c.md](docs/design/media/music-c.md) |
+| Train / idle queue | [gpu-training.md](docs/design/training/gpu-training.md) · [t6-unified-queue.md](docs/design/training/t6-unified-queue.md) · [t10-grpo.md](docs/design/training/t10-grpo.md) · [t11-recipes.md](docs/design/training/t11-recipes.md) |
+| Serving ideas (not vendor) | [deepinfer-borrowings.md](docs/upstream/deepinfer-borrowings.md) · [deepinfer-ladder.md](docs/upstream/deepinfer-ladder.md) · [vllm-borrowings.md](docs/upstream/vllm-borrowings.md) |
+| Doctor | [model-serving-minefield.md](docs/runbooks/model-serving-minefield.md) · [doctor-model-repair.md](docs/runbooks/doctor-model-repair.md) |
+| Storage / fleet | [remote-model-storage.md](docs/design/surfaces/remote-model-storage.md) · [fleet-management.md](docs/design/training/fleet-management.md) |
 
 ## Agent skills
 
-**33** [`SKILL.md`](skills/README.md) packages so Cursor / Claude / Copilot agents can use zerollama without reverse-engineering the API.
+**33** [`SKILL.md`](agentskills/README.md) packages so Cursor / Claude / Copilot agents can use zerollama without reverse-engineering the API.
 
 ```bash
 npx skills add GoodSoftware-Group/zerollama
 npx skills add GoodSoftware-Group/zerollama --agent cursor
 ```
 
-→ [skills/README.md](skills/README.md) · [skills/skills.json](skills/skills.json)
+→ [skills/README.md](agentskills/README.md) · [skills/skills.json](agentskills/skills.json)
 
 ## Acknowledgments
 
@@ -212,15 +212,15 @@ We reimplement **ideas** in our Go + llama.cpp + runtime shape — we do **not**
 |---------|----------------|
 | **[Gigatoken](https://github.com/chynggi/gigatoken-llama.cpp)** | Fast tokenize — patches **0106–0126** |
 | **[vLLM](https://github.com/vllm-project/vllm)** / **[SGLang](https://github.com/sgl-project/sglang)** | Prefix cache + agent multimodal patterns |
-| **[DeepInfer](https://github.com/deepseek-ai/DeepInfer)** | Schedule / SWA / speculation **ideas** only (SM100 engine not vendored) — [deepinfer-ladder.md](docs/deepinfer-ladder.md) |
+| **[DeepInfer](https://github.com/deepseek-ai/DeepInfer)** | Schedule / SWA / speculation **ideas** only (SM100 engine not vendored) — [deepinfer-ladder.md](docs/upstream/deepinfer-ladder.md) |
 | **[LocalAI](https://github.com/mudler/LocalAI)** | Control-plane habits (rerank, repair, bench) |
 | **[WestCoastML/multidecode](https://github.com/WestCoastML/multidecode)** | Forest decode — patches **0129–0131** |
 | **[GLiNER.cpp](https://github.com/Knowledgator/GLiNER.cpp)** / **[GLiNER2.5-Decide](https://huggingface.co/fastino/GLiNER2.5-Decide)** | Extract + encoder triage |
 | **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** | Harness that needs a real control plane |
 | **[model-serving-minefield](https://github.com/Blackwellboy/model-serving-minefield)** | Doctor trap map |
-| **[ollama/ollama](https://github.com/ollama/ollama)** / **[llama.cpp](https://github.com/ggml-org/llama.cpp)** | Wire shape + engine (pin **b10615**) |
+| **[ollama/ollama](https://github.com/ollama/ollama)** / **[llama.cpp](https://github.com/ggml-org/llama.cpp)** | Wire shape + engine (pin **b12119**) |
 
-More: [open-source-shoutouts.md](docs/open-source-shoutouts.md) · [@spaceodili](https://x.com/spaceodili)
+More: [open-source-shoutouts.md](docs/upstream/open-source-shoutouts.md) · [@spaceodili](https://x.com/spaceodili)
 
 Issues and PRs welcome.
 

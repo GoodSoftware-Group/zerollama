@@ -58,7 +58,7 @@ type ImageData []byte
 
 // VideoData is a raw video container (e.g. MP4/WebM). Bytes are staged separately from Images
 // because the vision runner consumes raster frames, not containers—sampling runs in the server
-// before inference so limits and errors stay centralized (see docs/video-understanding.md).
+// before inference so limits and errors stay centralized (see docs/design/media/video-understanding.md).
 type VideoData []byte
 
 // AudioData is a raw audio clip (e.g. OpenAI input_audio). Runners still receive these via
@@ -67,7 +67,7 @@ type AudioData []byte
 
 // VideoSpan records how many raster frames came from one original video blob after expansion.
 // When non-empty, Images are ordered as: any still images first, then frames for each Videos[] entry in order.
-// See docs/video-understanding.md and model/renderers/qwen3vl.go.
+// See docs/design/media/video-understanding.md and model/renderers/qwen3vl.go.
 type VideoSpan struct {
 	FrameCount int `json:"frame_count"`
 	// GridTHW is optional SGLang/Qwen-style [T,H,W] patch grid for this clip (preprocessed clients).
@@ -394,7 +394,7 @@ type Message struct {
 	// AudioClips holds raw audio blobs (OpenAI input_audio). Appended to Images at prompt time.
 	AudioClips []AudioData `json:"audio_clips,omitempty"`
 	// Videos holds undecoded video blobs (e.g. OpenAI video_url or /api/chat).
-	// They are expanded to frames on Images before inference—see docs/video-understanding.md.
+	// They are expanded to frames on Images before inference—see docs/design/media/video-understanding.md.
 	Videos []VideoData `json:"videos,omitempty"`
 	// VideoSpans is set when Videos were expanded: one entry per original blob, frame counts in order.
 	// Why: templates still receive a flat Images list; spans preserve provenance for renderers that
@@ -1089,7 +1089,7 @@ type RerankRequest struct {
 
 // MultiDecodeRequest is POST /v1/multidecode (forest decode).
 // WHY not ChatRequest: custom RoPE pos + ancestor parent / parent_node_ids;
-// see docs/multidecode-llama-cpp.md.
+// see docs/design/surfaces/multidecode-llama-cpp.md.
 type MultiDecodeRequest struct {
 	Model         string         `json:"model"`
 	Tokens        []int32        `json:"tokens"`
@@ -1120,7 +1120,7 @@ type MultiDecodeResponse struct {
 }
 
 // DecisionsRequest is POST /v1/decisions (Jev/Laya typed System-1 decisions).
-// WHY not ChatRequest: calibrated choice/score/noul + act head; see docs/laya-llama-cpp.md.
+// WHY not ChatRequest: calibrated choice/score/noul + act head; see docs/design/surfaces/laya-llama-cpp.md.
 type DecisionsRequest struct {
 	Model     string                      `json:"model"`
 	State     any                         `json:"state"`
@@ -1149,7 +1149,7 @@ type DecisionsResponse struct {
 }
 
 // ExtractRequest is POST /v1/extract (abstract NER) and the core of /v1/gliner.
-// WHY not DecisionsRequest: span NER ≠ choice/score/noul; see docs/gliner-cpp.md.
+// WHY not DecisionsRequest: span NER ≠ choice/score/noul; see docs/design/surfaces/gliner-cpp.md.
 type ExtractRequest struct {
 	Model     string   `json:"model"`
 	Text      string   `json:"text,omitempty"`
@@ -1837,6 +1837,20 @@ type BackendPolicy struct {
 type StatusResponse struct {
 	Cloud     CloudStatus     `json:"cloud"`
 	Inference InferenceStatus `json:"inference"`
+	// Slurm is set when this process is a Slurm guest or a queue client.
+	Slurm *SlurmStatus `json:"slurm,omitempty"`
+}
+
+// SlurmStatus is the queue-client / guest snapshot on GET /api/status.
+// rest_url stays empty until the slurmrestd transport (SL3) is configured.
+type SlurmStatus struct {
+	Guest     bool   `json:"guest"`
+	Submit    bool   `json:"submit"`
+	Transport string `json:"transport,omitempty"`
+	RestURL   string `json:"rest_url"`
+	Pending   int    `json:"pending,omitempty"`
+	Running   int    `json:"running,omitempty"`
+	JobID     string `json:"job_id,omitempty"`
 }
 
 // GenerateResponse is the response passed into [GenerateResponseFunc].
@@ -1928,7 +1942,7 @@ type GenerateResponse struct {
 }
 
 // GgmlNumCtx surfaces VRAM-aware num_ctx suggest/clamp on the ggml scheduler path (M12).
-// Field semantics differ by endpoint — see docs/scheduling-vram-policy.md.
+// Field semantics differ by endpoint — see docs/design/serving/scheduling-vram-policy.md.
 type GgmlNumCtx struct {
 	// SuggestedMaxNumCtx is the largest num_ctx estimate that fits free VRAM (show + load).
 	SuggestedMaxNumCtx int `json:"suggested_max_num_ctx,omitempty"`

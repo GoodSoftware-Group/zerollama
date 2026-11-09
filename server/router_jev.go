@@ -14,7 +14,7 @@ import (
 	"unicode/utf8"
 )
 
-// classifier: jev (docs/auto-router.md AR4): a local /v1/decisions model (Laya, CLM, a
+// classifier: jev (docs/design/surfaces/auto-router.md AR4): a local /v1/decisions model (Laya, CLM, a
 // System One score model, OpenJev, GLiNER-Decide) answers one choice question whose
 // options are the router's policy labels. Same finish() as the score tier, so candidates
 // and fallback behave identically.

@@ -23,7 +23,7 @@ Bump **`OllamaCompat`** (and keep default `Version = OllamaCompat`) when:
 
 1. Syncing / merging from **`../ollama-upstream`** or an upstream release tag, **or**
 2. Gallery pulls start returning **412** “requires a newer version of Ollama”, **or**
-3. Weekly Ollama sibling check notes a newer **release** tag than our stamp ([docs/upstream-siblings.md](../../docs/upstream-siblings.md))
+3. Weekly Ollama sibling check notes a newer **release** tag than our stamp ([docs/upstream/siblings.md](../../docs/upstream/siblings.md))
 
 Prefer the latest upstream **release** tag (`v0.40.10` → `"0.40.10"`), not an rc, unless we intentionally need that client gate.
 
@@ -42,4 +42,4 @@ curl -sS "$OLLAMA_HOST/api/version"   # version + ollama_compat
 zerollama pull <gallery-tag>          # no 412
 ```
 
-Update the Ollama row in [docs/upstream-siblings.md](../../docs/upstream-siblings.md) **Last checked** when the bump comes from an upstream sync.
+Update the Ollama row in [docs/upstream/siblings.md](../../docs/upstream/siblings.md) **Last checked** when the bump comes from an upstream sync.

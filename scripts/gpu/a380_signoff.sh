@@ -107,4 +107,4 @@ fi
 
 echo "== a380 sign-off complete =="
 echo "Report total_duration_eval_tok_s at your decode length — not eval_tok_s alone."
-echo "See docs/a380-runbook.md and ${ZA380_RESEARCH_LANE}/README.md"
+echo "See docs/runbooks/a380-runbook.md and ${ZA380_RESEARCH_LANE}/README.md"

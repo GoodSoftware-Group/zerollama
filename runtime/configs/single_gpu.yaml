@@ -4,11 +4,11 @@
 # WHY separate from Phase 13: Phase 13 estimates fit; L1 picks -b/-np/-fa/MTP draft_*.
 # Profile ctx cap: omit -c with ZEROLLAMA_GPU_PROFILE_CTX=0 or llama_profile.apply_ctx_size: false;
 # override context with LLAMA_SERVER_EXTRA_ARGS=-c 131072 (appended after profile flags).
-# Doc: docs/gpu-profiles-l1.md
+# Doc: docs/design/serving/gpu-profiles-l1.md
 # Why not dual_4090.yaml: tensor split (-sm tensor -ts 1,1) needs multiple GPUs and
 # fails model fitting on one card; use a quantized GGUF so weights + KV fit in VRAM.
 #
-# Optional operator env (see docs/phase11-runtime-admission.md, runtime/docs/OPERATIONS.md):
+# Optional operator env (see docs/design/serving/phase11-runtime-admission.md, runtime/docs/OPERATIONS.md):
 #   ZEROLLAMA_AUTO_CONFIG=1              — pick this file when one GPU visible
 #   ZEROLLAMA_RUNTIME_VRAM_MIN_FREE=1GiB
 #   ZEROLLAMA_RUNTIME_TRAINING_VRAM_RESERVE=2GiB

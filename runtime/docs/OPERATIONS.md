@@ -1,6 +1,6 @@
 # Operations (Phase 7)
 
-**VRAM admission (Phase 11 — why two env knobs, priorities):** [../../docs/phase11-runtime-admission.md](../../docs/phase11-runtime-admission.md). Full Go+Python policy: [../../docs/scheduling-vram-policy.md](../../docs/scheduling-vram-policy.md).
+**VRAM admission (Phase 11 — why two env knobs, priorities):** [../../docs/design/serving/phase11-runtime-admission.md](../../docs/design/serving/phase11-runtime-admission.md). Full Go+Python policy: [../../docs/design/serving/scheduling-vram-policy.md](../../docs/design/serving/scheduling-vram-policy.md).
 
 ## Option A — two terminals (debug)
 
@@ -88,8 +88,8 @@ Use `/ready` for systemd/Kubernetes probes; use `/health` for operator dashboard
 | `vram_budget` | object | `model_gguf`, `required_per_gpu` vs `free_bottleneck`, `fits` / `fits_with_margin` (uses `VRAM_MARGIN`), `admission_*` when VRAM gate on. `admission` also mirrors `vram_load_fits`, `vram_admission_fits`. |
 | `vram_calibration` | object | Last load: `observed_bytes`, `estimated_raw_bytes`, `estimated_effective_bytes` (= raw × `suggested_estimate_factor` when probe succeeded), optional `estimated_precheck_bytes` (factor used at pre-check). `suggested_estimate_factor` = observed/raw — **set** `VRAM_ESTIMATE_FACTOR` to that value (replace, do not multiply). Clamped 0.1–3. `autotune_active` / `probe_calibrate_required_for_autotune` on snapshot. Informational only. |
 | `autoconfig` | object | `config_path`, `pick` (`single_gpu` / `dual_4090` / `apple_silicon` / `custom`), `visible_gpu_count`, optional `gpu_total_vram`. |
-| `gpu_profile` | object | **L1 autotune** when enabled: `id`, `name`, `source` (`match` / `bucket` / `apple_memory`), `bucket_label`, `n_parallel`, `ctx_size_default`, `unified_memory_gb` (darwin), `cache_types_fallback`, `emit_ctx_size`, `emit_mlock`. Absent when `ZEROLLAMA_GPU_PROFILE=0`. Doc: [../../docs/gpu-profiles-l1.md](../../docs/gpu-profiles-l1.md). |
-| `llama_cache` | object | **L3 prefix cache** when enabled: `enabled`, `root`, `default_ttl_ms`, `model_path`, `model_loaded`, `model_hash`, `slot_save_path`, `file_count`, `files[]`. **Why:** operators verify session KV disk cache without reading slot dirs; `model_hash` uses canonical GGUF path + L2 cache types so fork/stock blobs never share a directory. Orphan hash dirs are swept on llama-server start. Absent fields shrink when `ZEROLLAMA_LLAMA_CACHE=0`. Doc: [../../docs/gpu-profiles-l3.md](../../docs/gpu-profiles-l3.md). |
+| `gpu_profile` | object | **L1 autotune** when enabled: `id`, `name`, `source` (`match` / `bucket` / `apple_memory`), `bucket_label`, `n_parallel`, `ctx_size_default`, `unified_memory_gb` (darwin), `cache_types_fallback`, `emit_ctx_size`, `emit_mlock`. Absent when `ZEROLLAMA_GPU_PROFILE=0`. Doc: [../../docs/design/serving/gpu-profiles-l1.md](../../docs/design/serving/gpu-profiles-l1.md). |
+| `llama_cache` | object | **L3 prefix cache** when enabled: `enabled`, `root`, `default_ttl_ms`, `model_path`, `model_loaded`, `model_hash`, `slot_save_path`, `file_count`, `files[]`. **Why:** operators verify session KV disk cache without reading slot dirs; `model_hash` uses canonical GGUF path + L2 cache types so fork/stock blobs never share a directory. Orphan hash dirs are swept on llama-server start. Absent fields shrink when `ZEROLLAMA_LLAMA_CACHE=0`. Doc: [../../docs/design/serving/gpu-profiles-l3.md](../../docs/design/serving/gpu-profiles-l3.md). |
 | `llama_backend` | string | Effective forward backend: `subprocess`, `inprocess`, or `llama-cpp-python`. |
 | `llama_backend_source` | string | `env` when `ZEROLLAMA_RUNTIME_LLAMA_BACKEND` is set; `config` when the loaded YAML has an explicit `llama_backend` key; else `default` (packaged subprocess). |
 | `llama_cpp` | object | **Wheel backend only** (key absent otherwise): `gpu_mode` (`cpu`/`gpu`), `n_gpu_layers`, `loaded`, optional `env_n_gpu_layers`. |
@@ -102,7 +102,7 @@ Use `/ready` for systemd/Kubernetes probes; use `/health` for operator dashboard
 | VRAM headroom | `admission.vram_min_free_configured`, `admission.vram_training_reserve_configured` | Defaults **1 GiB** / **2 GiB**; override with `ZEROLLAMA_RUNTIME_VRAM_MIN_FREE`, `ZEROLLAMA_RUNTIME_TRAINING_VRAM_RESERVE` (size strings — prefer **GiB**; `GB`/`MB` use decimal 1000-based units). |
 | enqueue / dequeue VRAM | — | When `ZEROLLAMA_RUNTIME_CHECK_GPU_VRAM=1` (default), host + GGUF GPU budget runs **before queueing** (when path known) and again at dequeue if VRAM changed. **2 GiB** training reserve (code constant) while handoff / pause / `go_training_gpu_busy`. Fail closed if GPU probe unavailable. |
 
-Policy across Go + Python (VRAM broker, T6 defer queue, why not one FIFO): [../../docs/scheduling-vram-policy.md](../../docs/scheduling-vram-policy.md). Smoke checklist: [../../docs/testing-smoke.md](../../docs/testing-smoke.md).
+Policy across Go + Python (VRAM broker, T6 defer queue, why not one FIFO): [../../docs/design/serving/scheduling-vram-policy.md](../../docs/design/serving/scheduling-vram-policy.md). Smoke checklist: [../../docs/runbooks/testing-smoke.md](../../docs/runbooks/testing-smoke.md).
 
 ## Streaming
 

@@ -6,7 +6,7 @@ import (
 
 // TestParseLlamaServerDevices_FreeMemoryFromListDevices locks that Go discovery
 // copies llama-server --list-devices "MiB free" into DeviceInfo.FreeMemory
-// (minefield trap 96 awareness). See docs/model-serving-minefield.md.
+// (minefield trap 96 awareness). See docs/runbooks/model-serving-minefield.md.
 func TestParseLlamaServerDevices_FreeMemoryFromListDevices(t *testing.T) {
 	output := `Available devices:
   CUDA0: NVIDIA GeForce RTX 4090 (24564 MiB, 12345 MiB free)

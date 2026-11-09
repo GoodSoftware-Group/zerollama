@@ -37,6 +37,7 @@ type LlmRequest struct {
 	errCh           chan error
 	schedAttempts   uint
 	fifoSeq         uint64
+	hotSkips        int // times this queued head was passed for an already-loaded model
 
 	// contextShift is a llama-server launch attribute resolved from the
 	// request-level shift option before scheduling.
@@ -92,6 +93,11 @@ type Scheduler struct {
 
 	// When true, GetRunner blocks until ResumeLoads (used when training needs VRAM).
 	loadsPaused atomic.Bool
+
+	// discoveredMaxRunners caches the GPU-count default so a paused requeue
+	// does not spawn a discovery subprocess every 50ms.
+	discoveredMaxRunners   uint
+	discoveredMaxRunnersAt time.Time
 
 	// loadingFifoSeq is the ticket of the pending request currently being scheduled/loaded.
 	loadingFifoSeq atomic.Uint64
@@ -510,6 +516,102 @@ func (s *Scheduler) notifyPendingIfQueued() {
 	}
 }
 
+// deferToInFlightLoad parks req until runner finishes loading, then requeues it.
+// Returns false when the runner is not loading, so the caller may expire it.
+func (s *Scheduler) deferToInFlightLoad(ctx context.Context, req *LlmRequest, runner *runnerRef) bool {
+	if s == nil || req == nil || runner == nil {
+		return false
+	}
+	runner.refMu.Lock()
+	loading := runner.loading
+	loadDone := runner.loadDone
+	runner.refMu.Unlock()
+	if !loading {
+		return false
+	}
+	var reqDone <-chan struct{}
+	if req.ctx != nil {
+		reqDone = req.ctx.Done()
+	}
+	go func() {
+		if loadDone != nil {
+			select {
+			case <-loadDone:
+			case <-reqDone:
+				req.failIfCanceled()
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+		if req.ctx != nil && req.ctx.Err() != nil {
+			req.failIfCanceled()
+			return
+		}
+		s.requeueAfter(req, 0)
+	}()
+	return true
+}
+
+// requeueAfter puts req back at the head and wakes the pending loop after d.
+// RequeueFront notifies immediately; that wake is dropped so a paused or
+// timed-out eviction does not spin the scheduler.
+func (s *Scheduler) requeueAfter(req *LlmRequest, d time.Duration) {
+	s.pending.RequeueFront([]*LlmRequest{req})
+	select {
+	case <-s.pending.WakeCh():
+	default:
+	}
+	time.AfterFunc(d, s.pending.notify)
+}
+
+// discoveredMaxRunnersTTL is how long a GPU-count cap stays valid. Discovery
+// shells out to a runner, so the residency check must not repeat it per request.
+const discoveredMaxRunnersTTL = 30 * time.Second
+
+// effectiveMaxRunners applies the documented default (3 models per GPU) when
+// OLLAMA_MAX_LOADED_MODELS is unset. The previous code computed that default
+// only after the eviction branch had already been skipped.
+//
+// Below defaultModelsPerGPU loaded models the cap cannot be reached on any
+// GPU count, so discovery is skipped. At the floor the count is cached.
+func (s *Scheduler) effectiveMaxRunners(ctx context.Context, pending *LlmRequest, runners []ml.FilteredRunnerDiscovery, current uint, loadedCount int) uint {
+	if current > 0 {
+		return current
+	}
+	if loadedCount < defaultModelsPerGPU {
+		return uint(defaultModelsPerGPU)
+	}
+	if s.discoveredMaxRunners > 0 && time.Since(s.discoveredMaxRunnersAt) < discoveredMaxRunnersTTL {
+		return s.discoveredMaxRunners
+	}
+	n := 0
+	if s.getGpuFn != nil {
+		n = len(s.getGpuFn(ctx, runners))
+	}
+	maxN := MaxRunnersForGPUs(0, n)
+	modelPath := ""
+	if pending != nil && pending.model != nil {
+		modelPath = pending.model.ModelPath
+	}
+	slog.Debug("updating default concurrency", "OLLAMA_MAX_LOADED_MODELS", maxN, "gpu_count", n, "model", modelPath)
+	s.discoveredMaxRunners = maxN
+	s.discoveredMaxRunnersAt = time.Now()
+	return maxN
+}
+
+func gpusAllIntegrated(gpus []ml.DeviceInfo) bool {
+	if len(gpus) == 0 {
+		return false
+	}
+	for _, g := range gpus {
+		if !g.Integrated {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Scheduler) processOnePending(ctx context.Context) {
 	maxRunners := envconfig.MaxRunners()
 	pending := s.pendingPopNext()
@@ -546,9 +648,18 @@ func (s *Scheduler) processOnePending(ctx context.Context) {
 			runnersSnapshot = append(runnersSnapshot, r)
 		}
 		s.loadedMu.Unlock()
+		maxRunners = s.effectiveMaxRunners(ctx, pending, runnersSnapshot, maxRunners, loadedCount)
 
 		if runner != nil {
 			if runner.needsReload(ctx, pending) {
+				// The load goroutine owns the process until loadDone. refCount is
+				// still 0, so expiring now Close()s it during WaitUntilRunning
+				// and fails the request that started the load.
+				if s.deferToInFlightLoad(ctx, pending, runner) {
+					schedLogInfo("in-flight load kept; request waits for it to finish", pending, schedRunnerAttrs(runner)...)
+					s.notifyPendingIfQueued()
+					return
+				}
 				schedLogInfo("loaded runner needs reload, will evict", pending, schedRunnerAttrs(runner)...)
 				runnerToExpire = runner
 			} else {
@@ -573,6 +684,13 @@ func (s *Scheduler) processOnePending(ctx context.Context) {
 			schedLogInfo("max loaded models, picking eviction victim", pending, "max_runners", maxRunners, "loaded_count", loadedCount)
 			runnerToExpire = s.findRunnerToUnload()
 		} else {
+			// Training sets loadsPaused before a queued request reaches load().
+			// Requeue instead of starting a runner beside the training job.
+			if s.loadsPaused.Load() {
+				schedLogInfo("loads paused; requeueing pending request", pending)
+				s.requeueAfter(pending, 50*time.Millisecond)
+				return
+			}
 			// Either no models are loaded or below envconfig.MaxRunners
 			// Get a refreshed GPU list
 			var gpus []ml.DeviceInfo
@@ -584,18 +702,6 @@ func (s *Scheduler) processOnePending(ctx context.Context) {
 			}
 			logutil.Trace("refreshing system information", "model", pending.model.ModelPath)
 			systemInfo := s.getSystemInfoFn()
-			if maxRunners <= 0 {
-				// No user specified MaxRunners, so figure out what automatic setting to use for the next load attempt
-				if pending.opts.NumGPU == 0 {
-					// Need to get actual GPU list to set the correct default max models
-					logutil.Trace("refreshing GPU list", "model", pending.model.ModelPath)
-					g := s.getGpuFn(ctx, runnersSnapshot)
-					maxRunners = uint(defaultModelsPerGPU * max(len(g), 1))
-				} else {
-					maxRunners = uint(defaultModelsPerGPU * max(len(gpus), 1))
-				}
-				slog.Debug("updating default concurrency", "OLLAMA_MAX_LOADED_MODELS", maxRunners, "gpu_count", len(gpus))
-			}
 
 			// Update free memory from currently loaded models
 			logutil.Trace("updating free space", "gpu_count", len(gpus), "model", pending.model.ModelPath)
@@ -704,9 +810,11 @@ func (s *Scheduler) processOnePending(ctx context.Context) {
 			break
 		case <-time.After(evictTimeout):
 			evictAttrs := append([]any{"evict_wait", time.Since(evictWaitStart), "timeout", evictTimeout}, schedRunnerAttrs(runnerToExpire)...)
-			schedLogWarn("eviction unload timed out; resuming loads", pending, evictAttrs...)
+			schedLogWarn("eviction unload timed out; requeueing without a second load", pending, evictAttrs...)
 			resumeAfterEvict()
-			continue
+			// Do not fall through into load() while the victim may still hold VRAM.
+			s.requeueAfter(pending, time.Second)
+			return
 		case <-s.unloadedCh:
 			evictAttrs := append([]any{"evict_wait", time.Since(evictWaitStart)}, schedRunnerAttrs(runnerToExpire)...)
 			schedLogInfo("eviction unload completed", pending, evictAttrs...)
@@ -722,6 +830,11 @@ func (s *Scheduler) processOnePending(ctx context.Context) {
 func (s *Scheduler) pendingPopNext() *LlmRequest {
 	for {
 		if s.fifoYield != nil && s.fifoYield() {
+			// The wake that entered processPending was consumed. Rearm so a
+			// cleared runtime ticket is noticed without waiting for an unrelated push.
+			if s.pending.Len() > 0 {
+				time.AfterFunc(200*time.Millisecond, s.pending.notify)
+			}
 			return nil
 		}
 		prefer := make(map[string]struct{})
@@ -789,6 +902,9 @@ func (pending *LlmRequest) useLoadedRunner(runner *runnerRef, finished chan *Llm
 		runner.expireTimer.Stop()
 		runner.expireTimer = nil
 	}
+	// An omitted keep_alive leaves the lease the runner already has. Applying the
+	// server default here would drop a pinned model back to five minutes when a
+	// classifier, embedder, or speech request schedules with no duration.
 	if pending.sessionDuration != nil {
 		runner.sessionDuration = pending.sessionDuration.Duration
 	}
@@ -836,10 +952,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 		slog.Warn("model architecture does not currently support parallel requests", "architecture", req.model.Config.ModelFamily)
 	}
 
-	sessionDuration := envconfig.KeepAlive()
-	if req.sessionDuration != nil {
-		sessionDuration = req.sessionDuration.Duration
-	}
+	sessionDuration := KeepAliveDuration(req.sessionDuration)
 
 	s.loadedMu.Lock()
 	llama := s.activeLoading
@@ -1360,8 +1473,41 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 		)
 	}
 
-	// Reuse the runner while the initial load is still in progress.
+	// Join an in-flight load only when the process being started can serve this request.
 	if runner.loading {
+		have := 0
+		var loaded api.Runner
+		if runner.Options != nil {
+			have = runner.Options.NumCtx
+			loaded = runner.Options.Runner
+		}
+		want := req.opts.Runner
+		if want.NumGPU < 0 {
+			loaded.NumGPU = -1
+			want.NumGPU = -1
+		}
+		if have > 0 && want.NumCtx > 0 && want.NumCtx <= have {
+			want.NumCtx = have
+		}
+		optionsDiffer := false
+		if runner.model != nil && !runner.model.IsMLX() && !runner.isImagegen {
+			optionsDiffer = !reflect.DeepEqual(loaded, want)
+		}
+		shiftDiffer := false
+		adaptersDiffer := false
+		projectorsDiffer := false
+		if req.model != nil {
+			if req.model.ModelPath != "" {
+				shiftDiffer = runner.contextShift != runnerContextShift(req)
+			}
+			if runner.model != nil {
+				adaptersDiffer = !reflect.DeepEqual(runner.model.AdapterPaths, req.model.AdapterPaths)
+				projectorsDiffer = !reflect.DeepEqual(runner.model.ProjectorPaths, req.model.ProjectorPaths)
+			}
+		}
+		if reason := LoadingCannotJoin(have, req.opts.NumCtx, shiftDiffer, adaptersDiffer, projectorsDiffer, optionsDiffer); reason != "" {
+			return reloadReason(reason, "loaded", have, "want", req.opts.NumCtx)
+		}
 		return false
 	}
 
@@ -1510,9 +1656,11 @@ func filterRunnerDiscovery(runners []ml.FilteredRunnerDiscovery, skip *runnerRef
 func (s *Scheduler) waitForVRAMRecovery(runner *runnerRef, runners []ml.FilteredRunnerDiscovery) chan any {
 	finished := make(chan any, 1)
 
-	// CPU, Metal and iGPUs don't need checking, so no waiting required
-	if len(runner.gpus) == 0 || !runner.discreteGPUs ||
-		(len(runner.gpus) == 1 && runner.gpus[0].Library == "Metal") {
+	lib := ""
+	if len(runner.gpus) == 1 {
+		lib = runner.gpus[0].Library
+	}
+	if !VRAMRecoveryNeeded(len(runner.gpus), runner.discreteGPUs, lib) {
 		finished <- struct{}{}
 		slog.Debug("no need to wait for VRAM recovery", "runner", runner)
 		return finished
@@ -1644,22 +1792,35 @@ type ByDurationAndName []*runnerRef
 func (a ByDurationAndName) Len() int      { return len(a) }
 func (a ByDurationAndName) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 func (a ByDurationAndName) Less(i, j int) bool {
-	// Primary sort by session duration (uint64 to handle negatives)
-	d1 := uint64(a[i].sessionDuration)
-	d2 := uint64(a[j].sessionDuration)
+	return evictBefore(a[i], a[j])
+}
+
+// evictBefore orders victims. A shorter keep-alive goes first, so a negative
+// lease (stored as the max duration) stays resident. Equal leases yield the
+// least recently used runner, then the name.
+func evictBefore(a, b *runnerRef) bool {
+	if a == nil || b == nil {
+		return a != nil && b == nil
+	}
+	d1 := uint64(a.sessionDuration)
+	d2 := uint64(b.sessionDuration)
 	if d1 != d2 {
 		return d1 < d2
 	}
-	// Secondary sort by model key/path lex order
-	n1 := a[i].modelPath
-	if n1 == "" {
-		n1 = a[i].modelKey
+	if !a.lastUsedAt.Equal(b.lastUsedAt) {
+		return a.lastUsedAt.Before(b.lastUsedAt)
 	}
-	n2 := a[j].modelPath
-	if n2 == "" {
-		n2 = a[j].modelKey
+	return runnerSortName(a) < runnerSortName(b)
+}
+
+func runnerSortName(r *runnerRef) string {
+	if r == nil {
+		return ""
 	}
-	return n1 < n2
+	if r.modelPath != "" {
+		return r.modelPath
+	}
+	return r.modelKey
 }
 
 // TODO - future consideration to pick runners based on size

@@ -1,8 +1,8 @@
 # zerollama-runtime
 
-GGUF-first Python inference runtime (PagedAttention KV). See [../docs/python-migration.md](../docs/python-migration.md).
+GGUF-first Python inference runtime (PagedAttention KV). See [../docs/design/serving/python-migration.md](../docs/design/serving/python-migration.md).
 
-**Scheduling & VRAM (why this exists next to Go):** [../docs/scheduling-vram-policy.md](../docs/scheduling-vram-policy.md) — full stack. **Phase 11 admission (who gets the GPU):** [../docs/phase11-runtime-admission.md](../docs/phase11-runtime-admission.md). **Phase 13 estimates (how much VRAM):** [../docs/phase13-runtime-vram.md](../docs/phase13-runtime-vram.md). **Phase 14 forward (subprocess vs in-process):** [../docs/phase14-inprocess-llama.md](../docs/phase14-inprocess-llama.md). **Operations:** [docs/OPERATIONS.md](./docs/OPERATIONS.md).
+**Scheduling & VRAM (why this exists next to Go):** [../docs/design/serving/scheduling-vram-policy.md](../docs/design/serving/scheduling-vram-policy.md) — full stack. **Phase 11 admission (who gets the GPU):** [../docs/design/serving/phase11-runtime-admission.md](../docs/design/serving/phase11-runtime-admission.md). **Phase 13 estimates (how much VRAM):** [../docs/design/serving/phase13-runtime-vram.md](../docs/design/serving/phase13-runtime-vram.md). **Phase 14 forward (subprocess vs in-process):** [../docs/design/serving/phase14-inprocess-llama.md](../docs/design/serving/phase14-inprocess-llama.md). **Operations:** [docs/OPERATIONS.md](./docs/OPERATIONS.md).
 
 **Pre-flight VRAM (no load):** `../scripts/runtime/runtime_vram_estimate.sh <gguf> [--num-ctx N]` — same path as `/internal/vram-estimate`. **Why:** pick quant and context before starting `llama-server` on a 16 GB card.
 
@@ -32,7 +32,7 @@ uv pip install -e ".[dev,serve]"
 source .venv/bin/activate
 ```
 
-**Note:** Go **embedded** runtime still uses system `libpython3` (see `docs/gpu-training.md`). The uv venv is for **sidecar** runtime (`serve_with_runtime.sh`, smokes, M3 sign-off).
+**Note:** Go **embedded** runtime still uses system `libpython3` (see `docs/design/training/gpu-training.md`). The uv venv is for **sidecar** runtime (`serve_with_runtime.sh`, smokes, M3 sign-off).
 
 ## Tests (Phase 0 — no GPU)
 
@@ -72,7 +72,7 @@ export LLAMA_CPP_LIB=/path/to/llama.cpp/build/bin/libllama.so
 
 `/health` reports `llama_backend_source`: `env` (override set), `config` (explicit YAML key), or `default` (packaged subprocess). When inprocess load fails on Darwin, the sidecar may fall back to subprocess `llama-server` (`llama_backend_fallback: true`, `llama_backend_requested: inprocess`); control via `ZEROLLAMA_RUNTIME_INPROCESS_FALLBACK` (`auto` on Mac when `LLAMA_SERVER_BIN` is set).
 
-Sign-off: `../scripts/phase/phase14_inprocess_smoke.sh` (5080 GPU), `../scripts/phase/phase14_wheel_cpu_smoke.sh` (wheel CPU), `../scripts/phase/phase14_yaml_config_smoke.sh`, or `../scripts/phase/phase14_both_backends.sh` — see [../docs/phase14-inprocess-llama.md](../docs/phase14-inprocess-llama.md).
+Sign-off: `../scripts/phase/phase14_inprocess_smoke.sh` (5080 GPU), `../scripts/phase/phase14_wheel_cpu_smoke.sh` (wheel CPU), `../scripts/phase/phase14_yaml_config_smoke.sh`, or `../scripts/phase/phase14_both_backends.sh` — see [../docs/design/serving/phase14-inprocess-llama.md](../docs/design/serving/phase14-inprocess-llama.md).
 
 ## Sidecar server (Phase 1–3)
 
@@ -91,7 +91,7 @@ Override via env: `ZEROLLAMA_RUNTIME_CONFIG`, `ZEROLLAMA_TENSOR_PARALLEL`, `ZERO
 
 Endpoints: `GET /health`, `GET /ready` (503 when not accepting loads), `POST /api/generate`, `POST /api/chat`, `POST /v1/completions`, `POST /internal/vram-estimate` (loopback), `POST /internal/training-handoff`, `POST /internal/inference/resume`.
 
-Smoke / GPU handoff: [../docs/testing-smoke.md](../docs/testing-smoke.md). **Why two internal endpoints:** handoff unloads GPU for training or legacy runners; resume clears `inference_state` without full process restart.
+Smoke / GPU handoff: [../docs/runbooks/testing-smoke.md](../docs/runbooks/testing-smoke.md). **Why two internal endpoints:** handoff unloads GPU for training or legacy runners; resume clears `inference_state` without full process restart.
 
 Pin: [LLAMA_CPP_PIN.md](./LLAMA_CPP_PIN.md)
 
@@ -135,7 +135,7 @@ Training OOM path calls `POST /internal/training-handoff` on the runtime URL whe
 
 **Constants** (2 GiB training reserve, 1 GiB min free, backlog thresholds): `runtime/runtime/gpu/admission.py`, `inference_policy.py` — tune after measurement, not new env vars.
 
-Details: [../docs/phase11-runtime-admission.md](../docs/phase11-runtime-admission.md). Smoke: `../scripts/e2e/e2e_coordination_smoke.sh`.
+Details: [../docs/design/serving/phase11-runtime-admission.md](../docs/design/serving/phase11-runtime-admission.md). Smoke: `../scripts/e2e/e2e_coordination_smoke.sh`.
 
 ## VRAM pre-check (Phase 13)
 

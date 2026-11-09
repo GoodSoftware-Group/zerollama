@@ -11,7 +11,7 @@ import "github.com/ollama/ollama/ml"
 //
 // Minefield trap 96: on discrete GPUs, trusting --list-devices "MiB free" as device
 // VRAM can be wrong (host memory reported as free). On Metal this host-as-device-free
-// mapping is intentional and documented — see docs/model-serving-minefield.md.
+// mapping is intentional and documented — see docs/runbooks/model-serving-minefield.md.
 func applyMetalUnifiedFreeMemory(devices []ml.DeviceInfo, updated []bool) {
 	host, err := GetCPUMem()
 	if err != nil || host.FreeMemory == 0 {

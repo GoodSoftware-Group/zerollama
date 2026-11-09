@@ -250,11 +250,8 @@ func (s *Server) putBlobRange(w http.ResponseWriter, r *http.Request, path, dige
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if _, err := os.Stat(path); err == nil && cr.start == 0 {
-		// Replacing a complete blob: drop it so resume metadata is on .partial.
-		_ = os.Remove(path)
-	}
-
+	// Keep the published blob until finalizeBlobPartial renames the hashed
+	// partial over it. Deleting first turned a failed replace into a 404.
 	if cr.start == 0 && current > 0 {
 		_ = os.Remove(tmp)
 		current = 0

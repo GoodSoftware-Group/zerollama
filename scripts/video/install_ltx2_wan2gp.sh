@@ -8,7 +8,7 @@
 #
 # Prefer SSD on astra:
 #   WAN2GP_ROOT=/mnt/ssd2/zerollama/third_party/wan2gp
-# Never binds Gradio to :11434 / :8081. See docs/ltx-t2v.md.
+# Never binds Gradio to :11434 / :8081. See docs/design/media/ltx-t2v.md.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

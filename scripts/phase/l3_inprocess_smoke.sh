@@ -181,4 +181,4 @@ trap - EXIT
 
 echo ""
 echo "PASS: l3_inprocess_smoke (${L3_OUT})"
-echo "Doc: docs/gpu-profiles-l3.md"
+echo "Doc: docs/design/serving/gpu-profiles-l3.md"

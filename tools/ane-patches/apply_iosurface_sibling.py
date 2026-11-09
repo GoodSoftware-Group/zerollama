@@ -287,7 +287,7 @@ def apply_rsets_pause_resume(root: pathlib.Path) -> None:
     """P70 (lab, Jul 2026): pause/resume the residency-set keep-alive heartbeat.
 
     Investigated as a candidate fix for an intermittent SIGSEGV in Metal resource-list code
-    during ANE dflash chain-17 lab runs (docs/ane-draft-inprocess.md "Known issues"). Did NOT
+    during ANE dflash chain-17 lab runs (docs/research/ane-draft-inprocess.md "Known issues"). Did NOT
     fix that crash on its own, but is a real, independently useful, ref-counted primitive — kept
     so it survives a fresh llama.cpp checkout + re-patch.
     """

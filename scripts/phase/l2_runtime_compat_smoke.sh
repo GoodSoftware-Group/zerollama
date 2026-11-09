@@ -118,4 +118,4 @@ _l2_compat_leg "fork" "${FORK_ROOT}" "auto"
 trap - EXIT
 echo ""
 echo "PASS: l2_runtime_compat_smoke"
-echo "Doc: docs/gpu-profiles-l2.md"
+echo "Doc: docs/design/serving/gpu-profiles-l2.md"

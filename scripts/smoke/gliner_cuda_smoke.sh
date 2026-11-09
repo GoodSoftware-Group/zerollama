@@ -3,7 +3,7 @@
 # Skips cleanly if no GPU, no CUDA binary, or no model.
 #
 # VRAM: do not co-reside with DiffusionGemma -ngl 25 / heavy emb on 16 GB —
-# free those first (see docs/gliner-cpp-findings.md Finding 7).
+# free those first (see docs/design/surfaces/gliner-cpp-findings.md Finding 7).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PORT="${GLINER_PORT:-18095}"

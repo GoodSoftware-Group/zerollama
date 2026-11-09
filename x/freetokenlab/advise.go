@@ -249,7 +249,7 @@ func AdviseSlotBankDims(nExperts, k int, ramGiB float64, measuredBytes int64, di
 	}
 }
 
-// RamCapSlots matches docs/flash-moe.md (8→16, 16→32, 36→64, 128→128).
+// RamCapSlots matches docs/research/flash-moe.md (8→16, 16→32, 36→64, 128→128).
 // Values between rows interpolate; above 128 GiB stays 128.
 func RamCapSlots(ramGiB float64) int {
 	if ramGiB <= 0 {

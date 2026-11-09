@@ -16,10 +16,10 @@ This package is the **CGO boundary** between Go and CPython: it compiles `traini
 | `shim_exports.go` | `//export go_training_oom_hook` — Go callback invoked from C when Python reports OOM. Mutex protects handler registration. **Why mutex:** OOM can race with `Close()` / handler replacement. |
 | `bootstrap_embed.go` | `//go:embed bootstrap.py` — must be separate from `import "C"` (CGO rule). |
 | `bootstrap.py` | Runs in `__main__` after compile+eval: installs `BridgeState`, wires `ollama_training_native`, starts `job_processor`. |
-| `training_shim.c` | `Py_Initialize`, GIL discipline, JSON IPC, native module `fire_oom`. Resolves `$REPO/.venv-training/lib/pythonX.Y/site-packages` where **X.Y = embedded libpython** (see `embedded_training_python_ver` in [`scripts/training/training_uv_venv.sh`](../../../scripts/training/training_uv_venv.sh)). **Before init:** `embedded_prepare_pytorch_ld_path` ([`x/pyembed_common/`](../../pyembed_common/)) prepends `torch/lib` and strips ggml `hostlibs` from `LD_LIBRARY_PATH`. **Why no `Py_Finalize` after torch:** unsafe with PyTorch and the Go runtime; process exit cleans up. |
+| `training_shim.c` | `Py_Initialize`, GIL discipline, JSON IPC, native module `fire_oom`. Resolves `$REPO/.venv-training/lib/pythonX.Y/site-packages` where **X.Y = embedded libpython** (see `embedded_training_python_ver` in [`scripts/training/training_uv_venv.sh`](../../../scripts/training/training_uv_venv.sh)). **Before init:** `embedded_prepare_pytorch_ld_path` ([`x/pyembed_common/`](../../pyembed_common)) prepends `torch/lib` and strips ggml `hostlibs` from `LD_LIBRARY_PATH`. **Why no `Py_Finalize` after torch:** unsafe with PyTorch and the Go runtime; process exit cleans up. |
 | `training_shim.h` | C API surface for the shim. |
 
 ## Reading order
 
-1. [`docs/gpu-training.md`](../../docs/gpu-training.md) — full architecture, env vars, OOM bridge, troubleshooting.
+1. [`docs/design/training/gpu-training.md`](../../../docs/design/training/gpu-training.md) — full architecture, env vars, OOM bridge, troubleshooting.
 2. [`../README.md`](../README.md) — why `trainingworker` is a separate package from `server/`.

@@ -33,8 +33,8 @@ var inferenceHealthClient = &http.Client{Timeout: 15 * time.Second}
 const runtimeHealthCacheTTL = 500 * time.Millisecond // Why: training submit idle-wait and ggml load paths probe /health multiple times per second; cache avoids loopback RTT on every check.
 
 var (
-	runtimeHealthCacheMu sync.Mutex
-	runtimeHealthCached  runtimeHealthSnapshot
+	runtimeHealthCacheMu  sync.Mutex
+	runtimeHealthCached   runtimeHealthSnapshot
 	runtimeHealthCacheURL string
 	runtimeHealthCachedAt time.Time
 )
@@ -265,7 +265,8 @@ func runtimeSidecarModelLoaded(ctx context.Context) bool {
 func TrainingSubmitConflict(err error) bool {
 	return errors.Is(err, ErrInferenceBacklogActive) ||
 		errors.Is(err, ErrRuntimeHealthProbeFailed) ||
-		errors.Is(err, ErrTrainingOutsideWindow)
+		errors.Is(err, ErrTrainingOutsideWindow) ||
+		errors.Is(err, errSlurmGuestGPU)
 }
 
 // TrainingSubmitMisconfigured reports operator/config errors that should not use HTTP 409.

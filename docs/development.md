@@ -16,9 +16,9 @@ TRAINING_UV_PYTHON_VER=3.11 ./scripts/training/training_uv_venv.sh --verify
 ldd ./zerollama | grep libpython   # expect 3.11
 ```
 
-See [gpu-training.md](./gpu-training.md#installing-python-deps-embedded-interpreter). **`5080_build_zerollama`** in [`scripts/gpu/5080_env.sh`](../scripts/gpu/5080_env.sh) sources the embed overlay automatically when `python-3.11-embed` is installed.
+See [gpu-training.md](design/training/gpu-training.md#installing-python-deps-embedded-interpreter). **`5080_build_zerollama`** in [`scripts/gpu/5080_env.sh`](../scripts/gpu/5080_env.sh) sources the embed overlay automatically when `python-3.11-embed` is installed.
 
-**5080 production serve:** `cp scripts/serve/serve_production_wrapper.sh ~/bin/serve.sh` — **WHY not copy `serve_gpu_example.sh` to `~/bin`:** breaks repo-root detection (`_ROOT=$HOME`). See [5080-runbook.md](./5080-runbook.md#production-serve-binserve-sh).
+**5080 production serve:** `cp scripts/serve/serve_production_wrapper.sh ~/bin/serve.sh` — **WHY not copy `serve_gpu_example.sh` to `~/bin`:** breaks repo-root detection (`_ROOT=$HOME`). See [5080-runbook.md](runbooks/5080-runbook.md#production-serve-binserve-sh).
 
 Then build and run Ollama from the root directory of the repository:
 
@@ -28,11 +28,11 @@ go run . serve
 
 The CLI binary is **`zerollama`**. A plain `go build` writes an executable named after this directory (`ollama`); use `go build -o zerollama .` if you want the on-disk name to match installs and integration tests.
 
-**GPU inference smoke** (runtime + legacy runner, VRAM handoff): see [testing-smoke.md](./testing-smoke.md). **Why separate from `go test`:** unit tests do not run `llama-server` on your GPU or prove the two local inference stacks can share one card safely.
+**GPU inference smoke** (runtime + legacy runner, VRAM handoff): see [testing-smoke.md](runbooks/testing-smoke.md). **Why separate from `go test`:** unit tests do not run `llama-server` on your GPU or prove the two local inference stacks can share one card safely.
 
-**Architecture (directional):** Zerollama aggregates **many inference callers** and **optional training jobs** into **queued work** sharing one or few GPUs per node; the roadmap spells out today’s split schedulers vs a future **unified policy** (priorities, idle training) on each host, and a **fleet management node** for multi-node warm routing and agent status. See [ROADMAP.md](./ROADMAP.md#product-model-queues-stakeholders-and-gpu-time) and [fleet-scheduling.md](./fleet-scheduling.md).
+**Architecture (directional):** Zerollama aggregates **many inference callers** and **optional training jobs** into **queued work** sharing one or few GPUs per node; the roadmap spells out today’s split schedulers vs a future **unified policy** (priorities, idle training) on each host, and a **fleet management node** for multi-node warm routing and agent status. See [ROADMAP.md](ROADMAP.md#product-model-queues-stakeholders-and-gpu-time) and [fleet-scheduling.md](design/training/fleet-scheduling.md).
 
-**Compare with upstream Ollama:** Zerollama adds Python runtime, training, and Eliza; upstream routes default GGUF as **Go → llama-server** (no Python sidecar). Clone vanilla Ollama beside this repo for A/B without merging: `./scripts/gpu/clone_upstream_ollama.sh` → [upstream-ollama-diff.md](./upstream-ollama-diff.md).
+**Compare with upstream Ollama:** Zerollama adds Python runtime, training, and Eliza; upstream routes default GGUF as **Go → llama-server** (no Python sidecar). Clone vanilla Ollama beside this repo for A/B without merging: `./scripts/gpu/clone_upstream_ollama.sh` → [upstream-ollama-diff.md](upstream/ollama-diff.md).
 
 > [!NOTE]
 > Ollama includes native code compiled with CGO.  From time to time these data structures can change and CGO can get out of sync resulting in unexpected crashes.  You can force a full build of the native code by running `go clean -cache` first. 
@@ -42,7 +42,7 @@ The CLI binary is **`zerollama`**. A plain `go build` writes an executable named
 
 macOS Apple Silicon supports **Metal** built into the main binary for **GGUF** models — no CUDA steps required. For **runtime admission** on unified memory (Phase 11/13), autoconfig picks `apple_silicon.yaml` and probes via `metal-unified`.
 
-**First-time setup:** see **[mac-dev-setup.md](./mac-dev-setup.md)** (tier 0 bootstrap for any Mac / any checkout path).
+**First-time setup:** see **[mac-dev-setup.md](runbooks/mac-dev-setup.md)** (tier 0 bootstrap for any Mac / any checkout path).
 
 ```bash
 ./scripts/runtime/dev_bootstrap.sh   # clone ../llama.cpp if needed; sign-off off by default
@@ -59,7 +59,7 @@ zerollama doctor --fix       # uv venv + Mac CGO build; clones ../llama.cpp then
 
 **Escape hatches:** set `ZEROLLAMA_RUNTIME_URL` to an existing sidecar (skip spawn), `ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=0` for ggml-only, or `OLLAMA_TRAINING=false` to skip training deps.
 
-**Build (CGO):** use **`./scripts/build/build_zerollama_mac.sh`** (or `./scripts/runtime/mac_setup.sh`). Details: [mac-dev-setup.md](./mac-dev-setup.md).
+**Build (CGO):** use **`./scripts/build/build_zerollama_mac.sh`** (or `./scripts/runtime/mac_setup.sh`). Details: [mac-dev-setup.md](runbooks/mac-dev-setup.md).
 
 Optional **MLX engine** for safetensors models: see [MLX Engine](#mlx-engine-optional) below.
 
@@ -252,7 +252,7 @@ cd ../ollama-upstream && go build -o ollama .
 OLLAMA_HOST=127.0.0.1:11435 ./ollama serve   # A/B vs zerollama :11434
 ```
 
-Full delta table, pin gaps, and cherry-pick list: [upstream-ollama-diff.md](./upstream-ollama-diff.md). Experimental zerollama routing toward llama.cpp: [llama-cpp-backend.md](./llama-cpp-backend.md).
+Full delta table, pin gaps, and cherry-pick list: [upstream-ollama-diff.md](upstream/ollama-diff.md). Experimental zerollama routing toward llama.cpp: [llama-cpp-backend.md](design/serving/llama-cpp-backend.md).
 
 ## Docker
 

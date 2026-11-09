@@ -63,7 +63,7 @@ EOF
 wire_compat() {
   if [[ "${pin_num}" -lt 11232 ]]; then
     echo "REFUSE: pin ${VERSION:-unknown} < b11232 — cannot wire llama/compat/002-clef.patch" >&2
-    echo "  Clef server wire needs b11232+. See docs/llama-cpp-pin-ladder.md" >&2
+    echo "  Clef server wire needs b11232+. See docs/design/serving/llama-cpp-pin-ladder.md" >&2
     echo "  Staged deferred patch remains at llama/clef/upstream-002-clef.patch" >&2
     exit 1
   fi

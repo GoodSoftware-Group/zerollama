@@ -1,4 +1,4 @@
-// Package autoroute holds the model-agnostic parts of the auto-router (docs/auto-router.md):
+// Package autoroute holds the model-agnostic parts of the auto-router (docs/design/surfaces/auto-router.md):
 // the candidate inventory, request signals, filters and scoring. It must not import
 // server — the server package supplies a Loader that knows how to open manifests.
 //

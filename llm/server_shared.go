@@ -156,7 +156,7 @@ type metadataKey struct {
 // WHY: every scheduled request decodes the GGUF header at least twice (num_ctx cap to
 // n_ctx_train, then the VRAM clamp). Skipping a 150k-entry vocab string by string costs
 // ~7.5 ms per decode for qwen3:8b (~2.5 ms for Laya) — ~15 ms of every warm chat request
-// (docs/auto-router-findings.md Finding 22). Metadata-only decodes drop large arrays, so
+// (docs/design/surfaces/auto-router-findings.md Finding 22). Metadata-only decodes drop large arrays, so
 // entries are small.
 var metadataCache struct {
 	sync.Mutex

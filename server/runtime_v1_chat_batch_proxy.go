@@ -21,7 +21,7 @@ import (
 // Hermes must group by model client-side (document that, don't invent server grouping).
 // WHY wrapper response (not bare []chat.completion): object=chat.completion.batch +
 // ordered completions[] is the stable contract — see OpenAPI ChatCompletionsBatchResponse
-// and docs/hermes-zerollama-gap.md §8. Underspecified "OpenAI-shaped list" blocked clients.
+// and docs/design/surfaces/hermes-zerollama-gap.md §8. Underspecified "OpenAI-shaped list" blocked clients.
 func (s *Server) runtimeV1ChatCompletionsBatchProxy() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Method != http.MethodPost || c.Request.URL.Path != "/v1/chat/completions/batch" {

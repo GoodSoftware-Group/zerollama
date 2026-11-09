@@ -95,7 +95,7 @@ registry; register the manifest instead:
 Then confirm it shows up: `curl -s http://localhost:11434/api/tags | grep comfy/`.
 Actual model weights must be downloaded into ComfyUI's `models/` directory
 separately (ComfyUI-GGUF for quantized weights on 16GB cards) — zerollama
-does not manage or blob those files. See `docs/comfyui-image-backend.md`.
+does not manage or blob those files. See `docs/design/media/comfyui-image-backend.md`.
 
 MLX-native image models (`z-image-turbo`, `flux2-klein-9b`) are regular
 pulls like any chat model: `curl -s http://localhost:11434/api/pull -d '{"model":"z-image-turbo"}'`.

@@ -142,7 +142,7 @@ func doctorCheckANEDraftHook(repo string) doctorCheck {
 			Name:    name,
 			Status:  "warn",
 			Detail:  fmt.Sprintf("%s @ %s", srcDetail, root),
-			FixHint: "./scripts/sync_ane_hook_to_llama_cpp.sh && ./scripts/build/build_llama_server.sh",
+			FixHint: "./scripts/vendor/sync_ane_hook_to_llama_cpp.sh && ./scripts/build/build_llama_server.sh",
 		}
 	}
 }

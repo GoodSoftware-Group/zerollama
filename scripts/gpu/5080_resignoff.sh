@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full CT 1564 re-sign-off — one driver for all tiers in docs/5080-runbook.md
+# Full CT 1564 re-sign-off — one driver for all tiers in docs/runbooks/5080-runbook.md
 #
 # Usage (inside CT 1564):
 #   cd ~/zerollama

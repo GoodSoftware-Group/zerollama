@@ -1,0 +1,131 @@
+# FreeToken MoE lab (arXiv:2608.16157)
+
+Offline simulator of FreeToken serving policies for zerollama. **No serve, no production ports.** Paper: [FreeToken](https://arxiv.org/abs/2608.16157). Code: `x/freetokenlab`.
+
+We do **not** vendor FlashML. This lab answers: which policies are worth wiring into Flash-MoE / llama-server next.
+
+## Run
+
+```bash
+go test ./x/freetokenlab/...
+go run ./x/freetokenlab/cmd/sim
+go run ./x/freetokenlab/cmd/sim -k 8 -experts 256 -ram 128
+go run ./x/freetokenlab/cmd/sim -trace x/freetokenlab/testdata/anemll_mini.jsonl
+./zerollama freetoken           # MoE headers + agent prefill lab (no weight load)
+./zerollama freetoken --json
+```
+
+## What the sim encodes
+
+| Policy | Paper | Lab |
+|--------|--------|-----|
+| \(q^\star = m\,B_P/B_H\) miss split | §3.2 | `QStarFillCount` / `SplitMisses` |
+| LRU expert cache vs static / prefill-hot | Fig. 4b | `SimulateCache` + `SweepMissRates` (11% / 37% / 50% of pool) |
+| `--moe-prefetch-temporal` | Flash-MoE | `PolicyLRUPrefetch` (install last-step experts before lookup) |
+| Real routing dump | anemll `write_trace` | `LoadAnemllJSONL` (`n_tokens>1` prefill) |
+| Full-layer prefill double-buffer | §3.1 | `OverlapPrefill` |
+| Semantic anchors at tool/think cuts | §3.1 | `PrefillTokensWithSemanticAnchor` |
+
+Hardware numbers are FreeToken Table 1. **`mac-uma`** sets \(B_P=B_H\) so \(q^\star\) fills every miss (unified DRAM: no residual host bandwidth for a parallel CPU expert path).
+
+## Measured here (synthetic)
+
+On `go run ./x/freetokenlab/cmd/sim` (80 MiB expert, 4 unique misses/layer):
+
+- Discrete PCIe boxes (5090/4090/4060): concurrent CPU experts **cut miss latency** vs all-PCIe-fill.
+- **5090 desktop** \(B_P\approx B_H\): little residual; policy ≈ all fill (paper’s dual-channel DDR5 case).
+- **Mac UMA**: all fill. Steal **LRU + prefill overlap + semantic checkpoints**, not \(q^\star\).
+- Default sim prints **two Zipf regimes**. **i.i.d.** (no locality): static / prefill-hot beat LRU. **75% stay:** LRU miss ~0.12 at 11% slots vs static ~0.44 — same qualitative win as Fig. 4b. `--moe-prefetch-temporal` does not help when LRU already holds the stay-set.
+- Tool-edit at 24k prefix + 400 new tokens: sparse 4k checkpoints replay thousands of tokens; a boundary checkpoint prefills **400**.
+
+anemll JSONL replay: `LoadAnemllJSONL` / `-trace`. Mini fixture parses. This host’s `qwen3.6-mtp` is 22 GiB with no sidecar — not captured in this session.
+
+## Capture a real anemll trace (lab only)
+
+anemll already writes JSONL from `write_trace`. **Do not** attach this to production `:11434`. Use `llama-cli` on a lab prompt:
+
+```bash
+# needs FLASH_MOE llama-cli from anemll-flash-llama.cpp, GGUF, optional sidecar
+./build/bin/llama-cli -m "$GGUF" --moe-trace /tmp/moe.jsonl --moe-trace-harness \
+  --prompt "Write a 3-step plan." -n 64
+go run ./x/freetokenlab/cmd/sim -trace /tmp/moe.jsonl
+```
+
+This host has `qwen3.6-mtp:latest` (**22 GiB**, 256 experts, **no sidecar**). A capture would load the full GGUF; skip unless you explicitly want that RAM hit.
+
+## chat_compress vs FreeToken anchors
+
+`partitionChatTail` keeps the **recent tail** and inserts a **new summary** where the old head was. That is **not** a surviving-prefix edit:
+
+| Edit | Radix reuse | Re-prefill |
+|------|-------------|------------|
+| Suffix strip (OpenClaw / FreeToken) | exact prefix up to boundary | new suffix only |
+| **zerollama keep-tail `summary`** | system/developer prefix only | **summary + tail** |
+| **`mode=placeholder`** | exact messages until first elided or peeled turn | rest of thread |
+
+Placeholder **elides newest fat tools first** so the start of the thread stays byte-identical (FreeToken prefix KV). Oldest peel is last resort. `summary` stays opt-in. `/api/chat` runs this before prompt render. `keep_tail_tokens` applies to **summary** only.
+
+Synthetic agent fixture (`ChatCompressLabCompare`, `num_ctx=4096`, no inference):
+
+| Policy | reuse | recompute |
+|--------|------:|----------:|
+| none | 0 | 4627 |
+| placeholder | **3017** | **15** |
+| summary | 8 | 46 |
+| suffix-strip+anchor (next 400 tokens) | 3017 | **400** |
+| suffix-strip + sparse ckpt@4k | 3017 | ≥400 |
+
+Placeholder **fits** by eliding the newest fat tools (~15 tokens of new prefill) and keeps a long exact prefix. `summary` still inserts a new system blob, so reuse stays ~8. On a *follow-up* turn, suffix-strip+anchor still prefills only 400 if KV kept that prefix. Echo `compression.elide_from` on the next append-only request so a larger `num_ctx` cannot restore an already-elided tool and split prefix KV.
+
+`zerollama doctor` / `zerollama freetoken` print this line.
+
+Do **not** load `qwen3.6-mtp` on this Mac while production Metal serve is up (22 GiB GGUF would contend for GPU).
+
+
+## Expert-bank byte estimate (FreeToken rematch)
+
+`AdviseSlotBankDims` / `flash-moe-resolve` size `bank~` as:
+
+- **measured:** sum of GGUF `*_exps` tensor bytes × `recommend / expert_count`
+- **estimate:** FreeToken `bank_bytes_estimate` — `layers × experts × BytesPerExpertLayer(format, H, I)` when tensors are missing; formats `q4_0` (default), `bf16`, `fp8_block`, `nvfp4`, `mxfp4`, `ds_fp4`
+
+`BytesPerExpertSlot` is one expert across all MoE layers (`estimate / experts`). Still **not** auto-exported as `ZEROLLAMA_FLASH_MOE_SLOT_BANK`.
+
+
+
+## Pin budget / split residency (FreeToken rematch)
+
+FreeToken caps `cudaHostRegister` on **WSL** at **40% of host RAM** (`FREETOKEN_PIN_BUDGET_GB` overrides anywhere). Plain Linux and Darwin are uncapped.
+
+When full expert banks exceed that budget, `--moe-cpu-layers auto` locks just enough **head+tail** MoE layers for CPU decode (U-shaped miss rates). Rematch in `x/freetokenlab`:
+
+| Helper | Role |
+|--------|------|
+| `PinBudgetBytes` / `AdvisePin` | WSL 40% or `ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB` |
+| `AutoCPULayerIDs` | head+tail layer ids |
+
+`zerollama doctor` / `freetoken` / `flash-moe-resolve` print `pin-over cpu-layers~N` when capped and over budget. **anemll has no `--moe-cpu-layers`** — shrink `--moe-slot-bank` instead. Mac UMA stays all-fill (uncapped). Advice only; does not auto-export slot-bank env.
+
+## Next
+
+1. Operator capture of a MoE trace when GPU is free (`llama-cli --moe-trace`, not `:11434`).
+2. CUDA **5080-est** (`BP=49`, `BH=63.2`) is an interpolation until CT 1564 measures expert DMA vs host GEMM. `AdviseProfile("5080-est")` still wants a CPU miss-split that anemll does not expose. Pin-budget / `--moe-cpu-layers auto` advice is live for WSL + `ZEROLLAMA_FLASH_MOE_PIN_BUDGET_GB`.
+3. `zerollama doctor` `freetoken MoE policy` uses local GGUF `expert_count` / `expert_used_count` when present (this host: 256 / k=8 → slots~19). Prefetch stays off on Mac UMA unless a real trace is i.i.d.
+4. `./zerollama freetoken` prints MoE header advice plus the agent prefill table (placeholder vs summary vs suffix-strip). Do not load `qwen3.6-mtp` on production Metal serve.
+5. Native `zerollama run` / `--experimental` / Go `api.ChatThread` echo `elide_from`. HTTP agents with a stable `prompt_cache_key` (including `/v1/responses` and `/v1/messages` extra_body) get the same cut server-side (per model, 256-key LRU, 30m; `cache_reset` clears). Explicit `compression.elide_from` still wins.
+
+See [flash-moe.md](flash-moe.md).
+
+## glm-flash-lite rematch (GF4/GF5, astra Oct 2026)
+
+External EXL3 sidecar ([glm-flash-lite-ladder.md](glm-flash-lite-ladder.md)) — **not** GGUF/Flash-MoE. Measured `GET http://127.0.0.1:30000/stats` on astra (`nvme`, GPU0 Gen4×16, `GLM53_NV_RAM_GB=55` → ~55 GiB exclusive RAM):
+
+| | astra | FreeToken lab `4090` | Watch for Flash-MoE / anemll |
+|--|-------|----------------------|------------------------------|
+| Miss placement | VRAM 43 % / RAM 51 % / NVMe 6 %; **~150 CPU experts/tok** | \(q^\star\) **2 PCIe fill + 2 CPU** of 4 | **CPU miss-split** still the right discrete-GPU idea; anemll has **no** flag |
+| Locality / prefetch | Layer-ahead used ~99 % of steps | `--moe-prefetch-temporal` cousin | Keep Flash-MoE temporal prefetch; do not invent EXL3 LA |
+| Exclusive RAM | VRAM∩RAM empty by design (`exclusive=true`) | slot-bank is single-tier | **Watch only** — ggml pin budget ≠ their exclusive tier |
+| Victim ring | 24-slot VRAM park → RAM drain | — | **Watch only** |
+| Speed | ~7.3 tok/s wall @ 55 GiB RAM (CPU-bound) | Table-1 latency model | Do **not** claim 19 tok/s 3090 parity on this box |
+
+**Non-goal:** vendor `nv2` / EXL3. Rematch = policy validation for doctor/`freetoken` notes, not a second engine.

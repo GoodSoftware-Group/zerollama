@@ -9,7 +9,7 @@
 #   RUN_E2E_T10B=1 CUDA_VISIBLE_DEVICES=1 ./scripts/training/t10b_grpo_ab_smoke.sh
 #     → short grpo_run=true (max_steps=2) for length vs format_json; write timings JSON
 #
-# Doc: docs/t10-grpo.md · docs/t10-grpo-findings.md
+# Doc: docs/design/training/t10-grpo.md · docs/design/training/t10-grpo-findings.md
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ollama/ollama/server/remotestore"
 	"github.com/ollama/ollama/types/model"
 )
 
@@ -448,6 +449,12 @@ func (s *Server) handleGC(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
+			// A blob that just landed may not have a manifest yet. Deleting it
+			// here races a push that uploaded layers before the manifest PUT.
+			fi, statErr := os.Stat(path)
+			if statErr == nil && remotestore.BlobTooYoungToGC(fi.ModTime(), time.Now()) {
+				continue
+			}
 			if err := os.Remove(path); err == nil {
 				resp.Deleted = append(resp.Deleted, d)
 			}
@@ -562,32 +569,34 @@ func (s *Server) findOrphanBlobs() ([]string, error) {
 func extractDigestsFromJSON(s string) []string {
 	var out []string
 	seen := map[string]struct{}{}
-	const needle = "sha256:"
-	for {
-		i := strings.Index(s, needle)
-		if i < 0 {
-			break
-		}
-		rest := s[i:]
-		if len(rest) < 7+64 {
-			break
-		}
-		d := rest[:7+64]
-		ok := true
-		for _, c := range d[7:] {
-			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-				ok = false
+	for _, needle := range []string{"sha256:", "sha256-"} {
+		rest := s
+		for {
+			i := strings.Index(rest, needle)
+			if i < 0 {
 				break
 			}
-		}
-		if ok {
-			norm := "sha256-" + strings.ToLower(d[7:])
-			if _, exists := seen[norm]; !exists {
-				seen[norm] = struct{}{}
-				out = append(out, norm)
+			rest = rest[i:]
+			if len(rest) < 7+64 {
+				break
 			}
+			d := rest[:7+64]
+			ok := true
+			for _, c := range d[7:] {
+				if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				norm := "sha256-" + strings.ToLower(d[7:])
+				if _, exists := seen[norm]; !exists {
+					seen[norm] = struct{}{}
+					out = append(out, norm)
+				}
+			}
+			rest = rest[7:]
 		}
-		s = rest[7:]
 	}
 	return out
 }

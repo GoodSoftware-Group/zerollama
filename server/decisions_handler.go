@@ -27,7 +27,7 @@ import (
 // Alias /v1/systemone keeps Jev clients on one path.
 //
 // WHY the handler is thin: backend dispatch lives in runDecisions so the auto-router can ask
-// a local decider the same typed questions in-process (docs/auto-router.md AR0/AR4).
+// a local decider the same typed questions in-process (docs/design/surfaces/auto-router.md AR0/AR4).
 func (s *Server) DecisionsHandler(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<20)
 	body, err := io.ReadAll(c.Request.Body)

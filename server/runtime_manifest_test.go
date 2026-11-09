@@ -18,11 +18,14 @@ func TestRuntimeProxyOptionsMergesGGUF(t *testing.T) {
 	}
 }
 
-func TestRuntimeProxyOptionsPreservesClientGguf(t *testing.T) {
-	client := map[string]any{"gguf": "/override/model.gguf"}
+func TestRuntimeProxyOptionsDropsClientGguf(t *testing.T) {
+	client := map[string]any{"gguf": "/override/model.gguf", "num_ctx": 2048}
 	opts := runtimeProxyOptions("missing-model", 64, true, client)
-	if opts["gguf"] != "/override/model.gguf" {
-		t.Fatalf("gguf=%v", opts["gguf"])
+	if _, ok := opts["gguf"]; ok {
+		t.Fatalf("client gguf leaked: %v", opts["gguf"])
+	}
+	if opts["num_ctx"] != 2048 {
+		t.Fatalf("num_ctx=%v", opts["num_ctx"])
 	}
 }
 
@@ -38,7 +41,7 @@ func TestRuntimeV1ProxyOptionsMaxTokensOnly(t *testing.T) {
 
 func TestRuntimeV1ProxyOptionsTopLevelNumCtx(t *testing.T) {
 	opts := runtimeV1ProxyOptions("missing-model", map[string]any{
-		"num_ctx": float64(6144),
+		"num_ctx":  float64(6144),
 		"messages": []any{},
 	})
 	if opts["num_ctx"] != float64(6144) {

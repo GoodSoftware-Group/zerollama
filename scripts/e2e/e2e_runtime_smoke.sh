@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Smoke-test zerollama Python runtime (see docs/testing-smoke.md for WHYs).
+# Smoke-test zerollama Python runtime (see docs/runbooks/testing-smoke.md for WHYs).
 #
 # Temp-0 / reproducibility (minefield traps 91–92): when payloads use temperature=0,
 # treat it as convenience sampling — not bit-identical guarantees under continuous
-# batching or warm prefix cache. See docs/model-serving-minefield.md.
+# batching or warm prefix cache. See docs/runbooks/model-serving-minefield.md.
 #
 #   ./scripts/e2e/e2e_runtime_smoke.sh
 #   RUN_E2E_GPU=1 LLAMA_MODEL=... LLAMA_SERVER_BIN=... ./scripts/e2e/e2e_runtime_smoke.sh

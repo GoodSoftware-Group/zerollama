@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # NVFP4 CUDA binary probe — no GGUF required.
 #
-# WHY: docs/cuda-lanes.md P1 asks for dual-4090 NVFP4 sign-off. Before pulling a
+# WHY: docs/design/serving/cuda-lanes.md P1 asks for dual-4090 NVFP4 sign-off. Before pulling a
 # gpt-oss NVFP4 blob, prove the packaged/vendor CUDA backend embeds NVFP4 type
 # markers (generic MMQ path on sm_89; not Blackwell MMA).
 #
@@ -68,4 +68,4 @@ if [[ -x "${LLAMA_SERVER_BIN}" ]]; then
 fi
 
 echo "PASS: nvfp4_cuda_probe (binary markers present; load an NVFP4 GGUF for lane sign-off)"
-echo "Doc: docs/cuda-lanes.md (P1 NVFP4 dual-4090)"
+echo "Doc: docs/design/serving/cuda-lanes.md (P1 NVFP4 dual-4090)"

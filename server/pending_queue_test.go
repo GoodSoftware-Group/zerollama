@@ -50,6 +50,23 @@ func TestPendingQueuePopPreferringKeys(t *testing.T) {
 	require.Same(t, b, q.Pop())
 }
 
+func TestPendingQueueHotPreferIsBounded(t *testing.T) {
+	q := newPendingQueue(8)
+	cold := &LlmRequest{model: &Model{ModelPath: "/cold"}}
+	hot1 := &LlmRequest{model: &Model{ModelPath: "/hot"}}
+	hot2 := &LlmRequest{model: &Model{ModelPath: "/hot"}}
+	hot3 := &LlmRequest{model: &Model{ModelPath: "/hot"}}
+	require.True(t, q.Push(cold))
+	require.True(t, q.Push(hot1))
+	require.True(t, q.Push(hot2))
+	require.True(t, q.Push(hot3))
+	prefer := map[string]struct{}{"/hot": {}}
+	require.Same(t, hot1, q.PopPreferringKeys(prefer))
+	require.Same(t, hot2, q.PopPreferringKeys(prefer))
+	require.Same(t, cold, q.PopPreferringKeys(prefer))
+	require.Same(t, hot3, q.PopPreferringKeys(prefer))
+}
+
 func TestPendingQueueRequeueFront(t *testing.T) {
 	q := newPendingQueue(8)
 	b := &LlmRequest{model: &Model{ModelPath: "/b"}}

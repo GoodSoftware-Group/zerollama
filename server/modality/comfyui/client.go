@@ -3,7 +3,7 @@
 // Qwen-Image(-Edit), FLUX.1/2, and GLM-Image with LoRA/ControlNet/upscale support —
 // porting those DiTs into the MLX Go runner (x/imagegen) would take months per family.
 // Zerollama orchestrates a running ComfyUI instance instead: queue a workflow, poll
-// history, download the PNG output. See docs/comfyui-image-backend.md.
+// history, download the PNG output. See docs/design/media/comfyui-image-backend.md.
 package comfyui
 
 import (

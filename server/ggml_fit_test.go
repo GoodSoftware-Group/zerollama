@@ -20,4 +20,8 @@ func TestGgmlWeightsFitLeavesRoomForRuntime(t *testing.T) {
 	if ggmlWeightsFit(nil, 1<<20) {
 		t.Fatal("no gpus")
 	}
+	integrated := []ml.DeviceInfo{{FreeMemory: 64 << 30, Integrated: true}}
+	if ggmlWeightsFit(integrated, 1<<20) {
+		t.Fatal("unified memory must not keep the runtime resident on a weight-only fit")
+	}
 }

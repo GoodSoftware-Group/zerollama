@@ -62,7 +62,7 @@ func (m fulfillmentMode) Active() bool {
 //
 // WHY this shape (declare → schedule → retain → hit): agent harnesses need to
 // communicate session/cache intent without cold: key prefixes or client TTLs that
-// fight keep_alive. See docs/agent-qos-and-project-tracking.md.
+// fight keep_alive. See docs/design/serving/agent-qos-and-project-tracking.md.
 type mlxQoS struct {
 	Class        mlxSessionClass
 	Priority     int    // 0–100; used when Class unknown

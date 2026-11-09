@@ -3,7 +3,7 @@
 #
 # WHY: runtime llama-server and Go ggml should share one source tree (Ollama pin +
 # llama/patches/). This script materializes vendor/llama-cpp-<short> and applies the
-# patch series. On pin bumps, resolve conflicts per docs/ggml-b9509-migration.md.
+# patch series. On pin bumps, resolve conflicts per docs/design/serving/ggml-b9509-migration.md.
 #
 # Usage:
 #   ./scripts/vendor/rebase_vendor_unified.sh          # clone/checkout only (patches pre-applied)

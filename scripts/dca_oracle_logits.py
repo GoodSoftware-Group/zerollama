@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Oracle harness: native Dual Chunk Attention vs SGLang dense DCA / stock FA.
 
-Cases (see docs/dca-dual-chunk-attention.md):
+Cases (see docs/design/serving/dca-dual-chunk-attention.md):
   n=0 (S < chunk_len): native DCA logits ≈ stock llama FA (intra only)
   n≥1 / n≥2:           native DCA logits ≈ SGLang dense DCA (same HF weights)
 

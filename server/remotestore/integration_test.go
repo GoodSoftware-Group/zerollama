@@ -19,6 +19,7 @@ import (
 )
 
 func TestIntegrationFetchRoundTrip(t *testing.T) {
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
 	secret := "integration-test-secret"
 	auth, err := remotestore.NewAuth(secret)
 	if err != nil {

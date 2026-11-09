@@ -248,7 +248,7 @@ int training_init(const char *repo_root, const char *bootstrap_py, char **err_ou
 			snprintf(msg, sizeof(msg),
 				"embedded Python %d.%d requires .venv-training/lib/python%d.%d/site-packages; "
 				"recreate with TRAINING_UV_PYTHON_VER=%d.%d ./scripts/training/training_uv_venv.sh --verify "
-				"(see docs/gpu-training.md)",
+				"(see docs/design/training/gpu-training.md)",
 				py_major, py_minor, py_major, py_minor, py_major, py_minor);
 			set_err(err_out, msg);
 			goto fail_early;

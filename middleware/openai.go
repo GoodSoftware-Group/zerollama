@@ -1036,7 +1036,7 @@ const CtxKeyVideoCreateRequest = "ollama.video.create.request"
 // CtxKeyRouteSurface tells GenerateHandler which surface a converted request came from
 // ("image" | "image_edit"). WHY: image middlewares rewrite the body into a plain
 // GenerateRequest, so the auto-router could not otherwise tell an image prompt from text
-// and might resolve a router name to a chat model (docs/auto-router.md §6.3).
+// and might resolve a router name to a chat model (docs/design/surfaces/auto-router.md §6.3).
 const CtxKeyRouteSurface = "zerollama.route.surface"
 
 // TranscriptionWriter collects streamed chat responses and outputs a transcription response.
@@ -1551,7 +1551,7 @@ func SpeechMiddleware() gin.HandlerFunc {
 // VideoCreateMiddleware validates OpenAI POST /v1/videos JSON and stores the request on context.
 // Body is capped so agents use /v1/media/{session}/{label} for large keyframes instead of inline JSON.
 // WHY 8 MiB (media.MaxVideoCreateBody): create should carry label refs only; frames stream via PUT
-// (docs/media-uploads.md). A larger cap would invite base64-in-JSON and defeat the media API.
+// (docs/design/media/media-uploads.md). A larger cap would invite base64-in-JSON and defeat the media API.
 func VideoCreateMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, media.MaxVideoCreateBody)

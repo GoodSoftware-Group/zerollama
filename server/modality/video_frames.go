@@ -22,7 +22,7 @@ import (
 // Images in order, sets VideoSpans for each clip, then clears Videos. Run before prompt/render.
 //
 // Why VideoSpans: the runner still sees a flat image list; spans record which images came from
-// which clip so renderers can group placeholders when a model cares (see docs/video-understanding.md).
+// which clip so renderers can group placeholders when a model cares (see docs/design/media/video-understanding.md).
 //
 // Multi-clip turns sample in parallel up to OLLAMA_MM_IO_WORKERS (SGLang #31438); span/image order
 // is preserved.

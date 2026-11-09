@@ -22,7 +22,7 @@ are also linked through Go CGO (`llama/compat/compat.go`, blank-imported from
 llama-server subprocess; without this path, published qwen35/qwen35moe GGUFs hit
 loader errors (e.g. `rope.dimension_sections` length 3 vs 4) even though the
 compat handlers already existed for CMake builds. See
-[docs/qwen35-apple-silicon.md](../docs/qwen35-apple-silicon.md).
+[docs/design/apple/qwen35-apple-silicon.md](../../docs/design/apple/qwen35-apple-silicon.md).
 
 ## Files
 
@@ -48,7 +48,7 @@ Zerollama keeps that file under **`llama/clef/upstream-002-clef.patch`** until
 the vendor pin is ≥ **b11232**. `apply-patch.cmake` uses `GLOB_RECURSE` on
 `*.patch`; dropping the upstream Clef patch into this directory on **b10615**
 breaks configure (`server-context.cpp` hunks fail). See
-[docs/llama-cpp-pin-ladder.md](../../docs/llama-cpp-pin-ladder.md) and
+[docs/design/serving/llama-cpp-pin-ladder.md](../../docs/design/serving/llama-cpp-pin-ladder.md) and
 `./scripts/phase/stage_clef_for_pin.sh --wire`.
 
 The compatibility source files stay in this directory and are linked into the

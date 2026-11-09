@@ -55,7 +55,7 @@ rather than assuming the request shape is wrong.
   `comfy/*` or MLX image models like `z-image-turbo`, `flux2-klein`)
 - For `comfy/*` models: a running ComfyUI instance the server can reach
   (`OLLAMA_COMFYUI_URL`, default `http://127.0.0.1:8188`) — see
-  `docs/comfyui-image-backend.md` in the zerollama repo
+  `docs/design/media/comfyui-image-backend.md` in the zerollama repo
 
 ## API Contract
 

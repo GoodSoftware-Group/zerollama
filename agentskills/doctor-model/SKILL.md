@@ -106,7 +106,7 @@ flag** — there is no `--traps` flag today. To use them from an agent:
 
 Trap **55/61**'s *behavioural* half (does a long prompt silently get
 truncated rather than erroring) is not arithmetic and needs a live probe —
-see `docs/model-serving-minefield.md` §2.1 for the cold/warm ladder script
+see `docs/runbooks/model-serving-minefield.md` §2.1 for the cold/warm ladder script
 (`scripts/minefield_cold_ladder.sh <model>`), lab ports only.
 
 ### 3. Live serving traps (once the model is warm)
@@ -160,7 +160,7 @@ stop/`Response` hygiene still auto-patches.
 
 Full trap-to-check mapping (which numbered minefield trap each doctor probe
 covers, plus which traps are hand-run scripts vs fully automated) lives in
-[`docs/model-serving-minefield.md`](../../docs/model-serving-minefield.md) —
+[`docs/runbooks/model-serving-minefield.md`](../../docs/runbooks/model-serving-minefield.md) —
 read it before assuming a trap is or isn't covered.
 
 ## How to Run (typical agent flow)

@@ -130,7 +130,7 @@ func LogDetails(devices []ml.DeviceInfo) {
 	// CPU inference fallback when bootstrap discovery found no GPUs.
 	// Why log CPU here: discover uses GPU list for scheduling; empty list means CPU-only
 	// layout. On Mac, if you expected Metal, rebuild — Jun 2026 fixed bootstrap /info
-	// disabling Metal via zero-layer dummy load (see docs/apple-silicon-metal.md).
+	// disabling Metal via zero-layer dummy load (see docs/design/apple/apple-silicon-metal.md).
 	if len(devices) == 0 {
 		dev, _ := GetCPUMem()
 		slog.Info("inference compute",

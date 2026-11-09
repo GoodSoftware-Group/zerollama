@@ -66,11 +66,11 @@ rather than assuming the request shape is wrong.
 
 ## Prerequisites
 
-- **Laya:** patches **0125–0126** + Laya GGUF — [docs/laya-llama-cpp.md](../../docs/laya-llama-cpp.md)
-- **Score System One:** [docs/system-one-score.md](../../docs/system-one-score.md) — tev1/nimble Rows on CUDA **or** Mac MLX; Strands **MLX only**; Clef **text** on MLX now, Clef **GGUF/images** need pin **L6** / vision merge
-- **CLM:** heads GGUF + emb URL — [docs/clm.md](../../docs/clm.md)
-- **OpenJev:** sibling build + `ZEROLLAMA_OPENJEV_URL` — [docs/diffusion-gemma-llama-cpp.md](../../docs/diffusion-gemma-llama-cpp.md) · [findings](../../docs/diffusion-gemma-llama-cpp-findings.md)
-- **GLiNER2.5-Decide:** `serve_gliner_decide_lab.sh` + `ZEROLLAMA_GLINER_DECIDE_URL` — [docs/gliner-decide.md](../../docs/gliner-decide.md) (not NER `/v1/extract`)
+- **Laya:** patches **0125–0126** + Laya GGUF — [docs/design/surfaces/laya-llama-cpp.md](../../docs/design/surfaces/laya-llama-cpp.md)
+- **Score System One:** [docs/design/surfaces/system-one-score.md](../../docs/design/surfaces/system-one-score.md) — tev1/nimble Rows on CUDA **or** Mac MLX; Strands **MLX only**; Clef **text** on MLX now, Clef **GGUF/images** need pin **L6** / vision merge
+- **CLM:** heads GGUF + emb URL — [docs/design/surfaces/clm.md](../../docs/design/surfaces/clm.md)
+- **OpenJev:** sibling build + `ZEROLLAMA_OPENJEV_URL` — [docs/design/surfaces/diffusion-gemma-llama-cpp.md](../../docs/design/surfaces/diffusion-gemma-llama-cpp.md) · [findings](../../docs/design/surfaces/diffusion-gemma-llama-cpp-findings.md)
+- **GLiNER2.5-Decide:** `serve_gliner_decide_lab.sh` + `ZEROLLAMA_GLINER_DECIDE_URL` — [docs/design/surfaces/gliner-decide.md](../../docs/design/surfaces/gliner-decide.md) (not NER `/v1/extract`)
 - Lab ports only (`11435`, `11439`, `18082`, `18093`, `18098`) — never bind `:11434` / `:8081` from agent work
 
 ## API Contract
@@ -151,10 +151,10 @@ curl -s http://127.0.0.1:11439/v1/decisions -H 'content-type: application/json' 
 - **OpenJev noul** — needs `0|1` markers + both calibrated flags; prefer Laya/CLM if you need a trained boolean head.
 - **GLiNER2.5-Decide** — always `calibrated:false` today; mechanical schema is `/v1/gliner-decide` (not NER `/v1/gliner`).
 - **Choice key order** — criteria object key order is load-bearing for Laya; OpenJev pack sorts question ids.
-- **VRAM** — DiffusionGemma Q4 on 16 GB needs `-ngl ~25` and usually exclusive GPU ([findings](../../docs/diffusion-gemma-llama-cpp-findings.md)). Gather needs host logits (GPU sampling off during score — Finding 7). Decide GPU: unload OpenJev/NER CUDA first.
+- **VRAM** — DiffusionGemma Q4 on 16 GB needs `-ngl ~25` and usually exclusive GPU ([findings](../../docs/design/surfaces/diffusion-gemma-llama-cpp-findings.md)). Gather needs host logits (GPU sampling off during score — Finding 7). Decide GPU: unload OpenJev/NER CUDA first.
 - **Agent labs** — never kill production `:11434` / `:8081`.
 
 ## Related
 
-- Docs: [laya](../../docs/laya-llama-cpp.md) · [system-one-score](../../docs/system-one-score.md) · [clm](../../docs/clm.md) · [diffusion](../../docs/diffusion-gemma-llama-cpp.md) · [readout design](../../docs/diffusion-gemma-readout-design.md) · [gliner-decide](../../docs/gliner-decide.md)
+- Docs: [laya](../../docs/design/surfaces/laya-llama-cpp.md) · [system-one-score](../../docs/design/surfaces/system-one-score.md) · [clm](../../docs/design/surfaces/clm.md) · [diffusion](../../docs/design/surfaces/diffusion-gemma-llama-cpp.md) · [readout design](../../docs/design/surfaces/diffusion-gemma-readout-design.md) · [gliner-decide](../../docs/design/surfaces/gliner-decide.md)
 - ROADMAP typed-decisions **LAYA\*** / **CLM\*** / **DG\*** / **GD\***

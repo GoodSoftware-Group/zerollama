@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/envconfig"
+	"github.com/ollama/ollama/internal/slurm"
 	"github.com/ollama/ollama/x/trainingworker"
 )
 
@@ -17,13 +18,19 @@ import (
 type TrainingSubmitOptions struct {
 	Priority    TrainingPriority
 	QueueOnBusy *bool
+	// Slurm, when non-nil, is the sbatch request. It is sent only when
+	// ZEROLLAMA_SLURM_SUBMIT=1. That flag also sends jobs that omit Slurm.
+	Slurm *slurm.Request
 }
 
 // TrainingSubmitResult is returned from a training job submit attempt.
 type TrainingSubmitResult struct {
-	JobID    string
-	Queued   bool
-	Priority TrainingPriority // resolved tier (T6b echo for operators / automation)
+	JobID      string
+	Queued     bool
+	Priority   TrainingPriority // resolved tier (T6b echo for operators / automation)
+	SlurmJobID string
+	State      string
+	Scheduler  string // "slurm" when the payload runs under sbatch
 }
 
 func (s *Server) submitTrainingJob(
@@ -32,6 +39,12 @@ func (s *Server) submitTrainingJob(
 	payload json.RawMessage,
 	opts TrainingSubmitOptions,
 ) (TrainingSubmitResult, error) {
+	if opts.Slurm != nil && !envconfig.SlurmSubmit() {
+		return TrainingSubmitResult{}, fmt.Errorf("%w: set ZEROLLAMA_SLURM_SUBMIT=1 before sending a slurm object", slurm.ErrBadRequest)
+	}
+	if envconfig.SlurmSubmit() {
+		return s.submitTrainingJobViaSlurm(ctx, kind, payload, opts)
+	}
 	if s == nil || s.training == nil {
 		return TrainingSubmitResult{}, errors.New("training worker not available")
 	}
@@ -126,6 +139,22 @@ func (s *Server) deferredTrainingJobStatusJSON(ctx context.Context, id string) (
 		return nil, trainingworker.ErrJobNotFound
 	}
 
+	if j.state == deferredStatePromoted && j.promotedID != "" && isSlurmTrainingJobID(j.promotedID) {
+		if raw, err := s.slurmTrainingJobStatusJSON(ctx, j.promotedID); err == nil {
+			var wrap map[string]any
+			if json.Unmarshal(raw, &wrap) == nil {
+				if job, ok := wrap["job"].(map[string]any); ok {
+					job["deferJobId"] = id
+					job["promotedJobId"] = j.promotedID
+					job["defer"] = true
+					job["priority"] = j.priority.String()
+					wrap["job"] = job
+					return json.Marshal(wrap)
+				}
+			}
+		}
+	}
+
 	if j.state == deferredStatePromoted && j.promotedID != "" && s.training != nil {
 		if raw, err := s.training.JobTrainingStatusJSON(ctx, j.promotedID); err == nil {
 			var wrap map[string]any
@@ -164,6 +193,9 @@ func (s *Server) deferredTrainingJobStatusJSON(ctx context.Context, id string) (
 		status = "cancelled"
 		msg = "cancelled before promotion"
 	case deferredStateWaiting:
+		if j.slurm != nil && j.retryCount == 0 {
+			msg = "waiting to submit to Slurm"
+		}
 		if j.retryCount > 0 {
 			status = "pending"
 			msg = fmt.Sprintf("retry %d scheduled after %s", j.retryCount, j.nextRetryAt.UTC().Format(time.RFC3339))
@@ -180,6 +212,9 @@ func (s *Server) deferredTrainingJobStatusJSON(ctx context.Context, id string) (
 		"priority":        j.priority.String(),
 		"enqueuedAt":      j.enqueuedAt.UTC().Format(time.RFC3339),
 		"submittedAt":     j.enqueuedAt.UTC().Format(time.RFC3339),
+	}
+	if j.slurm != nil {
+		job["scheduler"] = "slurm"
 	}
 	if j.kind == "run_script" {
 		modelName, size := wanVideoJobMeta(j.payload)
@@ -238,6 +273,9 @@ func (s *Server) mergeDeferredJobsListJSON(pythonList []byte) ([]byte, error) {
 		}
 		if j.promotedID != "" {
 			entry["promotedJobId"] = j.promotedID
+		}
+		if j.slurm != nil {
+			entry["scheduler"] = "slurm"
 		}
 		if j.errMsg != "" {
 			entry["error"] = j.errMsg

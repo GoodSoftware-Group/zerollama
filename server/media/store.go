@@ -9,7 +9,7 @@
 //
 // WHY no refcounts: pin/unpin across the training queue is easy to get wrong for
 // disposable frames. TTL + CAS byte-cap LRU + media_missing on create is enough.
-// See docs/media-uploads.md.
+// See docs/design/media/media-uploads.md.
 package media
 
 import (

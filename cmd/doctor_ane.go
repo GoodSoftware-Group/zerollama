@@ -28,7 +28,7 @@ func doctorCheckANE(repo string) doctorCheck {
 			Name:    "apple neural engine (experimental)",
 			Status:  "warn",
 			Detail:  fmt.Sprintf("maderix/ane bridge missing at %s", bridgeLib),
-			FixHint: "git clone https://github.com/maderix/ane ~/Sites/inference/ane && ./scripts/ane_probe_build.sh",
+			FixHint: "git clone https://github.com/maderix/ane ~/Sites/inference/ane && ./scripts/ane/ane_probe_build.sh",
 		}
 	}
 
@@ -38,7 +38,7 @@ func doctorCheckANE(repo string) doctorCheck {
 			Name:    "apple neural engine (experimental)",
 			Status:  "warn",
 			Detail:  fmt.Sprintf("ane-probe not built (bridge ok @ %s)", aneRepo),
-			FixHint: "./scripts/ane_probe_build.sh",
+			FixHint: "./scripts/ane/ane_probe_build.sh",
 		}
 	}
 
@@ -48,7 +48,7 @@ func doctorCheckANE(repo string) doctorCheck {
 			Name:    "apple neural engine (experimental)",
 			Status:  "warn",
 			Detail:  fmt.Sprintf("probe failed: %v", err),
-			FixHint: "rebuild: ./scripts/ane_probe_build.sh; uses private ANE APIs — may break on macOS updates",
+			FixHint: "rebuild: ./scripts/ane/ane_probe_build.sh; uses private ANE APIs — may break on macOS updates",
 		}
 	}
 

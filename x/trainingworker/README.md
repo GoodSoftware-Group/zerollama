@@ -16,4 +16,4 @@ Embeds **CPython** via CGO (`x/trainingworker/pyembed`), loads repo-root **`trai
 - One OS process: no `python3` on PATH for a sidecar, no gRPC, no UDS between Go and Python for the control plane.
 - OOM path is a **C → Go export** from the thread that hit CUDA OOM; **why:** synchronous coordination with the inference scheduler beats polling or a second socket for “please unload.”
 
-Full rationale: [`docs/gpu-training.md`](../../docs/gpu-training.md). Shim file index: [`pyembed/README.md`](pyembed/README.md).
+Full rationale: [`docs/design/training/gpu-training.md`](../../docs/design/training/gpu-training.md). Shim file index: [`pyembed/README.md`](pyembed/README.md).

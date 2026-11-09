@@ -49,19 +49,19 @@ func extractExternalResolve(modelName string, m *Model) (string, error) {
 		if u := envconfig.GlinerURL(); u != "" {
 			return u, nil
 		}
-		return "", fmt.Errorf("modality_backends.extract=gliner requires ZEROLLAMA_GLINER_URL; see docs/gliner-cpp.md")
+		return "", fmt.Errorf("modality_backends.extract=gliner requires ZEROLLAMA_GLINER_URL; see docs/design/surfaces/gliner-cpp.md")
 	}
 	if isGlinerModelName(modelName) {
 		if u := envconfig.GlinerURL(); u != "" {
 			return u, nil
 		}
-		return "", fmt.Errorf("model %q requires ZEROLLAMA_GLINER_URL; see docs/gliner-cpp.md", modelName)
+		return "", fmt.Errorf("model %q requires ZEROLLAMA_GLINER_URL; see docs/design/surfaces/gliner-cpp.md", modelName)
 	}
 	if u := envconfig.GlinerURL(); u != "" && strings.TrimSpace(modelName) != "" {
 		// Optional: any model name with URL set still proxies when explicitly hitting extract routes.
 		return u, nil
 	}
-	return "", fmt.Errorf("set ZEROLLAMA_GLINER_URL for /v1/extract|/v1/gliner; see docs/gliner-cpp.md")
+	return "", fmt.Errorf("set ZEROLLAMA_GLINER_URL for /v1/extract|/v1/gliner; see docs/design/surfaces/gliner-cpp.md")
 }
 
 // stripToAbstract keeps only portable NER fields for /v1/extract upstream.

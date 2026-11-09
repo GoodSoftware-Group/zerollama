@@ -9,7 +9,7 @@
 #
 # On astra, prefer SSD space:
 #   WAN2GP_ROOT=/mnt/ssd2/zerollama/third_party/wan2gp
-# Never binds Gradio to :11434 / :8081. See docs/h3-cuda-port.md.
+# Never binds Gradio to :11434 / :8081. See docs/design/media/h3-cuda-port.md.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

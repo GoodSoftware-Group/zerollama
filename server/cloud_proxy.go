@@ -27,7 +27,7 @@ import (
 
 // Default cloud upstream for Zerollama is Eliza (OpenAI/Anthropic-compatible APIs, API-key auth).
 // Legacy ollama.com remains available via OLLAMA_CLOUD_BASE_URL; Ed25519 signing applies only there
-// because that host's contract uses signed requests, not X-API-Key. See docs/eliza-cloud.md.
+// because that host's contract uses signed requests, not X-API-Key. See docs/design/surfaces/eliza-cloud.md.
 const (
 	defaultCloudProxyBaseURL      = "https://www.elizacloud.ai:443"
 	cloudProxyBaseURLEnv          = "OLLAMA_CLOUD_BASE_URL"

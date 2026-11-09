@@ -79,7 +79,7 @@ func doctorCheckReasoningRoundTrip(base string, m doctorLoadedModel) doctorCheck
 	case !thinkOK && !reasonOK && !rcOK:
 		statusOut = "warn"
 		parts = append(parts, "no arm preserved prior reasoning (trap 63/04)")
-		fixHint = "resend under thinking with think on; see docs/model-serving-minefield.md"
+		fixHint = "resend under thinking with think on; see docs/runbooks/model-serving-minefield.md"
 	default:
 		statusOut = "warn"
 		parts = append(parts, fmt.Sprintf(

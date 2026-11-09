@@ -112,13 +112,13 @@ else
   echo "  ../ollama-upstream Clef:     missing (optional refresh source)"
 fi
 echo ""
-echo "Doc: docs/llama-cpp-pin-ladder.md · runtime/LLAMA_CPP_PIN.md · llama/clef/README.md"
+echo "Doc: docs/design/serving/llama-cpp-pin-ladder.md · runtime/LLAMA_CPP_PIN.md · llama/clef/README.md"
 if [[ "${VERSION}" == "b12119" ]]; then
   echo "Next: patches rebased (162 files, 0001–0162). Production llama-server is vendor/llama-cpp-b12119 — rollback pin: LLAMA_CPP_*.prev (b11870)"
 elif [[ "${VERSION}" == "b11351" ]]; then
   echo "Next: Strands CUDA PointerRows (deferred) · tip prod live — rollback: l6_promote_tip_env.sh --rollback"
 else
-  echo "Next: bump one rung via docs/llama-cpp-pin-ladder.md#operator-runbook-one-rung"
+  echo "Next: bump one rung via docs/design/serving/llama-cpp-pin-ladder.md#operator-runbook-one-rung"
 fi
 
 if [[ -n "${L6_PIN_OUT}" ]]; then
@@ -150,10 +150,10 @@ report = {
     "tip_target": "b12119",
     "clef_floor": "b11232",
     "docs": [
-        "docs/llama-cpp-pin-ladder.md",
+        "docs/design/serving/llama-cpp-pin-ladder.md",
         "runtime/LLAMA_CPP_PIN.md",
         "llama/clef/README.md",
-        "docs/system-one-score.md",
+        "docs/design/surfaces/system-one-score.md",
     ],
 }
 path = pathlib.Path(os.environ["L6_PIN_OUT"])

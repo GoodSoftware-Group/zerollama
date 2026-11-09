@@ -5,7 +5,7 @@
 # PYTHONPATH runtime/training) is wrong on Arc. Production path is ggml Vulkan only.
 #
 # In-repo: bash scripts/serve/serve_a380_example.sh
-# Doc: docs/a380-runbook.md
+# Doc: docs/runbooks/a380-runbook.md
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,7 +55,7 @@ export ZEROLLAMA_RUNTIME_CONFIG="${ZEROLLAMA_RUNTIME_CONFIG:-${_ROOT}/runtime/co
 export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-1}"
 export OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-4096}"
 
-# Stable Diffusion 1.5 via stable-diffusion.cpp (Vulkan); see docs/sd-vulkan-a380.md
+# Stable Diffusion 1.5 via stable-diffusion.cpp (Vulkan); see docs/design/media/sd-vulkan-a380.md
 export OLLAMA_EXTERNAL_IMAGE_BIN="${OLLAMA_EXTERNAL_IMAGE_BIN:-${_ROOT}/scripts/image/sd_external_image.sh}"
 
 exec "${ZEROLLAMA_REPO}/zerollama" serve

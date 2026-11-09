@@ -5,7 +5,7 @@ recipes; links `libuma_client` from [bmtl uma_toolkit](https://github.com/elizaO
 
 Python Wan (`scripts/video/wan_video_generate.py`) remains the default product path.
 Operators may set `ZEROLLAMA_VIDEO_CLI` so Wan jobs use this binary — clients never
-choose the runner. See [docs/video-c.md](../../docs/video-c.md).
+choose the runner. See [docs/design/media/video-c.md](../../docs/design/media/video-c.md).
 
 Compat: `x/wan-c` → this tree; `wan-cli` → `video-cli`.
 
@@ -122,6 +122,6 @@ python3 ../bmtl/tools/export_bmtl_tokenizer.py \
 | Track | Scope |
 |-------|--------|
 | Darwin / UMA | This Mac track |
-| CUDA (`make cuda-lab`) | Parallel owner — [docs/cuda-uma-toolkit.md](../../docs/cuda-uma-toolkit.md) |
+| CUDA (`make cuda-lab`) | Parallel owner — [docs/design/serving/cuda-uma-toolkit.md](../../docs/design/serving/cuda-uma-toolkit.md) |
 
-Further Wan detail: [wan-c-speed-gap.md](../../docs/wan-c-speed-gap.md).
+Further Wan detail: [wan-c-speed-gap.md](../../docs/research/wan-c-speed-gap.md).

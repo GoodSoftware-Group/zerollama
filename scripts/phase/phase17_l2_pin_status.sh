@@ -63,7 +63,7 @@ echo "  fork *profiles* stay opt-in (ZEROLLAMA_LLAMA_FORK) until gate passes."
   echo "  (−48…−85% @ 8k/27k) — keep experimental."
 echo "Ship-of-record (5080 eliza-1, Jun 2026): FAIL default profiles — stock q8_0 faster @ 8k/27k."
 echo "Gates: ./scripts/phase/l2_cuda_full_gate.sh (CUDA) · ./scripts/phase/l2_full_gate.sh (Metal)"
-echo "Doc: docs/gpu-profiles-l2.md · docs/phase17-llama-server.md · runtime/LLAMA_CPP_PIN.md"
+echo "Doc: docs/design/serving/gpu-profiles-l2.md · docs/design/serving/phase17-llama-server.md · runtime/LLAMA_CPP_PIN.md"
 
 if [[ -n "${P17_L2_OUT}" ]]; then
   UNIFIED_HEAD="${UNIFIED_HEAD:-}"
@@ -86,8 +86,8 @@ report = {
         "kernels already in patches 0026-0030 — flip defaults only when gate passes"
     ),
     "docs": [
-        "docs/gpu-profiles-l2.md",
-        "docs/phase17-llama-server.md",
+        "docs/design/serving/gpu-profiles-l2.md",
+        "docs/design/serving/phase17-llama-server.md",
         "runtime/LLAMA_CPP_PIN.md",
     ],
     "gates": ["scripts/phase/l2_cuda_full_gate.sh", "scripts/phase/l2_full_gate.sh"],

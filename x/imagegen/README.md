@@ -2,9 +2,9 @@
 
 Go package that implements Ollama-compatible **image generation** via an MLX subprocess. Used for models with the `image` capability (e.g. `x/z-image-turbo`).
 
-**Operator guide:** [docs/imagegen-zimage-turbo.md](../../docs/imagegen-zimage-turbo.md)
+**Operator guide:** [docs/design/media/imagegen-zimage-turbo.md](../../docs/design/media/imagegen-zimage-turbo.md)
 
-**Why MLX stays here and Qwen/FLUX/GLM do not:** this package is the **interactive fast path** (Z-Image Turbo, Klein 4B-shaped). Agent utility (edit / ControlNet / LoRA on larger HF DiTs) goes through `modality_backends.image=comfyui` — see [docs/comfyui-image-backend.md](../../docs/comfyui-image-backend.md) and `server/modality/comfyui`. **Why not grow MLX for every family:** months of ports per DiT; Comfy already ships those graphs.
+**Why MLX stays here and Qwen/FLUX/GLM do not:** this package is the **interactive fast path** (Z-Image Turbo, Klein 4B-shaped). Agent utility (edit / ControlNet / LoRA on larger HF DiTs) goes through `modality_backends.image=comfyui` — see [docs/design/media/comfyui-image-backend.md](../../docs/design/media/comfyui-image-backend.md) and `server/modality/comfyui`. **Why not grow MLX for every family:** months of ports per DiT; Comfy already ships those graphs.
 
 ---
 
@@ -60,7 +60,7 @@ Documented in depth in the operator guide. Summary for contributors:
 
 ## Building / testing
 
-Requires MLX-C built and installed — see [docs/imagegen-zimage-turbo.md](../../docs/imagegen-zimage-turbo.md#one-time-build-5080--sm_120).
+Requires MLX-C built and installed — see [docs/design/media/imagegen-zimage-turbo.md](../../docs/design/media/imagegen-zimage-turbo.md#one-time-build-5080--sm_120).
 
 ```bash
 # From repo root — links imagegen into zerollama binary

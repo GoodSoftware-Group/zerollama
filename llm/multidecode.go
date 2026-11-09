@@ -4,7 +4,7 @@ import "context"
 
 // MultiDecodeRequest is a forest decode against llama-server POST /v1/multidecode.
 // WHY not CompletionRequest: custom RoPE pos + ancestor parent (or parent_node_ids)
-// for shared-prefix fan-out — see docs/multidecode-llama-cpp.md.
+// for shared-prefix fan-out — see docs/design/surfaces/multidecode-llama-cpp.md.
 type MultiDecodeRequest struct {
 	Model          string  `json:"model,omitempty"`
 	Tokens         []int32 `json:"tokens"`

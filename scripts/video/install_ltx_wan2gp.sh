@@ -7,7 +7,7 @@
 #   ./scripts/video/install_ltx_wan2gp.sh --dry-run
 #   ./scripts/video/install_ltx_wan2gp.sh --venv-only
 #
-# Never binds Gradio to :11434 / :8081. See docs/ltx-t2v.md.
+# Never binds Gradio to :11434 / :8081. See docs/design/media/ltx-t2v.md.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

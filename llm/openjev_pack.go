@@ -24,7 +24,7 @@ import (
 //
 // Confidence from the model text is NOT calibrated — stripped on parse; every
 // answer gets calibrated:false until marker-logit readout lands.
-// Docs: docs/diffusion-gemma-readout-design.md · docs/diffusion-gemma-llama-cpp-findings.md
+// Docs: docs/design/surfaces/diffusion-gemma-readout-design.md · docs/design/surfaces/diffusion-gemma-llama-cpp-findings.md
 
 const openJevPromptPreamble = `You are a structured System-1 decision model. Given STATE and QUESTIONS, emit:
 1) One MARKER LINE per question (exact spelling; fill the value), then

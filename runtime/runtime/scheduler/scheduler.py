@@ -128,7 +128,7 @@ class Scheduler:
         """Dequeue head unless batch (low) is blocked by inference-first or cross-queue FIFO.
 
         Why LOW-only stall: enqueue rejects LOW under the same mirrors; NORMAL chat must
-        keep running on a shared GPU (see docs/phase11-runtime-admission.md).
+        keep running on a shared GPU (see docs/design/serving/phase11-runtime-admission.md).
         """
         if not self.waiting:
             return None

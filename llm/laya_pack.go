@@ -13,7 +13,7 @@ import (
 // WHY separate from chat/rerank: Laya answers typed choice/score/noul in one
 // encoder pass with calibrated probs + act head. Go owns the Jev wire and
 // sequence layout; llama-server owns encode+CPU head (LA16 split, same idea as
-// /v1/rerank). See docs/laya-llama-cpp-findings.md.
+// /v1/rerank). See docs/design/surfaces/laya-llama-cpp-findings.md.
 
 // QTYPES maps Laya question type names to type_emb rows.
 var QTYPES = map[string]int{
@@ -38,7 +38,7 @@ const (
 	layaOptionTokCap      = 48
 
 	// Jev / Unsloth Desktop Decision API caps (wire parity).
-	// See https://unsloth.ai/docs/models/decision-laya and docs/laya-llama-cpp.md.
+	// See https://unsloth.ai/docs/models/decision-laya and docs/design/surfaces/laya-llama-cpp.md.
 	MaxDecisionQuestions = 64
 	MaxChoiceOptions     = 255
 	MaxScoreLevels       = 10

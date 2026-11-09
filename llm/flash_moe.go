@@ -67,7 +67,7 @@ func resolveFlashMoEConfig(opts api.Options) flashMoEConfig {
 
 // appendFlashMoEArgs adds anemll --moe-* flags when a sidecar is configured.
 // Also applies -fit on and -ub 1 — why: required by anemll for dense/slot VRAM
-// balance and correct MoE GPU prefill (see docs/flash-moe.md).
+// balance and correct MoE GPU prefill (see docs/research/flash-moe.md).
 func appendFlashMoEArgs(params []string, opts api.Options) []string {
 	cfg := resolveFlashMoEConfig(opts)
 	if !cfg.Active || cfg.Sidecar == "" {

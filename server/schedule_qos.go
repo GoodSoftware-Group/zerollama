@@ -24,7 +24,7 @@ import (
 // hot-map (and inject candidates), not only the fairness primary — otherwise a child
 // waits forever behind the wrong agent or never waits when parent is still hot.
 //
-// See docs/agent-qos-and-project-tracking.md.
+// See docs/design/serving/agent-qos-and-project-tracking.md.
 
 // scheduleSessionMeta resolves gate session key + class for MLX and GGUF runners.
 func scheduleSessionMeta(ctx context.Context, m *Model, opts map[string]any) (sessionKey string, class mlxSessionClass, qos mlxQoS) {

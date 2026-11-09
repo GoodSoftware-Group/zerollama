@@ -14,7 +14,7 @@ info:
     music generations, and video generation).
 
     GPU training (when the embed worker starts): `/api/train/*` (jobs, SSE events,
-    unload, status, T11 recipes). See docs/gpu-training.md.
+    unload, status, T11 recipes). See docs/design/training/gpu-training.md.
 
     LocalAI control plane (LA7/LA9/LA11/LA11b/LA15/LA16/LA17/LA21/LA22): `/api/repair`,
     `/api/score`, `/v1/rerank`, `/v1/decisions`, `/v1/multidecode`, `/v1/extract`, `/v1/gliner`, `/v1/gliner-decide`, `/api/router/*`, `/api/aliases`, `/api/load`, `/api/unload`, experimental web_search/fetch.
@@ -1546,8 +1546,8 @@ components:
         `modality_backends.decisions` selects that path; else local Laya GGUF
         (`general.architecture=laya`, llama-server `--decisions`) or local **score**
         models (tev1 / nimble / Clef / Strands) via `decision.Compile`. Docs:
-        docs/laya-llama-cpp.md, docs/clm.md, docs/diffusion-gemma-llama-cpp.md,
-        docs/gliner-decide.md, docs/system-one-score.md.
+        docs/design/surfaces/laya-llama-cpp.md, docs/design/surfaces/clm.md, docs/design/surfaces/diffusion-gemma-llama-cpp.md,
+        docs/design/surfaces/gliner-decide.md, docs/design/surfaces/system-one-score.md.
       properties:
         model:
           type: string
@@ -1762,7 +1762,7 @@ components:
         multi-step uses `parent_node_ids` + `clear:false`. Requires llama-server
         `--multidecode`. `n_predict` is accepted but the server does not
         autoregressive-loop — clients sticky-step. Docs:
-        docs/multidecode-llama-cpp.md · skill agentskills/multidecode/.
+        docs/design/surfaces/multidecode-llama-cpp.md · skill agentskills/multidecode/.
       properties:
         model:
           type: string
@@ -1849,7 +1849,7 @@ components:
       required: [model, labels]
       description: >
         Abstract NER (GL2). Provide `text` or `texts` plus zero-shot `labels`.
-        WHY not `/v1/decisions`: span extract ≠ choice/score/noul. Docs: docs/gliner-cpp.md.
+        WHY not `/v1/decisions`: span extract ≠ choice/score/noul. Docs: docs/design/surfaces/gliner-cpp.md.
       properties:
         model:
           type: string
@@ -2294,7 +2294,7 @@ components:
           description: True for edge builds (llama-server path only, no in-process ggml runner)
         zerollama:
           type: object
-          description: Fleet capability + QoS advertisement (see docs/multimodal-backends.md, docs/scheduling-vram-policy.md, docs/inference-wishlist-host.md)
+          description: Fleet capability + QoS advertisement (see docs/design/media/multimodal-backends.md, docs/design/serving/scheduling-vram-policy.md, docs/design/serving/inference-wishlist-host.md)
           properties:
             capabilities:
               type: object
@@ -3518,7 +3518,7 @@ components:
             keyframes[0] is I2V `--image`; last_frame_image or a second still is 400
             (no last-frame VAE in community ltx-mlx). H3 T2VA: layers (DiT depth, default 24,
             cap 50; host 50 is rank-1 gray). WHY labels not inline bytes: keep
-            create JSON small; CAS + media_missing recovery — docs/media-uploads.md.
+            create JSON small; CAS + media_missing recovery — docs/design/media/media-uploads.md.
     MediaPutResponse:
       type: object
       properties:
@@ -3726,8 +3726,8 @@ components:
           additionalProperties: true
           description: >
             Kind-specific body (model_name, training_data / dataset, LoRA fields,
-            T7 export flags, T10 prompts/rewards, …). See docs/gpu-training.md,
-            docs/t10-grpo.md, docs/t11-recipes.md.
+            T7 export flags, T10 prompts/rewards, …). See docs/design/training/gpu-training.md,
+            docs/design/training/t10-grpo.md, docs/design/training/t11-recipes.md.
         priority:
           type: string
           description: >
@@ -3745,6 +3745,36 @@ components:
           description: >
             When true, policy rejects become `defer-*` jobs instead of 409
             (same as ZEROLLAMA_TRAINING_QUEUE_ON_BUSY=1).
+        slurm:
+          type: object
+          description: >
+            When set, or when ZEROLLAMA_SLURM_SUBMIT=1, the job is submitted with
+            sbatch and does not run in the embedded trainer. time is required
+            (here or ZEROLLAMA_SLURM_TIME).
+          properties:
+            partition:
+              type: string
+            account:
+              type: string
+            qos:
+              type: string
+            time:
+              type: string
+              description: Walltime, Slurm format (04:00:00 or minutes)
+            gpus:
+              type: integer
+            cpus_per_task:
+              type: integer
+            mem:
+              type: string
+            constraint:
+              type: string
+            dependency:
+              type: string
+              description: Passed to sbatch --dependency (for example afterok:48001)
+            uid:
+              type: string
+              description: Passed to sbatch --uid only when ZEROLLAMA_SLURM_ALLOW_UID=1
     TrainJobSubmitResponse:
       type: object
       required: [job_id, priority]
@@ -3759,7 +3789,15 @@ components:
           description: True when the job is deferred
         state:
           type: string
-          description: e.g. waiting_for_inference_idle when queued
+          description: >
+            waiting_for_inference_idle when deferred locally; pending when sbatch
+            accepted the job.
+        scheduler:
+          type: string
+          description: slurm when the payload is handed to sbatch
+        slurm_job_id:
+          type: string
+          description: Cluster job id from sbatch --parsable
     TrainJobStatus:
       type: object
       description: >
@@ -4552,7 +4590,7 @@ paths:
       description: >
         Returns the model a router (`auto` or a router.yaml entry) would pick for this exact
         request, with filtered candidates and ranking, without running inference. Same logic
-        as the in-band rewrite on chat/generate/images (docs/auto-router.md).
+        as the in-band rewrite on chat/generate/images (docs/design/surfaces/auto-router.md).
       operationId: route
       x-codeSamples:
         - lang: bash
@@ -5159,7 +5197,7 @@ paths:
         Live ggml/runtime queue snapshot plus `inference.config` (NUM_PARALLEL,
         MAX_LOADED_MODELS, MAX_QUEUE, keep-alive, residency policy) and
         `inference.pins` (active Phase B pin leases). See
-        docs/inference-wishlist-host.md.
+        docs/design/serving/inference-wishlist-host.md.
       operationId: status
       x-codeSamples:
         - lang: bash
@@ -5881,7 +5919,7 @@ paths:
         ancestor mask via `parent` / sticky `parent_node_ids`. Custom harnesses
         call this directly; Hermes `POST /v1/chat/completions/batch` may silently
         pack when LCP ≥ 32 tokens. Probe `zerollama.capabilities.multidecode`.
-        Harness guide: docs/multidecode-llama-cpp.md § Custom harness · skill
+        Harness guide: docs/design/surfaces/multidecode-llama-cpp.md § Custom harness · skill
         `agentskills/multidecode/`. Lab ports only — never production `:11434` /
         `:8081`.
       operationId: multiDecodeV1
@@ -5922,8 +5960,8 @@ paths:
         when routing to `ZEROLLAMA_OPENJEV_URL`. Local Laya GGUF uses llama-server
         `--decisions` when `general.architecture=laya` (patches **0124–0125**).
         Alias `/v1/systemone`. OpenJev answers include `calibrated` (default false;
-        DG8/DG9 env opt-in). Docs: docs/laya-llama-cpp.md, docs/clm.md,
-        docs/diffusion-gemma-llama-cpp.md. Lab smokes use non-production ports —
+        DG8/DG9 env opt-in). Docs: docs/design/surfaces/laya-llama-cpp.md, docs/design/surfaces/clm.md,
+        docs/design/surfaces/diffusion-gemma-llama-cpp.md. Lab smokes use non-production ports —
         never bind agent tests to production `:11434` / `:8080` without operator ask.
       operationId: decisionsV1
       requestBody:
@@ -5982,7 +6020,7 @@ paths:
       description: >
         Portable zero-shot span NER. Proxies to gliner-server when
         `ZEROLLAMA_GLINER_URL` is set. Engine knobs are stripped — use `/v1/gliner`
-        for max_width / model_type / flat_ner. Docs: docs/gliner-cpp.md.
+        for max_width / model_type / flat_ner. Docs: docs/design/surfaces/gliner-cpp.md.
       operationId: extractV1
       requestBody:
         required: true
@@ -6043,7 +6081,7 @@ paths:
         Fastino `classify_text` schema pass-through. Proxies to the Python sibling
         when `ZEROLLAMA_GLINER_DECIDE_URL` is set. WHY not `/v1/gliner`: that path is
         span NER. WHY not only `/v1/decisions`: agents may want native schema heads.
-        Docs: docs/gliner-decide.md. Answers on the Jev path stay `calibrated:false`
+        Docs: docs/design/surfaces/gliner-decide.md. Answers on the Jev path stay `calibrated:false`
         until a fixture gate (Finding 3).
       operationId: glinerDecideV1
       requestBody:
@@ -6611,7 +6649,7 @@ paths:
       description: |
         Stream raw bytes. Server SHA-256 CAS under $OLLAMA_MODELS/media/.
         WHY not base64 in POST /v1/videos: keep create JSON small; soft TTL state ≠ model blobs.
-        See docs/media-uploads.md.
+        See docs/design/media/media-uploads.md.
       operationId: putMedia
       parameters:
         - name: session
@@ -6787,7 +6825,7 @@ paths:
         `job_id`. When inference-idle / window policy defers the job, `queued`
         is true and `job_id` is a `defer-*` id — keep polling the same id
         (`promotedJobId` after promotion). Routes exist only when the embed
-        training worker started. Operator guide: docs/gpu-training.md.
+        training worker started. Operator guide: docs/design/training/gpu-training.md.
       operationId: trainSubmitJob
       requestBody:
         required: true
@@ -6972,7 +7010,7 @@ paths:
       description: |
         T11c offline helper. Returns `{n_rows, training_data}` without enqueueing
         a GPU job. JSON body or multipart `file`. Operators POST `training_data`
-        into `/api/train/jobs` when ready. Docs: docs/t11-recipes.md.
+        into `/api/train/jobs` when ready. Docs: docs/design/training/t11-recipes.md.
       operationId: trainRecipes
       requestBody:
         required: true

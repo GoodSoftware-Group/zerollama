@@ -6,7 +6,7 @@
 # operators build a single llama-server instead of stock + eliza-llama.cpp siblings.
 #
 # In-process ggml still syncs from vendor/llama-cpp-b9781/ + Ollama patches until
-# vendor rebase lands (see docs/gpu-profiles-l2.md).
+# vendor rebase lands (see docs/design/serving/gpu-profiles-l2.md).
 #
 # Usage:
 #   source ./scripts/vendor/ensure_llama_cpp_sibling.sh && ensure_llama_cpp_sibling

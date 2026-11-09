@@ -99,7 +99,11 @@
               "/capabilities/vision",
               "/capabilities/embeddings",
               "/capabilities/tool-calling",
-              "/capabilities/web-search"
+              "/capabilities/web-search",
+              "/capabilities/decisions",
+              "/capabilities/extract",
+              "/capabilities/video",
+              "/capabilities/image"
             ]
           },
           {

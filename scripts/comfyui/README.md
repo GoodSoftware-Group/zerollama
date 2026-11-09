@@ -2,7 +2,7 @@
 
 API-format ComfyUI graphs + Zerollama **bindings** for `modality_backends.image=comfyui`.
 
-**Full guide:** [docs/comfyui-image-backend.md](../../docs/comfyui-image-backend.md)
+**Full guide:** [docs/design/media/comfyui-image-backend.md](../../docs/design/media/comfyui-image-backend.md)
 
 ## Why these files exist
 

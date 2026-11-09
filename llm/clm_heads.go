@@ -235,7 +235,7 @@ const clmParallelMinMACs = 1 << 18
 //
 // WHY batched + threaded: the heads used to project one text at a time with a scalar
 // loop on one core — 10–50 ms per decision for 1 state + 5 actions (width 512–2048),
-// growing with every action (docs/auto-router-findings.md Finding 25). Output rows
+// growing with every action (docs/design/surfaces/auto-router-findings.md Finding 25). Output rows
 // are split across goroutines and each weight row is reused for every input while it
 // is still in cache, so W streams from memory once per call instead of once per text.
 func (l clmLinear) forwardBatch(xs [][]float32) [][]float32 {

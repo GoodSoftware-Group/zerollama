@@ -48,4 +48,4 @@ if [[ "${RUN_E2E_VIDEO_AGENT_INFER:-0}" == "1" ]]; then
 fi
 
 echo "PASS video_l3_agent_gate"
-echo "Doc: docs/sglang-multimodal-borrowings.md docs/gpu-profiles-l3.md"
+echo "Doc: docs/sglang-multimodal-borrowings.md docs/design/serving/gpu-profiles-l3.md"

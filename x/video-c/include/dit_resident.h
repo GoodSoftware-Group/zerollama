@@ -1,4 +1,4 @@
-/* WAN_DIT_RESIDENT → N-slot count for dit_pager. See docs/dit-pager.md */
+/* WAN_DIT_RESIDENT → N-slot count for dit_pager. See docs/design/media/dit-pager.md */
 #ifndef WAN_DIT_RESIDENT_H
 #define WAN_DIT_RESIDENT_H
 

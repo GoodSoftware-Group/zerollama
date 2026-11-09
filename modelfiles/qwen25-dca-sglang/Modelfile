@@ -7,4 +7,4 @@
 #   # in model config.json:
 #   #   "modality_backends": { "inference": "sglang" }
 #
-# Clients: POST /v1/chat/completions — see docs/dca-dual-chunk-attention.md
+# Clients: POST /v1/chat/completions — see docs/design/serving/dca-dual-chunk-attention.md

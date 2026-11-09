@@ -346,7 +346,7 @@ enum llm_kv {
     LLM_KV_ATTENTION_SHARED_KV_LAYERS,
     LLM_KV_ATTENTION_KV_SOURCE_MAP,
     LLM_KV_ATTENTION_RECURRENT_LAYERS,
-    // Dual Chunk Attention (Qwen long-ctx / 1M). See docs/dca-dual-chunk-attention.md
+    // Dual Chunk Attention (Qwen long-ctx / 1M). See docs/design/serving/dca-dual-chunk-attention.md
     LLM_KV_ATTENTION_DCA_CHUNK_SIZE,
     LLM_KV_ATTENTION_DCA_LOCAL_SIZE,
     LLM_KV_ATTENTION_DCA_ORIG_CTX_LEN,

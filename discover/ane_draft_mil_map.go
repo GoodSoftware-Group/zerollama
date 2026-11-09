@@ -27,23 +27,23 @@ type ANEDraftMILSlot struct {
 
 // ANEDraftMILMapResult is the sidecar tensor → MIL compile plan.
 type ANEDraftMILMapResult struct {
-	OK                  bool               `json:"ok"`
-	Mode                string             `json:"mode"`
-	Tag                 string             `json:"tag,omitempty"`
-	SpecType            string             `json:"spec_type,omitempty"`
-	SidecarArchitecture string             `json:"sidecar_architecture,omitempty"`
-	DraftSidecarPresent bool               `json:"draft_sidecar_present"`
-	DraftGGUF           string             `json:"draft_gguf,omitempty"`
-	DraftSearchPaths    []string           `json:"draft_search_paths,omitempty"`
-	ProxyChannels       int                `json:"proxy_channels"`
-	ProxySpatial        int                `json:"proxy_spatial"`
-	WeightBlobBytes     int                `json:"weight_blob_bytes"`
-	Slots               []ANEDraftMILSlot  `json:"slots"`
-	MatchedCount        int                `json:"matched_count"`
-	RequiredCount       int                `json:"required_count"`
-	Blockers            []string           `json:"blockers,omitempty"`
-	NextStep            string             `json:"next_step,omitempty"`
-	Note                string             `json:"note,omitempty"`
+	OK                  bool              `json:"ok"`
+	Mode                string            `json:"mode"`
+	Tag                 string            `json:"tag,omitempty"`
+	SpecType            string            `json:"spec_type,omitempty"`
+	SidecarArchitecture string            `json:"sidecar_architecture,omitempty"`
+	DraftSidecarPresent bool              `json:"draft_sidecar_present"`
+	DraftGGUF           string            `json:"draft_gguf,omitempty"`
+	DraftSearchPaths    []string          `json:"draft_search_paths,omitempty"`
+	ProxyChannels       int               `json:"proxy_channels"`
+	ProxySpatial        int               `json:"proxy_spatial"`
+	WeightBlobBytes     int               `json:"weight_blob_bytes"`
+	Slots               []ANEDraftMILSlot `json:"slots"`
+	MatchedCount        int               `json:"matched_count"`
+	RequiredCount       int               `json:"required_count"`
+	Blockers            []string          `json:"blockers,omitempty"`
+	NextStep            string            `json:"next_step,omitempty"`
+	Note                string            `json:"note,omitempty"`
 }
 
 // eagle3MILSlotSpec is the static mapping table from llama.cpp eagle3 arch.
@@ -78,7 +78,7 @@ var eagle3MILSlotSpec = []ANEDraftMILSlot{
 
 // dflashMILSlotSpec maps dflash-draft sidecar tensors (llama.cpp dflash-draft.cpp).
 // Why phase2_proxy vs phase3_subgraph: lab conv extract proves ANE latency today; full
-// dflash_fc + attn slots await B7 MIL compile (see docs/ane-draft-inprocess.md).
+// dflash_fc + attn slots await B7 MIL compile (see docs/research/ane-draft-inprocess.md).
 var dflashMILSlotSpec = []ANEDraftMILSlot{
 	{
 		Slot:           "dflash_fc",
@@ -248,7 +248,7 @@ func ProbeANEDraftMILMap(_ context.Context, preferred string) (ANEDraftMILMapRes
 		}
 	} else {
 		out.Blockers = append(out.Blockers, "draft sidecar GGUF missing")
-		out.NextStep = "download eliza drafter: see scripts/setup_mtp_models.sh"
+		out.NextStep = "download eliza drafter: see scripts/runtime/setup_mtp_models.sh"
 	}
 
 	sidecarArch := ""

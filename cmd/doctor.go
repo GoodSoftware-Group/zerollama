@@ -68,9 +68,9 @@ Model template repair (milkey/moophlo-class + ChatML hygiene):
   zerollama doctor --repair-models --apply [MODEL...]         # recreate tag FROM itself
   (Passthrough {{ .Prompt }} → family RENDERER when known; invasive TEMPLATE
    rewrites: Qwen3 family only; ChatML stop hygiene: any family.
-   See docs/doctor-model-repair.md)
+   See docs/runbooks/doctor-model-repair.md)
 
-See docs/model-serving-minefield.md.`,
+See docs/runbooks/model-serving-minefield.md.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
 			if repairModels {
@@ -660,7 +660,7 @@ func doctorCheckMLX(repo string) doctorCheck {
 		fix = "cd dist/darwin-arm64 && ./zerollama serve for release MLX layout"
 	}
 	if status == "ok" && runtime.GOOS == "darwin" {
-		detail += " — safetensors use mlxrunner; GGUF library models stay on ggml Metal (see docs/mlx-routing-policy.md)"
+		detail += " — safetensors use mlxrunner; GGUF library models stay on ggml Metal (see docs/design/apple/mlx-routing-policy.md)"
 	}
 	return doctorCheck{
 		Name:    name,
@@ -1056,7 +1056,7 @@ func doctorCheckTrainingVenv(repo string) doctorCheck {
 			Name:    "training/.venv-training",
 			Status:  "warn",
 			Detail:  "missing (optional for /api/train MPS LoRA)",
-			FixHint: "TRAINING_UV_PYTHON_VER=\"$(./scripts/training_uv_venv.sh --embed-py)\" ./scripts/training_uv_venv.sh --verify (ABI must match ldd zerollama libpython)",
+			FixHint: "TRAINING_UV_PYTHON_VER=\"$(./scripts/training/training_uv_venv.sh --embed-py)\" ./scripts/training/training_uv_venv.sh --verify (ABI must match ldd zerollama libpython)",
 		}
 	}
 	cmd := exec.Command(py, "-c", "import torch, peft")
@@ -1065,7 +1065,7 @@ func doctorCheckTrainingVenv(repo string) doctorCheck {
 			Name:    "training/.venv-training",
 			Status:  "warn",
 			Detail:  "torch/peft import failed",
-			FixHint: "TRAINING_UV_SYNC=1 TRAINING_UV_PYTHON_VER=\"$(./scripts/training_uv_venv.sh --embed-py)\" ./scripts/training_uv_venv.sh --verify",
+			FixHint: "TRAINING_UV_SYNC=1 TRAINING_UV_PYTHON_VER=\"$(./scripts/training/training_uv_venv.sh --embed-py)\" ./scripts/training/training_uv_venv.sh --verify",
 		}
 	}
 	return doctorCheck{

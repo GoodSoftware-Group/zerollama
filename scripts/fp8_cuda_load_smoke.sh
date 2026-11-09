@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Native FP8 GGUF CUDA load smoke — binary probe + llama-server /completion.
 #
-# WHY: docs/cuda-lanes.md P1 / docs/native-fp8-gguf.md. Proves a real FP8_E4M3
+# WHY: docs/design/serving/cuda-lanes.md P1 / docs/design/serving/native-fp8-gguf.md. Proves a real FP8_E4M3
 # (or E5M2) GGUF loads on packaged CUDA llama-server and decodes.
 #
 #   FP8_GGUF=/path/to/fp8.gguf ./scripts/fp8_cuda_load_smoke.sh
@@ -15,8 +15,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/linux_runtime_serve_lib.sh
-source "${ROOT}/scripts/linux_runtime_serve_lib.sh"
+# shellcheck source=scripts/runtime/linux_runtime_serve_lib.sh
+source "${ROOT}/scripts/runtime/linux_runtime_serve_lib.sh"
 
 FP8_GGUF="${FP8_GGUF:-/mnt/ssd2/models/fp8/tinyllama-fp8-e2e/tinyllama-1.1b-fp8_e4m3.gguf}"
 FP8_NUM_CTX="${FP8_NUM_CTX:-2048}"
@@ -154,4 +154,4 @@ print(f"PASS: wrote {out}")
 PY
 
 echo "PASS: fp8_cuda_load_smoke"
-echo "Doc: docs/native-fp8-gguf.md"
+echo "Doc: docs/design/serving/native-fp8-gguf.md"

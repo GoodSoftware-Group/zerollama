@@ -487,7 +487,7 @@ func RouterRewrite() bool {
 }
 
 // RouterStickyTTL is how long a conversation keeps its routed model after its last turn
-// (docs/auto-router.md AR6). Default 30m; "0" or "off" disables sticky routing.
+// (docs/design/surfaces/auto-router.md AR6). Default 30m; "0" or "off" disables sticky routing.
 func RouterStickyTTL() time.Duration {
 	s := strings.TrimSpace(strings.ToLower(Var("ZEROLLAMA_ROUTER_STICKY_TTL")))
 	switch s {
@@ -503,7 +503,7 @@ func RouterStickyTTL() time.Duration {
 }
 
 // AutoRouter enables the implicit deterministic router for model "auto" when router.yaml
-// does not define one (docs/auto-router.md AR1). Default on; ZEROLLAMA_AUTO_ROUTER=0 makes
+// does not define one (docs/design/surfaces/auto-router.md AR1). Default on; ZEROLLAMA_AUTO_ROUTER=0 makes
 // "auto" an ordinary (usually missing) model name again.
 func AutoRouter() bool {
 	s := strings.TrimSpace(strings.ToLower(Var("ZEROLLAMA_AUTO_ROUTER")))
@@ -682,6 +682,14 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_TRAINING_TCP":                      {"OLLAMA_TRAINING_TCP", Var("OLLAMA_TRAINING_TCP"), "Public training TCP listen address; empty or 1 is :9500; 0 or - disables"},
 		"OLLAMA_TRAINING_PYTHONPATH":               {"OLLAMA_TRAINING_PYTHONPATH", Var("OLLAMA_TRAINING_PYTHONPATH"), "Repository root containing training.py; must exist if set (no silent fallback). When unset: walk cwd, then $HOME/zerollama or $HOME/ollama"},
 		"ZEROLLAMA_REPO":                           {"ZEROLLAMA_REPO", Var("ZEROLLAMA_REPO"), "Alias for repo root (training.py and runtime/); same rules as OLLAMA_TRAINING_PYTHONPATH"},
+		"ZEROLLAMA_SLURM_SUBMIT":                   {"ZEROLLAMA_SLURM_SUBMIT", SlurmSubmit(), "Submit /api/train jobs with sbatch instead of the embedded trainer"},
+		"ZEROLLAMA_SLURM_PARTITION":                {"ZEROLLAMA_SLURM_PARTITION", SlurmPartition(), "Default Slurm partition for queue-client submits"},
+		"ZEROLLAMA_SLURM_ACCOUNT":                  {"ZEROLLAMA_SLURM_ACCOUNT", SlurmAccount(), "Default Slurm account for queue-client submits"},
+		"ZEROLLAMA_SLURM_TIME":                     {"ZEROLLAMA_SLURM_TIME", SlurmTime(), "Default Slurm walltime (required when the request omits slurm.time)"},
+		"ZEROLLAMA_SLURM_SPOOL":                    {"ZEROLLAMA_SLURM_SPOOL", SlurmSpool(), "Directory for sbatch scripts; must be visible to compute nodes"},
+		"ZEROLLAMA_SLURM_PYTHON":                   {"ZEROLLAMA_SLURM_PYTHON", SlurmPython(), "Python interpreter on the compute node (default python3)"},
+		"ZEROLLAMA_SLURM_ALLOW_UID":                {"ZEROLLAMA_SLURM_ALLOW_UID", SlurmAllowUID(), "Allow a caller-supplied slurm.uid to be passed to sbatch --uid"},
+		"ZEROLLAMA_SLURM_GUEST":                    {"ZEROLLAMA_SLURM_GUEST", SlurmGuestMode(), "auto: guest when SLURM_JOB_ID is set; 1 force; 0 off"},
 		"OLLAMA_NUM_PARALLEL":                      {"OLLAMA_NUM_PARALLEL", NumParallel(), "Maximum number of parallel requests"},
 		"OLLAMA_ORIGINS":                           {"OLLAMA_ORIGINS", AllowedOrigins(), "A comma separated list of allowed origins"},
 		"OLLAMA_SCHED_SPREAD":                      {"OLLAMA_SCHED_SPREAD", SchedSpread(), "Always schedule model across all GPUs"},
@@ -1015,7 +1023,7 @@ func OpenAIRemoteURL() string {
 
 // CLMURL is an optional base URL for operator-run clm-serve (fallback when
 // ZEROLLAMA_CLM_HEADS + ZEROLLAMA_CLM_EMB_URL are unset). Prefer native Go heads
-// (docs/clm.md). If set, DecisionsHandler proxies instead of native.
+// (docs/design/surfaces/clm.md). If set, DecisionsHandler proxies instead of native.
 func CLMURL() string {
 	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_CLM_URL")), "/")
 }
@@ -1033,7 +1041,7 @@ func LayaURL() string {
 //
 // WHY separate from LayaURL/CLMURL: different upstream contract — Go packs a
 // prompt; C++ returns {answer}, not public DecisionsResponse. v0 answers are
-// uncalibrated (see docs/diffusion-gemma-llama-cpp-findings.md).
+// uncalibrated (see docs/design/surfaces/diffusion-gemma-llama-cpp-findings.md).
 func OpenJevURL() string {
 	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_OPENJEV_URL")), "/")
 }
@@ -1049,7 +1057,7 @@ func GlinerURL() string {
 // gliner2.5-decide* routes /v1/decisions|/v1/systemone here (GD*).
 //
 // WHY separate from GlinerURL: Decide is System-1 triage (classify_text), not
-// span NER. See docs/gliner-decide.md.
+// span NER. See docs/design/surfaces/gliner-decide.md.
 func GlinerDecideURL() string {
 	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_GLINER_DECIDE_URL")), "/")
 }
@@ -1093,7 +1101,7 @@ func OpenJevNoulCalibrated() bool {
 
 // DiffusionBin is an optional path to llama-diffusion-gemma-cli from the
 // sibling vendor tree (scripts/build/build_llama_diffusion.sh).
-// WHY not LLAMA_SERVER_BIN: prod chat/Laya/CLM emb must stay on b10615.
+// WHY not LLAMA_SERVER_BIN: prod chat/Laya/CLM emb must stay on the b12119 llama-server.
 func DiffusionBin() string {
 	return strings.TrimSpace(Var("ZEROLLAMA_DIFFUSION_BIN"))
 }
@@ -1360,7 +1368,7 @@ func RuntimeEmbedDisplay() string {
 
 // Training submit policy (T6): idle-wait, defer queue, and priority interact with
 // server/inference_workload.go and server/training_defer_queue.go. See
-// docs/scheduling-vram-policy.md for rationale — inference and training are not one
+// docs/design/serving/scheduling-vram-policy.md for rationale — inference and training are not one
 // FIFO because PyTorch epochs are not safely preemptible from Go.
 
 // TrainingWaitInferenceIdle rejects new training job submit while ggml inference is busy.
@@ -1492,6 +1500,101 @@ func TrainingQueueRetryInterval() time.Duration {
 func TrainingQueueListAll() bool {
 	v := strings.TrimSpace(Var("ZEROLLAMA_TRAINING_QUEUE_LIST_ALL"))
 	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// Slurm queue client. The cluster stays in Slurm; zerollama only shells out to
+// sbatch / scontrol / scancel. See docs/design/training/slurm-integration.md.
+
+func envBool(key string) bool {
+	v := strings.TrimSpace(Var(key))
+	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on")
+}
+
+// SlurmSubmit sends training jobs to sbatch even when the request has no slurm object.
+func SlurmSubmit() bool {
+	return envBool("ZEROLLAMA_SLURM_SUBMIT")
+}
+
+// SlurmAllowUID passes a caller-supplied uid to sbatch --uid. Default off.
+func SlurmAllowUID() bool {
+	return envBool("ZEROLLAMA_SLURM_ALLOW_UID")
+}
+
+// SlurmGuestMode is the raw ZEROLLAMA_SLURM_GUEST value (auto when unset).
+func SlurmGuestMode() string {
+	v := strings.TrimSpace(Var("ZEROLLAMA_SLURM_GUEST"))
+	if v == "" {
+		return "auto"
+	}
+	return v
+}
+
+// SlurmGuest reports whether this process is inside a Slurm allocation.
+// auto (default) follows SLURM_JOB_ID. 0 disables. 1 forces.
+func SlurmGuest() bool {
+	switch strings.ToLower(SlurmGuestMode()) {
+	case "0", "false", "off":
+		return false
+	case "1", "true", "on":
+		return true
+	default:
+		return strings.TrimSpace(os.Getenv("SLURM_JOB_ID")) != ""
+	}
+}
+
+// SlurmGuestHasGPU is true when guest mode can see a device. A guest that
+// already holds GPUs must not sbatch more work onto the cluster.
+func SlurmGuestHasGPU() bool {
+	if !SlurmGuest() {
+		return false
+	}
+	// SLURM_GPUS_ON_NODE is a count. "0" means the allocation has no device.
+	// The other variables are lists, where "0" is GPU index 0.
+	if slurmGPUCount(os.Getenv("SLURM_GPUS_ON_NODE")) {
+		return true
+	}
+	for _, key := range []string{"CUDA_VISIBLE_DEVICES", "SLURM_STEP_GPUS", "SLURM_JOB_GPUS"} {
+		if slurmGPUList(os.Getenv(key)) {
+			return true
+		}
+	}
+	return false
+}
+
+// slurmGPUCount is true when a Slurm GPU-count variable names one or more devices.
+func slurmGPUCount(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return slurmGPUList(v)
+	}
+	return n > 0
+}
+
+func slurmGPUList(v string) bool {
+	v = strings.TrimSpace(v)
+	switch v {
+	case "", "void", "NoDevFiles", "-1", "none":
+		return false
+	default:
+		return true
+	}
+}
+
+func SlurmPartition() string { return strings.TrimSpace(Var("ZEROLLAMA_SLURM_PARTITION")) }
+func SlurmAccount() string   { return strings.TrimSpace(Var("ZEROLLAMA_SLURM_ACCOUNT")) }
+func SlurmTime() string      { return strings.TrimSpace(Var("ZEROLLAMA_SLURM_TIME")) }
+func SlurmSpool() string     { return strings.TrimSpace(Var("ZEROLLAMA_SLURM_SPOOL")) }
+
+// SlurmPython is the compute-node interpreter. Empty env means python3.
+func SlurmPython() string {
+	if p := strings.TrimSpace(Var("ZEROLLAMA_SLURM_PYTHON")); p != "" {
+		return p
+	}
+	return "python3"
 }
 
 // BlockInferenceDuringTraining rejects runtime proxy requests while training holds the GPU.

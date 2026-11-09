@@ -183,7 +183,7 @@ func (s *Server) decideRouterNonText(ctx context.Context, name string, spec Rout
 // applyRouterRewrite resolves a router name to a concrete model in-band. router.yaml
 // routers (LA11) run their classifier and are then checked against the request's surface
 // and capabilities; the reserved name "auto" without a router.yaml entry uses the built-in
-// deterministic router (docs/auto-router.md AR1). Other names pass through unchanged.
+// deterministic router (docs/design/surfaces/auto-router.md AR1). Other names pass through unchanged.
 func (s *Server) applyRouterRewrite(ctx context.Context, modelName string, sig autoroute.Signals) (string, *RouterDecision, error) {
 	if !envconfig.RouterRewrite() {
 		return modelName, nil, nil

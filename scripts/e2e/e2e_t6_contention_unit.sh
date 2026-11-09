@@ -3,7 +3,7 @@
 #
 #   ./scripts/e2e/e2e_t6_contention_unit.sh
 #
-# Doc: docs/t6-unified-queue.md § T6c
+# Doc: docs/design/training/t6-unified-queue.md § T6c
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"

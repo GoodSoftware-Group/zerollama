@@ -37,7 +37,7 @@ func sinkhorn(comb *mlx.Array, iters int32, eps float32) *mlx.Array {
 }
 
 func hcApplyFn(flat, fn *mlx.Array, inDim, outDim int32) *mlx.Array {
-	// Why: mlx-lm [out,in] vs ggml [in,out] — see docs/mlx-deepseek-v4-flash-findings.md.
+	// Why: mlx-lm [out,in] vs ggml [in,out] — see docs/research/mlx-deepseek-v4-flash-findings.md.
 	d0, d1 := int32(fn.Dim(0)), int32(fn.Dim(1))
 	switch {
 	case d0 == outDim && d1 == inDim:

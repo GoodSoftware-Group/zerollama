@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # NVFP4 dual-4090 CUDA sign-off — binary probe + direct llama-server load/decode.
 #
-# WHY: docs/cuda-lanes.md P1. Proves NVFP4 GGUF loads on sm_89 (generic MMQ, not
+# WHY: docs/design/serving/cuda-lanes.md P1. Proves NVFP4 GGUF loads on sm_89 (generic MMQ, not
 # Blackwell MMA) and records decode tok/s + VRAM. Optional MXFP4 sibling A/B.
 #
 #   NVFP4_GGUF=/path/to/nvfp4.gguf ./scripts/gpu/nvfp4_cuda_signoff.sh
@@ -211,4 +211,4 @@ print(json.dumps(comp, indent=2))
 PY
 
 echo "PASS: nvfp4_cuda_signoff (${OUT})"
-echo "Doc: docs/cuda-lanes.md"
+echo "Doc: docs/design/serving/cuda-lanes.md"

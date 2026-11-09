@@ -2,7 +2,7 @@
 
 CUDA backend for [antirez/h3.c](https://github.com/antirez/h3.c) `h3_gpu.h`.
 
-Canonical notes: zerollama [docs/h3-cuda-port.md](../../docs/h3-cuda-port.md).
+Canonical notes: zerollama [docs/design/media/h3-cuda-port.md](../../docs/design/media/h3-cuda-port.md).
 
 **Lab path:** active build dir on CT 1564 is `/tmp/h3c-research/h3-cuda`; this `research/` tree is the durable snapshot (no `bin/`).
 

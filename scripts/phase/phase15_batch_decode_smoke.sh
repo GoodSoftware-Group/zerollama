@@ -7,7 +7,7 @@
 #
 # Temp-0 note (minefield traps 91–92): options.temperature=0 is for stable short
 # smoke text, not bit-identical reproducibility under continuous batching or
-# shared prefix cache. See docs/model-serving-minefield.md.
+# shared prefix cache. See docs/runbooks/model-serving-minefield.md.
 #
 # Requires:
 #   - Running runtime at RUNTIME_URL (default :8081)

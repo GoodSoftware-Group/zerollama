@@ -50,4 +50,4 @@ fi
 echo "ok: runner subprocess stub rejected"
 
 echo "PASS: phase16_edge_build_smoke (${OUT})"
-echo "Doc: docs/phase16-thin-edge.md"
+echo "Doc: docs/design/serving/phase16-thin-edge.md"

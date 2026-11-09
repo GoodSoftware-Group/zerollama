@@ -22,7 +22,7 @@ namespace {
 // Worker threads for the CPU decision head (LLAMA_LAYA_THREADS overrides).
 // WHY threads + batched linears: the head is a small Transformer run on CPU after the GPU
 // encode; as per-token scalar GEMVs on one core it was 94-97% of /v1/decisions latency
-// (~400 ms for 28 tokens on a Zen 4 box). See zerollama docs/auto-router-findings.md.
+// (~400 ms for 28 tokens on a Zen 4 box). See zerollama docs/design/surfaces/auto-router-findings.md.
 static int laya_threads() {
     static const int n = [] {
         if (const char * e = std::getenv("LLAMA_LAYA_THREADS")) {

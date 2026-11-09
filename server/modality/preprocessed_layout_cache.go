@@ -12,7 +12,7 @@ import (
 const preprocessedLayoutKeyPrefix = "preprocessed:"
 
 // preprocessedMessageFingerprint hashes single-clip pre-expanded content for session layout cache.
-// Still images precede video frames in msg.Images (see docs/video-understanding.md).
+// Still images precede video frames in msg.Images (see docs/design/media/video-understanding.md).
 func preprocessedMessageFingerprint(msg api.Message) string {
 	if len(msg.VideoSpans) != 1 {
 		return ""

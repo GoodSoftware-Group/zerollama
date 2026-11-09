@@ -144,7 +144,7 @@ def resolve_default_config_path() -> Path:
         return apple
     # Prefer single_gpu when the probe failed or autoconfig is off — dual tensor-split
     # topologies break on one card (RTX 5080). Operators on dual-4090 set
-    # ZEROLLAMA_RUNTIME_CONFIG explicitly (see scripts/dual_4090_env.sh).
+    # ZEROLLAMA_RUNTIME_CONFIG explicitly (see scripts/gpu/dual_4090_env.sh).
     if single.is_file():
         return single
     if dual.is_file():

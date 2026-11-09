@@ -225,7 +225,7 @@ func doctorCheckThinkRoundtrip(base string, m doctorLoadedModel) doctorCheck {
 				Name:    name,
 				Status:  "warn",
 				Detail:  fmt.Sprintf("think=%v returned empty content and empty thinking (minefield trap 12/64/65)", think),
-				FixHint: "raise num_predict / check answer-in-reasoning routing; see docs/model-serving-minefield.md",
+				FixHint: "raise num_predict / check answer-in-reasoning routing; see docs/runbooks/model-serving-minefield.md",
 			}
 		}
 		// Trap 64 shape: content null/empty but thinking holds the whole answer.

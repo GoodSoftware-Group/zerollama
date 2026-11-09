@@ -16,6 +16,7 @@ func (s *Server) statusResponse(ctx context.Context) api.StatusResponse {
 			Source:   source,
 		},
 		Inference: s.inferenceStatus(ctx),
+		Slurm:     s.slurmStatus(ctx),
 	}
 }
 
@@ -74,5 +75,5 @@ func runtimeStatusFromHealth(ctx context.Context, enabled bool) api.RuntimeStatu
 	return runtime
 }
 
-func intPtr(n int) *int       { return &n }
-func boolPtr(b bool) *bool    { return &b }
+func intPtr(n int) *int    { return &n }
+func boolPtr(b bool) *bool { return &b }

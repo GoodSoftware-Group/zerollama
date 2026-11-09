@@ -18,7 +18,7 @@ import (
 //     response or slash-collapse detection.
 //   - Dry-run by default; --apply is required to POST /api/create.
 //
-// See docs/doctor-model-repair.md.
+// See docs/runbooks/doctor-model-repair.md.
 func runDoctorRepairModels(args []string, apply, jsonOut, allLocal bool) error {
 	base, _ := doctorProbeGoAPI()
 	if base == "" {

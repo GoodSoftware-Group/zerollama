@@ -2,7 +2,7 @@ package autoroute
 
 import "regexp"
 
-// Output modalities a chat turn may really be asking for (docs/auto-router.md §9, AR8).
+// Output modalities a chat turn may really be asking for (docs/design/surfaces/auto-router.md §9, AR8).
 const (
 	ModalityText   = "text"
 	ModalityImage  = "image"

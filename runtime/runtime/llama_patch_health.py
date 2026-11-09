@@ -503,7 +503,7 @@ def llama_patch_health(
         else:
             issues.append(
                 f"llama-server binary lacks /cuda-graph/invalidate string — rebuild with patch 0072: "
-                f"./scripts/build_llama_server.sh"
+                f"./scripts/build/build_llama_server.sh"
             )
     elif external_install and bin_cuda_graph is True:
         warnings.append("external binary validated via /cuda-graph/invalidate embed")

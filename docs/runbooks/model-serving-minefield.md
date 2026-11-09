@@ -1,0 +1,467 @@
+# Model serving minefield ↔ zerollama
+
+Cross-reference between the community [model-serving-minefield](https://github.com/Blackwellboy/model-serving-minefield) registry and zerollama.
+
+This is a living map, not a copy of the registry. Trap IDs match the upstream entries.
+
+Status vocabulary used below:
+
+| Status | Meaning |
+|--------|---------|
+| `safe` | Owned path does not share the trap's failure mode |
+| `at-risk` | Owned code trusts a signal the trap says can lie |
+| `gap` | Footgun not checked / not surfaced to operators |
+| `fixed` | Regression locked after confirmation |
+| `covered via doctor` | `zerollama doctor` exercises a check |
+| `covered via test` | Unit/integration test locks behavior |
+| `partial` / `n/a` | Related code or architecture differs |
+
+Upstream premise that still applies: **inspect the assembled prompt, not the request**; state build + revision next to numbers; diff the kwarg surface in both directions.
+
+---
+
+## 1. Broker / admission / llama-server substrate (primary)
+
+These traps matter because zerollama **spawns llama-server** and owns VRAM admission/scheduling. A wrong free-memory or context signal is a correctness bug in *our* load decisions, not just a measurement footnote.
+
+| Trap | Topic | Verdict | Evidence |
+|------|-------|---------|----------|
+| **96** | `--list-devices` free may be host memory, not device VRAM | **mitigated** | Clamp free ≤ total; for **CUDA/ROCm** prefer native probe (NVML/HIP) free when present ([`preferNativeDeviceFree`](../../discover/llama_server.go)). Metal host-as-free remains intentional. Python admission still uses NVML/smi independently. |
+| **97** | Partial GPU offload invisible in health output | **fixed** | `/api/ps` `loaded_metadata.gpu_layers_offloaded` / `gpu_layers_total` from llama-server load logs; `zerollama ps` PROCESSOR column prefers layer counts over VRAM ratio. |
+| **87** | `/props` reports per-slot context, not trained | **safe** | No serving path reads llama-server `/props` for context. Served = load `options.NumCtx` ([`llm/llama_server.go`](../../llm/llama_server.go) `ContextLength()`). `/api/ps` `loaded_metadata` separates `num_ctx` vs `train_context_length` ([`server/runner_metadata.go`](../../server/runner_metadata.go)). |
+| **71** | MTP layer count ≠ draft token count | **safe** | `nextn_predict_layers` / tensor presence enables MTP; draft depth is `draft_num_predict` → `--spec-draft-n-max` ([`llm/llama_server.go`](../../llm/llama_server.go) `appendMTPDraftArgs`). Guessing only sets `spec_type=draft-mtp`, not draft count from layer count ([`server/gguf_guess.go`](../../server/gguf_guess.go)). |
+| **91/92** | Temp-0 determinism has prompt-length floor; prefix cache is a second divergence source | **documented** | Caveats in [`docs/runbooks/testing-smoke.md`](testing-smoke.md), [`scripts/mlx/mlx_prefix_cache_smoke.sh`](../../scripts/mlx/mlx_prefix_cache_smoke.sh), phase15 batch/auto-batch smokes, [`scripts/e2e/e2e_runtime_smoke.sh`](../../scripts/e2e/e2e_runtime_smoke.sh). |
+
+**Operator takeaway:** On discrete CUDA, do not treat Go discovery `available=` from list-devices as NVML ground truth without cross-check. On Metal, free-as-host is by design. Prefer `/api/ps` `loaded_metadata` over raw llama-server `/props` for context. Do not infer full GPU residency from VRAM alone — require layer offload counts.
+
+---
+
+## 2. Lab minefield-doctor runs
+
+Lab only (`OLLAMA_HOST=127.0.0.1:11435`, `ZEROLLAMA_RUNTIME=0`, `ZEROLLAMA_RUNTIME_DARWIN_SIDECAR=0`). Never production `:11434` / `:8081`.
+
+### Thinking lane — `qwen3:0.6b` (2026-07-28)
+
+```text
+model=qwen3:0.6b  build=0.30.11  tool=minefield_doctor.py
+```
+
+| Bucket | Result |
+|--------|--------|
+| **PROBLEMS** | **12** (empty content at `max_tokens=512` with long reasoning — conversion floor; size budgets for thinking), **29** (default thinking-off is not a gate: client `reasoning_effort` / aliases can re-enable per request — mitigate with `ZEROLLAMA_THINKING_GATE=deny\|strip`) |
+| **CLEAN** | **77**, **78**, **01**, **03** (toggle map separable), **02**, **23**, **07**, **19**, **26**, mm-* |
+| Coverage | `problems 2` · `clean 9` numbered · Core executed **01, 03, 12, 19, 77** |
+
+Native `zerollama doctor` on the same warm model (lab `:11435`, 2026-07-28): **77/78/01/12 ok**; **04** was warn (prior `.Thinking` stripped) until preserve-prior-thinking landed — re-check should CLEAN when clients resend `thinking`; **29** warns when gate unset; **55/61** may warn on context ceilings. **66** re-check 2026-07-29: **ok** (inject observed, assistant cleaned).
+
+**Operator takeaway (12 / 29):** On thinking models, a 512 ceiling can score as capability collapse while the model is still reasoning. Treat server thinking-off as a **default**, not a hard gate, unless your gateway strips thinking kwargs.
+
+### Non-thinking lane — `qwen2.5:0.5b` (2026-07-28)
+
+```text
+model=qwen2.5:0.5b  build=0.30.11
+```
+
+| Bucket | Result |
+|--------|--------|
+| **PROBLEMS** | **none** |
+| **CLEAN** | **77**, **78**, **12**, **23**, **02**, **07**, **19**, **26**, mm-* |
+| Coverage | **03/29** N/A (no reasoning channel; arms return but none fire) |
+
+### Earlier baseline (pre-fix)
+
+```text
+model=qwen2.5:0.5b  build=0.30.11  (pre trap 77/78 fixes)
+```
+
+#### PROBLEMS (2) — pre-fix
+
+| Trap | Finding |
+|------|---------|
+| **77** | Invented top-level field accepted with HTTP 200. **Fixed:** `/v1` + `/api/chat` reject unknown keys; `chat_template_kwargs` / `enable_thinking` mapped to `think` with nested-kwarg validation. |
+| **78** | `tool_choice: "none"` accepted and ignored. **Fixed:** omits tools in chat + responses conversion. |
+
+### Still out of reach for the upstream doctor here
+
+- **04/20/25** — upstream `minefield_doctor.py` has no `/apply-template` on this Ollama-shaped stack; **zerollama doctor** covers them via `/api/chat` `_debug_render_only` (see §2.2)
+- **10/17/21** — need `--hf-repo` or a readable chat template for full upstream checks (native doctor still covers 10/21 from manifests)
+- **56** — native doctor flags missing templates **and** passthrough `TEMPLATE {{ .Prompt }}` (no role framing); `doctor --repair-models --apply` installs family RENDERER when known (DeepSeek → deepseek3, Qwen3.5 → qwen3.5, …)
+- Core **35 / 53 / 61** — no check in `minefield_doctor.py` (upstream leaves them as hand-runs; see §2.1). Zerollama covers **53** in doctor; **35** / **54** / **61** (+ **60** cold/warm) via lab scripts; **55/61** arithmetic in doctor; **63** via history round-trip doctor; **09** documented (VL).
+
+Coverage lines from the tool are **not** a bill of health for the full registry (166 numbered traps as of 2026-10-15; upstream doctor implements ~70 IDs).
+
+### 2.1 Core hand-runs (35 / 53 / 61) on zerollama
+
+Upstream [CORE.md](https://github.com/Blackwellboy/model-serving-minefield/blob/main/CORE.md) deliberately omits these from `minefield_doctor.py`. Map them onto this stack as follows.
+
+#### Trap 35 — identical weights do not score identically
+
+Not a serving bug. Before publishing small eval deltas on zerollama (ggml or runtime lane):
+
+1. Fix one host + one binary revision as the measurement room.
+2. Run the **same** items twice (same process, then fresh process) at `temperature=0`.
+3. Report **per-item agreement**, not only score delta.
+4. Treat the observed score spread as your minimum detectable effect; do not assemble paired arms across machines without quoting that floor.
+
+Zerollama ships a tiny same-process harness for a first look:
+
+```bash
+# lab serve on :11435 first
+./scripts/minefield_agreement_floor.sh qwen2.5:0.5b
+```
+
+Use your real benchmark’s per-item JSON for publishable floors. Temp-0 still has a prompt-length / prefix-cache floor (traps **91/92**).
+
+#### Trap 63 — reasoning round-trip has one correct shape
+
+Nemotron-style stacks need `reasoning` + `truncate_history_thinking: false` (inverted polarity vs `preserve_thinking`). On zerollama the **only** preserve shape is:
+
+1. Resend prior reasoning under native `thinking` (OpenAI `/v1` write field `reasoning` maps into it).
+2. Keep `think` on so `preservePriorThinkingForRender` re-embeds history markers.
+3. Do **not** send `reasoning_content` on `/api/chat` — it is dropped before render.
+4. Do **not** port `truncate_history_thinking` — unknown kwargs **400** (trap **07**), which is intentional loudness.
+
+`zerollama doctor` runs `serving trap-63 (reasoning round-trip)` on a warm thinking model.
+
+#### Trap 09 — image choice changes outcome
+
+Multimodal / vision stack only: the same text prompt with different image encodings (resize, tile, JPEG quality, empty image) can move the answer. Zerollama has no Mac-primary live doctor for this yet; when scoring VL models, pin the image pipeline in the protocol and treat encoding as a confound (trap **17** sibling).
+
+#### Trap 54 — run order / warm cache / cross-session drift
+
+A clean speedup (or temp=0 hash change) can be **whichever arm ran second**, not your feature. Upstream also saw identical temp=0 requests diverge once a warm prefix slot existed.
+
+```bash
+# lab :11435 — hash drift + short↔long order reverse on prompt_eval_duration
+./scripts/minefield_warm_cache_check.sh qwen2.5:0.5b
+```
+
+Before publishing a latency win: reverse A↔B, re-measure baseline in the **same** session/binary, and prefer a null-build disproof. Peak memory spikes ≠ trend leaks (see also traps **106/107**).
+
+#### Trap 34 — winning against a baseline you degraded yourself
+
+Methodological (no doctor probe): if the reference arm is a non-default top-k / quant / template / budget **you** chose, a “significant win” may only recover your own handicap. Always report against the **shipped** default as well (third arm), or say explicitly that the number is vs a non-shipped reference. Related: traps **17** (arm confound) and **35** (agreement floor).
+
+#### Trap 53 — config edit never took effect
+
+`zerollama doctor` prints **serve identity (trap 53)**: answering `base`, `/api/version`, and (on Darwin/Linux) listener `pid` + `ps` start/etime/cmd.
+
+After every config or binary change:
+
+```bash
+# prove the process answering is newer than the edit
+lsof -nP -iTCP:11434 -sTCP:LISTEN          # production — read-only
+ps -o pid,lstart,etime,cmd -p <pid>
+curl -s http://127.0.0.1:11434/api/version
+./zerollama doctor                         # includes serve identity
+```
+
+Kill **by port**, assert free, then start. Never trust a restart command’s exit code alone. Agents must not free production **11434/8081**; operators do that deliberately.
+
+#### Trap 112 — process up is not model ready
+
+A listener PID (trap **53**) can be crash-looping or serving an empty runner. `zerollama doctor` checks `/api/version` and `/api/tags` HTTP 200, then counts `/api/ps` loaded models. Tags 200 with zero loaded runners is **API ready, not a warm model**.
+
+#### Trap 98 — speculative depth × slots on UMA
+
+Do not copy vLLM `--max-num-seqs` (256 default / 32 card) onto Mac llama-server `-np`. Speculative **K** and **slots** both spend unified memory; a slots value that survived at one K can OOM at another. Doctor prints the product (env `ZEROLLAMA_LLAMA_PARALLEL_SLOTS` / `ZEROLLAMA_DRAFT_MAX`, else `apple_silicon_128g` 8×16).
+
+#### Trap 110 — benches on a shared endpoint
+
+```bash
+./scripts/minefield_bench_screen.sh   # lab :11435; refuses 11434/8081
+```
+
+If `/api/ps` already shows a runner, single-stream tok/s is measuring neighbours and prefix cache, not your change.
+
+#### Trap 61 — advertised window fails silently
+
+Distinct from trap **55** (quality in the trained regime / three numbers disagreeing). Trap **61** is *no error*: long prompts return HTTP 200 with exact `prompt_tokens`, yet the head may be unread.
+
+Zerollama surfaces the **arithmetic** half:
+
+- Manifest doctor: `trap-55/61 (context)` when advertised / `num_ctx` / GGUF trained diverge ([`internal/modelhealth/traps.go`](../../internal/modelhealth/traps.go))
+- Live doctor: `context ceilings … (trap 55/61)` from `/api/ps` `loaded_metadata`
+
+The **behavioural** half remains a hand-run (cold *and* warm — see upstream traps **60** / **61**):
+
+1. Plant a fact at position 0, unique filler, decoy at the tail, ask for the fact.
+2. Ladder depths (1k → served `num_ctx`); compare local tokenize vs response `prompt_eval_count` / usage.
+3. At each depth: **cold** (`cache_reset`) then immediate **warm** re-send; if fact recovery or `done_reason` flips, that is trap **60** (do not publish only the warm retry).
+4. Record recovery + `done_reason` / finish reason each rung.
+5. Treat **trained** context from `loaded_metadata.train_context_length` as the supported window; advertised/served above that are capability claims, not guarantees.
+
+```bash
+# warm runner already loaded — arithmetic only
+curl -s http://127.0.0.1:11434/api/ps | jq '.models[].loaded_metadata|{num_ctx,train_context_length}'
+
+# behavioural cold+warm ladder (lab :11435)
+./scripts/minefield_cold_ladder.sh qwen2.5:0.5b
+# DEPTHS=512,1024,2048 ./scripts/minefield_cold_ladder.sh qwen3:0.6b
+```
+
+### 2.2 History render (04 / 20 / 25 / 63) via `_debug_render_only`
+
+Upstream doctor skips these without `/apply-template`. Zerollama exposes the assembled prompt on `/api/chat` with `"_debug_render_only": true` → `debug_info.rendered_template`.
+
+`zerollama doctor` (warm thinking model) runs:
+
+1. **04** — three-turn history with prior `thinking` markers; warns if markers are absent. Zerollama **re-embeds** resent prior `.Thinking` into Content when `think` is on (non-tool turns), so stock Go templates that only emit `.Thinking` after `lastUserIdx` still surface the marker.
+2. **25** — counts empty `<think></think>` shells in that render
+3. **20** — last-assistant arm: `thinking` must appear; bare `reasoning` on `/api/chat` must not (native write field is `thinking`; OpenAI maps `reasoning` → `thinking`)
+4. **63** — four-arm-style round trip: `thinking` preserves; `reasoning` / `reasoning_content` must not; `truncate_history_thinking` must **400** (not a silent Nemotron preserve)
+
+Manual probe:
+
+```bash
+curl -s http://127.0.0.1:11435/api/chat -d '{
+  "model":"qwen3:0.6b","think":true,"_debug_render_only":true,"stream":false,
+  "messages":[
+    {"role":"user","content":"Step 1"},
+    {"role":"assistant","content":"ok","thinking":"MARKER_UNIQUE"},
+    {"role":"user","content":"Step 2"}
+  ]
+}' | jq -r '._debug_info.rendered_template' | grep -n MARKER_UNIQUE || echo "stripped (trap 04)"
+```
+
+### 2.3 Think-toggle echo (66)
+
+Stock Qwen chat templates append ` /think` or ` /no_think` to the last user turn (Ollama mirror). Models often echo that marker into the answer, poisoning harnesses that score exact match.
+
+Zerollama strips **trailing** ` /think` / `/no_think` from assistant `content` / generate `response` ([`sanitizeAssistantContent`](../../server/chat_sanitize.go)). Paths like `src/think/` are left alone.
+
+`zerollama doctor` (warm thinking model) runs `serving trap-66`: debug-render should show injection; chat `"Reply with exactly: OK"` + `think:true` must not leave a trailing toggle on content.
+
+---
+
+## 3. `zerollama doctor` coverage (native)
+
+`zerollama doctor` includes minefield-style checks in-tree:
+
+1. **Serve identity** ([`cmd/doctor_serve_identity.go`](../../cmd/doctor_serve_identity.go)): **53** — who holds the port / version / start time
+2. **Readiness vs liveness** ([`cmd/doctor_readiness.go`](../../cmd/doctor_readiness.go)): **112** — TCP/PID is not `/api/version`+`/api/tags`; tags≠warm `/api/ps`
+3. **Spec × slots on UMA** ([`cmd/doctor_spec_uma.go`](../../cmd/doctor_spec_uma.go)): **98** — `draft_max × n_parallel` product; warn in the contributor-crash region when speculative env is on
+4. **N-gram JSON / HTTP concurrency** ([`cmd/doctor_ngram.go`](../../cmd/doctor_ngram.go)): **138/157** warn if n-gram spec env is on; **135** prints engine slots vs client count
+5. **Model config traps** ([`internal/modelhealth/traps.go`](../../internal/modelhealth/traps.go)): **21**, **10**, **56**, **55/61** (arithmetic)
+6. **Live serving traps** ([`cmd/doctor_serving_traps.go`](../../cmd/doctor_serving_traps.go) + [`cmd/doctor_think_lanes.go`](../../cmd/doctor_think_lanes.go) + [`cmd/doctor_tool_ascii.go`](../../cmd/doctor_tool_ascii.go) + [`cmd/doctor_think_off_spill.go`](../../cmd/doctor_think_off_spill.go) + other `cmd/doctor_*.go`): **29**, **77**, **07**, **78**, **23**, **04/20/25**, **63**, **02**, **66**, **48**, **55/61**, **01/03**, **12/64/65**, **126**, **148**, **149**, **158**, **162**, **164**, **166**, **19**, **26**; trap **12** @ 512 when `ZEROLLAMA_DOCTOR_DEEP=1`
+
+```bash
+./zerollama doctor
+./zerollama doctor --models
+./zerollama run <model> && ./zerollama doctor   # enable live serving probes
+ZEROLLAMA_DOCTOR_DEEP=1 ./zerollama doctor     # also run trap-12 ceiling @ 512
+
+# Template repair (milkey / moophlo class) — dry-run by default
+./zerollama doctor --repair-models                  # warm /api/ps models
+./zerollama doctor --repair-models --all-local      # every /api/tags model (may cold-load)
+./zerollama doctor --repair-models milkey/foo:latest
+./zerollama doctor --repair-models --apply milkey/foo:latest
+```
+
+### 3.1 Model template repair (`--repair-models`)
+
+**Why:** Some community GGUFs score as “broken models” when the failure is really the **assembled prompt / parser / default think routing / missing ChatML stops**. Deleting the tag or re-quantizing wastes disk; a Modelfile overlay often restores harness `response` / chat content.
+
+**Why not `doctor --fix`:** That flag is host bootstrap (uv, Metal llama.cpp). Mutating tags under `--fix` would surprise operators who only meant “install the toolchain.”
+
+Full operator guide + safety rules: [doctor-model-repair.md](doctor-model-repair.md).
+
+| Recipe | Symptom | Patch | Why |
+|--------|---------|-------|-----|
+| `chatml_missing_stops` | ChatML without `<\|im_end\|>` / `<\|im_start\|>` stops | Add stops only (any family) | Role markers leak into the next turn |
+| `missing_response_placeholder` | Go TEMPLATE lacks `{{ .Response }}` | Append Response suffix | Generate continuation breaks |
+| `empty_template` | Empty TEMPLATE (Qwen3) | Stock ChatML | Chat assembly skipped |
+| `think_generate_empty` / `think_parser_mismatch` | Default generate → empty `response` / thinking PARSER without toggles | Inject toggles + closed `<think>`; `PARSER qwen3` | Thinking parser + missing `/no_think` |
+| `slash_system_collapse` | User-only OK; system+user → slash/empty | Drop system; `stripRolePrefixes` + steer (not `stop ///`) | Coder GGUF comment-fill / slot poison |
+
+Implementation: [`internal/modelrepair`](../../internal/modelrepair) + [`cmd/doctor_repair_models.go`](../../cmd/doctor_repair_models.go). Apply recreates the same tag via `/api/create` (`FROM` itself).
+
+**Not auto-fixed:** prompts that embed `System:` / `Assistant:` in the user text (bench roleplay) — template cannot strip that. Non-`qwen3*` architectures that need **invasive** TEMPLATE rewrites are **manual-review** only; stop/`Response` hygiene still applies. Live doctor trap-12/64 also probes **default generate** now (with unload first — **why:** prefix cache after chat can disagree with repair probes).
+
+**Serve note:** rebuild/restart so `Think` defaults to false **before** parser `Init` ([`server/routes.go`](../../server/routes.go)); then `PARSER qwen3-thinking` works correctly again.
+
+Hand-run Core scripts (lab `:11435`):
+
+```bash
+./scripts/minefield_ceiling_probe.sh qwen3:0.6b
+./scripts/minefield_cold_ladder.sh qwen2.5:0.5b
+./scripts/minefield_warm_cache_check.sh qwen2.5:0.5b
+./scripts/minefield_agreement_floor.sh qwen2.5:0.5b
+./scripts/minefield_bench_screen.sh            # trap 110 — refuse shared/production endpoints
+./scripts/minefield_lab_doctor.sh qwen2.5:0.5b
+./scripts/minefield_pull_checks.sh qwen3:0.6b   # upstream budget/tokenize/cache checks
+```
+
+External upstream doctor (lab ports only):
+
+```bash
+python3 /tmp/zerollama-minefield-lab/minefield_doctor.py --base-url http://127.0.0.1:11435/v1 --model <tag>
+```
+
+---
+
+## 4. API-surface appendix
+
+| Trap | Topic | Status | Where |
+|------|-------|--------|-------|
+| 01 | Wrong reasoning field name | `covered via doctor` | Lab CLEAN on `qwen3:0.6b` (`reasoning`); `doctorCheckReasoningField` |
+| **02** | Orphaned `</think>` at content start | **fixed** + `covered via doctor` | [`thinking.Parser`](../../thinking/parser.go) strips leading closer when open was template-owned; `doctorCheckOrphanedThinkClose` |
+| **23** | Streamed answer must land in `content` | `covered via doctor` | `doctorCheckStreamContent` on `/v1` with think off — reasoning-only deltas warn |
+| **38** | Template owns opening `<think>` | `documented` | Offline/GRPO pipelines must prefill + recombine the open tag (mirror of trap **02**); chat path already does |
+| 03 | Thinking toggle / default drift | `covered via doctor` | Lab CLEAN toggle map on `qwen3:0.6b` |
+| 04 | History reasoning stripping | **fixed** + `covered via doctor` | `preservePriorThinkingForRender` re-embeds prior `.Thinking` into Content when `think` is on (skips tool-call turns); qwen3.5/vl renderers preserve non-tool history thinking |
+| 12 | Empty content at token ceiling | `covered via doctor` (deep) + script | Default doctor skips; `ZEROLLAMA_DOCTOR_DEEP=1` or [`scripts/minefield_ceiling_probe.sh`](../../scripts/minefield_ceiling_probe.sh) (`N=3` conversion rate). Lab PROBLEM on `qwen3:0.6b` @ 512 |
+| **22** | Family budget advice is not per-size | `documented` + script | Same probe as **12**; ceilings are per model and a distribution — see §7 |
+| 19 | Tool parsing / structured calls | `covered via doctor` | Lab clean + `doctorCheckToolCallShape` |
+| **26** | Tool call inside unclosed think | **fixed** + `covered via doctor` | [`thinking.ImplicitThinkEndMarkers`](../../thinking/parser.go) ends think at `<tool_call>`; `doctorCheckToolMarkup` |
+| 20 | Reasoning write field name | `covered via doctor` | Native write field `thinking`; OpenAI `reasoning` mapped in ([`openai/openai.go`](../../openai/openai.go)) |
+| 25 | Empty think shells in history | `covered via doctor` | Counted in history-render probe |
+| **29** | Server thinking-off is not a gate | **optional gate** + `covered via doctor` | `doctorCheckThinkingGate`; set `ZEROLLAMA_THINKING_GATE=deny\|strip` ([`envconfig/thinking_gate.go`](../../envconfig/thinking_gate.go)) |
+| **66** | Template injects `/think`/`/no_think`; model may echo | **fixed** + `covered via doctor` | Trailing toggle strip in [`server/chat_sanitize.go`](../../server/chat_sanitize.go); `doctorCheckThinkToggleInjection` |
+| **48** | Client latency ≠ server work (DNS/IPv6/mDNS) | `covered via doctor` + script | `doctorCheckLatencyReconciliation` vs `total_duration`; [`scripts/minefield_pull_checks.sh`](../../scripts/minefield_pull_checks.sh) `latency` |
+| **16** | `finish_reason`/`done_reason` is not pass/fail | `documented` | Bucket on extractable content first; use `done_reason` only as a diagnostic (length ≠ fail, stop ≠ success) |
+| **17** | Per-arm recommended sampling confound | `documented` | Pin the same sampler kwargs across A/B arms; card defaults are trap **21** adjacent |
+| 57 | Thinking kwarg truthiness | `n/a` / `partial` | Native `ThinkValue` typed; OpenAI aliases mapped |
+| 58/64/65 | Effort / toggle / rescue | `covered via doctor` + test | [`server/runtime_v1_legacy_test.go`](../../server/runtime_v1_legacy_test.go) |
+| **77** | Only one request field validated | **fixed** + `covered via doctor` | Live probe rejects `__minefield_unvalidated_field_probe__` on `/api/chat` + `/v1` |
+| **07** | Accepted-but-unread kwargs | **mitigated** + `covered via doctor` | Unknown `chat_template_kwargs.*` → HTTP 400 ([`api.validateChatTemplateKwargs`](../../api/chat_thinking_aliases.go)); doctor paired control |
+| **78** | `tool_choice` fails open | **fixed** + `covered via doctor` | Live `/v1` `tool_choice=none` must not return `tool_calls` |
+| **126** | Think-off spills trace into `content` | **mapped** + `covered via doctor` | `kwargs.thinking` → `Think`; `doctorCheckThinkOffSpill` |
+| **135** | HTTP clients ≠ model concurrency | `covered via doctor` | `doctorCheckHTTPConcurrency` quotes slots |
+| **138** | N-gram structured JSON token dup | `covered via doctor` | Warn if n-gram spec env on; strict-parse JSON |
+| **148** | Tool JSON ASCII escaping | `covered via doctor` | `doctorCheckToolASCIIEscape` via `_debug_render_only` |
+| **149** | Think-on JSON schema runaway | `covered via doctor` | `doctorCheckJSONThinkOn` — A/B `format=json` |
+| **158** | Empty thought markers count as reasoning | `covered via doctor` | `doctorCheckEmptyThoughtMarkers` |
+| **162** | Think-on short answer in reasoning only | `covered via doctor` | `doctorCheckThinkOnContent` |
+| **164** | Thinking budget cut hides answer | `covered via doctor` | `doctorCheckThinkBudgetCut` (tiny `num_predict`) |
+| **166** | Per-call think switch splits prefix cache | `covered via doctor` | `doctorCheckThinkPrefixSplit` |
+
+### Model config / Core gaps (also in native doctor)
+
+| Trap | Status | Where |
+|------|--------|-------|
+| 10, 21, 55/61, 56 | `covered via doctor` | 55/61 = arithmetic; 61 behavioural ladder = §2.1 hand-run |
+| **35** | `documented` + script | [`scripts/minefield_agreement_floor.sh`](../../scripts/minefield_agreement_floor.sh) — agreement-floor protocol in §2.1 |
+| **54** | `documented` + script | [`scripts/minefield_warm_cache_check.sh`](../../scripts/minefield_warm_cache_check.sh) — temp=0 hash + order reverse (§2.1) |
+| **60** | `documented` + script | [`scripts/minefield_cold_ladder.sh`](../../scripts/minefield_cold_ladder.sh) — cold then warm per depth |
+| **63** | `covered via doctor` | `doctorCheckReasoningRoundTrip` — thinking-only preserve; foreign gate 400 |
+| **09** | `documented` | VL image-pipeline confound (§2.1); no Mac live doctor yet |
+| **53** | `covered via doctor` | `doctorCheckServeIdentity` — pid/start/version of answering process |
+| **112** | `covered via doctor` | `doctorCheckModelReadiness` — version+tags vs TCP; tags≠`/api/ps` |
+| **98** | `covered via doctor` | `doctorCheckSpeculativeUMA` — draft_max × n_parallel on Darwin |
+| **110** | `documented` + script | [`scripts/minefield_bench_screen.sh`](../../scripts/minefield_bench_screen.sh) — refuse `:11434`/`:8081`; warn if a runner is already warm |
+| **79** | **mitigated** + `covered via doctor` | Clamp + `doctorCheckOversizedNumCtx` (oversized `num_ctx` silent empty) |
+| **U02** | **fixed** | [`sample/penalties.go`](../../sample/penalties.go) + ollamarunner `WithPenalties` |
+
+---
+
+## Updating this doc
+
+When the broker/admission sources of free VRAM change, or a lab doctor re-run flips PROBLEMS ↔ CLEAN, update sections 1–2 and the matching regression tests under `discover/` and `openai/`.
+
+---
+
+## 5. Pulled from upstream (2026-07-28 evening)
+
+[`minefield_doctor.py`](https://github.com/Blackwellboy/model-serving-minefield/blob/main/doctor/minefield_doctor.py) itself was unchanged — we pulled **findings and checks**, not a doctor diff.
+
+| Item | What we did |
+|------|-------------|
+| **[U02](https://github.com/Blackwellboy/model-serving-minefield/blob/main/upstream/U02-ollama-go-runner-drops-sampling-penalties.md)** | **Fixed:** `ollamarunner` now applies `repeat_penalty` / `presence_penalty` / `frequency_penalty` via [`sample.WithPenalties`](../../sample/penalties.go) (llamarunner / llama-server already did). |
+| Trap **79** oversized `num_ctx` | Already clamped; **doctor probe** `serving trap-79` watches for the empty/`length` signature without a clamp report. |
+| Trap **104** | Documented as mirror of **53** (stale startup artifact vs stale process). |
+| Upstream `checks/*` | [`scripts/minefield_pull_checks.sh`](../../scripts/minefield_pull_checks.sh) fetches and runs budget / tokenize / cache probes against lab `:11435/v1`. |
+| **[PR #8](https://github.com/Blackwellboy/model-serving-minefield/pull/8)** draft SGLang | Still watch-only until merge. |
+| Traps **99–103** gfx1151 | Skip for Mac Metal primary. |
+
+---
+
+## 6. Upstream deltas (2026-07-29 morning)
+
+| Item | Zerollama action |
+|------|------------------|
+| Mining candidates (persona suppressor, presence_penalty greeting latency, Codex findings on PR #9/#10) | **Watch / document only** — not promoted traps; Mac Metal primary does not run the GB10/NVFP4/vLLM confirmation lanes. Greeting-latency check: reconcile client vs server timing (trap **48** class) before blaming samplers. |
+| Trap **66** lab re-check | **CLEAN** on `qwen3:0.6b` lab `:11435` after strip + doctor (`template injects…; assistant output cleaned`). |
+| Pin `b10159` Mac CGO | Restored post-sync: KV COW `k_idx` assign + `(*v_cells)` MSA path, `mtmd_bitmap_set_grid_hint`, `load_mode` vs `use_mmap`; local `llama/llama.cpp/vendor/{nlohmann,miniaudio,stb}` (gitignored under `vendor/`). |
+| Trap **48** latency reconcile | Native doctor + `minefield_pull_checks.sh latency` (upstream `latency_reconciliation.py`). Prefer `127.0.0.1` bases. |
+| Core **16** / **17** | Documented scoring/sampling rules in §4 (no live mutation — harness methodology). |
+| Trap **02** orphaned `</think>` | **Fixed** in thinking parser + doctor probe (think on/off/absent arms). |
+| Trap **23** stream content | Native doctor `/v1` SSE probe; lab historically CLEAN on qwen lanes. |
+| Trap **38** template-owned open | Documented (offline rollout prefill); related to **02**. |
+| Trap **07** kwarg deadness | Doctor: invented `chat_template_kwargs.bogus_kwarg_zzq` must 400 with control OK (loud rejection vs silent accept). |
+| Trap **26** tool-in-think | **Fixed:** thinking parser treats `<tool_call>` as implicit `</think>`; doctor forced-tool probe. |
+| Registry size | Upstream doctor reports **107** numbered traps (was ~103). |
+| Core **54** | Lab script [`minefield_warm_cache_check.sh`](../../scripts/minefield_warm_cache_check.sh) — order reverse + identical temp=0 hash series. |
+| Core **63** / **60** / **09** | Doctor round-trip (**63**); cold+warm ladder (**60**); VL confound documented (**09**). |
+
+---
+
+## 7. Upstream traps 105–108 + 22 (2026-07-29)
+
+Instrumentation / methodology entries from long soaks. Mostly **document**, not new serve bugs.
+
+| Trap | Topic | Zerollama action |
+|------|-------|------------------|
+| **22** | Family-card thinking budget ≠ per-size floor; floor is a **rate** | [`scripts/minefield_ceiling_probe.sh`](../../scripts/minefield_ceiling_probe.sh) defaults `N=3`, prints conversion rate; re-measure on every size swap |
+| **105** | Speculative “acceptance” without named estimator/scope | When publishing MTP/draft acceptance, name **token- vs request-weighted**, scope to *your* turns, and show per-family mix ([trap 71](#1-broker--admission--llama-server-substrate-primary) adjacent) |
+| **106** | KV / prefix-cache occupancy climb ≠ leak | Full cache under prefix reuse (or unique `prompt_cache_key` / salt forcing misses) is normal; watch **preemption / waiting / OOM**, not fill % alone. Unique per-request cache keys produce a write-only fill curve |
+| **107** | Short soak “leak” that long soak reverts | Do not declare unbounded growth from a rising limb; hold until plateau or recovery |
+| **108** | Temp-0 burn canary is bistable | Pairwise “differs from previous” fires on attractor flip (traps **91/92**); track distinct output set / return-to-mode, not adjacent pairs |
+
+---
+
+## 8. Upstream traps 98 / 109–124 (2026-08-21)
+
+Registry grew from **108 → 124**. Native `minefield_doctor.py` `TRAP_PATHS` is unchanged. Mac-actionable subset:
+
+| Trap | Topic | Zerollama action |
+|------|-------|------------------|
+| **98** | Speculative depth × sequence capacity OOM on unified memory | Doctor reports `draft_max × n_parallel` (env or `apple_silicon_128g.json` = 16×8=128). Warn if speculative env is on **and** product ≥ 224 (contributor crash region; not a proven threshold). A seqs value validated at one K is not safe at another. |
+| **110** | Single-stream bench on a shared endpoint measures neighbours | [`scripts/minefield_bench_screen.sh`](../../scripts/minefield_bench_screen.sh) refuses production **11434/8081**; exits if `/api/ps` already has a runner. Do not quote tok/s from daily serve. |
+| **111** | Greedy spec-decode medians are a content lottery | Document only: pin draft off (or name acceptance estimator — trap **105**) before publishing decode medians |
+| **112** | Process liveness ≠ model readiness | `doctorCheckModelReadiness`: `/api/version`+`/api/tags` 200; TCP-without-API warns; zero `/api/ps` models is “API ready, not loaded” |
+| **119** | Free memory drifts down after churn (wrong node blamed) | Same class as **106/107**: trend vs peak on **this** process; Mac UMA “free” is not a leak proof |
+| **109, 113–118, 120–124** | vLLM/CUDA/RDMA/Ray/MTP/EngineCore/GB10 | **Skip** for Mac Metal primary. [PR #56](https://github.com/Blackwellboy/model-serving-minefield/pull/56) merged 2026-08-22. |
+
+Apple Silicon L1 `draft_max=16` is **not** vLLM `--max-num-seqs`. Do not copy GB10 seqs=256/32 onto llama-server `-np`.
+
+---
+
+## 9. Upstream traps 125–138 (2026-09-12)
+
+Registry **124 → 138**. Native `TRAP_PATHS` still the original ~19. Mac-actionable:
+
+| Trap | Topic | Zerollama action |
+|------|-------|------------------|
+| **126** | `thinking:false` keeps reasoning work and spills `<think>` into `content` | **Mapped** `chat_template_kwargs.thinking` → `Think` ([`api/chat_thinking_aliases.go`](../../api/chat_thinking_aliases.go) + `/v1`). Live `doctorCheckThinkOffSpill`: think-off `content` must not contain think tags. Do not use think-off as a latency win until this probe is CLEAN. Related **02/29/64**. |
+| **129** | Prefix-cache “hit” is the **minimum** across KV groups / SWA horizon | Document: SWA + prefix reuse can look like a hit while the sliding window already dropped the head (trap **60** sibling). Use [`scripts/minefield_cold_ladder.sh`](../../scripts/minefield_cold_ladder.sh) cold vs warm; unique nonce at the **front**. |
+| **135** | Concurrent HTTP clients ≠ concurrent model execution | `doctorCheckHTTPConcurrency` prints engine **slots**. Quote `n_parallel` / queue depth, not C1/C2/C4 client count. Lab benches: [`scripts/minefield_bench_screen.sh`](../../scripts/minefield_bench_screen.sh) (**110**). |
+| **138** | N-gram prompt lookup duplicates tokens in structured JSON (HTTP 200) | `doctorCheckNgramStructured` warns if `ZEROLLAMA_SPEC_TYPE` contains `ngram` or `ZEROLLAMA_ELIZA_NGRAM` is on. Strict-parse assistant JSON; A/B with n-gram off. |
+| **132** | Spec placeholders corrupt prompt tail on **cold** chunked prefill | Document: do not score first cold turn under speculation; trap **60** cold/warm split. |
+| **125, 127–128, 130–131, 133–134, 136–137** | cgroup/CUDA-UMA, bind-mount crash loops, vLLM admission no-ops, cudagraph, HF refs, DSpark shared expert, NIC path-proof, pipeline `rc`, kernel selector rc | **Skip** Mac Metal primary (methodology **136** is “pipefail”; **137** is native-return ≠ process exit). |
+
+Open upstream as of 2026-09-12: [PR #115](https://github.com/Blackwellboy/model-serving-minefield/pull/115) trap 139 later landed; [PR #114](https://github.com/Blackwellboy/model-serving-minefield/pull/114) pin-closure policy.
+
+---
+
+## 10. Upstream traps 139–166 (2026-10-17)
+
+Registry **138 → 166**. Upstream doctor `TRAP_PATHS` is now **~70** IDs (was ~19). Mac-actionable:
+
+| Trap | Topic | Zerollama action |
+|------|-------|------------------|
+| **143** | Qwen3 `sliding_window` in config can still resolve every layer to full attention | Document: `use_sliding_window` + `max_window_layers` (default 28) gate the reconstructed types; a numeric window key is not proof. Cold needle still required (traps **60/61/129**). |
+| **146** | Gateway retry hides a correct context rejection | Document: surface the first 4xx/context error; do not retry-compress forever. Adjacent to trap **79** clamp. |
+| **148** | Identical tool JSON can tokenize differently via `ensure_ascii` | Live `doctorCheckToolASCIIEscape` |
+| **149** | `json_schema` OK with think off, runaway with think on | Live `doctorCheckJSONThinkOn` |
+| **153** | Thinking-budget processor hard-codes another family's marker IDs | Document: zerollama `Think` / effort strings are not SGLang's 151667/151668 logit processor; do not assume a foreign budget kwarg is live (trap **07**) |
+| **155** | Prefix-slot victim policy re-prefills two long chats | Document: need a slot per long conversation, or a victim rule that reclaims idle retained prefixes; quote `n_parallel` (**135**) |
+| **157** | N-gram wins single-stream, loses at real concurrency | Folded into `doctorCheckNgramStructured` when n-gram env is on |
+| **158** | Empty `<think></think>` counted as reasoning tokens | Live `doctorCheckEmptyThoughtMarkers` |
+| **162** | Think-on short answer is all reasoning, empty content, `stop` | Live `doctorCheckThinkOnContent` |
+| **164** | Thinking-token cap that actually cuts hides the answer (`length`) | Live `doctorCheckThinkBudgetCut` |
+| **165** | Think-off for “agent speed” passes tool checks, fails reasoning | Document + 126/158 probes: keep a think-on quality arm |
+| **166** | Per-call think/effort switch is its own prefix cache | Live `doctorCheckThinkPrefixSplit` |
+| **139–142, 144–145, 147, 150–152, 154, 156, 159–161, 163** | NCCL/Docker/SGLang/FlashInfer/NVFP4/ExLlama/JIT | **Skip** Mac Metal primary |
+
+Draft [PR #212](https://github.com/Blackwellboy/model-serving-minefield/pull/212) (bounded raw execution) is watch-only.

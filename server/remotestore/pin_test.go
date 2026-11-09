@@ -63,6 +63,40 @@ func TestPinRefcountBlocksEviction(t *testing.T) {
 	}
 }
 
+func TestReleaseModelBlobsKeepsSharedPin(t *testing.T) {
+	t.Parallel()
+	scratch := t.TempDir()
+	d := "sha256-" + "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	path := filepath.Join(scratch, d)
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := &Resolver{
+		Mode:       CacheEphemeral,
+		ScratchDir: scratch,
+		ephemeral:  map[string]string{d: path},
+		pinned:     map[string]int{d: 2},
+	}
+	r.ReleaseModelBlobs(d)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("shared pin should keep scratch blob: %v", err)
+	}
+	if r.pinned[d] != 1 {
+		t.Fatalf("pin=%d", r.pinned[d])
+	}
+}
+
+func TestLocalBlobPathRejectsTraversal(t *testing.T) {
+	t.Parallel()
+	r := &Resolver{CacheDir: t.TempDir()}
+	if _, err := r.LocalBlobPath("sha256-../../etc/passwd"); err == nil {
+		t.Fatal("expected invalid digest")
+	}
+	if _, err := r.LocalBlobPath("sha256-" + "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReleaseModelBlobsEphemeral(t *testing.T) {
 	t.Parallel()
 	scratch := t.TempDir()

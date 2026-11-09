@@ -258,4 +258,4 @@ if comp.get("fork_wins_vram"):
 PY
 
 echo "PASS: l2_cuda_direct_bench (${L2_OUT})"
-echo "Doc: docs/gpu-profiles-l2.md"
+echo "Doc: docs/design/serving/gpu-profiles-l2.md"

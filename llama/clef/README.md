@@ -55,5 +55,5 @@ OLLAMA_HOST=127.0.0.1:8080 ./scripts/phase/l6_clef_vl_decisions_smoke.sh
 
 Do **not** use `ggml-org/Clef-Flash-GGUF` with this head — that pack is native `clef` + `decision.*` tensors.
 
-Operator ladder: [docs/llama-cpp-pin-ladder.md](../../docs/llama-cpp-pin-ladder.md).
-Product: [docs/system-one-score.md](../../docs/system-one-score.md).
+Operator ladder: [docs/design/serving/llama-cpp-pin-ladder.md](../../docs/design/serving/llama-cpp-pin-ladder.md).
+Product: [docs/design/surfaces/system-one-score.md](../../docs/design/surfaces/system-one-score.md).

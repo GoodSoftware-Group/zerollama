@@ -10,7 +10,7 @@
 #     → dry_run via process_grpo_request; note trl presence
 #       (full GRPOTrainer needs grpo_run=true — lab only; pin in requirements-training.txt)
 #
-# Doc: docs/t10-grpo.md · ROADMAP T10/T10b
+# Doc: docs/design/training/t10-grpo.md · ROADMAP T10/T10b
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"

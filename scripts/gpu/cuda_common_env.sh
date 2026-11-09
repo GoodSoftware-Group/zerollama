@@ -6,7 +6,7 @@
 # Lane-specific files (5080_env.sh, dual_4090_env.sh) source this first, then override
 # topology YAML, serve layout, and sign-off fixtures.
 #
-# Doc: docs/cuda-lanes.md
+# Doc: docs/design/serving/cuda-lanes.md
 set -euo pipefail
 
 _CUDA_COMMON_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")/../.." && pwd)"

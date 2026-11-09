@@ -1,6 +1,6 @@
 /* Synthetic DiT block0: self-attn + FFN on wan_backend + dit_pager.
  * LN→AdaLN→QKV→RMS→RoPE3→SDPA→O→gate + FFN half-block.
- * See docs/cuda-uma-toolkit.md */
+ * See docs/design/serving/cuda-uma-toolkit.md */
 #include "dit_pager.h"
 #include "dit_resident.h"
 #include "wan_backend.h"

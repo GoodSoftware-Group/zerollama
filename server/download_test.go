@@ -68,6 +68,28 @@ func TestDownloadChunkReturnsWhenTransferCompletes(t *testing.T) {
 	}
 }
 
+func TestDownloadChunkRejectsWholeObjectForLaterPart(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "4")
+		_, _ = w.Write([]byte("abcd"))
+	}))
+	t.Cleanup(server.Close)
+	requestURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	download := &blobDownload{
+		Name:   filepath.Join(t.TempDir(), "blob"),
+		Digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		Parts:  []*blobDownloadPart{{}, {}},
+	}
+	part := &blobDownloadPart{Offset: 2, Size: 2, N: 1, blobDownload: download}
+	err = download.downloadChunk(t.Context(), requestURL, io.Discard, part)
+	if err == nil {
+		t.Fatal("a 200 of the whole object was accepted as a later part")
+	}
+}
+
 func TestDownloadChunkDetectsStallBeforeFirstByte(t *testing.T) {
 	requestStarted := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -2,7 +2,7 @@
 
 Go HTTP bridge for `modality_backends.image=comfyui`.
 
-**Operator / agent guide (WHYs):** [docs/comfyui-image-backend.md](../../../docs/comfyui-image-backend.md)
+**Operator / agent guide (WHYs):** [docs/design/media/comfyui-image-backend.md](../../../docs/design/media/comfyui-image-backend.md)
 
 ## Why this package
 

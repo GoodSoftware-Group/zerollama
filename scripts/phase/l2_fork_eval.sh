@@ -27,8 +27,8 @@ if [[ "${L2_BUILD:-0}" == "1" || "${L2_BUILD_FORK:-0}" == "1" ]]; then
   BIN="${LLAMA_SERVER_BIN:-${UNIFIED_ROOT}/build/bin/llama-server}"
 fi
 
-# shellcheck source=scripts/linux_runtime_serve_lib.sh
-source "${ROOT}/scripts/linux_runtime_serve_lib.sh"
+# shellcheck source=scripts/runtime/linux_runtime_serve_lib.sh
+source "${ROOT}/scripts/runtime/linux_runtime_serve_lib.sh"
 
 if [[ -z "${BIN}" || ! -x "${BIN}" ]]; then
   if _vendor="$(l1_vendor_llama_cpp_root "${ROOT}")"; then
@@ -105,4 +105,4 @@ echo "Manual gate: compare decode tok/s + VRAM @ same model with ZEROLLAMA_LLAMA
 echo "  Mac: ./scripts/phase/l2_metal_bench.sh   # automated A/B JSON"
 echo "  Mac: ./scripts/phase/m3_metal_signoff.sh"
 echo "  CUDA: ./scripts/gpu/gpu_5080_session.sh"
-echo "Doc: docs/gpu-profiles-l2.md"
+echo "Doc: docs/design/serving/gpu-profiles-l2.md"

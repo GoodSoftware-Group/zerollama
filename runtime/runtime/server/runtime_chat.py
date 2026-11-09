@@ -43,7 +43,9 @@ def chat_needs_legacy(
 ) -> bool:
     """Vision/logprobs/think stay on ggml; plain tools use runtime chat_tools path."""
     del tools  # runtime supports tools via generic JSON prompt + parser
-    if logprobs or think is not None:
+    from runtime.invariants import think_forces_legacy
+
+    if logprobs or think_forces_legacy(think):
         return True
     for m in messages or []:
         if m.get("images") or m.get("videos"):

@@ -272,4 +272,4 @@ trap - EXIT
 
 echo ""
 echo "PASS: phase17_llama_server_smoke (${P17_OUT})"
-echo "Doc: docs/phase17-llama-server.md"
+echo "Doc: docs/design/serving/phase17-llama-server.md"

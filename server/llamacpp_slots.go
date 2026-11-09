@@ -69,6 +69,7 @@ func (s *Server) llamaCompatSlots() []llamaCompatSlot {
 	nCtx := runnerEffectiveNumCtx(primary)
 	loading := primary.loading
 	busy := primary.refCount > 0
+	fittedParallel := primary.numParallel
 	isMLX := primary.model != nil && primary.model.IsMLX()
 	primary.refMu.Unlock()
 
@@ -78,7 +79,13 @@ func (s *Server) llamaCompatSlots() []llamaCompatSlot {
 
 	nSlots := 1
 	if !isMLX {
-		nSlots = max(1, int(envconfig.NumParallel()))
+		// The array length is the process -np, not the env value that was
+		// requested before fit. Env is only the fallback before a runner exists.
+		if fittedParallel > 0 {
+			nSlots = fittedParallel
+		} else {
+			nSlots = max(1, int(envconfig.NumParallel()))
+		}
 	}
 
 	processing := loading || busy

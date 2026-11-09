@@ -3,7 +3,7 @@
 #
 #   ./scripts/training/t11_recipes_smoke.sh
 #
-# Doc: docs/t11-recipes.md · ROADMAP T11
+# Doc: docs/design/training/t11-recipes.md · ROADMAP T11
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"

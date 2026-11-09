@@ -34,7 +34,7 @@ def recommend_from_snapshot(snap: dict[str, Any]) -> list[str]:
         )
     elif ac.get("pick") == "apple_silicon":
         lines.append(
-            "# autoconfig: apple_silicon.yaml (Metal unified memory); see docs/apple-silicon-metal.md"
+            "# autoconfig: apple_silicon.yaml (Metal unified memory); see docs/design/apple/apple-silicon-metal.md"
         )
 
     backend = snap.get("llama_backend")

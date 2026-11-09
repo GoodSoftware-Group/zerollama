@@ -602,7 +602,7 @@ def extract_cache_reset(options: dict[str, Any] | None) -> bool:
 
     WHY same key (not a cold: prefix): harnesses already own a stable interactive
     key; resetting validity is orthogonal to identity. Engine skips L3 resume and
-    Radix seed when True — see docs/agent-qos-and-project-tracking.md.
+    Radix seed when True — see docs/design/serving/agent-qos-and-project-tracking.md.
     """
     z = zerollama_block_from_options(options)
     raw = z.get("cache_reset")

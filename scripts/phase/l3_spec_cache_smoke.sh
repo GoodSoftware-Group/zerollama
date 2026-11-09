@@ -235,4 +235,4 @@ trap - EXIT
 
 echo ""
 echo "PASS: l3_spec_cache_smoke (${L3_OUT}, L3_SPEC_METHOD=${L3_SPEC_METHOD})"
-echo "Doc: docs/gpu-profiles-l3.md runtime/docs/SPECULATIVE.md"
+echo "Doc: docs/design/serving/gpu-profiles-l3.md runtime/docs/SPECULATIVE.md"

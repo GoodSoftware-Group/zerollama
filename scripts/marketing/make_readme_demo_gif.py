@@ -40,7 +40,7 @@ BAR_HOT = (90, 200, 150)
 PROMPT = (140, 180, 220)
 HL = (55, 90, 75)  # soft column highlight
 
-# Measured Jul 2026 — docs/readme-marketing-benches.md (Qwen2 chat 1 MiB)
+# Measured Jul 2026 — docs/design/serving/readme-marketing-benches.md (Qwen2 chat 1 MiB)
 DEFAULT_TOKENIZE = {"cold_ms": 389, "fast_ms": 81, "label": "Qwen2 chat · 1 MiB tokenize", "speedup": "4.8×"}
 
 # Curated when --from-live fails; CTX shows host-safe / host–train range.

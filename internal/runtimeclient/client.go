@@ -30,7 +30,7 @@ func runtimeBaseURL() string {
 // Why called from training OOM handler: after Go evicts ggml runners, Python subprocess
 // may still hold LLAMA_MODEL weights; handoff clears that VRAM before AckVRAMHeadroom.
 // Operators also POST /internal/training-handoff manually; use /internal/inference/resume
-// to run runtime generate again (see docs/testing-smoke.md).
+// to run runtime generate again (see docs/runbooks/testing-smoke.md).
 func TrainingHandoff(ctx context.Context) {
 	base := runtimeBaseURL()
 	if base == "" {

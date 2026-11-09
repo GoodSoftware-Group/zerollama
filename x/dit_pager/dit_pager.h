@@ -1,4 +1,4 @@
-/* Portable DiT N-slot LRU pager — no CUDA/UMA deps. See docs/dit-pager.md */
+/* Portable DiT N-slot LRU pager — no CUDA/UMA deps. See docs/design/media/dit-pager.md */
 #ifndef DIT_PAGER_H
 #define DIT_PAGER_H
 

@@ -2,6 +2,7 @@ package server
 
 import (
 	"maps"
+	"os"
 	"slices"
 	"sync"
 
@@ -46,7 +47,8 @@ func (c *inferenceModelCache) Get(name string) (*Model, error) {
 	n := model.ParseName(name)
 	mf, err := manifest.ParseNamedManifest(n)
 	if err != nil {
-		return nil, err
+		// No local manifest yet. loadModel fetches one from storage when it is configured.
+		return c.rememberLoaded(name, n)
 	}
 
 	key := inferenceModelCacheKey{
@@ -88,6 +90,31 @@ func (c *inferenceModelCache) Get(name string) (*Model, error) {
 	return cloneInferenceModel(v.(*Model)), nil
 }
 
+// rememberLoaded resolves a model that has no local manifest yet and stores it.
+func (c *inferenceModelCache) rememberLoaded(name string, n model.Name) (*Model, error) {
+	if c == nil || c.loadModel == nil {
+		return nil, os.ErrNotExist
+	}
+	key := inferenceModelCacheKey{
+		name:       n.String(),
+		modelsRoot: envconfig.Models(),
+	}
+	v, err, _ := c.loads.Do(key.name+"\x00"+key.modelsRoot+"\x00missing", func() (any, error) {
+		m, err := c.loadModel(name)
+		if err != nil {
+			return nil, err
+		}
+		c.mu.Lock()
+		c.entries[key] = inferenceModelCacheEntry{digest: m.Digest, model: m}
+		c.mu.Unlock()
+		return m, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return cloneInferenceModel(v.(*Model)), nil
+}
+
 func cloneInferenceModel(src *Model) *Model {
 	if src == nil {
 		return nil
@@ -122,5 +149,5 @@ func (c *inferenceModelCache) Invalidate() {
 }
 
 func (s *Server) getModel(name string) (*Model, error) {
-	return inferenceModelCacheDefault.Get(name)
+	return GetModel(name)
 }

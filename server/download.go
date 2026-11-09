@@ -229,6 +229,7 @@ func (b *blobDownload) run(ctx context.Context, requestURL *url.URL, opts *regis
 
 	_ = file.Truncate(b.Total)
 
+	storedInline := false
 	directURL, err := func() (*url.URL, error) {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -265,14 +266,50 @@ func (b *blobDownload) run(ctx context.Context, requestURL *url.URL, opts *regis
 				continue
 			}
 			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusTemporaryRedirect && resp.StatusCode != http.StatusOK {
-				return nil, fmt.Errorf("unexpected status code %d", resp.StatusCode)
+			final := requestURL
+			if resp.Request != nil && resp.Request.URL != nil {
+				final = resp.Request.URL
 			}
-			return resp.Location()
+			loc, locErr := resp.Location()
+			if locErr != nil {
+				loc = nil
+			}
+			direct, derr := DirectBlobURL(resp.StatusCode, loc, final)
+			if derr != nil {
+				return nil, derr
+			}
+			// A 200 already carried the blob. Keep those bytes only when they are the whole object.
+			if resp.StatusCode == http.StatusOK && b.Total > 0 {
+				n, cerr := io.Copy(file, resp.Body)
+				if cerr != nil {
+					return nil, cerr
+				}
+				if InlineBlobComplete(n, b.Total) {
+					storedInline = true
+				} else if n > 0 {
+					if err := file.Truncate(0); err != nil {
+						return nil, err
+					}
+					if err := file.Truncate(b.Total); err != nil {
+						return nil, err
+					}
+					if _, err := file.Seek(0, io.SeekStart); err != nil {
+						return nil, err
+					}
+				}
+			}
+			return direct, nil
 		}
 	}()
 	if err != nil {
 		return err
+	}
+	if storedInline {
+		for _, part := range b.Parts {
+			part.Completed.Store(part.Size)
+		}
+		b.Completed.Store(b.Total)
+		return b.commitPartial(file)
 	}
 	// Same-host redirects (and --insecure local registries) are allowed; SSRF
 	// still blocks cross-host jumps onto private networks.
@@ -323,22 +360,19 @@ func (b *blobDownload) run(ctx context.Context, requestURL *url.URL, opts *regis
 		return err
 	}
 
-	// explicitly close the file so we can rename it
+	return b.commitPartial(file)
+}
+
+func (b *blobDownload) commitPartial(file *os.File) error {
 	if err := file.Close(); err != nil {
 		return err
 	}
-
 	for i := range b.Parts {
 		if err := os.Remove(file.Name() + "-" + strconv.Itoa(i)); err != nil {
 			return err
 		}
 	}
-
-	if err := os.Rename(file.Name(), b.Name); err != nil {
-		return err
-	}
-
-	return nil
+	return os.Rename(file.Name(), b.Name)
 }
 
 func (b *blobDownload) downloadChunk(ctx context.Context, requestURL *url.URL, w io.Writer, part *blobDownloadPart) error {
@@ -353,11 +387,15 @@ func (b *blobDownload) downloadChunk(ctx context.Context, requestURL *url.URL, w
 			return err
 		}
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", part.StartsAt(), part.StopsAt()-1))
+		ApplyGalleryUserAgent(req.Header)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return err
 		}
 		defer resp.Body.Close()
+		if !RangeBodyFitsPart(resp.StatusCode, part.StartsAt(), part.Size, resp.ContentLength, len(b.Parts) <= 1) {
+			return fmt.Errorf("blob range: status %d is not part %d", resp.StatusCode, part.N)
+		}
 
 		n, err := io.CopyN(w, io.TeeReader(resp.Body, part), part.Size-part.Completed.Load())
 		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.ErrUnexpectedEOF) {

@@ -23,7 +23,7 @@ VRAM budgets are large (Music 3 alone is ~14 GB; Wan/Comfy/LTX are larger).
 This skill is the **picker + install** half. After install, hand off to the
 matching usage skill (`generate-image`, `generate-video`, `text-to-speech`,
 `speech-to-text`, `video-understanding-chat`, or music HTTP in
-`docs/music-c.md`).
+`docs/design/media/music-c.md`).
 
 ## Compatibility check
 
@@ -83,7 +83,7 @@ asks for multiple modalities one by one.
 ## Music generation
 
 Local songs on Mac = **mlx-audio MiniMax Music 3** (not MiniMax cloud, not
-Comfy GPL). See `docs/music-c.md`.
+Comfy GPL). See `docs/design/media/music-c.md`.
 
 | Option | Disk | Platform | Why pick it |
 |---|---|---|---|
@@ -162,7 +162,7 @@ Registered tags: `piper-lessac`, `whisper-base`, `chatterbox`, `orpheus`,
 
 `install_speech_backends.sh` + `register_speech_models.sh` (above) register
 `whisper-base`. Point `backend_paths.whisper_model` / `OLLAMA_WHISPER_BIN`
-if the binary isn't on `PATH` (`docs/multimodal-backends.md`).
+if the binary isn't on `PATH` (`docs/design/media/multimodal-backends.md`).
 
 **Use after install:** `speech-to-text` skill →
 `POST /v1/audio/transcriptions`.
@@ -204,7 +204,7 @@ curl -s http://127.0.0.1:11434/api/tags | grep -i z-image
 |---|---|---|---|
 | Wan 2.1 1.3B (`wan2.1-t2v-1.3b`) | Smaller Wan | Mac/CUDA via install script | **Default** first T2V |
 | Wan 2.2 TI2V 5B | Larger | More VRAM | Better quality / i2v |
-| LTX distilled / MLX LTX | Varies | See `docs/ltx-t2v.md` | Alternate stack |
+| LTX distilled / MLX LTX | Varies | See `docs/design/media/ltx-t2v.md` | Alternate stack |
 | H3 / Wan2GP CUDA | Large | CUDA | Product CUDA lane |
 
 **Install Wan (default profile — ask before `all`):**
@@ -264,5 +264,5 @@ curl -s http://127.0.0.1:11434/api/tags | jq '.models[] | select(.capabilities[]
 - `generate-image` / `generate-video` / `text-to-speech` / `speech-to-text` /
   `video-understanding-chat` — use the model after install
 - `model-suggester` — capability/VRAM fit for chat models (not multimedia packs)
-- Docs: `docs/music-c.md`, `docs/multimodal-backends.md`,
-  `docs/comfyui-image-backend.md`, `docs/wan-t2v.md`, `docs/ltx-t2v.md`
+- Docs: `docs/design/media/music-c.md`, `docs/design/media/multimodal-backends.md`,
+  `docs/design/media/comfyui-image-backend.md`, `docs/design/media/wan-t2v.md`, `docs/design/media/ltx-t2v.md`

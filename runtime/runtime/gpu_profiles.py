@@ -22,7 +22,7 @@ STOCK LLAMA.CPP SAFETY (default)
 --------------------------------
 When fork is off (``runtime.llama_fork``), fork KV types → ``q8_0`` and
 ``ctx_checkpoints`` are stripped. When fork is on, ``_eliza_fork_*`` JSON
-sections merge and emit fork argv. See ``docs/gpu-profiles-l1.md`` / ``l2.md``.
+sections merge and emit fork argv. See ``docs/design/serving/gpu-profiles-l1.md`` / ``l2.md``.
 """
 
 from __future__ import annotations

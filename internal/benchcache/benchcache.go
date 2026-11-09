@@ -2,7 +2,7 @@
 //
 // WHY a shared internal package: `zerollama bench` (cmd) writes the cache and `zerollama ls`
 // reads it, but the auto-router (server) also needs read-only perf to rank candidates
-// (docs/auto-router.md §5). server must not import cmd, and the writer depends on
+// (docs/design/surfaces/auto-router.md §5). server must not import cmd, and the writer depends on
 // cmd/internal/fileutil — so types + Load live here and cmd/benchcache keeps Save.
 // Digest keys keep the cache valid across tag renames and invalidate when weights change.
 package benchcache

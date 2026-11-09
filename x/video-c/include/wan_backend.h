@@ -1,5 +1,5 @@
 /* Thin compute backend for wan-c — UMA or in-process CUDA.
- * See docs/cuda-uma-toolkit.md */
+ * See docs/design/serving/cuda-uma-toolkit.md */
 #ifndef WAN_BACKEND_H
 #define WAN_BACKEND_H
 

@@ -25,72 +25,72 @@ import (
 
 // ANEDraftABResult compares ANE in-process draft-step latency vs Metal dflash e2e.
 type ANEDraftABResult struct {
-	OK            bool                   `json:"ok"`
-	Mode          string                 `json:"mode"`
-	Tag           string                 `json:"tag,omitempty"`
-	SpecType      string                 `json:"spec_type,omitempty"`
-	ProxyChannels int                    `json:"proxy_channels"`
-	ProxySpatial  int                    `json:"proxy_spatial"`
-	ConvDepth     int                    `json:"conv_depth,omitempty"`
-	Micro         ANEDraftABMicro        `json:"micro"`
-	E2E           *ANEDraftABE2E         `json:"e2e,omitempty"`
-	Comparison    ANEDraftABComparison   `json:"comparison"`
+	OK            bool                    `json:"ok"`
+	Mode          string                  `json:"mode"`
+	Tag           string                  `json:"tag,omitempty"`
+	SpecType      string                  `json:"spec_type,omitempty"`
+	ProxyChannels int                     `json:"proxy_channels"`
+	ProxySpatial  int                     `json:"proxy_spatial"`
+	ConvDepth     int                     `json:"conv_depth,omitempty"`
+	Micro         ANEDraftABMicro         `json:"micro"`
+	E2E           *ANEDraftABE2E          `json:"e2e,omitempty"`
+	Comparison    ANEDraftABComparison    `json:"comparison"`
 	WeightBundle  *ANEDraftWeightManifest `json:"weight_bundle,omitempty"`
-	Note          string                 `json:"note,omitempty"`
-	Error         string                 `json:"error,omitempty"`
+	Note          string                  `json:"note,omitempty"`
+	Error         string                  `json:"error,omitempty"`
 }
 
 // ANEDraftABMicro is isolated ANE map+eval (no full Metal draft graph).
 type ANEDraftABMicro struct {
-	InprocessAvgEvalMS     float64 `json:"inprocess_avg_eval_ms"`
-	InprocessAvgMapFillMS  float64 `json:"inprocess_avg_map_fill_ms"`
-	InprocessAvgStepMS     float64 `json:"inprocess_avg_step_ms"`
-	InprocessSteps         int     `json:"inprocess_steps"`
-	ConvOnlyEvalMS         float64 `json:"conv_only_eval_ms"`
-	KernelReused           bool    `json:"kernel_reused"`
-	HasSidecarGamma        bool    `json:"has_sidecar_gamma"`
+	InprocessAvgEvalMS    float64 `json:"inprocess_avg_eval_ms"`
+	InprocessAvgMapFillMS float64 `json:"inprocess_avg_map_fill_ms"`
+	InprocessAvgStepMS    float64 `json:"inprocess_avg_step_ms"`
+	InprocessSteps        int     `json:"inprocess_steps"`
+	ConvOnlyEvalMS        float64 `json:"conv_only_eval_ms"`
+	KernelReused          bool    `json:"kernel_reused"`
+	HasSidecarGamma       bool    `json:"has_sidecar_gamma"`
 }
 
 // ANEDraftABE2E is llama-server dflash completion + speculative stats from logs.
 type ANEDraftABE2E struct {
-	Port              int               `json:"port"`
-	MaxTokens         int               `json:"max_tokens"`
-	DriveMode         string            `json:"drive_mode,omitempty"`
-	MetalOnly         ANEDraftServerRun `json:"metal_only"`
-	ANEHook           ANEDraftServerRun `json:"ane_hook"`
-	AcceptanceParity  bool              `json:"acceptance_parity"`
-	HookOverheadPct   float64           `json:"hook_overhead_pct,omitempty"`
+	Port             int               `json:"port"`
+	MaxTokens        int               `json:"max_tokens"`
+	DriveMode        string            `json:"drive_mode,omitempty"`
+	MetalOnly        ANEDraftServerRun `json:"metal_only"`
+	ANEHook          ANEDraftServerRun `json:"ane_hook"`
+	AcceptanceParity bool              `json:"acceptance_parity"`
+	HookOverheadPct  float64           `json:"hook_overhead_pct,omitempty"`
 }
 
 // ANEDraftServerRun is one dflash generate leg on lab llama-server.
 type ANEDraftServerRun struct {
-	OK                 bool    `json:"ok"`
-	TokensPerSec       float64 `json:"tokens_per_sec,omitempty"`
-	EvalDurationMS     float64 `json:"eval_duration_ms,omitempty"`
-	EvalCount          int     `json:"eval_count,omitempty"`
-	GenDrafts          uint64  `json:"gen_drafts,omitempty"`
-	AccDrafts          uint64  `json:"acc_drafts,omitempty"`
-	GenTokens          uint64  `json:"gen_tokens,omitempty"`
-	AccTokens          uint64  `json:"acc_tokens,omitempty"`
-	DraftAcceptance    float64 `json:"draft_acceptance,omitempty"`
-	HandoffSteps       int     `json:"handoff_steps,omitempty"`
-	HandoffStride      int     `json:"handoff_stride,omitempty"`
-	Conv2Chained       bool    `json:"conv2_chained,omitempty"`
-	ConvDepthCap       int     `json:"conv_depth_cap,omitempty"`
-	ActiveConvDepth    int     `json:"active_conv_depth,omitempty"`
-	GoldenCosine       float64 `json:"golden_cosine,omitempty"`
-	GoldenSteps        int     `json:"golden_steps,omitempty"`
-	DriveShadowSteps       int     `json:"drive_shadow_steps,omitempty"`
-	DriveShadowMatches     int     `json:"drive_shadow_matches,omitempty"`
-	DriveShadowHiddenCos   float64 `json:"drive_shadow_hidden_cos,omitempty"`
-	DriveShadowHiddenSteps int     `json:"drive_shadow_hidden_steps,omitempty"`
-	MetalGoldenLegs        map[string]float64 `json:"metal_golden_legs,omitempty"` // last B8m cos per leg
-	MetalGoldenInputCos    float64            `json:"metal_golden_input_cos,omitempty"`
-	MetalGoldenHostFcCos   float64            `json:"metal_golden_host_fc_cos,omitempty"`
-	MetalGoldenPreOutputCos float64           `json:"metal_golden_pre_output_cos,omitempty"`
-	MetalGoldenOutputCos   float64            `json:"metal_golden_output_cos,omitempty"`
-	MatmulChain            int     `json:"matmul_chain,omitempty"`
-	Error              string  `json:"error,omitempty"`
+	OK                      bool               `json:"ok"`
+	TokensPerSec            float64            `json:"tokens_per_sec,omitempty"`
+	EvalDurationMS          float64            `json:"eval_duration_ms,omitempty"`
+	EvalCount               int                `json:"eval_count,omitempty"`
+	GenDrafts               uint64             `json:"gen_drafts,omitempty"`
+	AccDrafts               uint64             `json:"acc_drafts,omitempty"`
+	GenTokens               uint64             `json:"gen_tokens,omitempty"`
+	AccTokens               uint64             `json:"acc_tokens,omitempty"`
+	DraftAcceptance         float64            `json:"draft_acceptance,omitempty"`
+	HandoffSteps            int                `json:"handoff_steps,omitempty"`
+	HandoffStride           int                `json:"handoff_stride,omitempty"`
+	Conv2Chained            bool               `json:"conv2_chained,omitempty"`
+	ConvDepthCap            int                `json:"conv_depth_cap,omitempty"`
+	ActiveConvDepth         int                `json:"active_conv_depth,omitempty"`
+	GoldenCosine            float64            `json:"golden_cosine,omitempty"`
+	GoldenSteps             int                `json:"golden_steps,omitempty"`
+	DriveShadowSteps        int                `json:"drive_shadow_steps,omitempty"`
+	DriveShadowMatches      int                `json:"drive_shadow_matches,omitempty"`
+	DriveShadowHiddenCos    float64            `json:"drive_shadow_hidden_cos,omitempty"`
+	DriveShadowHiddenSteps  int                `json:"drive_shadow_hidden_steps,omitempty"`
+	MetalGoldenLegs         map[string]float64 `json:"metal_golden_legs,omitempty"` // last B8m cos per leg
+	MetalGoldenInputCos     float64            `json:"metal_golden_input_cos,omitempty"`
+	MetalGoldenHostFcCos    float64            `json:"metal_golden_host_fc_cos,omitempty"`
+	MetalGoldenPreOutputCos float64            `json:"metal_golden_pre_output_cos,omitempty"`
+	MetalGoldenOutputCos    float64            `json:"metal_golden_output_cos,omitempty"`
+	MatmulChain             int                `json:"matmul_chain,omitempty"`
+	Error                   string             `json:"error,omitempty"`
 }
 
 // ANEDraftABComparison summarizes A/B deltas.
@@ -105,30 +105,30 @@ type ANEDraftABComparison struct {
 }
 
 var (
-	dflashStatsRE       = regexp.MustCompile(`statistics dflash:.*?#gen drafts = (\d+), #acc drafts = (\d+), #gen tokens = (\d+), #acc tokens = (\d+)`)
-	draftAcceptRateRE   = regexp.MustCompile(`draft acceptance rate = ([0-9.]+)`)
-	aneHandoffStepRE    = regexp.MustCompile(`common_ane_draft_handoff_after_decode: step=\d+ (?:ggml iosurface handoff ok|iosurface handoff ok)`)
-	aneConv2ChainedRE   = regexp.MustCompile(`B6 dual conv1 chain active|B8 triple conv1 chain active|B9 quad conv1 chain active|B10 pent conv1 chain active|B11 hex conv1 chain active|B12 hept conv1 chain active|B13 oct conv1 chain active`)
-	aneConvDepthRE      = regexp.MustCompile(`conv depth cap=(\d+) active_convs=(\d+)`)
-	aneGoldenCosineRE   = regexp.MustCompile(`B6 golden step=\d+ mode=\w+ mse_ref_vs_ane=[0-9.eE+-]+ cosine=([0-9.-]+)`)
-	aneB7ShadowRE       = regexp.MustCompile(`B7 shadow step=\d+ seq=\d+(?: handoff_tok=\d+)? ane_tok=\d+ metal_tok=\d+ match=(\d+)(?: hidden_cos=([0-9.eE+-]+))?`)
-	aneB8MetalGoldenRE  = regexp.MustCompile(`B8m step=\d+ leg=(\w+) cos=([0-9.eE+-]+) n=\d+(?: note=\w+)?`)
-	aneMatmulChain4RE   = regexp.MustCompile(`chain4=swiglu\+down\+attn_gate|mode=matmul_chain4`)
-	aneMatmulChain5RE   = regexp.MustCompile(`chain5=swiglu\+down\+attn_gate\+ssm_out|mode=matmul_chain5`)
-	aneMatmulChain10RE  = regexp.MustCompile(`chain10=|P9 matmul chain blk\.1 ffn_down|mode=matmul_chain10_blk1_down`)
-	aneMatmulChain9RE   = regexp.MustCompile(`chain9=|P8 matmul chain blk\.1|mode=matmul_chain9_blk1_swiglu`)
-	aneMatmulChain8RE   = regexp.MustCompile(`chain8=|P7b dflash_fc|mode=matmul_chain8_dflash_fc`)
-	aneMatmulChain11RE  = regexp.MustCompile(`chain11=|P10 dflash chain11 active|mode=matmul_chain11_dflash_attn_q`)
-	aneMatmulChain12RE  = regexp.MustCompile(`chain12=|P11 dflash chain12 active|mode=matmul_chain12_dflash_attn_v`)
-	aneMatmulChain13RE  = regexp.MustCompile(`chain13=|P12 dflash chain13 active|mode=matmul_chain13_dflash_attn_out`)
-	aneMatmulChain14RE  = regexp.MustCompile(`chain14=|P13 dflash chain14 active|mode=matmul_chain14_dflash_attn_wo`)
-	aneMatmulChain15RE  = regexp.MustCompile(`chain15=|P14 dflash chain15 active|mode=matmul_chain15_dflash_ffn_gate`)
-	aneMatmulChain16RE  = regexp.MustCompile(`chain16=|P15 dflash chain16 active|mode=matmul_chain16_dflash_ffn_down`)
-	aneMatmulChain17RE  = regexp.MustCompile(`chain17=|P16 dflash chain17 active|mode=matmul_chain17_dflash_lm_head`)
-	aneMatmulChain7RE   = regexp.MustCompile(`chain7=|P7 matmul chain blk\.1|mode=matmul_chain7_blk1_gate`)
-	aneMatmulChain6RE   = regexp.MustCompile(`chain6=qkv\+|mode=matmul_chain6_qkv`)
-	aneMatmulChain3RE   = regexp.MustCompile(`chain3=swiglu\+down|mode=matmul_chain3`)
-	aneMatmulChain2RE   = regexp.MustCompile(`chain2=gate\+silu\+up|mode=matmul_chain2`)
+	dflashStatsRE      = regexp.MustCompile(`statistics dflash:.*?#gen drafts = (\d+), #acc drafts = (\d+), #gen tokens = (\d+), #acc tokens = (\d+)`)
+	draftAcceptRateRE  = regexp.MustCompile(`draft acceptance rate = ([0-9.]+)`)
+	aneHandoffStepRE   = regexp.MustCompile(`common_ane_draft_handoff_after_decode: step=\d+ (?:ggml iosurface handoff ok|iosurface handoff ok)`)
+	aneConv2ChainedRE  = regexp.MustCompile(`B6 dual conv1 chain active|B8 triple conv1 chain active|B9 quad conv1 chain active|B10 pent conv1 chain active|B11 hex conv1 chain active|B12 hept conv1 chain active|B13 oct conv1 chain active`)
+	aneConvDepthRE     = regexp.MustCompile(`conv depth cap=(\d+) active_convs=(\d+)`)
+	aneGoldenCosineRE  = regexp.MustCompile(`B6 golden step=\d+ mode=\w+ mse_ref_vs_ane=[0-9.eE+-]+ cosine=([0-9.-]+)`)
+	aneB7ShadowRE      = regexp.MustCompile(`B7 shadow step=\d+ seq=\d+(?: handoff_tok=\d+)? ane_tok=\d+ metal_tok=\d+ match=(\d+)(?: hidden_cos=([0-9.eE+-]+))?`)
+	aneB8MetalGoldenRE = regexp.MustCompile(`B8m step=\d+ leg=(\w+) cos=([0-9.eE+-]+) n=\d+(?: note=\w+)?`)
+	aneMatmulChain4RE  = regexp.MustCompile(`chain4=swiglu\+down\+attn_gate|mode=matmul_chain4`)
+	aneMatmulChain5RE  = regexp.MustCompile(`chain5=swiglu\+down\+attn_gate\+ssm_out|mode=matmul_chain5`)
+	aneMatmulChain10RE = regexp.MustCompile(`chain10=|P9 matmul chain blk\.1 ffn_down|mode=matmul_chain10_blk1_down`)
+	aneMatmulChain9RE  = regexp.MustCompile(`chain9=|P8 matmul chain blk\.1|mode=matmul_chain9_blk1_swiglu`)
+	aneMatmulChain8RE  = regexp.MustCompile(`chain8=|P7b dflash_fc|mode=matmul_chain8_dflash_fc`)
+	aneMatmulChain11RE = regexp.MustCompile(`chain11=|P10 dflash chain11 active|mode=matmul_chain11_dflash_attn_q`)
+	aneMatmulChain12RE = regexp.MustCompile(`chain12=|P11 dflash chain12 active|mode=matmul_chain12_dflash_attn_v`)
+	aneMatmulChain13RE = regexp.MustCompile(`chain13=|P12 dflash chain13 active|mode=matmul_chain13_dflash_attn_out`)
+	aneMatmulChain14RE = regexp.MustCompile(`chain14=|P13 dflash chain14 active|mode=matmul_chain14_dflash_attn_wo`)
+	aneMatmulChain15RE = regexp.MustCompile(`chain15=|P14 dflash chain15 active|mode=matmul_chain15_dflash_ffn_gate`)
+	aneMatmulChain16RE = regexp.MustCompile(`chain16=|P15 dflash chain16 active|mode=matmul_chain16_dflash_ffn_down`)
+	aneMatmulChain17RE = regexp.MustCompile(`chain17=|P16 dflash chain17 active|mode=matmul_chain17_dflash_lm_head`)
+	aneMatmulChain7RE  = regexp.MustCompile(`chain7=|P7 matmul chain blk\.1|mode=matmul_chain7_blk1_gate`)
+	aneMatmulChain6RE  = regexp.MustCompile(`chain6=qkv\+|mode=matmul_chain6_qkv`)
+	aneMatmulChain3RE  = regexp.MustCompile(`chain3=swiglu\+down|mode=matmul_chain3`)
+	aneMatmulChain2RE  = regexp.MustCompile(`chain2=gate\+silu\+up|mode=matmul_chain2`)
 )
 
 func parseB7ShadowFromLog(logText string) (steps, matches int, hiddenCosSum float64, hiddenCosN int) {
@@ -447,7 +447,7 @@ func findLlamaServerForANEDraft() (string, error) {
 func probeANEDraftE2E(ctx context.Context, entry ANEDraftEntry, quick, telemetry bool, driveMode, driveMetrics string, convDepth int, kernel string) (ANEDraftABE2E, error) {
 	serverBin, err := findLlamaServerForANEDraft()
 	if err != nil {
-		return ANEDraftABE2E{}, fmt.Errorf("llama-server not found: %w (run ./scripts/build_llama_server.sh)", err)
+		return ANEDraftABE2E{}, fmt.Errorf("llama-server not found: %w (run ./scripts/build/build_llama_server.sh)", err)
 	}
 
 	basePath := strings.TrimSpace(entry.BaseGGUF)
@@ -681,70 +681,71 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 				}
 			}
 			if !useDflashFc && forceChain != 8 && forceChain != 11 && forceChain != 12 && forceChain != 13 && forceChain != 14 && forceChain != 15 && forceChain != 16 && forceChain != 17 {
-			if wpath, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_gate.weight", matmulIC, matmulOC); err == nil && wpath != "" {
-				cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE="+wpath)
-			}
-			icUp, ocUp := DraftANEMatmulChain3UpDims(matmulIC, matmulOC)
-			icDown, ocDown := DraftANEMatmulChain3DownDims(matmulOC, matmulIC)
-			chain3 := false
-			if forceChain != 1 && forceChain != 2 {
-				if w3, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_down.weight", icDown, ocDown); err == nil && w3 != "" {
-					if w2, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_up.weight", icUp, ocUp); err == nil && w2 != "" {
-						cmd.Env = append(cmd.Env,
-							"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2="+w2,
-							"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3="+w3,
-							"ZEROLLAMA_ANE_DRAFT_MATMUL_OC2="+strconv.Itoa(ocUp),
-							"ZEROLLAMA_ANE_DRAFT_MATMUL_OC3="+strconv.Itoa(ocDown),
-						)
-						chain3 = true
-						matmulChain = 3
-						if forceChain != 3 && forceChain != 4 {
-							ic4, oc4 := DraftANEMatmulChain4AttnGateDims(matmulIC, matmulOC)
-							if w4, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.attn_gate.weight", ic4, oc4); err == nil && w4 != "" {
-								cmd.Env = append(cmd.Env,
-									"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4="+w4,
-									"ZEROLLAMA_ANE_DRAFT_MATMUL_OC4="+strconv.Itoa(oc4),
-								)
-								matmulChain = 4
-								ic5, oc5 := DraftANEMatmulChain5SSMOutDims(matmulIC, matmulOC)
-								if w5, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ssm_out.weight", ic5, oc5); err == nil && w5 != "" {
+				if wpath, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_gate.weight", matmulIC, matmulOC); err == nil && wpath != "" {
+					cmd.Env = append(cmd.Env, "ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE="+wpath)
+				}
+				icUp, ocUp := DraftANEMatmulChain3UpDims(matmulIC, matmulOC)
+				icDown, ocDown := DraftANEMatmulChain3DownDims(matmulOC, matmulIC)
+				chain3 := false
+				if forceChain != 1 && forceChain != 2 {
+					if w3, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_down.weight", icDown, ocDown); err == nil && w3 != "" {
+						if w2, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_up.weight", icUp, ocUp); err == nil && w2 != "" {
+							cmd.Env = append(cmd.Env,
+								"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2="+w2,
+								"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE3="+w3,
+								"ZEROLLAMA_ANE_DRAFT_MATMUL_OC2="+strconv.Itoa(ocUp),
+								"ZEROLLAMA_ANE_DRAFT_MATMUL_OC3="+strconv.Itoa(ocDown),
+							)
+							chain3 = true
+							matmulChain = 3
+							if forceChain != 3 && forceChain != 4 {
+								ic4, oc4 := DraftANEMatmulChain4AttnGateDims(matmulIC, matmulOC)
+								if w4, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.attn_gate.weight", ic4, oc4); err == nil && w4 != "" {
 									cmd.Env = append(cmd.Env,
-										"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5="+w5,
-										"ZEROLLAMA_ANE_DRAFT_MATMUL_OC5="+strconv.Itoa(oc5),
+										"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4="+w4,
+										"ZEROLLAMA_ANE_DRAFT_MATMUL_OC4="+strconv.Itoa(oc4),
 									)
-									matmulChain = 5
-									if forceChain != 5 {
-										ic6, oc6 := DraftANEMatmulChain6QKVDims(matmulIC, matmulOC)
-										if w6, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.attn_qkv.weight", ic6, oc6); err == nil && w6 != "" {
-											cmd.Env = append(cmd.Env,
-												"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE6="+w6,
-												"ZEROLLAMA_ANE_DRAFT_MATMUL_OC6="+strconv.Itoa(oc6),
-											)
-											matmulChain = 6
-											if forceChain != 6 {
-												ic7, oc7 := DraftANEMatmulChain7Blk1GateDims(matmulIC, matmulOC)
-												if w7, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.1.ffn_gate.weight", ic7, oc7); err == nil && w7 != "" {
-													cmd.Env = append(cmd.Env,
-														"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE7="+w7,
-														"ZEROLLAMA_ANE_DRAFT_MATMUL_OC7="+strconv.Itoa(oc7),
-													)
-													matmulChain = 7
-													if forceChain == 0 || forceChain == 9 || forceChain == 10 {
-														ic9, oc9 := DraftANEMatmulChain9Blk1UpDims(matmulIC, matmulOC)
-														if w8, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.1.ffn_up.weight", ic9, oc9); err == nil && w8 != "" {
-															cmd.Env = append(cmd.Env,
-																"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE8="+w8,
-																"ZEROLLAMA_ANE_DRAFT_MATMUL_OC9="+strconv.Itoa(oc9),
-															)
-															matmulChain = 9
-															if forceChain == 0 || forceChain == 10 { // not 9 — lab chain9 stops at blk.1 SwiGLU
-																ic10, oc10 := DraftANEMatmulChain10Blk1DownDims(matmulOC, matmulIC)
-																if w9, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.1.ffn_down.weight", ic10, oc10); err == nil && w9 != "" {
-																	cmd.Env = append(cmd.Env,
-																		"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE9="+w9,
-																		"ZEROLLAMA_ANE_DRAFT_MATMUL_OC10="+strconv.Itoa(oc10),
-																	)
-																	matmulChain = 10
+									matmulChain = 4
+									ic5, oc5 := DraftANEMatmulChain5SSMOutDims(matmulIC, matmulOC)
+									if w5, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ssm_out.weight", ic5, oc5); err == nil && w5 != "" {
+										cmd.Env = append(cmd.Env,
+											"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE5="+w5,
+											"ZEROLLAMA_ANE_DRAFT_MATMUL_OC5="+strconv.Itoa(oc5),
+										)
+										matmulChain = 5
+										if forceChain != 5 {
+											ic6, oc6 := DraftANEMatmulChain6QKVDims(matmulIC, matmulOC)
+											if w6, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.attn_qkv.weight", ic6, oc6); err == nil && w6 != "" {
+												cmd.Env = append(cmd.Env,
+													"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE6="+w6,
+													"ZEROLLAMA_ANE_DRAFT_MATMUL_OC6="+strconv.Itoa(oc6),
+												)
+												matmulChain = 6
+												if forceChain != 6 {
+													ic7, oc7 := DraftANEMatmulChain7Blk1GateDims(matmulIC, matmulOC)
+													if w7, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.1.ffn_gate.weight", ic7, oc7); err == nil && w7 != "" {
+														cmd.Env = append(cmd.Env,
+															"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE7="+w7,
+															"ZEROLLAMA_ANE_DRAFT_MATMUL_OC7="+strconv.Itoa(oc7),
+														)
+														matmulChain = 7
+														if forceChain == 0 || forceChain == 9 || forceChain == 10 {
+															ic9, oc9 := DraftANEMatmulChain9Blk1UpDims(matmulIC, matmulOC)
+															if w8, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.1.ffn_up.weight", ic9, oc9); err == nil && w8 != "" {
+																cmd.Env = append(cmd.Env,
+																	"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE8="+w8,
+																	"ZEROLLAMA_ANE_DRAFT_MATMUL_OC9="+strconv.Itoa(oc9),
+																)
+																matmulChain = 9
+																if forceChain == 0 || forceChain == 10 { // not 9 — lab chain9 stops at blk.1 SwiGLU
+																	ic10, oc10 := DraftANEMatmulChain10Blk1DownDims(matmulOC, matmulIC)
+																	if w9, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.1.ffn_down.weight", ic10, oc10); err == nil && w9 != "" {
+																		cmd.Env = append(cmd.Env,
+																			"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE9="+w9,
+																			"ZEROLLAMA_ANE_DRAFT_MATMUL_OC10="+strconv.Itoa(oc10),
+																		)
+																		matmulChain = 10
+																	}
 																}
 															}
 														}
@@ -755,46 +756,45 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 									}
 								}
 							}
-						}
-						switch matmulChain {
-						case 10:
-							cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "10")
-						case 9:
-							cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "9")
-						case 7:
-							cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "7")
-						case 6:
-							cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "6")
-						case 5:
-							cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "5")
-						case 4:
-							cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "4")
-						default:
-							cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "3")
+							switch matmulChain {
+							case 10:
+								cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "10")
+							case 9:
+								cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "9")
+							case 7:
+								cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "7")
+							case 6:
+								cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "6")
+							case 5:
+								cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "5")
+							case 4:
+								cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "4")
+							default:
+								cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "3")
+							}
 						}
 					}
 				}
-			}
-			if forceChain == 4 {
-				ic4, oc4 := DraftANEMatmulChain4AttnGateDims(matmulIC, matmulOC)
-				if w4, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.attn_gate.weight", ic4, oc4); err == nil && w4 != "" {
-					cmd.Env = append(cmd.Env,
-						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4="+w4,
-						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC4="+strconv.Itoa(oc4),
-					)
+				if forceChain == 4 {
+					ic4, oc4 := DraftANEMatmulChain4AttnGateDims(matmulIC, matmulOC)
+					if w4, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.attn_gate.weight", ic4, oc4); err == nil && w4 != "" {
+						cmd.Env = append(cmd.Env,
+							"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE4="+w4,
+							"ZEROLLAMA_ANE_DRAFT_MATMUL_OC4="+strconv.Itoa(oc4),
+						)
+					}
 				}
-			}
-			if !chain3 && forceChain != 1 {
-				ic2, oc2 := DraftANEMatmulChain2Dims(matmulIC, matmulOC)
-				if w2, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_up.weight", ic2, oc2); err == nil && w2 != "" {
-					cmd.Env = append(cmd.Env,
-						"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2="+w2,
-						"ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=2",
-						"ZEROLLAMA_ANE_DRAFT_MATMUL_OC2="+strconv.Itoa(oc2),
-					)
-					matmulChain = 2
+				if !chain3 && forceChain != 1 {
+					ic2, oc2 := DraftANEMatmulChain2Dims(matmulIC, matmulOC)
+					if w2, _, err := MaterializeANEDraftMatmulWeightFile(entry, "blk.0.ffn_up.weight", ic2, oc2); err == nil && w2 != "" {
+						cmd.Env = append(cmd.Env,
+							"ZEROLLAMA_ANE_DRAFT_WEIGHT_FILE2="+w2,
+							"ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=2",
+							"ZEROLLAMA_ANE_DRAFT_MATMUL_OC2="+strconv.Itoa(oc2),
+						)
+						matmulChain = 2
+					}
 				}
-			}
 			}
 			if forceChain == 1 {
 				cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN", "1")
@@ -926,7 +926,7 @@ func runDflashServerLeg(ctx context.Context, serverBin string, entry ANEDraftEnt
 				for k, v := range ExportDflashTargetMetaEnv(entry) {
 					cmd.Env = upsertEnv(cmd.Env, k, v)
 				}
-                if len(ExportDflashTargetMetaEnv(entry)) == 0 {
+				if len(ExportDflashTargetMetaEnv(entry)) == 0 {
 					cmd.Env = upsertEnv(cmd.Env, "ZEROLLAMA_ANE_DRAFT_TARGET_FEAT_TILE", "1")
 				}
 				if DraftANEDraftFFNUseFullDims(matmulChain, entry) {

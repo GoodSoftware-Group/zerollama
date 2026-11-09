@@ -28,7 +28,7 @@ type routeEnvelope struct {
 }
 
 // RouteHandler serves POST /v1/route — "which model would this request run on?" without
-// running inference (docs/auto-router.md §10).
+// running inference (docs/design/surfaces/auto-router.md §10).
 //
 // WHY accept the real request body: agents can paste the exact chat/generate payload they
 // are about to send (native or OpenAI-shaped) and get the decision the in-band rewrite would

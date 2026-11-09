@@ -149,7 +149,7 @@ func speechRouteSignals(req openai.SpeechCreateRequest, surface autoroute.Surfac
 	return autoroute.Signals{Surface: surface, Text: req.Input, Voice: req.Voice}
 }
 
-// decisionsRouteSignals picks a decider deterministically (docs/auto-router.md §6.11):
+// decisionsRouteSignals picks a decider deterministically (docs/design/surfaces/auto-router.md §6.11):
 // images need a multimodal score encoding (clef); calibrated deciders rank above
 // uncalibrated ones; Laya's trained boolean head is preferred for noul questions.
 func decisionsRouteSignals(req api.DecisionsRequest) autoroute.Signals {

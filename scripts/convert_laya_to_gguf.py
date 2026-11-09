@@ -14,7 +14,7 @@ LLM_ARCH_LAYA (laya.type_embd, laya.head.%d.*, laya.scorer.*, laya.act.*).
 WHY arch=laya (not modern-bert): RANK/embed pooling cannot expose per-MASK logits
 + act head. WHY key names: SWA RoPE must be laya.rope.freq_base_swa (not
 laya.attention.rope.…); silent GGUF key misses corrupt SWA RoPE. Prefer cfg n_act
-when set. Docs: docs/laya-llama-cpp.md · findings.
+when set. Docs: docs/design/surfaces/laya-llama-cpp.md · findings.
 """
 from __future__ import annotations
 

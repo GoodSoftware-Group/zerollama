@@ -1,5 +1,5 @@
 /* DiT FFN-linear fragment + dit_pager — unlock proof with bank_evict coupling.
- * See docs/cuda-uma-toolkit.md */
+ * See docs/design/serving/cuda-uma-toolkit.md */
 #include "dit_pager.h"
 #include "dit_resident.h"
 #include "wan_backend.h"

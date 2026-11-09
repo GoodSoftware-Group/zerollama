@@ -107,7 +107,7 @@ _emit_asm_chunk() {
 
   # Eliza TBQ/QJL/polar: only emit when listed in GGML_METAL_LIBS (device.m).
   # Concatenating onto misc redefines block_qjl1_256 and fails JIT — see
-  # docs/apple-silicon-metal.md. Sources live in eliza-shipped/ for metallib builds.
+  # docs/design/apple/apple-silicon-metal.md. Sources live in eliza-shipped/ for metallib builds.
   :
 } > "${ASM_OUT}"
 

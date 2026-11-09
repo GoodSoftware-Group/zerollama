@@ -17,7 +17,7 @@ What still lives here:
 Protocol notes:
   - Historical deployments spoke JSON + newlines over TCP directly to a Python listener; that
     wire format is now implemented in Go (``x/trainingworker``) for backward compatibility.
-  - Internal Go↔Python uses the Python C API and a small bootstrap script; see docs/gpu-training.md.
+  - Internal Go↔Python uses the Python C API and a small bootstrap script; see docs/design/training/gpu-training.md.
 
 Environment:
   - TRAINING_WORKER_IDLE_UNLOAD_SEC (default 300): after each train job, unload the cached

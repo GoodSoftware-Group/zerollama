@@ -1,0 +1,26 @@
+# Media
+
+Video, music, image, mesh, and voice.
+
+- [ComfyUI image backend (agent-max utility)](./comfyui-image-backend.md)
+- [DiT resident pager (x/dit_pager)](./dit-pager.md)
+- [ClipProj — small Qwen3-VL → MiniMax-H3 conditioning](./h3-clipproj.md)
+- [MiniMax-H3 CUDA engine research (from antirez/h3.c)](./h3-cuda-port.md)
+- [MLX image generation — Z-Image Turbo (x/z-image-turbo)](./imagegen-zimage-turbo.md)
+- [LTX text-to-video (zerollama v1.4 slice)](./ltx-t2v.md)
+- [Media uploads (/v1/media)](./media-uploads.md)
+- [Local GLB generation (TRELLIS lab)](./mesh-gen.md)
+- [mtmd grid_thw forward handoff](./mtmd-grid-thw-handoff.md)
+- [Optional multimodal backends](./multimodal-backends.md)
+- [MiniMax Music 3 — findings & learnings](./music-c-findings.md)
+- [music-c — MiniMax Music 3 (hear first, C later)](./music-c.md)
+- [Quick voice stack](./quick-voice.md)
+- [Stable Diffusion on Intel Arc A380 (OpenVINO GenAI)](./sd-openvino-a380.md)
+- [Stable Diffusion on Intel Arc A380 (Vulkan)](./sd-vulkan-a380.md)
+- [video-c — Pure-C multi-family video (x/video-c)](./video-c.md)
+- [Video parity matrix (native VLM vs optional SGLang)](./video-parity.md)
+- [Video understanding (VLM)](./video-understanding.md)
+- [Blow-away Python — idea scorecard (2026-08-09)](./wan-c-blowaway-ideas.md)
+- [Wan Pure-C client → video-c](./wan-c.md)
+- [Wan CPU worker (optional accelerator) — plan](./wan-cpu-worker.md)
+- [Wan text-to-video (zerollama)](./wan-t2v.md)

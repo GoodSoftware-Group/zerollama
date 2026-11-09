@@ -4,7 +4,7 @@
 //
 // Why not CGO in zerollama: private _ANEClient APIs break across macOS updates;
 // isolating compile/eval in tools/ane-probe keeps the main binary stable and lets
-// doctor warn without blocking serve. See docs/ane-probe.md.
+// doctor warn without blocking serve. See docs/research/ane-probe.md.
 package discover
 
 import (
@@ -72,7 +72,7 @@ func RunANEProbe(ctx context.Context, w io.Writer) error {
 
 	bin := FindANEProbeBin()
 	if bin == "" {
-		return fmt.Errorf("ane-probe binary not found — run ./scripts/ane_probe_build.sh (set ANE_REPO if needed)")
+		return fmt.Errorf("ane-probe binary not found — run ./scripts/ane/ane_probe_build.sh (set ANE_REPO if needed)")
 	}
 
 	if ctx == nil {

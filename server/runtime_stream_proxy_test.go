@@ -74,6 +74,31 @@ func TestRuntimeGenerateStreamProxy(t *testing.T) {
 	}
 }
 
+func TestRuntimeGenerateStreamKeepsSidecarStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rt := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "legacy think", http.StatusNotImplemented)
+	}))
+	defer rt.Close()
+	t.Setenv("ZEROLLAMA_RUNTIME_URL", rt.URL)
+	t.Setenv("ZEROLLAMA_RUNTIME", "1")
+	t.Setenv("OLLAMA_RUNTIME_ALL", "1")
+
+	s := &Server{}
+	r := gin.New()
+	r.POST("/api/generate", s.runtimeGenerateProxy(), func(c *gin.Context) {
+		c.JSON(http.StatusTeapot, gin.H{"error": "legacy"})
+	})
+	body := `{"model":"m","prompt":"hi","stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/generate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status %d body %s", w.Code, w.Body.String())
+	}
+}
+
 func TestRuntimeGenerateStreamDefaultNil(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	called := false

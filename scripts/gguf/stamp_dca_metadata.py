@@ -7,7 +7,7 @@ recorded for re-stamp / debugging.
 
 Native path: patched llama-server (llama/patches 0095–0097) reads
 {arch}.attention.dca.* and runs DualChunk RoPE + 3× FA. SGLang is the logit
-oracle only (docs/dca-dual-chunk-attention.md, scripts/dca_oracle_logits.py).
+oracle only (docs/design/serving/dca-dual-chunk-attention.md, scripts/dca_oracle_logits.py).
 
 Usage:
   python3 scripts/gguf/stamp_dca_metadata.py \\

@@ -2,7 +2,7 @@
 //
 // Why subprocess (not CGO in zerollama): private _ANEClient APIs break on macOS updates;
 // this binary isolates compile/eval risk. Compiles a tiny 1x1 conv MIL program, runs eval,
-// prints JSON on stdout for discover/ProbeANE. See docs/ane-probe.md.
+// prints JSON on stdout for discover/ProbeANE. See docs/research/ane-probe.md.
 //
 // Build: make -C tools/ane-probe  (requires ANE_REPO with bridge built)
 

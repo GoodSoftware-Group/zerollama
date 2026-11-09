@@ -17,7 +17,7 @@ import (
 	"github.com/ollama/ollama/types/model"
 )
 
-// Multi-question jev routing (docs/auto-router.md AR5). Opt-in: a classifier: jev router
+// Multi-question jev routing (docs/design/surfaces/auto-router.md AR5). Opt-in: a classifier: jev router
 // with a non-empty questions list. One /v1/decisions batch answers every question; the
 // answers become a fit score and an escalation gate over the router's candidates, and the
 // deterministic engine (capability filters, availability, residency) makes the final pick.

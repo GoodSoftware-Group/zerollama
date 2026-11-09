@@ -19,4 +19,4 @@ echo "== Phase 17 Linux auto smoke (plain zerollama serve) =="
 
 echo ""
 echo "PASS: phase17_linux_auto_smoke (${P17_OUT})"
-echo "Doc: docs/phase17-llama-server.md"
+echo "Doc: docs/design/serving/phase17-llama-server.md"

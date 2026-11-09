@@ -6,7 +6,7 @@
 # Install: cp scripts/serve/serve_production_wrapper.sh ~/bin/serve.sh
 #
 # In-repo debug: SERVE_LOG=/tmp/zerollama-serve.log bash scripts/serve/serve_gpu_example.sh
-# Doc: docs/5080-runbook.md#production-serve-binserve-sh
+# Doc: docs/runbooks/5080-runbook.md#production-serve-binserve-sh
 set -euo pipefail
 
 # shellcheck source=scripts/serve/refuse_pve_host.sh
@@ -66,7 +66,7 @@ export ZEROLLAMA_RUNTIME_VRAM_ESTIMATE_FACTOR_AUTOTUNE="${ZEROLLAMA_RUNTIME_VRAM
 # Jul 2026 llama-bench: Llama-3.1-8B q8_0 beats f16 tg on this card — keep stock path.
 # Phase 17 Go→llama-server also reads this JSON (llm/gpu_profile.go) — same knobs as Python.
 #
-# Prefer ONE lane over flag soup (see docs/gpu-profiles-l1.md):
+# Prefer ONE lane over flag soup (see docs/design/serving/gpu-profiles-l1.md):
 #   ZEROLLAMA_INFERENCE_PROFILE=auto|throughput|agent|vram|off
 # auto → throughput: L1 on, FORK off, L3 cache on, CUDA graphs off.
 # agent → + Radix / L3_PROFILE=agent + l3_agent_subprocess.yaml (multi-slot).
@@ -124,7 +124,7 @@ fi
 export ZEROLLAMA_BIN
 
 # WHY embed PYTHONPATH: training + runtime share one CPython; uvicorn in runtime/.venv,
-# torch in .venv-training (same order as scripts/gpu/5080_env.sh). See docs/gpu-training.md.
+# torch in .venv-training (same order as scripts/gpu/5080_env.sh). See docs/design/training/gpu-training.md.
 # shellcheck source=scripts/training/training_uv_venv.sh disable=SC1091
 source "${_ROOT}/scripts/training/training_uv_venv.sh"
 _EMBED_PY="$(embedded_training_python_ver)"
@@ -169,7 +169,7 @@ export ZEROLLAMA_GGML_CLAMP_NUM_CTX="${ZEROLLAMA_GGML_CLAMP_NUM_CTX:-1}"
 # CUDA libs for ggml cuda_v13 (5080 / Blackwell). Override to cuda_v12 paths on older GPUs.
 # /usr/hostlibs may expose libcudnn older than PyTorch in the Wan venv; keep hostlibs for
 # ggml. Wan run_script subprocesses sanitize LD (prepend venv torch/lib, drop hostlibs).
-# See docs/wan-t2v.md troubleshooting: "cuDNN version incompatibility".
+# See docs/design/media/wan-t2v.md troubleshooting: "cuDNN version incompatibility".
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/root/nvidia-host:/usr/hostlibs:/usr/local/cuda/targets/x86_64-linux/lib:/usr/local/cuda-13.3/targets/x86_64-linux/lib}"
 # ggml CUDA backend (chat/completion runners). Discovery honors this even when
 # the binary is run/zerollama (no ../lib/ollama). Without these dirs, ggml is CPU-only on 5080.
@@ -220,7 +220,7 @@ export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda-12.8}"
 export CUDA_PATH="${CUDA_PATH:-$CUDA_HOME}"
 
 # Wan T2V on 16g / SM120 (5080 class); unset to use manifest-only defaults.
-# VAE_CPU default 0 — CPU VAE spikes host RAM and OOMs ~24G CTs (see docs/wan-t2v.md).
+# VAE_CPU default 0 — CPU VAE spikes host RAM and OOMs ~24G CTs (see docs/design/media/wan-t2v.md).
 export ZEROLLAMA_WAN_FORCE_SDPA="${ZEROLLAMA_WAN_FORCE_SDPA:-1}"
 # Prefer GPU VAE under mmgp (Go planWanHost); CPU VAE + mmgp thrash ≤24 GiB host.
 export ZEROLLAMA_WAN_VAE_CPU="${ZEROLLAMA_WAN_VAE_CPU:-0}"

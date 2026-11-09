@@ -6,7 +6,7 @@
 # Go / cmake / pkg-config / uv are installed user-local by mac_host_deps.sh
 # when MAC_SETUP_HOST_DEPS=1 (dev_bootstrap default).
 #
-# See docs/mac-dev-setup.md for the full script map (post-reorg paths).
+# See docs/runbooks/mac-dev-setup.md for the full script map (post-reorg paths).
 #
 # Usage:
 #   ./scripts/runtime/dev_bootstrap.sh          # recommended for fresh clones

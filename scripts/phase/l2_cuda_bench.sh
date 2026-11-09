@@ -538,4 +538,4 @@ trap - EXIT
 echo ""
 echo "PASS: l2_cuda_bench (${L2_OUT})"
 echo "Next: RUN_E2E_QWEN35=1 qwen35 smoke on each binary; raise L2_NUM_CTX for long-ctx gate."
-echo "Doc: docs/gpu-profiles-l2.md"
+echo "Doc: docs/design/serving/gpu-profiles-l2.md"

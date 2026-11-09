@@ -66,7 +66,7 @@ def _inference_profile_note() -> dict:
         "requested": requested,
         "resolved": resolved,
         "would_soft_set_if_unset": would_apply,
-        "doc": "docs/gpu-profiles-l1.md — prefer INFERENCE_PROFILE over flag soup",
+        "doc": "docs/design/serving/gpu-profiles-l1.md — prefer INFERENCE_PROFILE over flag soup",
     }
 
 root = resolve_llama_cpp_root()

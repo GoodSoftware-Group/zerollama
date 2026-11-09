@@ -12,7 +12,7 @@ package server
 // gateSessionKey         — MLX rewrites aux/bg branches; GGUF preserves client keys
 // agentSessionMetadataEnabled — eliza/prefixHash only for harness/zerollama hints
 //
-// See docs/agent-qos-and-project-tracking.md.
+// See docs/design/serving/agent-qos-and-project-tracking.md.
 
 import (
 	"strings"

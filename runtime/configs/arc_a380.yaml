@@ -2,7 +2,7 @@
 # WHY separate from single_gpu.yaml: no NVIDIA NVML; production inference is ggml Vulkan, not CUDA llama-server.
 # Research: ~/bmtl/asm_lab/lanes/arc-a380 — partial num_gpu / -ngl cliff, load_ms tax, Q8_0 fixtures.
 # Disable L1: ZEROLLAMA_GPU_PROFILE=0. Force profile: ZEROLLAMA_GPU_PROFILE_ID=arc-a380.
-# Doc: docs/a380-runbook.md
+# Doc: docs/runbooks/a380-runbook.md
 device_count: 1
 tensor_parallel: 1
 split_mode: layer

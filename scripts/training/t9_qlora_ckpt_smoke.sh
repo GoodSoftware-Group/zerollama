@@ -9,7 +9,7 @@
 #   RUN_E2E_T9=1 CUDA_VISIBLE_DEVICES=1 ./scripts/training/t9_qlora_ckpt_smoke.sh
 #     → tiny QLoRA + gradient_checkpointing train step (needs .venv-training)
 #
-# Doc: docs/gpu-training.md · ROADMAP T9
+# Doc: docs/design/training/gpu-training.md · ROADMAP T9
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"

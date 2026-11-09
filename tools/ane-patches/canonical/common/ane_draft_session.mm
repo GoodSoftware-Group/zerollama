@@ -3760,7 +3760,7 @@ bool ane_draft_session_eval_dflash_ffn_gate(void) {
     // e.g. 5120 -> 17408). This step used to write directly without growing outBuf first — a real
     // heap buffer overflow (~3.4x the allocation for chain 17's shapes), consistent with the FAR
     // fault-address pattern seen across the original crash investigation (see
-    // docs/ane-draft-inprocess.md). Now routed through ane_session_ensure_out_buf() like every
+    // docs/research/ane-draft-inprocess.md). Now routed through ane_session_ensure_out_buf() like every
     // other row-dim-changing write in this file.
     if (!ane_session_ensure_out_buf(gate_bytes)) {
         return false;
@@ -3931,7 +3931,7 @@ bool ane_draft_session_eval_dflash_attn_post_norm(void) {
 // INVARIANT: any code that is about to write `new_bytes` worth of floats into outBuf MUST call
 // this first — do not `calloc`/`free` outBuf ad hoc or assume it is already big enough because a
 // same-named session field (matmulNOc, etc.) "should" match. A missing check here was the root
-// cause of the P70/P71 chain-17 SIGSEGV investigation (see docs/ane-draft-inprocess.md): the
+// cause of the P70/P71 chain-17 SIGSEGV investigation (see docs/research/ane-draft-inprocess.md): the
 // ffn_gate step wrote 17408*seq floats into an outBuf still sized for the prior 5120*seq step, a
 // ~3.4x heap overflow. Returns false (and leaves outBuf untouched) only on allocation failure.
 static bool ane_session_ensure_out_buf(size_t new_bytes) {

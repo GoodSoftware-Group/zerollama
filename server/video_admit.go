@@ -129,7 +129,7 @@ func wanOMPThreads() int {
 
 // videoBackendErr rejects video_generation backends the handler cannot run.
 // WHY shared: the auto-router filters video_gen candidates with the same rule the
-// handler enforces (docs/auto-router.md §6.5), so a routed request never 400s here.
+// handler enforces (docs/design/surfaces/auto-router.md §6.5), so a routed request never 400s here.
 func videoBackendErr(backend string) error {
 	switch backend {
 	case model.BackendWan, model.BackendLTX, model.BackendH3:

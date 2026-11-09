@@ -21,7 +21,7 @@ Run **zero-shot NER** on [zerollama](https://github.com/GoodSoftware-Group/zerol
 | `POST /v1/extract` | Portable agents — `{text, labels, threshold?}` |
 | `POST /v1/gliner` | Need GLiNER.cpp knobs — `max_width`, `max_length`, `model_type`, `device_id`, `flat_ner`, `multi_label` |
 
-Requires `ZEROLLAMA_GLINER_URL` → sibling `gliner-server` (lab `:18094`). Docs: [gliner-cpp.md](../../docs/gliner-cpp.md).
+Requires `ZEROLLAMA_GLINER_URL` → sibling `gliner-server` (lab `:18094`). Docs: [gliner-cpp.md](../../docs/design/surfaces/gliner-cpp.md).
 
 **Why not `/v1/decisions`:** spans ≠ choice/score/noul.
 
@@ -113,4 +113,4 @@ curl -s http://127.0.0.1:11438/v1/gliner -H 'content-type: application/json' -d 
 
 ## Related
 
-- [gliner-cpp.md](../../docs/gliner-cpp.md) · [findings](../../docs/gliner-cpp-findings.md) · ROADMAP **GL\***
+- [gliner-cpp.md](../../docs/design/surfaces/gliner-cpp.md) · [findings](../../docs/design/surfaces/gliner-cpp-findings.md) · ROADMAP **GL\***

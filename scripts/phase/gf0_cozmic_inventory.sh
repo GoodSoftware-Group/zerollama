@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # GF0 — cozmic inventory for glm-flash-lite ladder (read-only).
-# Run ON cozmic (GPU host). Paste output into docs/glm-flash-lite-ladder.md Findings.
+# Run ON cozmic (GPU host). Paste output into docs/research/glm-flash-lite-ladder.md Findings.
 # Never starts serve / docker / downloads.
 set -uo pipefail
 

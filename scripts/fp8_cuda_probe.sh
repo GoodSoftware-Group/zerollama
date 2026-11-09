@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Native FP8 (E4M3/E5M2) CUDA binary probe — no GGUF required.
 #
-# WHY: docs/cuda-lanes.md P1 native FP8 weights. Prove packaged/vendor
+# WHY: docs/design/serving/cuda-lanes.md P1 native FP8 weights. Prove packaged/vendor
 # libggml-cuda embeds FP8 type/kernel markers (MMVQ/MMQ + convert).
 #
 #   ./scripts/fp8_cuda_probe.sh
@@ -9,8 +9,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/linux_runtime_serve_lib.sh
-source "${ROOT}/scripts/linux_runtime_serve_lib.sh"
+# shellcheck source=scripts/runtime/linux_runtime_serve_lib.sh
+source "${ROOT}/scripts/runtime/linux_runtime_serve_lib.sh"
 
 if [[ -z "${LLAMA_CPP_ROOT:-}" ]]; then
   if root="$(l1_vendor_llama_cpp_root "${ROOT}" 2>/dev/null)"; then
@@ -90,4 +90,4 @@ if [[ -x "${LLAMA_SERVER_BIN}" ]]; then
 fi
 
 echo "PASS: fp8_cuda_probe (E4M3+E5M2 markers present)"
-echo "Doc: docs/cuda-lanes.md (P1 Native FP8 weights)"
+echo "Doc: docs/design/serving/cuda-lanes.md (P1 Native FP8 weights)"

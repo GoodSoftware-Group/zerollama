@@ -56,7 +56,7 @@ rather than assuming the request shape is wrong.
 ## Prerequisites
 
 - `OLLAMA_TRAINING=true` (default when the embedded PyTorch worker is
-  available) — training venv set up per `docs/gpu-training.md`
+  available) — training venv set up per `docs/design/training/gpu-training.md`
   (`.venv-training`, uv-managed, ABI-matched to the embedded `libpython3.X`)
 - GPU (CUDA) for QLoRA; LoRA works on CUDA or Apple Silicon MPS (QLoRA is
   CUDA-only — `bitsandbytes`)
@@ -224,7 +224,7 @@ quantization issue.
 - **Training venv ABI must match the embedded interpreter** — `No module
   named 'torch'` or `Failed to load PyTorch C extensions` almost always
   means `.venv-training`'s Python version doesn't match the linked
-  `libpython3.X`; see `docs/gpu-training.md` troubleshooting table.
+  `libpython3.X`; see `docs/design/training/gpu-training.md` troubleshooting table.
 
 ## Related
 

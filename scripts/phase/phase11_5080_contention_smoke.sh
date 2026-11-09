@@ -20,7 +20,7 @@
 #
 # Pass: normal requests must not be systematically 503'd by inference-first
 # mirrors; VRAM probe must not be misconfigured when checks are on.
-# Doc: docs/phase11-runtime-admission.md
+# Doc: docs/design/serving/phase11-runtime-admission.md
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -307,7 +307,7 @@ artifact = {
     "warnings": warns,
     "fail_reasons": fail_reasons,
     "verdict": "FAIL" if fail_reasons else "PASS",
-    "doc": "docs/phase11-runtime-admission.md",
+    "doc": "docs/design/serving/phase11-runtime-admission.md",
 }
 
 with open(out_path, "w", encoding="utf-8") as f:

@@ -2,7 +2,7 @@
 //
 // Video: raw containers are expanded to raster frames here (not in the OpenAI layer) so ffmpeg,
 // caps, and policy stay in one place, and this package can depend on [types/model.ConfigV2] without
-// importing server.Model (avoids cycles and keeps tests small). See docs/video-understanding.md
+// importing server.Model (avoids cycles and keeps tests small). See docs/design/media/video-understanding.md
 // for why merges, sampling modes, and preflight work the way they do.
 package modality
 

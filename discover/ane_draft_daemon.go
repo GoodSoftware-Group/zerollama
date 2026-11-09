@@ -18,19 +18,19 @@ const aneDraftDaemonTimeout = 180 * time.Second
 
 // ANEDraftDaemonReady is the first JSON line from ane-draft-daemon.
 type ANEDraftDaemonReady struct {
-	OK            bool    `json:"ok"`
-	Event         string  `json:"event"`
-	Mode          string  `json:"mode"`
-	Channels      int     `json:"channels"`
-	Spatial       int     `json:"spatial"`
-	SurfaceID     uint32  `json:"surface_id"`
-	SurfaceBytes  int     `json:"surface_bytes"`
-	CompileMS     float64 `json:"compile_ms"`
-	CompileCount  int     `json:"compile_count"`
-	WeightSource  string  `json:"weight_source,omitempty"`
-	Source        string  `json:"source"`
-	Note          string  `json:"note,omitempty"`
-	Error         string  `json:"error,omitempty"`
+	OK           bool    `json:"ok"`
+	Event        string  `json:"event"`
+	Mode         string  `json:"mode"`
+	Channels     int     `json:"channels"`
+	Spatial      int     `json:"spatial"`
+	SurfaceID    uint32  `json:"surface_id"`
+	SurfaceBytes int     `json:"surface_bytes"`
+	CompileMS    float64 `json:"compile_ms"`
+	CompileCount int     `json:"compile_count"`
+	WeightSource string  `json:"weight_source,omitempty"`
+	Source       string  `json:"source"`
+	Note         string  `json:"note,omitempty"`
+	Error        string  `json:"error,omitempty"`
 }
 
 // ANEDraftDaemonBench is JSON from bench/eval responses.
@@ -55,18 +55,18 @@ type ANEDraftDaemonBench struct {
 
 // ANEDraftDaemonSmokeResult compares compile-once session vs one-shot handoff.
 type ANEDraftDaemonSmokeResult struct {
-	OK              bool                    `json:"ok"`
-	Mode            string                  `json:"mode"`
-	Tag             string                  `json:"tag,omitempty"`
-	ProxyChannels   int                     `json:"proxy_channels"`
-	ProxySpatial    int                     `json:"proxy_spatial"`
-	Ready           ANEDraftDaemonReady     `json:"ready"`
-	FirstBench      ANEDraftDaemonBench     `json:"first_bench"`
-	SecondBench     ANEDraftDaemonBench     `json:"second_bench"`
-	OneShotHandoff  ANEMetalHandoffResult   `json:"one_shot_handoff"`
-	KernelReused    bool                    `json:"kernel_reused"`
-	Note            string                  `json:"note,omitempty"`
-	Error           string                  `json:"error,omitempty"`
+	OK             bool                  `json:"ok"`
+	Mode           string                `json:"mode"`
+	Tag            string                `json:"tag,omitempty"`
+	ProxyChannels  int                   `json:"proxy_channels"`
+	ProxySpatial   int                   `json:"proxy_spatial"`
+	Ready          ANEDraftDaemonReady   `json:"ready"`
+	FirstBench     ANEDraftDaemonBench   `json:"first_bench"`
+	SecondBench    ANEDraftDaemonBench   `json:"second_bench"`
+	OneShotHandoff ANEMetalHandoffResult `json:"one_shot_handoff"`
+	KernelReused   bool                  `json:"kernel_reused"`
+	Note           string                `json:"note,omitempty"`
+	Error          string                `json:"error,omitempty"`
 }
 
 // FindANEDraftDaemonBin locates the persistent draft daemon binary.
@@ -99,7 +99,7 @@ func startDraftDaemonSessionOpts(ctx context.Context, channels, spatial int, lon
 	}
 	bin := FindANEDraftDaemonBin()
 	if bin == "" {
-		return nil, ANEDraftDaemonReady{}, fmt.Errorf("ane-draft-daemon not found — run ./scripts/ane_probe_build.sh")
+		return nil, ANEDraftDaemonReady{}, fmt.Errorf("ane-draft-daemon not found — run ./scripts/ane/ane_probe_build.sh")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -263,7 +263,7 @@ func ProbeANEDraftDaemonBench(ctx context.Context, channels, spatial int, quick 
 	}
 	bin := FindANEDraftDaemonBin()
 	if bin == "" {
-		return ANEDraftDaemonBench{}, fmt.Errorf("ane-draft-daemon not found — run ./scripts/ane_probe_build.sh")
+		return ANEDraftDaemonBench{}, fmt.Errorf("ane-draft-daemon not found — run ./scripts/ane/ane_probe_build.sh")
 	}
 	args := []string{"--bench", "--iters", fmt.Sprintf("%d", draftDaemonBenchIters(quick))}
 	if channels > 0 {
