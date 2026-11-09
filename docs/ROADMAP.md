@@ -15,6 +15,7 @@ This file is the **executive roadmap**: a short view of what matters next.
 - **Surfaces and integrations:** Eliza route hardening, **LAYA1/LAYA2**, and the **AR7** auto-router gate. Details: [surfaces-and-integrations.md](roadmaps/surfaces-and-integrations.md#zerollama-remote-cloud-eliza), [structured surfaces](roadmaps/surfaces-and-integrations.md#structured-inference-surfaces).
 - **Training and scheduling:** **T9 → T10 → T11 → T6**, plus **SL1/SL2** Slurm follow-through. Details: [training-and-scheduling.md](roadmaps/training-and-scheduling.md#gpu-training-fine-tuning), [Slurm](roadmaps/training-and-scheduling.md#slurm).
 - **Media:** Wan cancel / TTL, `mmgp` 16 GB offload, first image workflow calibration, and mesh service bake. Details: [media.md](roadmaps/media.md#video-generation--dit-media-toolkit-wan--ltx--h3), [image](roadmaps/media.md#image-generation--mlx-fast-path--comfyui-utility-partial), [mesh](roadmaps/media.md#mesh--glb-generation--trellis-lab-http-not-started).
+- **Audio:** one writer per realtime socket (six `voicepipe` tests fail on master), body caps on the speech endpoints, and Piper plus sidecar lifetime. Details: [media.md](roadmaps/media.md#speech-transcription-and-realtime-voice).
 
 ## Next
 
@@ -30,7 +31,7 @@ This file is the **executive roadmap**: a short view of what matters next.
 - **Surfaces:** **LAYA4** and **AR10** stay parked until the active surfaces justify more investment.
 - **Integrations:** LM Studio fixture cache and MLX compatibility matrix stay later-tier.
 - **Media:** long-tail runner/value expansion and deeper native acceleration stay behind the near-term product backlog.
-- **Code structure:** delete the unused `zzauditvp` voice clone, then collapse the duplicated digest scan and split the oversized serving files (**R1 → R7**). Details: [core-serving.md](roadmaps/core-serving.md#code-structure).
+- **Code structure:** collapse the duplicated digest scan and split the oversized serving files (**R2 → R7**). **R1** (the unused `zzauditvp` voice clone) is done. Details: [core-serving.md](roadmaps/core-serving.md#code-structure).
 
 ## Track roadmaps
 

@@ -37,7 +37,7 @@ Public docs stay in [index.mdx](index.mdx), [docs.json](docs.json), [api/](api),
 * [Core serving roadmap](roadmaps/core-serving.md) — local inference, runtime, and product-track Apple serving.
 * [Surfaces and integrations roadmap](roadmaps/surfaces-and-integrations.md) — Eliza cloud, structured inference surfaces, and LM Studio.
 * [Training and scheduling roadmap](roadmaps/training-and-scheduling.md) — queue policy, Slurm, and GPU training.
-* [Media roadmap](roadmaps/media.md) — video, music, image, and mesh backlog.
+* [Media roadmap](roadmaps/media.md) — video, music, image, mesh, and the local audio stack.
 
 ### Capabilities
 

@@ -104,11 +104,11 @@ Research-track Apple items live in [../RESEARCH_ROADMAP.md#apple-silicon--metal-
 
 Structural cleanup from a first-party scan on 9 Nov 2026 (vendored llama.cpp, ggml, and xgrammar left out). These items remove a second copy or pull a self-contained chunk out of a file that has grown past the serving path. They do not change admission, scheduling, or the HTTP wire.
 
-**Suggested order:** **R1 → R2 → R3 → R4 → R5 → R6 → R7**. **R8–R10** wait until someone is already editing that file.
+**Suggested order:** **R2 → R3 → R4 → R5 → R6 → R7**. **R8–R10** wait until someone is already editing that file.
 
 | ID | Status | Open work |
 |----|--------|-----------|
-| **R1** | **Open** | Delete `server/zzauditvp`. It is a byte-identical copy of `server/voicepipe` (14 files, still `package voicepipe`, including the 2,335-line session test). Nothing imports it. |
+| **R1** | **Done** | `server/zzauditvp` is deleted. It was a byte-identical copy of `server/voicepipe` and nothing imported it. The six failing duplex tests stay in `server/voicepipe` ([media.md](media.md#speech-transcription-and-realtime-voice), **A1**). |
 | **R2** | **Open** | One digest scan. `blobNamesInManifest` (`server/remotestore/invariants.go`) and `extractDigestsFromJSON` (`server/remotestore/storaged/ops.go`) walk `sha256:` and `sha256-` the same way. Garbage collection and fetch call one function. |
 | **R3** | **Open** | Pull health out of `runtime/runtime/engine.py` (3,800 lines). `_health_body` and the `_kv_*_health` helpers are about 1,200 lines of snapshot building inside the load and decode class. |
 | **R4** | **Open** | Share the batch preamble in `engine.py`. `generate_batch` (197 lines) and `stream_generate_batch` (212 lines) both import the same invariants and both take the same serial fallback before admit. |
