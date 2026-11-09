@@ -65,6 +65,12 @@ def chat_needs_legacy(
 
 
 def messages_to_prompt(messages: list[dict[str, Any]]) -> str:
+    """Legacy role-line prompt when Go Modelfile render is unavailable.
+
+    Do not use this for models that ship a real chat template (ChatML, Llama,
+    …). Spoken duplex and /api/chat must call :func:`resolve_chat_prompt` so
+    the model does not continue ``User:`` / ``Assistant:`` stage directions.
+    """
     parts: list[str] = []
     for m in messages:
         role = str(m.get("role", "")).lower()
@@ -78,3 +84,35 @@ def messages_to_prompt(messages: list[dict[str, Any]]) -> str:
         else:
             parts.append(content)
     return "\n".join(parts).strip()
+
+
+def resolve_chat_prompt(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    think: Any = None,
+    num_ctx: int | None = None,
+    n_predict: int | None = None,
+) -> str:
+    """Modelfile / builtin template via Go ``/internal/render-chat``, else legacy lines.
+
+    Uses ``truncate=false`` so Go skips Python vocab tokenize. Why: on this host
+    in-process libllama SEGV's the runtime; token-accurate truncate is unsafe
+    until that path is fixed. Duplex history is short; ChatML matters more than
+    prefix drop. Legacy ``User:`` / ``Assistant:`` makes the ear speak role labels.
+    """
+    from runtime.go_render_chat import render_chat_via_go
+
+    rendered = render_chat_via_go(
+        model,
+        messages,
+        think=think,
+        num_ctx=num_ctx,
+        num_predict=n_predict,
+        truncate=False,
+    )
+    if rendered:
+        prompt = rendered.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            return prompt
+    return messages_to_prompt(messages)

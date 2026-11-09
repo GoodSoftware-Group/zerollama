@@ -173,6 +173,8 @@ func applyServeEnv(serve map[string]any, configName string) {
 		{"max_queue", "OLLAMA_MAX_QUEUE"},
 		{"llama_fork", "ZEROLLAMA_LLAMA_FORK"},
 		{"llama_fork_profile", "ZEROLLAMA_LLAMA_FORK_PROFILE"},
+		{"talk_gpu", "ZEROLLAMA_TALK_GPU"},
+		{"see_gpu", "ZEROLLAMA_SEE_GPU"},
 	} {
 		if strings.TrimSpace(os.Getenv(m.envKey)) != "" {
 			continue

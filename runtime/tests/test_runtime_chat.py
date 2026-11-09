@@ -2,10 +2,13 @@ from fastapi.testclient import TestClient
 
 from runtime.config import RuntimeConfig
 from runtime.server.app import create_app
+from unittest.mock import patch
+
 from runtime.server.runtime_chat import (
     chat_needs_legacy,
     message_content_text,
     messages_to_prompt,
+    resolve_chat_prompt,
 )
 
 
@@ -41,6 +44,25 @@ def test_messages_to_prompt_multipart_text():
         [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
     )
     assert prompt == "User: hello"
+
+
+def test_resolve_chat_prompt_uses_go_render():
+    messages = [{"role": "user", "content": "hi"}]
+    with patch(
+        "runtime.go_render_chat.render_chat_via_go",
+        return_value={"prompt": "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n"},
+    ) as render:
+        prompt = resolve_chat_prompt("qwen2.5:14b", messages, num_ctx=8192, n_predict=48)
+    assert prompt.startswith("<|im_start|>user")
+    assert render.call_count == 1
+    assert render.call_args.args[0] == "qwen2.5:14b"
+    assert render.call_args.kwargs.get("truncate") is False
+
+
+def test_resolve_chat_prompt_falls_back_to_legacy_lines():
+    messages = [{"role": "user", "content": "hi"}]
+    with patch("runtime.go_render_chat.render_chat_via_go", return_value=None):
+        assert resolve_chat_prompt("m", messages) == "User: hi"
 
 
 def test_chat_needs_legacy_openai_vision_parts():

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -39,10 +40,11 @@ func (s *Server) prepareRuntimeVRAM(ctx context.Context, reqGGUF string, forceUn
 	if s != nil && s.sched != nil {
 		ev = s.sched
 	}
-	// WHY ggml-empty gate: skipping unload while ggml still holds VRAM risks OOM when
-	// llama-server grows KV / loads alongside leftover runners.
-	skip := !forceUnload && runtimeGGUFAlreadyResident(ctx, reqGGUF) && !s.ggmlRunnersLoaded()
-	if skip {
+	// The resident runtime GGUF already paid for its weights and KV. Ggml peers that
+	// loaded into the remaining VRAM stay. A different GGUF still clears ggml below,
+	// because Python keeps a single llama-server.
+	if !forceUnload && runtimeGGUFAlreadyResident(ctx, reqGGUF) {
+		slog.Info("runtime GGUF already resident; keeping ggml peers", "gguf", reqGGUF, "ggml_loaded", s.ggmlRunnersLoaded())
 		runtimeclient.ResumeInference(ctx)
 		return nil
 	}

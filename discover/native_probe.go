@@ -86,6 +86,7 @@ func discoverNativeDevices(ctx context.Context, llamaServer string, libDirs []st
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.WaitDelay = llamaServerDiscoveryWaitDelay
 	llm.SetupLlamaServerCommandEnv(cmd, llamaServer, libDirs, extraEnvs)
+	cmd.Env = llm.StripModelDevicePins(cmd.Env)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

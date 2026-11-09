@@ -12,6 +12,10 @@ Type=simple
 User=ollama
 Group=ollama
 Environment="LLAMA_SERVER_BIN=/opt/zerollama/llama-server-b12119/llama-server"
+# Go API on this host is :2083 (not the default :11434 ollama.service).
+# Why: plain /api/chat calls /internal/render-chat for ChatML; without this URL
+# the runtime defaults to :11434 and falls back to User:/Assistant: lines.
+Environment="ZEROLLAMA_GO_URL=http://127.0.0.1:2083"
 Environment="ZEROLLAMA_RUNTIME_CONFIG=/opt/zerollama/runtime/configs/dual_4090.yaml"
 Environment="ZEROLLAMA_AUTO_CONFIG=1"
 Environment="ZEROLLAMA_GPU_PROFILE=1"

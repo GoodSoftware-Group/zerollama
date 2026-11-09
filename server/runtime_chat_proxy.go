@@ -5,11 +5,13 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/internal/runtimeclient"
+	"github.com/ollama/ollama/server/vram"
 )
 
 // runtimeChatProxy forwards /api/chat to the Python runtime when eligible (streaming or not).
@@ -58,6 +60,21 @@ func (s *Server) runtimeChatProxy() gin.HandlerFunc {
 			c.Set("request_timeout", req.Timeout)
 		}
 		if len(req.Messages) == 0 && req.KeepAlive != nil && req.KeepAlive.Duration == 0 {
+			// Runtime-routed tags have no ggml runner. expireRunner in ChatHandler
+			// would report unload and leave llama-server resident. Release that
+			// GGUF only; other loaded models stay.
+			if resolveRuntimeProxy(c, req.Model, req.Options) {
+				vram.ReleaseRuntimeVRAM(c.Request.Context())
+				c.JSON(http.StatusOK, api.ChatResponse{
+					Model:      req.Model,
+					CreatedAt:  time.Now().UTC(),
+					Message:    api.Message{Role: "assistant"},
+					Done:       true,
+					DoneReason: "unload",
+				})
+				c.Abort()
+				return
+			}
 			c.Next()
 			return
 		}

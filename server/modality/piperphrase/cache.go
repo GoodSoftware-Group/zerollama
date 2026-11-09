@@ -26,6 +26,18 @@ func Fillers() []string {
 	}
 }
 
+// Hesitation is the non-lexical hold spoken after a duplex commit when the
+// model's opening clause is not ready yet.
+func Hesitation() string {
+	return "um"
+}
+
+// HoldMore is the second hold after Hesitation finishes and the opening is
+// still missing. It is also listed in Fillers.
+func HoldMore() string {
+	return "One moment."
+}
+
 const phraseMaxRunes = 48
 
 var (

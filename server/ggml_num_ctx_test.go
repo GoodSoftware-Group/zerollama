@@ -280,8 +280,8 @@ func TestGgmlArchitectureForcesParallelOne(t *testing.T) {
 }
 
 func TestMetalUmaParallelBudget(t *testing.T) {
-	metal := []ml.DeviceInfo{{Library: "Metal", FreeMemory: 100 * format.GibiByte}}
-	cuda := []ml.DeviceInfo{{Library: "CUDA", FreeMemory: 100 * format.GibiByte}}
+	metal := []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "Metal"}, FreeMemory: 100 * format.GibiByte}}
+	cuda := []ml.DeviceInfo{{DeviceID: ml.DeviceID{Library: "CUDA"}, FreeMemory: 100 * format.GibiByte}}
 	free := uint64(100 * format.GibiByte)
 	if got := metalUmaParallelBudget(cuda, nil, free); got != free {
 		t.Fatalf("non-Metal must pass through: got %d want %d", got, free)

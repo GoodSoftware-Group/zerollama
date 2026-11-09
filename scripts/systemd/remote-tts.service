@@ -1,0 +1,37 @@
+# OpenAI-compatible TTS sidecar for zerollama remote-tts tags (kokoro / chatterbox / …).
+# Install assets: ./scripts/speech/install_kokoro_tts.sh
+#   sudo cp scripts/systemd/remote-tts.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now remote-tts
+#
+# zerollama.service.d/speech-backends.conf sets OLLAMA_TTS_URL=http://127.0.0.1:8090
+# so kokoro:latest (modality_backends.speech=remote-tts) reaches this process.
+# piper-lessac stays on the in-process Piper backend and does not use this port.
+
+[Unit]
+Description=Zerollama remote-tts sidecar (Kokoro on :8090)
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/ollama_img
+Before=zerollama.service
+
+[Service]
+Type=simple
+User=ollama
+Group=ollama
+WorkingDirectory=/mnt/ollama_img/speech/kokoro
+Environment=HOME=/usr/share/ollama
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=TTS_ENGINE=kokoro
+Environment=TTS_HOST=127.0.0.1
+Environment=TTS_PORT=8090
+Environment=TTS_VOICES_DIR=/mnt/ollama_img/speech/voices
+Environment=KOKORO_MODEL=/mnt/ollama_img/speech/kokoro/kokoro-v1.0.onnx
+Environment=KOKORO_VOICES=/mnt/ollama_img/speech/kokoro/voices-v1.0.bin
+# Install copies scripts/tts_remote_server.py here so User=ollama need not read /root.
+ExecStart=/mnt/ollama_img/speech/kokoro/.venv/bin/python /mnt/ollama_img/speech/kokoro/tts_remote_server.py
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

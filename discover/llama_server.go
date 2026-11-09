@@ -78,6 +78,7 @@ func llamaServerDiscoverDevices(ctx context.Context, libDirs []string, extraEnvs
 	cmd.Env = os.Environ()
 
 	llm.SetupLlamaServerCommandEnv(cmd, llamaServer, libDirs, extraEnvs)
+	cmd.Env = llm.StripModelDevicePins(cmd.Env)
 
 	logutil.Trace("running llama-server for discovery", "cmd", cmd.Path, "libDirs", libDirs)
 

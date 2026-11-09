@@ -289,13 +289,72 @@ class InferenceEngine:
         bin_p = self.config.llama_server_bin
         return bin_p is not None and bin_p.is_file()
 
+    def _apply_talk_lane(self, extra_args: list[str]) -> tuple[list[str], dict[str, str]]:
+        """Pin llama-server to the talk GPU when the model fits on that card."""
+        from runtime.gpu_lanes import fits_on_one_gpu, nvidia_total_vram_bytes, pin_talk_lane, talk_lane_candidates
+
+        talk = getattr(self.config, "talk_gpu", None)
+        if talk is None:
+            return extra_args, {}
+        model = getattr(self._server, "model", None)
+        if model is None:
+            return extra_args, {}
+        try:
+            from runtime.gpu_vram import estimate_gguf_vram_bytes
+
+            total = nvidia_total_vram_bytes(int(talk))
+
+            def _estimated(candidate: list[str]) -> int:
+                return estimate_gguf_vram_bytes(
+                    Path(model),
+                    tensor_parallel=1,
+                    llama_args=candidate,
+                    parallel_slots_default=1,
+                )
+
+            chosen = None
+            estimated = None
+            for candidate in talk_lane_candidates(extra_args):
+                estimated = _estimated(candidate)
+                if fits_on_one_gpu(estimated, total):
+                    chosen = candidate
+                    break
+        except Exception as exc:
+            self._log.info("talk lane estimate skipped: %s", exc)
+            return extra_args, {}
+        if chosen is None:
+            self._log.info(
+                "talk lane: model does not fit GPU %s (estimate=%s); keeping tensor split",
+                talk,
+                estimated,
+            )
+            return extra_args, {}
+        args, env = pin_talk_lane(chosen, fits=True, talk_gpu=int(talk))
+        if chosen != extra_args:
+            self._log.info("talk lane: shrunk llama-server args so the model fits one GPU")
+        self._log.info(
+            "talk lane: llama-server on GPU %s (estimate=%s)",
+            talk,
+            estimated,
+        )
+        return args, env
+
     def _start_server_with_fallback(self, extra_args: list[str]) -> None:
         if self._server is None:
             raise LlamaServerError("llama forward not configured")
+        split_args = list(extra_args)
+        extra_args, lane_env = self._apply_talk_lane(extra_args)
         try:
-            self._server.start(extra_args=extra_args)
+            self._server.start(extra_args=extra_args, extra_env=lane_env or None)
             self._sync_kv_overlay_donor_from_session()
         except LlamaServerError as exc:
+            if lane_env:
+                self._log.warning("talk lane load failed; retrying tensor split: %s", exc)
+                self._server.stop()
+                self._server.start(extra_args=split_args, extra_env=None)
+                self._sync_kv_overlay_donor_from_session()
+                self.invalidate_health_cache()
+                return
             if (
                 self._llama_backend_override is None
                 and self._requested_llama_backend() == LlamaBackendKind.INPROCESS
@@ -325,7 +384,7 @@ class InferenceEngine:
                         main_gpu=self.config.main_gpu,
                         config=self.config,
                     )
-                    self._server.start(extra_args=extra_args)
+                    self._server.start(extra_args=extra_args, extra_env=lane_env or None)
                     self._sync_kv_overlay_donor_from_session()
                     self.invalidate_health_cache()
                     return

@@ -107,6 +107,9 @@ class LlamaServerProcess:
     _watchdog_stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _watchdog_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _log_file: Any = field(default=None, init=False, repr=False)
+    # True after /health has returned 200 for this process. Cleared on stop or
+    # respawn so hot completions skip a health round-trip and the ready log.
+    _weights_ready: bool = field(default=False, init=False, repr=False)
 
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
@@ -193,14 +196,18 @@ class LlamaServerProcess:
         out = post_kv_shrink(self.base_url, int(n_ctx))
         return bool(out.get("ok", False)) or "n_ctx_seq" in out
 
-    def start(self, extra_args: list[str] | None = None) -> None:
+    def start(
+        self,
+        extra_args: list[str] | None = None,
+        *,
+        extra_env: dict[str, str] | None = None,
+        prefill_cancel: Any | None = None,
+    ) -> None:
+        # A live process is not ready until /health is 200. A second caller
+        # that returns here and posts /completion gets llama-server's
+        # "Loading model" 503 while the first caller is still in _wait_healthy.
         if self._proc is not None and self._proc.poll() is None:
-            logger.info(
-                "model %s already loaded (gguf=%s, url=%s)",
-                self.model.name,
-                self.model.resolve(),
-                self.base_url,
-            )
+            self._wait_healthy(timeout_s=120.0, prefill_cancel=prefill_cancel)
             return
         if not self.binary.is_file():
             raise LlamaServerError(f"llama-server not found: {self.binary}")
@@ -234,20 +241,44 @@ class LlamaServerProcess:
         log_fd = self._open_log_sink()
         self._exit_code = None
         self._crash_tail = ""
+        self._weights_ready = False
+        env = _llama_server_subprocess_env()
+        if extra_env:
+            env.update(extra_env)
+            logger.info("talk lane env %s", extra_env)
         self._proc = subprocess.Popen(
             cmd,
             stdout=log_fd,
             stderr=log_fd if log_fd != subprocess.DEVNULL else subprocess.DEVNULL,
-            env=_llama_server_subprocess_env(),
+            env=env,
         )
         self._start_watchdog()
-        self._wait_healthy(timeout_s=120.0)
+        self._wait_healthy(timeout_s=120.0, prefill_cancel=prefill_cancel)
 
-    def _wait_healthy(self, timeout_s: float) -> None:
+    def _wait_healthy(
+        self,
+        timeout_s: float,
+        *,
+        prefill_cancel: Any | None = None,
+    ) -> None:
+        """Block until llama-server /health is 200 (weights loaded).
+
+        llama-server serves HTTP before load_model finishes. Until then every
+        route, including /health and /completion, returns 503 Loading model.
+        After the first 200, later calls skip the probe until stop/respawn.
+        """
+        from runtime.kv.native_decode_loop import PrefillAbortedError
+
+        if self._weights_ready and self.is_running():
+            return
+
         deadline = time.monotonic() + timeout_s
         url = f"{self.base_url}/health"
         while time.monotonic() < deadline:
+            if prefill_cancel is not None and prefill_cancel.is_cancelled():
+                raise PrefillAbortedError("KV prefill aborted (client disconnect)")
             if self._proc is not None and self._proc.poll() is not None:
+                self._weights_ready = False
                 tail = self._crash_tail
                 if not tail and self._proc.stderr is not None:
                     try:
@@ -258,6 +289,7 @@ class LlamaServerProcess:
             try:
                 with urllib.request.urlopen(url, timeout=2.0) as resp:
                     if resp.status == 200:
+                        self._weights_ready = True
                         logger.info(
                             "model %s ready (gguf=%s, url=%s)",
                             self.model.name,
@@ -265,8 +297,11 @@ class LlamaServerProcess:
                             self.base_url,
                         )
                         return
-            except (urllib.error.URLError, TimeoutError):
+            except (urllib.error.URLError, TimeoutError, OSError):
+                # URLError covers HTTP 503 Loading model while is_ready is false.
                 time.sleep(0.25)
+                continue
+            time.sleep(0.25)
         raise LlamaServerError(f"llama-server not healthy at {url} within {timeout_s}s")
 
     def stop(self) -> None:
@@ -284,6 +319,7 @@ class LlamaServerProcess:
             self._watchdog_thread.join(timeout=2.0)
         self._proc = None
         self._watchdog_thread = None
+        self._weights_ready = False
         if self._log_file is not None:
             try:
                 self._log_file.close()
@@ -309,6 +345,9 @@ class LlamaServerProcess:
         del kv_token_budget, kv_bind_req, kv_block_size, current_pos
         if self._proc is None or self._proc.poll() is not None:
             raise LlamaServerError("llama-server is not running")
+        # Reuse paths skip start()'s wait; a second /api/chat during load must
+        # not POST /completion until /health is 200.
+        self._wait_healthy(timeout_s=120.0, prefill_cancel=prefill_cancel)
         payload: dict[str, Any] = {
             "prompt": prompt,
             "stream": False,
@@ -377,6 +416,9 @@ class LlamaServerProcess:
         del kv_token_budget, kv_bind_req, kv_block_size, current_pos
         if self._proc is None or self._proc.poll() is not None:
             raise LlamaServerError("llama-server is not running")
+        # Same wait as completion(): engine.reuse returns a live process before
+        # is_ready, and duplex pin + first utterance both hit this path.
+        self._wait_healthy(timeout_s=120.0, prefill_cancel=prefill_cancel)
         payload: dict[str, Any] = {
             "prompt": prompt,
             "stream": True,

@@ -10,7 +10,13 @@ main_gpu: 0
 llama_parallel_slots: 4
 # Go daemon defaults (envconfig/hardware_lane.go) — only applied when OLLAMA_* unset.
 serve:
-  max_loaded_models: 1
+  # 0 would become 3 per GPU. A high cap leaves eviction to VRAM fit so every
+  # model that fits stays loaded. OLLAMA_MAX_LOADED_MODELS still overrides.
+  max_loaded_models: 32
+  # Voice llama-server uses GPU 1 when the model fits on one card.
+  # Vision ggml uses GPU 0. A model that does not fit keeps the tensor split.
+  talk_gpu: 1
+  see_gpu: 0
   keep_alive: 5m
   num_parallel: 1
   # WHY stock: L1 q8_0 wins decode tok/s on measured CUDA gates. For long-ctx VRAM

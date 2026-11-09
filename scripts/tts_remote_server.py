@@ -88,20 +88,42 @@ def synthesize_echo(text: str, voice: str, emotion: str) -> bytes:
     return _pcm_wav(bytes(frames), 24000)
 
 
+_kokoro_lock = None
+_kokoro_engine = None
+
+
+def _kokoro_singleton():
+    """Load kokoro-onnx once; duplex speaks many short clauses per turn."""
+    global _kokoro_lock, _kokoro_engine
+    if _kokoro_lock is None:
+        import threading
+
+        _kokoro_lock = threading.Lock()
+    with _kokoro_lock:
+        if _kokoro_engine is not None:
+            return _kokoro_engine
+        try:
+            from kokoro_onnx import Kokoro  # type: ignore
+        except ImportError as e:
+            raise RuntimeError(
+                "kokoro-onnx not installed; pip install kokoro-onnx misaki[en] "
+                "or set TTS_ENGINE=echo for smoke"
+            ) from e
+        model = os.environ.get("KOKORO_MODEL", "").strip()
+        voices = os.environ.get("KOKORO_VOICES", "").strip()
+        if not model or not voices:
+            raise RuntimeError("set KOKORO_MODEL and KOKORO_VOICES paths")
+        if not Path(model).is_file():
+            raise RuntimeError(f"KOKORO_MODEL not found: {model}")
+        if not Path(voices).is_file():
+            raise RuntimeError(f"KOKORO_VOICES not found: {voices}")
+        _kokoro_engine = Kokoro(model, voices)
+        return _kokoro_engine
+
+
 def synthesize_kokoro(text: str, voice: str, emotion: str, speed: Any = 1.0) -> bytes:
     speed = kokoro_request_speed(speed, emotion)
-    try:
-        from kokoro_onnx import Kokoro  # type: ignore
-    except ImportError as e:
-        raise RuntimeError(
-            "kokoro-onnx not installed; pip install kokoro-onnx misaki[en] "
-            "or set TTS_ENGINE=echo for smoke"
-        ) from e
-    model = os.environ.get("KOKORO_MODEL", "")
-    voices = os.environ.get("KOKORO_VOICES", "")
-    if not model or not voices:
-        raise RuntimeError("set KOKORO_MODEL and KOKORO_VOICES paths")
-    k = Kokoro(model, voices)
+    k = _kokoro_singleton()
     samples, rate = k.create(text, voice=voice or "af_heart", speed=speed)
     # samples may be float32 numpy
     import numpy as np

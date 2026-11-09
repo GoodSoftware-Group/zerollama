@@ -24,6 +24,15 @@ func TestReplyPredictCapsALongReply(t *testing.T) {
 	}
 }
 
+func TestReplyNumCtxCapsGalleryDefaults(t *testing.T) {
+	if ReplyNumCtx(0) != MaxNumCtx || ReplyNumCtx(-1) != MaxNumCtx || ReplyNumCtx(32768) != MaxNumCtx {
+		t.Fatalf("cap %d %d %d", ReplyNumCtx(0), ReplyNumCtx(-1), ReplyNumCtx(32768))
+	}
+	if ReplyNumCtx(2048) != 2048 || ReplyNumCtx(MaxNumCtx) != MaxNumCtx {
+		t.Fatalf("keep %d %d", ReplyNumCtx(2048), ReplyNumCtx(MaxNumCtx))
+	}
+}
+
 func TestWarmReplyPrefillsTheFinishedTurn(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
@@ -220,6 +229,50 @@ func TestSpeakMoreSendsTheFirstChunk(t *testing.T) {
 	}
 	if deltas != 2 {
 		t.Fatalf("deltas %d", deltas)
+	}
+}
+
+func TestDuplexASRBackendOnWire(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	go Serve(context.Background(), server, nil, Engine{
+		Duplex:     true,
+		InputRate:  16000,
+		ASR:        "qwen3-asr",
+		ASRBackend: "qwen3-asr",
+		HearEx: func(ctx context.Context, wav []byte, language string) (string, string, error) {
+			return "hey", "whisper_fallback", nil
+		},
+		Reply: func(ctx context.Context, instructions, user string, prior []Exchange) (string, error) {
+			return "Hi.", nil
+		},
+		Speak: func(ctx context.Context, text, voice, language, emotion string) (Clip, error) {
+			return Clip{Rate: 16000, PCM: []byte{0, 0}}, nil
+		},
+	})
+	br := bufio.NewReader(client)
+	created := readJSON(t, br)
+	if created["type"] != "session.created" {
+		t.Fatal(created)
+	}
+	sess, _ := created["session"].(map[string]any)
+	if sess["asr"] != "qwen3-asr" || sess["asr_backend"] != "qwen3-asr" {
+		t.Fatalf("session.created %#v", sess)
+	}
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": "AQA="})
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.commit"})
+	for {
+		ev := readJSON(t, br)
+		switch ev["type"] {
+		case "conversation.item.input_audio_transcription.completed":
+			if ev["transcript"] != "hey" || ev["asr"] != "qwen3-asr" || ev["asr_backend"] != "whisper_fallback" {
+				t.Fatalf("completed %#v", ev)
+			}
+			return
+		case "error":
+			t.Fatal(ev)
+		}
 	}
 }
 
@@ -712,7 +765,8 @@ func TestLoadingTranscriberIsKept(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if warmN != 1 || hearN != 0 {
+	// Socket-open warm plus the next-ear warm after the reply both call WarmHear.
+	if warmN < 1 || hearN != 0 {
 		t.Fatalf("warm %d hear %d", warmN, hearN)
 	}
 }
@@ -1068,6 +1122,87 @@ func TestSentenceStreamSpeaksTheFirstWords(t *testing.T) {
 	}
 	if strings.Join(got, " ") != text {
 		t.Fatalf("%q", got)
+	}
+}
+
+func TestSentenceStreamKeepsALeadingFiller(t *testing.T) {
+	var stream SentenceStream
+	var got []string
+	emit := func(s string) error {
+		got = append(got, s)
+		return nil
+	}
+	if err := stream.Push("Well,", emit); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("spoke filler alone %q", got)
+	}
+	if err := stream.Push(" the capital is.", emit); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Flush(emit); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, "|") != "Well, the capital is." {
+		t.Fatal(got)
+	}
+	stream = SentenceStream{}
+	got = nil
+	if err := stream.Push("Yes.", emit); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Flush(emit); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, "|") != "Yes." {
+		t.Fatal(got)
+	}
+	stream = SentenceStream{}
+	got = nil
+	if err := stream.Push("Well,", emit); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Flush(emit); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, "|") != "Well," {
+		t.Fatal(got)
+	}
+}
+
+func TestTrimSilenceAndFade(t *testing.T) {
+	pcm := make([]byte, 20)
+	binary.LittleEndian.PutUint16(pcm[8:10], 1000)
+	binary.LittleEndian.PutUint16(pcm[10:12], 1000)
+	got := TrimSilencePCM16(pcm, 200)
+	if len(got) != 4 {
+		t.Fatalf("trim %d", len(got))
+	}
+	faded := FadePCM16([]byte{0, 4, 0, 4, 0, 4, 0, 4}, 8)
+	if binary.LittleEndian.Uint16(faded[6:8]) != 0 {
+		t.Fatalf("fade %#v", faded)
+	}
+}
+
+func TestDuplexDefaultTurnUsesHumanGap(t *testing.T) {
+	if DefaultTurn().SilenceMS != DefaultSilenceMS || DefaultSilenceMS != 500 {
+		t.Fatal(DefaultTurn())
+	}
+	if DuplexDefaultTurn().SilenceMS != DuplexSilenceMS || DuplexSilenceMS != 300 {
+		t.Fatal(DuplexDefaultTurn())
+	}
+	on, turn, err := ParseTurn(map[string]any{"type": "server_vad"})
+	if err != nil || !on || turn.SilenceMS != 500 {
+		t.Fatal(err, on, turn)
+	}
+	on, turn, err = ParseDuplexTurn(map[string]any{"type": "server_vad"})
+	if err != nil || !on || turn.SilenceMS != 300 {
+		t.Fatal(err, on, turn)
+	}
+	on, turn, err = ParseDuplexTurn(map[string]any{"type": "server_vad", "silence_duration_ms": 500})
+	if err != nil || !on || turn.SilenceMS != 500 {
+		t.Fatal(err, on, turn)
 	}
 }
 
@@ -1470,7 +1605,7 @@ func TestQuietStartsTranscription(t *testing.T) {
 	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
 	started := make(chan struct{})
 	release := make(chan struct{})
-	turn := DefaultTurn()
+	turn := DuplexDefaultTurn()
 	go Serve(context.Background(), server, nil, Engine{
 		Duplex:    true,
 		InputRate: 16000,
@@ -1541,7 +1676,7 @@ func TestChatStartsDuringSilence(t *testing.T) {
 	nextReady := make(chan struct{})
 	var mu sync.Mutex
 	n := 0
-	turn := DefaultTurn()
+	turn := DuplexDefaultTurn()
 	go Serve(context.Background(), server, nil, Engine{
 		Duplex:    true,
 		InputRate: 16000,
@@ -1649,7 +1784,7 @@ func TestSpeechResumeDropsEarlyTranscript(t *testing.T) {
 	started := make(chan struct{})
 	var mu sync.Mutex
 	n := 0
-	turn := DefaultTurn()
+	turn := DuplexDefaultTurn()
 	go Serve(context.Background(), server, nil, Engine{
 		Duplex:    true,
 		InputRate: 16000,
@@ -1713,6 +1848,343 @@ func TestSpeechResumeDropsEarlyTranscript(t *testing.T) {
 	}
 }
 
+func tonePCM(rate, ms int, amp int16) []byte {
+	n := rate * ms / 1000
+	if n < 1 {
+		n = 1
+	}
+	out := make([]byte, n*2)
+	for i := 0; i < n; i++ {
+		binary.LittleEndian.PutUint16(out[i*2:], uint16(amp))
+	}
+	return out
+}
+
+func TestSpeakStreamPlaysHold(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+	speakGate := make(chan struct{})
+	var releaseSpeak sync.Once
+	hold := Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 400, 1000)}
+	go Serve(context.Background(), server, nil, Engine{
+		Duplex:   true,
+		InputRate: 16000,
+		Hold:     hold,
+		HoldMore: Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 200, 800)},
+		Hear: func(ctx context.Context, wav []byte, language string) (string, error) {
+			return "hello", nil
+		},
+		StreamReply: func(ctx context.Context, instructions, user string, prior []Exchange, emit func(string) error) error {
+			return emit("The capital is Paris.")
+		},
+		Speak: func(ctx context.Context, text, voice, language, emotion string) (Clip, error) {
+			select {
+			case <-speakGate:
+			case <-ctx.Done():
+				return Clip{}, ctx.Err()
+			}
+			return Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 40, 2000)}, nil
+		},
+	})
+	br := bufio.NewReader(client)
+	_ = readJSON(t, br)
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(4000)})
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.commit"})
+	var sawHoldAudio bool
+	var text string
+	for {
+		ev := readJSON(t, br)
+		switch ev["type"] {
+		case "response.output_audio.delta":
+			sawHoldAudio = true
+			releaseSpeak.Do(func() { close(speakGate) })
+		case "response.output_text.delta":
+			delta, _ := ev["delta"].(string)
+			text += delta
+		case "response.done":
+			if !sawHoldAudio {
+				t.Fatal("hold audio was not sent on speakStream")
+			}
+			if text != "The capital is Paris." {
+				t.Fatalf("text %q", text)
+			}
+			return
+		case "error":
+			t.Fatal(ev)
+		}
+	}
+}
+
+func TestReadyOpeningSkipsHold(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	heard := make(chan struct{})
+	release := make(chan struct{})
+	synthed := make(chan struct{})
+	turn := DuplexDefaultTurn()
+	hold := Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 2000, 1000)}
+	go Serve(context.Background(), server, nil, Engine{
+		Duplex:    true,
+		InputRate: 16000,
+		Turn:      &turn,
+		Hold:      hold,
+		HoldMore:  Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 200, 1000)},
+		Hear: func(ctx context.Context, wav []byte, language string) (string, error) {
+			return "cold", nil
+		},
+		WarmHear: func(ctx context.Context, language string) (func(context.Context, []byte) (string, error), error) {
+			return func(ctx context.Context, wav []byte) (string, error) {
+				close(heard)
+				select {
+				case <-release:
+					return "hello", nil
+				case <-ctx.Done():
+					return "", ctx.Err()
+				}
+			}, nil
+		},
+		StreamReply: func(ctx context.Context, instructions, user string, prior []Exchange, emit func(string) error) error {
+			return emit("The capital is Paris.")
+		},
+		Speak: func(ctx context.Context, text, voice, language, emotion string) (Clip, error) {
+			close(synthed)
+			return Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 40, 2000)}, nil
+		},
+	})
+	br := bufio.NewReader(client)
+	_ = readJSON(t, br)
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(4000)})
+	for {
+		ev := readJSON(t, br)
+		if ev["type"] == "input_audio_buffer.speech_started" {
+			break
+		}
+		if ev["type"] == "error" {
+			t.Fatal(ev)
+		}
+	}
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(0, 160)})
+	select {
+	case <-heard:
+	case <-time.After(time.Second):
+		t.Fatal("transcription did not start")
+	}
+	close(release)
+	select {
+	case <-synthed:
+	case <-time.After(time.Second):
+		t.Fatal("opening was not ready before commit")
+	}
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(0, 7840)})
+	start := time.Now()
+	var text string
+	for {
+		ev := readJSON(t, br)
+		switch ev["type"] {
+		case "response.output_text.delta":
+			delta, _ := ev["delta"].(string)
+			text += delta
+		case "response.done":
+			if text != "The capital is Paris." {
+				t.Fatalf("text %q", text)
+			}
+			if time.Since(start) > 500*time.Millisecond {
+				t.Fatalf("hold played for %s", time.Since(start))
+			}
+			return
+		case "error":
+			t.Fatal(ev)
+		}
+	}
+}
+
+func TestLateOpeningPlaysHold(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+	heard := make(chan struct{})
+	release := make(chan struct{})
+	speakGate := make(chan struct{})
+	var releaseSpeak sync.Once
+	turn := DuplexDefaultTurn()
+	hold := Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 400, 1000)}
+	go Serve(context.Background(), server, nil, Engine{
+		Duplex:    true,
+		InputRate: 16000,
+		Turn:      &turn,
+		Hold:      hold,
+		HoldMore:  Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 200, 800)},
+		Hear: func(ctx context.Context, wav []byte, language string) (string, error) {
+			return "cold", nil
+		},
+		WarmHear: func(ctx context.Context, language string) (func(context.Context, []byte) (string, error), error) {
+			return func(ctx context.Context, wav []byte) (string, error) {
+				close(heard)
+				select {
+				case <-release:
+					return "hello", nil
+				case <-ctx.Done():
+					return "", ctx.Err()
+				}
+			}, nil
+		},
+		StreamReply: func(ctx context.Context, instructions, user string, prior []Exchange, emit func(string) error) error {
+			return emit("The capital is Paris.")
+		},
+		Speak: func(ctx context.Context, text, voice, language, emotion string) (Clip, error) {
+			select {
+			case <-speakGate:
+			case <-ctx.Done():
+				return Clip{}, ctx.Err()
+			}
+			return Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 40, 2000)}, nil
+		},
+	})
+	br := bufio.NewReader(client)
+	_ = readJSON(t, br)
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(4000)})
+	for {
+		ev := readJSON(t, br)
+		if ev["type"] == "input_audio_buffer.speech_started" {
+			break
+		}
+		if ev["type"] == "error" {
+			t.Fatal(ev)
+		}
+	}
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(0, 160)})
+	select {
+	case <-heard:
+	case <-time.After(time.Second):
+		t.Fatal("transcription did not start")
+	}
+	close(release)
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(0, 7840)})
+	var sawHoldAudio bool
+	var text string
+	for {
+		ev := readJSON(t, br)
+		switch ev["type"] {
+		case "response.output_audio.delta":
+			if text == "" {
+				sawHoldAudio = true
+				releaseSpeak.Do(func() { close(speakGate) })
+			}
+		case "response.output_text.delta":
+			delta, _ := ev["delta"].(string)
+			text += delta
+		case "response.done":
+			if !sawHoldAudio {
+				t.Fatal("hold audio was not sent")
+			}
+			if text != "The capital is Paris." {
+				t.Fatalf("text %q", text)
+			}
+			if strings.Contains(strings.ToLower(text), "um") || strings.Contains(text, "One moment") {
+				t.Fatalf("hold leaked into history text %q", text)
+			}
+			return
+		case "error":
+			t.Fatal(ev)
+		}
+	}
+}
+
+func TestBargeDropsHold(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+	heard := make(chan struct{})
+	release := make(chan struct{})
+	speakGate := make(chan struct{})
+	cancelled := make(chan struct{})
+	var noteCancel sync.Once
+	turn := DuplexDefaultTurn()
+	hold := Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 800, 1000)}
+	go Serve(context.Background(), server, nil, Engine{
+		Duplex:    true,
+		InputRate: 16000,
+		Turn:      &turn,
+		Hold:      hold,
+		Hear: func(ctx context.Context, wav []byte, language string) (string, error) {
+			return "cold", nil
+		},
+		WarmHear: func(ctx context.Context, language string) (func(context.Context, []byte) (string, error), error) {
+			return func(ctx context.Context, wav []byte) (string, error) {
+				close(heard)
+				select {
+				case <-release:
+					return "hello", nil
+				case <-ctx.Done():
+					return "", ctx.Err()
+				}
+			}, nil
+		},
+		StreamReply: func(ctx context.Context, instructions, user string, prior []Exchange, emit func(string) error) error {
+			return emit("The capital is Paris.")
+		},
+		Speak: func(ctx context.Context, text, voice, language, emotion string) (Clip, error) {
+			select {
+			case <-speakGate:
+				return Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 40, 2000)}, nil
+			case <-ctx.Done():
+				noteCancel.Do(func() { close(cancelled) })
+				return Clip{}, ctx.Err()
+			}
+		},
+	})
+	br := bufio.NewReader(client)
+	_ = readJSON(t, br)
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(4000)})
+	for {
+		ev := readJSON(t, br)
+		if ev["type"] == "input_audio_buffer.speech_started" {
+			break
+		}
+		if ev["type"] == "error" {
+			t.Fatal(ev)
+		}
+	}
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(0, 160)})
+	select {
+	case <-heard:
+	case <-time.After(time.Second):
+		t.Fatal("transcription did not start")
+	}
+	close(release)
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(0, 7840)})
+	for {
+		ev := readJSON(t, br)
+		if ev["type"] == "response.output_audio.delta" {
+			break
+		}
+		if ev["type"] == "error" {
+			t.Fatal(ev)
+		}
+	}
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(4000)})
+	for {
+		ev := readJSON(t, br)
+		switch ev["type"] {
+		case "response.done":
+			status, _ := ev["response"].(map[string]any)["status"].(string)
+			if status != "cancelled" {
+				t.Fatalf("status %q", status)
+			}
+			select {
+			case <-cancelled:
+			case <-time.After(time.Second):
+				t.Fatal("speak was not cancelled")
+			}
+			return
+		case "error":
+			t.Fatal(ev)
+		}
+	}
+}
+
 func sendJSON(t *testing.T, conn net.Conn, ev map[string]any) {
 	t.Helper()
 	b, err := json.Marshal(ev)
@@ -1721,6 +2193,109 @@ func sendJSON(t *testing.T, conn net.Conn, ev map[string]any) {
 	}
 	if err := WriteClientFrame(conn, b); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDuplexStatusStages(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+	vad := Turn{Threshold: 0.02, SilenceMS: 80, PrefixMS: 0}
+	go Serve(context.Background(), server, nil, Engine{
+		Duplex:    true,
+		InputRate: 16000,
+		Turn:      &vad,
+		Stages:    &StageReporter{},
+		Hear: func(ctx context.Context, wav []byte, language string) (string, error) {
+			return "hey", nil
+		},
+		StreamReply: func(ctx context.Context, instructions, user string, prior []Exchange, emit func(string) error) error {
+			return emit("Hello.")
+		},
+		Speak: func(ctx context.Context, text, voice, language, emotion string) (Clip, error) {
+			return Clip{PCM: []byte{1, 0, 1, 0}, Rate: 8000}, nil
+		},
+	})
+	br := bufio.NewReader(client)
+	_ = readJSON(t, br)
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(4000)})
+	saw := map[string]bool{}
+	quietSent := false
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = client.SetDeadline(time.Now().Add(time.Second))
+		ev := readJSON(t, br)
+		switch ev["type"] {
+		case "input_audio_buffer.speech_started":
+			saw["speech_started"] = true
+			if !quietSent {
+				quietSent = true
+				sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(0, 1600)})
+			}
+		case "response.status":
+			st, _ := ev["status"].(string)
+			saw[st] = true
+			if st == "silence_started" {
+				if ev["silence_duration_ms"] != float64(80) {
+					t.Fatalf("silence_duration_ms = %#v", ev["silence_duration_ms"])
+				}
+			}
+		case "conversation.item.input_audio_transcription.started":
+			saw["stt_started"] = true
+		case "conversation.item.input_audio_transcription.completed":
+			saw["stt_done"] = true
+		case "response.output_audio.done":
+			saw["audio_done_event"] = true
+		case "response.done":
+			if !saw["silence_started"] || !saw["transcribing"] || !saw["generating"] || !saw["audio_done"] {
+				t.Fatalf("missing stages: %#v", saw)
+			}
+			if !saw["stt_started"] || !saw["stt_done"] || !saw["audio_done_event"] {
+				t.Fatalf("missing events: %#v", saw)
+			}
+			return
+		case "error":
+			t.Fatal(ev)
+		}
+	}
+	t.Fatalf("timed out stages=%#v", saw)
+}
+
+func TestFailSendsModelLoadCode(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	go Serve(context.Background(), server, nil, Engine{
+		Duplex:    true,
+		InputRate: 16000,
+		Hear: func(ctx context.Context, wav []byte, language string) (string, error) {
+			return "hey", nil
+		},
+		StreamReply: func(ctx context.Context, instructions, user string, prior []Exchange, emit func(string) error) error {
+			return &Error{Message: "the chat model did not finish loading", Code: "model_load_failed"}
+		},
+		Speak: func(ctx context.Context, text, voice, language, emotion string) (Clip, error) {
+			return Clip{PCM: []byte{0, 0}, Rate: 8000}, nil
+		},
+	})
+	br := bufio.NewReader(client)
+	_ = readJSON(t, br)
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(1)})
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.commit"})
+	for {
+		ev := readJSON(t, br)
+		if ev["type"] != "error" {
+			continue
+		}
+		errObj, _ := ev["error"].(map[string]any)
+		if errObj["code"] != "model_load_failed" {
+			t.Fatalf("code = %#v", errObj["code"])
+		}
+		msg, _ := errObj["message"].(string)
+		if msg != "the chat model did not finish loading" || strings.Contains(msg, "{") {
+			t.Fatalf("message = %q", msg)
+		}
+		return
 	}
 }
 

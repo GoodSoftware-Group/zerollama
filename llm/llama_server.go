@@ -21,6 +21,7 @@ import (
 	"container/list"
 	"context"
 	crand "crypto/rand"
+	"debug/elf"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -1274,11 +1275,83 @@ func findLlamaServerGPUBackend(dir string) string {
 	slices.Sort(candidates)
 
 	for _, match := range candidates {
-		if isLlamaServerGPUBackend(match) {
+		if isLlamaServerGPUBackend(match) && exportsGgmlBackendInit(match) {
 			return match
 		}
 	}
 	return ""
+}
+
+// exportsGgmlBackendInit reports whether path is a ggml backend llama-server
+// can dlopen. A real ELF shared object without ggml_backend_init is a stale
+// runner plugin (the installed cuda_v12 libggml-cuda.so). Pointing
+// GGML_BACKEND_PATH at it makes llama-server log "failed to find
+// ggml_backend_init" and ignore that file. Files that are not ELF stay
+// eligible so tests can use empty placeholders.
+func exportsGgmlBackendInit(path string) bool {
+	if runtime.GOOS != "linux" {
+		return true
+	}
+	f, err := elf.Open(path)
+	if err != nil {
+		return true
+	}
+	defer f.Close()
+	syms, err := f.DynamicSymbols()
+	if err != nil {
+		return true
+	}
+	for _, sym := range syms {
+		if sym.Name == "ggml_backend_init" && sym.Section != elf.SHN_UNDEF {
+			return true
+		}
+	}
+	slog.Debug("skipping ggml backend that does not export ggml_backend_init", "path", path)
+	return false
+}
+
+// StripModelDevicePins removes llama-server load pins from a discovery
+// environment. The second discovery pass sets CUDA_VISIBLE_DEVICES to one
+// ordinal, so the remaining GPU is renumbered CUDA0. A process-wide
+// LLAMA_ARG_DEVICE=CUDA1 then makes --list-devices exit "invalid device"
+// with an empty list, and that GPU is deleted. Both cards disappearing is
+// how startup logs "no GPU found" while nvidia-smi still lists them.
+// Model launches keep the pin; only enumeration calls this.
+func StripModelDevicePins(env []string) []string {
+	if len(env) == 0 {
+		return env
+	}
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && isModelDevicePin(key) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// rewriteSingleVisibleDevicePin maps a process-wide LLAMA_ARG_DEVICE onto
+// the one GPU this launch can see. CUDA_VISIBLE_DEVICES renumbers that card
+// to CUDA0, so an inherited CUDA1 pin exits "invalid device".
+func rewriteSingleVisibleDevicePin(envs map[string]string, gpus []ml.DeviceInfo) {
+	if len(gpus) != 1 || envs == nil {
+		return
+	}
+	if _, ok := envs["CUDA_VISIBLE_DEVICES"]; !ok {
+		return
+	}
+	envs["LLAMA_ARG_DEVICE"] = "CUDA0"
+}
+
+func isModelDevicePin(key string) bool {
+	switch strings.ToUpper(key) {
+	case "LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU":
+		return true
+	default:
+		return false
+	}
 }
 
 func isLlamaServerGPUBackend(path string) bool {
@@ -1884,6 +1957,9 @@ func NewLlamaServerRunner(
 	for k, v := range extraEnvs {
 		serverEnvs[k] = v
 	}
+	// A see-lane launch hides every card but one. The inherited
+	// LLAMA_ARG_DEVICE=CUDA1 then names a device this process cannot see.
+	rewriteSingleVisibleDevicePin(serverEnvs, gpus)
 	serverEnvs["LLAMA_MEDIA_MARKER"] = mediaMarker
 	applyLlamaServerMXFP4CUDAEnv(serverEnvs, f)
 

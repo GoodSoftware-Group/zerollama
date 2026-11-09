@@ -30,6 +30,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ollama/ollama/server/voicepipe"
 )
 
 func main() {
@@ -109,6 +111,8 @@ func main() {
 	outPath := flag.String("out", "", "write spoken PCM to this wav, at the session output rate")
 	chunkMs := flag.Int("chunk-ms", 320, "append chunk length at the session rate")
 	timeout := flag.Duration("timeout", 2*time.Minute, "wait for the transcript or reply")
+	checkHygiene := flag.Bool("check-hygiene", false, "fail when the spoken reply leaks role labels or ChatML (duplex / conversation)")
+	minAudioBytes := flag.Int("min-audio-bytes", 0, "fail when response audio is shorter than this many bytes (duplex / speech)")
 	flag.Parse()
 	if *model == "" || (*wavPath == "" && strings.TrimSpace(*textIn) == "") {
 		fmt.Fprintln(os.Stderr, "usage: realtime_probe -model <tag> (-wav <clip.wav> | -text <message>) [-mode realtime|transcribe|speech]")
@@ -254,6 +258,18 @@ func main() {
 	}
 	if err != nil {
 		fatal(err)
+	}
+	if *checkHygiene {
+		reply := strings.TrimSpace(report.Reply)
+		if reply == "" {
+			reply = strings.TrimSpace(report.Transcript)
+		}
+		if err := voicepipe.SpokenReplyHygiene(reply); err != nil {
+			fatal(fmt.Errorf("reply hygiene: %w (%q)", err, reply))
+		}
+	}
+	if *minAudioBytes > 0 && report.AudioBytes < *minAudioBytes {
+		fatal(fmt.Errorf("audio too short: %d bytes (want >= %d)", report.AudioBytes, *minAudioBytes))
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -987,6 +1003,11 @@ func probeRealtime(host, model, intent, textIn string, modalities []string, barg
 			if out, ok := sessionOutputRate(ev); ok {
 				report.OutputRate = out
 			}
+			if sess, _ := ev["session"].(map[string]any); sess != nil {
+				if b, _ := sess["asr_backend"].(string); b != "" {
+					fmt.Fprintf(os.Stderr, "realtime_probe: session asr=%v asr_backend=%s\n", sess["asr"], b)
+				}
+			}
 			if session != nil {
 				payload, err := json.Marshal(session)
 				if err != nil {
@@ -1045,6 +1066,9 @@ func probeRealtime(host, model, intent, textIn string, modalities []string, barg
 				text.WriteString(full)
 			}
 			report.Transcript = strings.TrimSpace(text.String())
+			if b, _ := ev["asr_backend"].(string); b != "" {
+				fmt.Fprintf(os.Stderr, "realtime_probe: transcript asr=%v asr_backend=%s text=%q\n", ev["asr"], b, report.Transcript)
+			}
 			if !heardOutput && !start.IsZero() {
 				report.FirstTextMs = time.Since(start).Milliseconds()
 				heardOutput = true

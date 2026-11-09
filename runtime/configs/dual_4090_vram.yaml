@@ -18,7 +18,12 @@ tensor_split: [1, 1]
 main_gpu: 0
 llama_parallel_slots: 4
 serve:
-  max_loaded_models: 1
+  # High cap: the scheduler evicts when the next model does not fit, not at 1.
+  max_loaded_models: 32
+  # Voice llama-server uses GPU 1 when the model fits on one card.
+  # Vision ggml uses GPU 0. A model that does not fit keeps the tensor split.
+  talk_gpu: 1
+  see_gpu: 0
   keep_alive: 5m
   num_parallel: 1
   llama_fork: 1

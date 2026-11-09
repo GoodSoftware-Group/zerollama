@@ -11,6 +11,7 @@ Operator checklist for validating **local inference** on a GPU host (e.g. RTX 50
 | Layer | Command / artifact | Why it matters |
 |-------|-------------------|----------------|
 | Go unit tests | `go test ./server/... ./envconfig/...` | Handlers, cloud catalog merge, runtime proxy logic—no GPU, deterministic CI. **Why `OLLAMA_NO_CLOUD` in `TestMain`:** machines with `ELIZACLOUD_API_KEY` merge hundreds of cloud models and break list/tags tests that expect a small fixture set. |
+| Duplex voice hygiene | `./scripts/smoke/duplex_voice_hygiene.sh` (`RUN_E2E_DUPLEX_TTS=1`, `RUN_E2E_DUPLEX_FULL=1`) | Catches ChatML / `User:`/`Assistant:` leaks in spoken replies; optional Piper energy check and full speech→duplex→audio path via `realtime_probe -check-hygiene`. |
 | Runtime health | `GET :8081/health` | Sidecar is up; check `llama_model`, `inference_state`, `vram_budget`, `autoconfig`. |
 | VRAM pre-flight | `./scripts/runtime_vram_estimate.sh <gguf>` | **Why:** same as `/internal/vram-estimate` — budget before load ([phase13-runtime-vram.md](./phase13-runtime-vram.md)). |
 | Runtime generate | `POST :8081/api/generate` or `RUN_E2E_GPU=1` script | Python → `llama-server` → GGUF (`LLAMA_MODEL`). |

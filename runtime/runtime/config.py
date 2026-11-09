@@ -46,6 +46,8 @@ class RuntimeConfig:
     split_mode: str = "tensor"
     tensor_split: tuple[float, ...] | None = None
     main_gpu: int = 0
+    talk_gpu: int | None = None
+    see_gpu: int | None = None
     speculative_method: str = "none"
     draft_model: Path | None = None
     speculative: SpeculativeConfig = field(default_factory=SpeculativeConfig)
@@ -161,6 +163,13 @@ class RuntimeConfig:
 
         backend_raw = data.get("llama_backend")
         backend_from_file = backend_raw is not None and str(backend_raw).strip() != ""
+        serve = data.get("serve") or {}
+
+        def _opt_gpu(key: str) -> int | None:
+            raw = serve.get(key, data.get(key))
+            if raw is None or raw == "":
+                return None
+            return int(raw)
 
         cfg = cls(
             host=str(data.get("host", "127.0.0.1")),
@@ -180,6 +189,8 @@ class RuntimeConfig:
             split_mode=split_mode,
             tensor_split=tensor_split,
             main_gpu=int(data.get("main_gpu", 0)),
+            talk_gpu=_opt_gpu("talk_gpu"),
+            see_gpu=_opt_gpu("see_gpu"),
             speculative_method=spec_cfg.method,
             draft_model=spec_cfg.draft_model or draft,
             speculative=spec_cfg,
@@ -203,6 +214,10 @@ class RuntimeConfig:
             self.device_count = int(v)
         if v := os.environ.get("ZEROLLAMA_TENSOR_PARALLEL"):
             self.tensor_parallel = int(v)
+        if v := os.environ.get("ZEROLLAMA_TALK_GPU", "").strip():
+            self.talk_gpu = int(v)
+        if v := os.environ.get("ZEROLLAMA_SEE_GPU", "").strip():
+            self.see_gpu = int(v)
         if v := os.environ.get("ZEROLLAMA_RUNTIME_LLAMA_BACKEND", "").strip():
             self.llama_backend = _normalize_llama_backend(v)
         lib_env = os.environ.get("LLAMA_CPP_LIB", "").strip()

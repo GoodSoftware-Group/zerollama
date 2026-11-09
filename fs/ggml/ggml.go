@@ -24,6 +24,19 @@ type GGML struct {
 	Length int64
 }
 
+// WeightBytes is the sum of tensor sizes in the header. A zero GGML, or one
+// whose model has not been read, returns 0 instead of calling through a nil model.
+func (llm *GGML) WeightBytes() uint64 {
+	if llm == nil || llm.model == nil {
+		return 0
+	}
+	var n uint64
+	for _, t := range llm.Tensors().Items() {
+		n += t.Size()
+	}
+	return n
+}
+
 type model interface {
 	KV() KV
 	Tensors() Tensors

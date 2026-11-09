@@ -62,6 +62,8 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"DecisionAction", "ChoiceAnswer", "ScoreAnswer", "NoulAnswer",
 		"MultiDecodeRequest", "MultiDecodeResponse", "MultiDecodeLeafResult",
 		"ExtractRequest", "ExtractResponse", "ExtractEntity", "GlinerRequest",
+		"RealtimeResponseStatus",
+		"RealtimeASRBackend", "RealtimeSessionCreated", "RealtimeTranscriptionCompleted",
 		"RouterCorpusEntry", "RepairRequest", "RepairResponse",
 		"LoadRequest", "LoadResponse", "UnloadRequest", "UnloadResponse",
 		"TrainJobSubmitRequest", "TrainJobSubmitResponse", "TrainJobStatus", "TrainJobStatusResponse",
@@ -76,6 +78,22 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		if _, ok := batchResp[f]; !ok {
 			t.Fatalf("ChatCompletionsBatchResponse missing %s", f)
 		}
+	}
+	sessProps := schemas["RealtimeSessionCreated"].(map[string]any)["properties"].(map[string]any)["session"].(map[string]any)["properties"].(map[string]any)
+	for _, f := range []string{"asr", "asr_backend"} {
+		if _, ok := sessProps[f]; !ok {
+			t.Fatalf("RealtimeSessionCreated.session missing %s", f)
+		}
+	}
+	trProps := schemas["RealtimeTranscriptionCompleted"].(map[string]any)["properties"].(map[string]any)
+	for _, f := range []string{"transcript", "asr", "asr_backend"} {
+		if _, ok := trProps[f]; !ok {
+			t.Fatalf("RealtimeTranscriptionCompleted missing %s", f)
+		}
+	}
+	rtPath := paths["/v1/realtime"].(map[string]any)["get"].(map[string]any)
+	if desc, _ := rtPath["description"].(string); !strings.Contains(desc, "RealtimeTranscriptionCompleted") {
+		t.Fatal("/v1/realtime description missing RealtimeTranscriptionCompleted")
 	}
 	// OpenJev / Jev honesty flag on typed answers (DG8/DG9).
 	for _, ans := range []string{"ChoiceAnswer", "ScoreAnswer", "NoulAnswer"} {

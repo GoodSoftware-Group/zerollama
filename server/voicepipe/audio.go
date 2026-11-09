@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -30,6 +31,9 @@ type Clip struct {
 // clause comma, semicolon, or colon, or a stretch of characters at a word
 // boundary is spoken immediately. The first stretch is firstClauseRunes.
 // A later stretch is clauseRunes. Flush emits a trailing fragment.
+// A leading filler-only clause (um, uh, hmm, hm, well, so, okay, ok) stays
+// in the buffer while tokens are still arriving so it is spoken in the same
+// phrase as the words that follow. Flush still speaks that filler alone.
 type SentenceStream struct {
 	buf     strings.Builder
 	started bool
@@ -40,7 +44,7 @@ func (s *SentenceStream) Push(delta string, emit func(string) error) error {
 	for _, r := range delta {
 		s.buf.WriteRune(r)
 		if r == '.' || r == '!' || r == '?' || r == '\n' || r == ',' || r == ';' || r == ':' {
-			if err := s.emit(emit); err != nil {
+			if err := s.emit(emit, false); err != nil {
 				return err
 			}
 			continue
@@ -54,13 +58,20 @@ func (s *SentenceStream) Push(delta string, emit func(string) error) error {
 
 // Flush emits any text that had no closing punctuation.
 func (s *SentenceStream) Flush(emit func(string) error) error {
-	return s.emit(emit)
+	return s.emit(emit, true)
 }
 
-func (s *SentenceStream) emit(emit func(string) error) error {
+func (s *SentenceStream) emit(emit func(string) error, force bool) error {
 	text := strings.TrimSpace(s.buf.String())
+	if text == "" {
+		s.buf.Reset()
+		return nil
+	}
+	if !force && !s.started && openingFiller(text) {
+		return nil
+	}
 	s.buf.Reset()
-	if text == "" || emit == nil {
+	if emit == nil {
 		return nil
 	}
 	s.started = true
@@ -75,7 +86,13 @@ func (s *SentenceStream) emitOverflow(emit func(string) error) error {
 	if !s.started {
 		limit = firstClauseRunes
 	}
-	if utf8.RuneCountInString(strings.TrimSpace(raw)) < limit {
+	measure := strings.TrimSpace(raw)
+	if !s.started {
+		if _, rest, ok := leadingFillerPrefix(raw); ok {
+			measure = rest
+		}
+	}
+	if utf8.RuneCountInString(measure) < limit {
 		return nil
 	}
 	cut := strings.LastIndexAny(raw, " \t")
@@ -84,13 +101,135 @@ func (s *SentenceStream) emitOverflow(emit func(string) error) error {
 	}
 	head := strings.TrimSpace(raw[:cut])
 	tail := strings.TrimLeft(raw[cut:], " \t")
+	if head == "" {
+		return nil
+	}
+	if !s.started && openingFiller(head) {
+		return nil
+	}
 	s.buf.Reset()
 	s.buf.WriteString(tail)
-	if head == "" || emit == nil {
+	if emit == nil {
 		return nil
 	}
 	s.started = true
 	return emit(head)
+}
+
+// openingFiller reports whether text is only a leading hesitation word.
+// Punctuation around the word is ignored. "Yes" is not held.
+func openingFiller(text string) bool {
+	word := strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) {
+			return unicode.ToLower(r)
+		}
+		return -1
+	}, text)
+	switch word {
+	case "um", "uh", "hmm", "hm", "well", "so", "okay", "ok":
+		return true
+	default:
+		return false
+	}
+}
+
+// leadingFillerPrefix splits a leading um/well/so/... (with its punctuation)
+// from the rest of the buffer so the first-clause stretch is measured on the
+// words that follow.
+func leadingFillerPrefix(raw string) (prefix, rest string, ok bool) {
+	trim := strings.TrimLeft(raw, " \t")
+	if trim == "" {
+		return "", "", false
+	}
+	i := 0
+	for _, r := range trim {
+		if unicode.IsLetter(r) {
+			i += utf8.RuneLen(r)
+			continue
+		}
+		break
+	}
+	if i == 0 {
+		return "", "", false
+	}
+	j := i
+	for _, r := range trim[i:] {
+		if r == ',' || r == ';' || r == ':' || r == '.' || r == '!' || r == '?' {
+			j += utf8.RuneLen(r)
+			continue
+		}
+		break
+	}
+	prefix = trim[:j]
+	if !openingFiller(prefix) {
+		return "", "", false
+	}
+	return prefix, strings.TrimLeft(trim[j:], " \t"), true
+}
+
+// TrimSilencePCM16 drops leading and trailing near-silent s16le samples.
+// Samples whose absolute value is below amp stay quiet. An empty or odd
+// buffer is returned unchanged.
+func TrimSilencePCM16(pcm []byte, amp int16) []byte {
+	if len(pcm) < 2 || len(pcm)%2 != 0 {
+		return pcm
+	}
+	if amp < 0 {
+		amp = 0
+	}
+	n := len(pcm) / 2
+	start := 0
+	for start < n {
+		v := int16(binary.LittleEndian.Uint16(pcm[start*2 : start*2+2]))
+		if v < 0 {
+			v = -v
+		}
+		if v >= amp {
+			break
+		}
+		start++
+	}
+	end := n
+	for end > start {
+		v := int16(binary.LittleEndian.Uint16(pcm[(end-1)*2 : (end-1)*2+2]))
+		if v < 0 {
+			v = -v
+		}
+		if v >= amp {
+			break
+		}
+		end--
+	}
+	if start == 0 && end == n {
+		return pcm
+	}
+	out := make([]byte, (end-start)*2)
+	copy(out, pcm[start*2:end*2])
+	return out
+}
+
+// FadePCM16 scales the last fadeBytes of little-endian s16le PCM down to
+// silence. fadeBytes is rounded down to a whole sample. The input is copied.
+func FadePCM16(pcm []byte, fadeBytes int) []byte {
+	if len(pcm) < 2 || fadeBytes <= 0 {
+		return append([]byte(nil), pcm...)
+	}
+	fadeBytes -= fadeBytes % 2
+	if fadeBytes > len(pcm) {
+		fadeBytes = len(pcm) - len(pcm)%2
+	}
+	out := append([]byte(nil), pcm...)
+	off := len(out) - fadeBytes
+	samples := fadeBytes / 2
+	for i := 0; i < samples; i++ {
+		scale := float64(samples-1-i) / float64(samples)
+		if samples == 1 {
+			scale = 0
+		}
+		v := int16(binary.LittleEndian.Uint16(out[off+i*2 : off+i*2+2]))
+		binary.LittleEndian.PutUint16(out[off+i*2:off+i*2+2], uint16(int16(float64(v)*scale)))
+	}
+	return out
 }
 
 // Sentences splits a reply on sentence punctuation and newlines.

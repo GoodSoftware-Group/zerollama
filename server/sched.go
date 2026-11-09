@@ -23,7 +23,6 @@ import (
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/server/remotestore"
-	"github.com/ollama/ollama/server/vram"
 	"github.com/ollama/ollama/types/model"
 	"github.com/ollama/ollama/x/imagegen"
 	"github.com/ollama/ollama/x/mlxrunner"
@@ -885,9 +884,11 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 			s.loadedMu.Unlock()
 			return false
 		}
-		// Why after contention checks: PrepareForLegacyRunner evicts the runtime sidecar;
-		// do not handoff VRAM for a ggml load we are about to skip.
-		vram.PrepareForLegacyRunner(ctx)
+		// Vision stays on the see GPU so voice on the other card can keep decoding.
+		gpus = gpusForSeeLane(req.model, gpus)
+		// Why after contention checks: a handoff evicts the runtime sidecar.
+		// Skip it when the GGUF still fits in the free VRAM the runtime left behind.
+		s.releaseRuntimeIfTight(ctx, gpus, req.model.ModelPath)
 		var err error
 		if !req.model.IsMLX() {
 			f, loadErr := llm.LoadModel(req.model.ModelPath, 1024)

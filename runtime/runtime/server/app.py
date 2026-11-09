@@ -342,7 +342,7 @@ def create_app(
             resolve_tools_chat_prompt,
             stream_tool_chat_chunks,
         )
-        from runtime.server.runtime_chat import chat_needs_legacy, messages_to_prompt
+        from runtime.server.runtime_chat import chat_needs_legacy, resolve_chat_prompt
 
         started = log_request_in(
             "/api/chat",
@@ -385,7 +385,15 @@ def create_app(
                 n_predict=n_predict,
             )
         else:
-            prompt = messages_to_prompt(list(req.messages))
+            # Why Go render: messages_to_prompt is User:/Assistant: lines; qwen
+            # ChatML (and peers) then speak role markers into duplex audio.
+            prompt = resolve_chat_prompt(
+                req.model,
+                list(req.messages),
+                think=req.think,
+                num_ctx=num_ctx,
+                n_predict=n_predict,
+            )
         if not prompt:
             raise HTTPException(status_code=400, detail="empty messages")
         if req.stream:

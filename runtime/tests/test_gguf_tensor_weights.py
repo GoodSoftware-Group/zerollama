@@ -1,7 +1,13 @@
 import struct
 from pathlib import Path
+from unittest import mock
 
-from runtime.gguf_estimate import estimate_gpu_weight_bytes, gguf_tensor_infos
+from runtime.gguf_estimate import (
+    clear_gguf_estimate_caches,
+    estimate_gpu_weight_bytes,
+    gguf_file_tensor_region_bytes,
+    gguf_tensor_infos,
+)
 
 
 def _tensor_meta(name: bytes, ne: int, type_id: int = 0) -> bytes:
@@ -55,3 +61,16 @@ def test_estimate_gpu_weight_partial_layers(tmp_path: Path):
     # layer 0 + globals (embd, output)
     assert half == 100 * 4 + 200 * 4 + 100 * 4
     assert none == 0
+
+
+def test_gguf_tensor_infos_cached(tmp_path: Path):
+    clear_gguf_estimate_caches()
+    p = tmp_path / "m.gguf"
+    _layered_gguf(p, [("token_embd.weight", 100), ("blk.0.ffn_up.weight", 200)])
+    first = gguf_tensor_infos(p)
+    second = gguf_tensor_infos(p)
+    assert first is second
+    assert gguf_file_tensor_region_bytes(p) == gguf_file_tensor_region_bytes(p)
+    with mock.patch("runtime.gguf_estimate._parse_gguf_tensor_infos") as parse:
+        assert gguf_tensor_infos(p) is first
+        parse.assert_not_called()

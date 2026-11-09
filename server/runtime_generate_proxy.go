@@ -64,11 +64,10 @@ func (s *Server) runtimeGenerateProxy() gin.HandlerFunc {
 			// WHY runtime unload here: bench and CLI use KeepAlive=0 between models.
 			// Falling through to GenerateHandler scheduleRunner would spawn a ggml
 			// llama-server load on dual-4090 hosts where inference uses the sidecar.
+			// Only this runtime GGUF is released. Ggml peers stay until they are
+			// unloaded or a later load does not fit.
 			if resolveRuntimeProxy(c, req.Model, req.Options) {
 				vram.ReleaseRuntimeVRAM(c.Request.Context())
-				if s != nil && s.sched != nil {
-					s.sched.UnloadAllRunners()
-				}
 				c.JSON(http.StatusOK, api.GenerateResponse{
 					Model:      req.Model,
 					CreatedAt:  time.Now().UTC(),

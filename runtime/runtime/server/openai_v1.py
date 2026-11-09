@@ -17,7 +17,7 @@ from runtime.server.chat_tools import (
     stream_tool_chat_chunks,
 )
 from runtime.server.gguf_path import pop_gguf_path
-from runtime.server.runtime_chat import chat_needs_legacy, messages_to_prompt
+from runtime.server.runtime_chat import chat_needs_legacy, resolve_chat_prompt
 
 
 def _positive_int(value: Any) -> int | None:
@@ -149,7 +149,13 @@ def prepare_v1_chat(engine: Any, body: dict[str, Any]) -> V1ChatPrepared:
             n_predict=n_predict,
         )
     else:
-        prompt = messages_to_prompt(messages)
+        prompt = resolve_chat_prompt(
+            model,
+            messages,
+            think=body.get("think"),
+            num_ctx=num_ctx,
+            n_predict=n_predict,
+        )
     return V1ChatPrepared(
         model=model,
         messages=messages,
@@ -415,12 +421,21 @@ def run_v1_chat_completions_batch(
             # model groups; inventing a multi-runner batch here fights VRAM broker.
             raise ValueError("batch chat requires the same model for all requests")
         messages = list(item.get("messages") or [])
-        prompt = messages_to_prompt(messages)
+        item_predict = v1_max_tokens(item)
+        opts = v1_request_options(item)
+        gguf = pop_gguf_path(dict(opts))
+        num_ctx, _ = engine.resolve_num_ctx_for_request(gguf, options=opts)
+        prompt = resolve_chat_prompt(
+            item_model,
+            messages,
+            think=item.get("think"),
+            num_ctx=num_ctx,
+            n_predict=item_predict,
+        )
         if not prompt.strip():
             raise ValueError(f"requests[{i}]: empty messages")
         prompts.append(prompt)
-        n_predict = max(n_predict, v1_max_tokens(item))
-        opts = v1_request_options(item)
+        n_predict = max(n_predict, item_predict)
         if i == 0:
             shared_opts = opts
         else:

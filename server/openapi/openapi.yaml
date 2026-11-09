@@ -3408,6 +3408,82 @@ components:
               properties:
                 cached_tokens:
                   type: integer
+    RealtimeResponseStatus:
+      type: object
+      description: >
+        Duplex milestone on GET /v1/realtime?pipeline=duplex. Clients log these
+        without parsing PCM. `silence_started` may include silence_duration_ms.
+      required: [type, status]
+      properties:
+        type:
+          type: string
+          enum: [response.status]
+        status:
+          type: string
+          enum: [silence_started, transcribing, generating, first_token, audio_done]
+          description: >
+            silence_started — server_vad quiet wait began;
+            transcribing — ASR started (also conversation.item.input_audio_transcription.started);
+            generating — chat prompt submitted (Modelfile / ChatML render, think off);
+            first_token — first assistant content token;
+            audio_done — final PCM flushed (pairs with response.output_audio.done).
+        silence_duration_ms:
+          type: integer
+          minimum: 0
+          maximum: 10000
+          description: Present on silence_started; quiet wait in milliseconds.
+    RealtimeASRBackend:
+      type: string
+      enum: [qwen3-asr, whisper, whisper_fallback, llama-asr]
+      description: >
+        STT family on duplex sockets. `session.created` advertises the configured
+        family (`qwen3-asr`, `whisper`, or `llama-asr`). Each
+        `conversation.item.input_audio_transcription.completed` reports what ran
+        for that clip; `whisper_fallback` means Qwen3-ASR was unavailable and
+        Whisper handled the clip.
+    RealtimeSessionCreated:
+      type: object
+      description: >
+        First server event on GET /v1/realtime. With pipeline=duplex, `session`
+        includes `asr` (query tag) and `asr_backend` (configured family).
+      required: [type, session]
+      properties:
+        type:
+          type: string
+          enum: [session.created]
+        session:
+          type: object
+          required: [type, audio]
+          properties:
+            type:
+              type: string
+              description: conversation or transcription
+            asr:
+              type: string
+              description: Duplex asr= query tag when set.
+            asr_backend:
+              $ref: "#/components/schemas/RealtimeASRBackend"
+            audio:
+              type: object
+              additionalProperties: true
+    RealtimeTranscriptionCompleted:
+      type: object
+      description: >
+        Duplex ASR result after a committed clip. `asr_backend` is the backend
+        that produced `transcript` for this turn (`whisper_fallback` when Qwen
+        fell through to Whisper).
+      required: [type, transcript]
+      properties:
+        type:
+          type: string
+          enum: [conversation.item.input_audio_transcription.completed]
+        transcript:
+          type: string
+        asr:
+          type: string
+          description: Duplex asr= query tag when set.
+        asr_backend:
+          $ref: "#/components/schemas/RealtimeASRBackend"
     VideoCreateRequest:
       type: object
       required: [model, prompt]
@@ -6238,9 +6314,15 @@ paths:
         (`final: true` ends a transcription), `response.create`, `response.cancel`.
         The input sample rate is `audio.input.format.rate` on `session.created`.
         `turn=server_vad` commits after the PCM goes quiet, using that rate.
-        A conversation session also receives `response.create`. A transcription
-        session receives only the commit. Quiet audio during a reply is dropped.
-        A loud chunk sends `response.cancel`.
+        On the llama-server proxy the omitted quiet wait is 500 ms. On duplex
+        it is 300 ms. `session.update` can set
+        `audio.input.turn_detection` (`type` `server_vad` or `none`, plus
+        `threshold`, `silence_duration_ms` from 0 to 10000, and
+        `prefix_padding_ms`). With `server_vad` the client does not send
+        `input_audio_buffer.commit`. A conversation session also receives
+        `response.create`. A transcription session receives only the commit.
+        Quiet audio during a reply is dropped. A loud chunk sends
+        `response.cancel`.
 
         A speech model on this same socket speaks text. Query `voice` selects
         the voice. Query `language` is forwarded to local Kokoro (`en`,
@@ -6252,7 +6334,37 @@ paths:
         `pipeline=duplex` uses `model` as the chat model. `voice` is the speech
         tag, `asr` is a whisper or llama-server ASR tag, and `rate` is the
         input PCM16 rate in Hz. `speaker` selects that speech model's voice id.
-        `language` is forwarded to Kokoro and to the transcriber.
+        `language` is forwarded to Kokoro and to the transcriber. Spoken
+        audio returns as `response.output_audio.delta` (base64 PCM16,
+        `mime` `audio/pcm`, plus `rate`).
+
+        Duplex chat renders the model's Modelfile / ChatML template via Go
+        `/internal/render-chat` (not `User:` / `Assistant:` role lines). Thinking
+        is off so the first spoken tokens are words, not a think block. Each
+        reply caps `num_predict` at 48 and `num_ctx` at 8192. Up to eight earlier
+        turns from this socket are kept for the next reply. Spoken text must not
+        contain role labels or raw ChatML markers; operators can check with
+        `./scripts/smoke/duplex_voice_hygiene.sh` and
+        `realtime_probe -check-hygiene`.
+
+        Duplex emits `response.status` events (`RealtimeResponseStatus`) with
+        `silence_started` (quiet wait began; `silence_duration_ms`),
+        `transcribing`, `generating`, `first_token`, and `audio_done`, plus
+        `conversation.item.input_audio_transcription.started` when ASR begins.
+        Opening `session.created` is `RealtimeSessionCreated` (`asr`,
+        `asr_backend`). Each ASR finish is `RealtimeTranscriptionCompleted`
+        (same fields; `asr_backend` may be `whisper_fallback` when Qwen3-ASR
+        was unavailable — see `RealtimeASRBackend`).
+        Transcription starts about 100 ms into the quiet wait; the chat model
+        and voice synthesize during that wait. When the first clause is ready
+        at commit it plays immediately.
+        When it is not, a cached `um` in the same voice holds the floor, then
+        one `One moment.` if the opening is still missing; the model's
+        opening fades in over that hold and is the only assistant text kept
+        in history. A leading model filler such as `Well,` is spoken in the
+        same phrase as the words that follow. The first words start at a comma,
+        semicolon, colon, or about 16 characters; a later stretch waits for
+        about 48.
       operationId: realtimeAudio
       parameters:
         - name: model
@@ -6264,7 +6376,13 @@ paths:
           in: query
           required: false
           schema: {type: string, enum: [duplex]}
-          description: duplex transcribes a committed clip, asks the chat model, and speaks the reply with the voice tag.
+          description: >
+            duplex transcribes a committed clip, asks the chat model (Modelfile
+            / ChatML render, think off, ≤48 tokens, num_ctx ≤8192), and speaks
+            the reply with the voice tag. Emits RealtimeResponseStatus milestones.
+            With turn=server_vad the client does not commit; omitted
+            silence_duration_ms is 300 ms. A late opening may be preceded by a
+            short hold in the same voice.
         - name: voice
           in: query
           required: false
@@ -6312,7 +6430,14 @@ paths:
           in: query
           required: false
           schema: {type: string, enum: [server_vad, none]}
-          description: server_vad commits the live buffer when PCM amplitude stays under 0.02 for 500 ms. The rate is session.created's audio.input.format.rate. A realtime session also gets response.create.
+          description: >
+            server_vad commits the live buffer when input goes quiet (amplitude
+            under 0.02, or a neural score when OLLAMA_NEURAL_VAD is set). The
+            omitted quiet wait is 500 ms on the llama-server proxy and 300 ms
+            on duplex. session.update can change silence_duration_ms (0–10000).
+            The rate is session.created's audio.input.format.rate. A realtime
+            conversation session also gets response.create; with server_vad the
+            client does not send input_audio_buffer.commit.
       responses:
         "101":
           description: Switching Protocols. The socket then carries llama-server realtime events.

@@ -29,9 +29,22 @@ type Turn struct {
 // DefaultAmplitude is the PCM amplitude cutoff for amplitude VAD and neural fallback.
 const DefaultAmplitude = 0.02
 
+// DefaultSilenceMS is the quiet wait when silence_duration_ms is omitted on
+// the llama-server realtime proxy.
+const DefaultSilenceMS = 500
+
+// DuplexSilenceMS is the quiet wait when silence_duration_ms is omitted on a
+// duplex socket.
+const DuplexSilenceMS = 300
+
 // DefaultTurn is the server_vad setting used when the fields are omitted.
 func DefaultTurn() Turn {
-	return Turn{Threshold: DefaultAmplitude, AmplitudeScale: DefaultAmplitude, SilenceMS: 500, PrefixMS: 300}
+	return Turn{Threshold: DefaultAmplitude, AmplitudeScale: DefaultAmplitude, SilenceMS: DefaultSilenceMS, PrefixMS: 300}
+}
+
+// DuplexDefaultTurn is the duplex server_vad setting when the fields are omitted.
+func DuplexDefaultTurn() Turn {
+	return Turn{Threshold: DefaultAmplitude, AmplitudeScale: DefaultAmplitude, SilenceMS: DuplexSilenceMS, PrefixMS: 300}
 }
 
 // NeuralDefaultThreshold is the speech probability cutoff when the client
@@ -59,6 +72,15 @@ func (t Turn) Amp() float64 {
 // ParseTurn reads session.audio.input.turn_detection. Null and type none
 // turn it off. server_vad turns it on. Omitted fields use DefaultTurn.
 func ParseTurn(v any) (on bool, turn Turn, err error) {
+	return parseTurn(v, DefaultTurn())
+}
+
+// ParseDuplexTurn is ParseTurn with DuplexDefaultTurn for omitted fields.
+func ParseDuplexTurn(v any) (on bool, turn Turn, err error) {
+	return parseTurn(v, DuplexDefaultTurn())
+}
+
+func parseTurn(v any, base Turn) (on bool, turn Turn, err error) {
 	if v == nil {
 		return false, Turn{}, nil
 	}
@@ -73,7 +95,7 @@ func ParseTurn(v any) (on bool, turn Turn, err error) {
 	default:
 		return false, Turn{}, errors.New("turn_detection type must be server_vad or none")
 	}
-	turn = DefaultTurn()
+	turn = base
 	if raw, ok := m["threshold"]; ok {
 		f, ok := number(raw)
 		if !ok || f < 0 || f > 1 {

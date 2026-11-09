@@ -240,10 +240,7 @@ func metalUmaParallelBudget(gpus []ml.DeviceInfo, f *ggml.GGML, free uint64) uin
 	if free == 0 || f == nil || !gpusAreMetalUMA(gpus) {
 		return free
 	}
-	var weights uint64
-	for _, t := range f.Tensors().Items() {
-		weights += t.Size()
-	}
+	weights := f.WeightBytes()
 	if weights == 0 {
 		return free
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/ollama/ollama/llm"
 	"github.com/ollama/ollama/server/modality"
 	"github.com/ollama/ollama/server/modality/neuralvad"
+	"github.com/ollama/ollama/server/modality/piperphrase"
 	"github.com/ollama/ollama/server/modality/qwen3asr"
 	"github.com/ollama/ollama/server/voicepipe"
 	"github.com/ollama/ollama/server/wsproxy"
@@ -86,7 +88,7 @@ func (s *Server) serveDuplex(c *gin.Context, chatName string, chat *Model) {
 	var turn *voicepipe.Turn
 	var speechScore voicepipe.SpeechScorer
 	var onTurnReset func()
-	if on, parsed, err := parseTurnQuery(c.Query("turn")); err != nil {
+	if on, parsed, err := parseDuplexTurnQuery(c.Query("turn")); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	} else if on {
@@ -108,7 +110,8 @@ func (s *Server) serveDuplex(c *gin.Context, chatName string, chat *Model) {
 		}
 		return
 	}
-	piper := openLivePiper(voiceModel, strings.TrimSpace(c.Query("speaker")))
+	speaker := strings.TrimSpace(c.Query("speaker"))
+	piper := openLivePiper(voiceModel, speaker)
 	defer piper.Close()
 	live := openLiveWhisper(c.Request.Context(), asrModel)
 	defer live.Close()
@@ -118,24 +121,31 @@ func (s *Server) serveDuplex(c *gin.Context, chatName string, chat *Model) {
 		go s.pinDuplexChat(pinCtx, chatName)
 	}
 	var chatMu sync.Mutex
+	stages := &voicepipe.StageReporter{}
 	eng := voicepipe.Engine{
 		Duplex:      true,
 		InputRate:   rate,
 		OutputRate:  genSampleRate(voiceModel),
 		Language:    strings.TrimSpace(c.Query("language")),
-		Voice:       strings.TrimSpace(c.Query("speaker")),
+		Voice:       speaker,
 		Emotion:     strings.TrimSpace(c.Query("emotion")),
 		Turn:        turn,
 		SpeechScore: speechScore,
 		OnTurnReset: onTurnReset,
-		Hear: func(ctx context.Context, wav []byte, language string) (string, error) {
+		Stages:      stages,
+		ASR:         asrTag,
+		ASRBackend:  duplexASRBackend(asrModel),
+		PrepareHolds: func(ctx context.Context) (voicepipe.Clip, voicepipe.Clip) {
+			return duplexHoldClips(ctx, voiceModel, speaker, piper)
+		},
+		HearEx: func(ctx context.Context, wav []byte, language string) (string, string, error) {
 			return s.hearClip(ctx, asrModel, asrTag, wav, language)
 		},
-		WarmHear: warmWhisper(asrModel, live),
+		WarmHearEx: warmASR(asrModel, live),
 		StreamReply: func(ctx context.Context, instructions, user string, prior []voicepipe.Exchange, emit func(string) error) error {
 			chatMu.Lock()
 			defer chatMu.Unlock()
-			return s.replyTextStream(ctx, chatName, instructions, user, prior, emit)
+			return s.replyTextStream(ctx, chatName, instructions, user, prior, emit, stages)
 		},
 		WarmReply: func(ctx context.Context, instructions string, prior []voicepipe.Exchange) error {
 			chatMu.Lock()
@@ -145,6 +155,74 @@ func (s *Server) serveDuplex(c *gin.Context, chatName string, chat *Model) {
 	}
 	eng.Speak, eng.SpeakMore = s.liveSpeaker(voiceModel, voiceTag, piper)
 	_ = voicepipe.Serve(c.Request.Context(), conn, src, eng)
+}
+
+func parseDuplexTurnQuery(q string) (bool, voicepipe.Turn, error) {
+	switch strings.ToLower(strings.TrimSpace(q)) {
+	case "", "none":
+		return false, voicepipe.Turn{}, nil
+	case "server_vad":
+		return true, voicepipe.DuplexDefaultTurn(), nil
+	default:
+		return false, voicepipe.Turn{}, errors.New("turn must be server_vad or none")
+	}
+}
+
+// duplexHoldClips warms and loads the hesitation and "One moment." clips for
+// the live voice. Missing weights leave both empty so the socket skips the hold.
+func duplexHoldClips(ctx context.Context, m *Model, voice string, piper *modality.PiperSession) (hold, more voicepipe.Clip) {
+	if m == nil {
+		return voicepipe.Clip{}, voicepipe.Clip{}
+	}
+	switch speechBackend(m.Config) {
+	case model.BackendKokoro:
+		modality.WarmKokoroPhrases(ctx, m.Config, voice)
+		if wav, ok := modality.KokoroCachedWAV(m.Config, voice, piperphrase.Hesitation()); ok {
+			hold = decodeHoldWAV(wav)
+		}
+		if wav, ok := modality.KokoroCachedWAV(m.Config, voice, piperphrase.HoldMore()); ok {
+			more = decodeHoldWAV(wav)
+		}
+		return hold, more
+	case model.BackendPiper:
+		modality.WarmPiperPhrases(ctx, m.Config, voice)
+		if piper != nil {
+			if wav, err := piper.Speak(ctx, piperphrase.Hesitation(), voice); err == nil {
+				hold = decodeHoldWAV(wav)
+			}
+			if wav, err := piper.Speak(ctx, piperphrase.HoldMore(), voice); err == nil {
+				more = decodeHoldWAV(wav)
+			}
+		}
+		if len(hold.PCM) == 0 {
+			if wav, ok := modality.PiperCachedWAV(m.Config, voice, piperphrase.Hesitation()); ok {
+				hold = decodeHoldWAV(wav)
+			}
+		}
+		if len(more.PCM) == 0 {
+			if wav, ok := modality.PiperCachedWAV(m.Config, voice, piperphrase.HoldMore()); ok {
+				more = decodeHoldWAV(wav)
+			}
+		}
+		return hold, more
+	default:
+		return voicepipe.Clip{}, voicepipe.Clip{}
+	}
+}
+
+func decodeHoldWAV(wav []byte) voicepipe.Clip {
+	if len(wav) == 0 {
+		return voicepipe.Clip{}
+	}
+	rate, pcm, err := voicepipe.ParseWAV(wav)
+	if err != nil || rate <= 0 || len(pcm) < 2 {
+		return voicepipe.Clip{}
+	}
+	return voicepipe.Clip{
+		MIME: "audio/pcm",
+		Rate: rate,
+		PCM:  voicepipe.TrimSilencePCM16(pcm, 200),
+	}
 }
 
 func canSpeak(m *Model) bool {
@@ -199,6 +277,12 @@ func voiceHoldsRunner(m *Model) bool {
 // pinDuplexChat loads the chat model for the life of the socket, so the first
 // transcript does not wait on weights. The scheduler drops the ref when ctx ends.
 func (s *Server) pinDuplexChat(ctx context.Context, name string) {
+	if m, err := GetModel(name); err == nil && deferInferenceToRuntime(m) {
+		// One token loads the runtime GGUF before the first transcript.
+		// The spoken reply is a later /api/chat on the same sidecar.
+		_ = s.replyRuntimeChat(ctx, name, m, "", ".", nil, func(string) error { return nil }, 1, nil)
+		return
+	}
 	_, _, _, _, release, err := s.scheduleRunner(ctx, name, []model.Capability{model.CapabilityCompletion}, nil, nil, nil, nil, nil)
 	if err != nil {
 		return
@@ -368,22 +452,39 @@ func openLiveWhisper(ctx context.Context, m *Model) *modality.WhisperLive {
 	return modality.StartWhisperLive(ctx, m.Config)
 }
 
-func warmWhisper(m *Model, live *modality.WhisperLive) func(context.Context, string) (func(context.Context, []byte) (string, error), error) {
+func duplexASRBackend(m *Model) string {
+	if m == nil {
+		return ""
+	}
+	if modality.UsesQwen3ASR(m.Config) {
+		return "qwen3-asr"
+	}
+	if modelUsesLlamaASR(m) {
+		return "llama-asr"
+	}
+	return "whisper"
+}
+
+func warmASR(m *Model, live *modality.WhisperLive) func(context.Context, string) (func(context.Context, []byte) (string, string, error), error) {
 	if m == nil || modelUsesLlamaASR(m) {
 		return nil
 	}
 	if modality.UsesQwen3ASR(m.Config) {
-		return func(ctx context.Context, language string) (func(context.Context, []byte) (string, error), error) {
-			return func(ctx context.Context, wav []byte) (string, error) {
+		return func(ctx context.Context, language string) (func(context.Context, []byte) (string, string, error), error) {
+			return func(ctx context.Context, wav []byte) (string, string, error) {
 				text, err := modality.TranscribeQwen3(ctx, m.Config, wav, language)
 				if errors.Is(err, qwen3asr.ErrUnavailable) {
+					slog.Warn("duplex asr: qwen3-asr unavailable, using whisper fallback", "err", err)
 					tr, werr := modality.TranscribeWhisper(ctx, m.Config, wav, "clip.wav", language, "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", false, false, false, false, false, false, false, false, false, false, false, false)
 					if werr != nil {
-						return "", fmt.Errorf("%w (whisper fallback: %v)", err, werr)
+						return "", "", fmt.Errorf("%w (whisper fallback: %v)", err, werr)
 					}
-					return tr.Text, nil
+					return tr.Text, "whisper_fallback", nil
 				}
-				return text, err
+				if err != nil {
+					return "", "", err
+				}
+				return text, "qwen3-asr", nil
 			}, nil
 		}
 	}
@@ -391,22 +492,30 @@ func warmWhisper(m *Model, live *modality.WhisperLive) func(context.Context, str
 	if !whisper {
 		return nil
 	}
-	return func(ctx context.Context, language string) (func(context.Context, []byte) (string, error), error) {
-		return modality.WarmLive(ctx, live, m.Config, language)
+	return func(ctx context.Context, language string) (func(context.Context, []byte) (string, string, error), error) {
+		fin, err := modality.WarmLive(ctx, live, m.Config, language)
+		if err != nil || fin == nil {
+			return nil, err
+		}
+		return func(ctx context.Context, wav []byte) (string, string, error) {
+			text, err := fin(ctx, wav)
+			return text, "whisper", err
+		}, nil
 	}
 }
 
-func (s *Server) hearClip(ctx context.Context, m *Model, modelName string, wav []byte, language string) (string, error) {
+func (s *Server) hearClip(ctx context.Context, m *Model, modelName string, wav []byte, language string) (string, string, error) {
 	var qwenErr error
 	if modality.UsesQwen3ASR(m.Config) {
 		text, err := modality.TranscribeQwen3(ctx, m.Config, wav, language)
 		if err == nil {
-			return text, nil
+			return text, "qwen3-asr", nil
 		}
 		if !errors.Is(err, qwen3asr.ErrUnavailable) {
-			return "", err
+			return "", "", err
 		}
 		qwenErr = err
+		slog.Warn("duplex asr: qwen3-asr unavailable, using whisper fallback", "err", err)
 		// Fall through to Whisper CLI when the resident process cannot start.
 	}
 	whisper := hostTranscribeOnly(m) || modality.BackendFor(m.Config, model.ModalityTranscribe) == model.BackendWhisper || modality.PathFor(m.Config, "whisper_model") != "" || modality.UsesQwen3ASR(m.Config)
@@ -414,37 +523,41 @@ func (s *Server) hearClip(ctx context.Context, m *Model, modelName string, wav [
 		tr, err := modality.TranscribeWhisper(ctx, m.Config, wav, "clip.wav", language, "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", false, false, false, false, false, false, false, false, false, false, false, false)
 		if err != nil {
 			if qwenErr != nil {
-				return "", fmt.Errorf("%w (whisper fallback: %v)", qwenErr, err)
+				return "", "", fmt.Errorf("%w (whisper fallback: %v)", qwenErr, err)
 			}
-			return "", err
+			return "", "", err
 		}
-		return tr.Text, nil
+		backend := "whisper"
+		if qwenErr != nil {
+			backend = "whisper_fallback"
+		}
+		return tr.Text, backend, nil
 	}
 	runner, _, _, _, release, err := s.scheduleRunner(ctx, modelName, nil, nil, nil, nil, nil, nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer release()
 	asr, ok := runner.(llm.LlamaASRTranscriber)
 	if !ok {
-		return "", errors.New("asr requires a whisper model or llama-server ASR")
+		return "", "", errors.New("asr requires a whisper model or llama-server ASR")
 	}
 	_, body, err := asr.TranscribeAudio(ctx, wav, "clip.wav", language, "", "", "", false)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer body.Close()
 	buf, err := io.ReadAll(body)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var parsed struct {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(buf, &parsed); err == nil && strings.TrimSpace(parsed.Text) != "" {
-		return strings.TrimSpace(parsed.Text), nil
+		return strings.TrimSpace(parsed.Text), "llama-asr", nil
 	}
-	return strings.TrimSpace(string(buf)), nil
+	return strings.TrimSpace(string(buf)), "llama-asr", nil
 }
 
 // duplexThink is off so a spoken reply starts with the words, not a thinking block.
@@ -509,6 +622,11 @@ func (s *Server) warmDuplexPrefix(ctx context.Context, modelName, instructions s
 	if len(msgs) == 0 {
 		return nil
 	}
+	if m, err := GetModel(modelName); err == nil && deferInferenceToRuntime(m) {
+		// The runtime keeps its own cache. A llama-server prefix warm is the
+		// call that returns "model uses zerollama-runtime inference".
+		return nil
+	}
 	runner, m, opts, _, release, err := s.scheduleRunner(ctx, modelName, []model.Capability{model.CapabilityCompletion}, nil, nil, nil, nil, nil)
 	if err != nil {
 		return err
@@ -530,10 +648,14 @@ func duplexOptions(opts *api.Options) *api.Options {
 		base = *opts
 	}
 	base.NumPredict = voicepipe.ReplyPredict(base.NumPredict)
+	base.NumCtx = voicepipe.ReplyNumCtx(base.NumCtx)
 	return &base
 }
 
-func (s *Server) replyTextStream(ctx context.Context, modelName, instructions, user string, prior []voicepipe.Exchange, emit func(string) error) error {
+func (s *Server) replyTextStream(ctx context.Context, modelName, instructions, user string, prior []voicepipe.Exchange, emit func(string) error, stages *voicepipe.StageReporter) error {
+	if m, err := GetModel(modelName); err == nil && deferInferenceToRuntime(m) {
+		return s.replyRuntimeChat(ctx, modelName, m, instructions, user, prior, emit, 0, stages)
+	}
 	runner, m, opts, _, release, err := s.scheduleRunner(ctx, modelName, []model.Capability{model.CapabilityCompletion}, nil, nil, nil, nil, nil)
 	if err != nil {
 		return err
@@ -544,10 +666,15 @@ func (s *Server) replyTextStream(ctx context.Context, modelName, instructions, u
 	defer cancel()
 	var stream voicepipe.SentenceStream
 	var emitErr error
+	first := true
 	mtp := duplexMTP(m)
 	err = runner.Completion(ctx, llm.CompletionRequest{Prompt: prompt, Options: duplexOptions(opts), EnableMTP: mtp}, func(res llm.CompletionResponse) {
 		if emitErr != nil || res.Content == "" {
 			return
+		}
+		if first {
+			first = false
+			stages.Report(voicepipe.StageFirstToken, nil)
 		}
 		if pushErr := stream.Push(res.Content, emit); pushErr != nil {
 			emitErr = pushErr

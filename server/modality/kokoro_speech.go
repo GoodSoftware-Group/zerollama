@@ -120,10 +120,10 @@ func KokoroFillersReady(cfg model.ConfigV2, voice string) bool {
 // WarmKokoroPhrases synthesizes the short acknowledgements for one voice.
 // A phrase already in memory is skipped. The first Kokoro error stops the pass.
 func WarmKokoroPhrases(ctx context.Context, cfg model.ConfigV2, voice string) {
-	if KokoroFillersReady(cfg, voice) {
+	if KokoroFillersReady(cfg, voice) && KokoroHoldsReady(cfg, voice) {
 		return
 	}
-	for _, phrase := range piperphrase.Fillers() {
+	for _, phrase := range append(piperphrase.Fillers(), piperphrase.Hesitation()) {
 		if ctx.Err() != nil {
 			return
 		}
@@ -131,6 +131,47 @@ func WarmKokoroPhrases(ctx context.Context, cfg model.ConfigV2, voice string) {
 			return
 		}
 	}
+}
+
+// KokoroHoldsReady reports whether the duplex hesitation and HoldMore clips
+// for this voice are already in memory.
+func KokoroHoldsReady(cfg model.ConfigV2, voice string) bool {
+	voice, lang, err := prepareKokoro(cfg, voice, "")
+	if err != nil || KokoroModelPath(cfg) == "" || KokoroVoicesPath(cfg) == "" {
+		return false
+	}
+	key := piperphrase.Key{
+		Model:  KokoroModelPath(cfg),
+		Config: KokoroVoicesPath(cfg),
+		Voice:  voice,
+		Scale:  kokoroSpeedKey(1),
+		Lang:   lang,
+	}
+	for _, phrase := range []string{piperphrase.Hesitation(), piperphrase.HoldMore()} {
+		k := key
+		k.Text = phrase
+		if _, ok := piperphrase.Get(k); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// KokoroCachedWAV returns a cached WAV for text when the phrase is already warm.
+func KokoroCachedWAV(cfg model.ConfigV2, voice, text string) ([]byte, bool) {
+	voice, lang, err := prepareKokoro(cfg, voice, "")
+	if err != nil || strings.TrimSpace(text) == "" {
+		return nil, false
+	}
+	wav, ok := piperphrase.Get(piperphrase.Key{
+		Model:  KokoroModelPath(cfg),
+		Config: KokoroVoicesPath(cfg),
+		Voice:  voice,
+		Scale:  kokoroSpeedKey(1),
+		Lang:   lang,
+		Text:   text,
+	})
+	return wav, ok
 }
 
 // SpeechKokoro synthesizes a WAV. An omitted speed is 1. A speed outside

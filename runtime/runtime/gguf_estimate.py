@@ -22,6 +22,32 @@ _hints_cache: dict[str, tuple[float, float, GgufArchHints]] = {}
 _hints_lock = threading.Lock()
 _HINTS_CACHE_TTL_S = 60.0
 
+# Tensor-table walks seek through every KV + tensor header. Uncached, each
+# suggest_max_num_ctx binary search and every /health VRAM probe re-parses the
+# GGUF (hundreds of ms on a 14B blob; seconds under concurrent Go coordination).
+# That stalls duplex TTFT with the GPU idle. Cache by path+mtime like arch hints.
+_tensor_infos_cache: dict[str, tuple[float, float, list[GgufTensorInfo] | None]] = {}
+_tensor_region_cache: dict[str, tuple[float, float, int | None]] = {}
+_tensor_cache_lock = threading.Lock()
+_TENSOR_CACHE_TTL_S = 60.0
+
+
+def _gguf_cache_key(path: Path) -> tuple[str, float] | None:
+    try:
+        resolved = path.resolve()
+        return str(resolved), resolved.stat().st_mtime
+    except OSError:
+        return None
+
+
+def clear_gguf_estimate_caches() -> None:
+    """Drop arch/tensor caches (tests)."""
+    with _hints_lock:
+        _hints_cache.clear()
+    with _tensor_cache_lock:
+        _tensor_infos_cache.clear()
+        _tensor_region_cache.clear()
+
 
 @dataclass
 class GgufArchHints:
@@ -548,7 +574,7 @@ def _tensor_layer_index(name: str) -> int | None:
     return int(m.group(1))
 
 
-def gguf_file_tensor_region_bytes(path: Path) -> int | None:
+def _parse_gguf_file_tensor_region_bytes(path: Path) -> int | None:
     """On-disk tensor payload bytes (includes inter-tensor alignment padding)."""
     try:
         size = path.stat().st_size
@@ -585,7 +611,26 @@ def gguf_file_tensor_region_bytes(path: Path) -> int | None:
         return None
 
 
-def gguf_tensor_infos(path: Path) -> list[GgufTensorInfo] | None:
+def gguf_file_tensor_region_bytes(path: Path) -> int | None:
+    """On-disk tensor payload bytes (cached by path + mtime)."""
+    key_mtime = _gguf_cache_key(path)
+    if key_mtime is None:
+        return _parse_gguf_file_tensor_region_bytes(path)
+    key, mtime = key_mtime
+    now = time.monotonic()
+    with _tensor_cache_lock:
+        cached = _tensor_region_cache.get(key)
+        if cached is not None:
+            cached_mtime, cached_at, region = cached
+            if cached_mtime == mtime and (now - cached_at) < _TENSOR_CACHE_TTL_S:
+                return region
+    region = _parse_gguf_file_tensor_region_bytes(path)
+    with _tensor_cache_lock:
+        _tensor_region_cache[key] = (mtime, now, region)
+    return region
+
+
+def _parse_gguf_tensor_infos(path: Path) -> list[GgufTensorInfo] | None:
     """Per-tensor payload sizes from GGUF metadata."""
     try:
         with path.open("rb") as f:
@@ -625,6 +670,25 @@ def gguf_tensor_infos(path: Path) -> list[GgufTensorInfo] | None:
             return out
     except (OSError, ValueError, struct.error, TypeError, EOFError):
         return None
+
+
+def gguf_tensor_infos(path: Path) -> list[GgufTensorInfo] | None:
+    """Per-tensor payload sizes from GGUF metadata (cached by path + mtime)."""
+    key_mtime = _gguf_cache_key(path)
+    if key_mtime is None:
+        return _parse_gguf_tensor_infos(path)
+    key, mtime = key_mtime
+    now = time.monotonic()
+    with _tensor_cache_lock:
+        cached = _tensor_infos_cache.get(key)
+        if cached is not None:
+            cached_mtime, cached_at, infos = cached
+            if cached_mtime == mtime and (now - cached_at) < _TENSOR_CACHE_TTL_S:
+                return infos
+    infos = _parse_gguf_tensor_infos(path)
+    with _tensor_cache_lock:
+        _tensor_infos_cache[key] = (mtime, now, infos)
+    return infos
 
 
 def estimate_gpu_weight_bytes(path: Path, n_gpu_layers: int) -> int | None:

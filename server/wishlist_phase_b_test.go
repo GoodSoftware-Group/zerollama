@@ -248,15 +248,15 @@ func TestPrepareRuntimeVRAMSkipWhenResidentAndEmpty(t *testing.T) {
 		t.Fatal("no ggml runners should have been touched")
 	}
 
-	// With ggml loaded, must unload (not skip) even when GGUF matches.
+	// Resident runtime GGUF keeps ggml peers. The weights already fit.
 	s.sched.loadedMu.Lock()
 	s.sched.loaded["other"] = &runnerRef{llama: other, modelKey: "other", numParallel: 1}
 	s.sched.loadedMu.Unlock()
 	if err := s.prepareRuntimeVRAM(t.Context(), "/tmp/resident.gguf", false); err != nil {
-		t.Fatalf("unload path: %v", err)
+		t.Fatalf("co-resident path: %v", err)
 	}
-	if !other.closeCalled {
-		t.Fatal("expected ggml unload when runners present")
+	if other.closeCalled {
+		t.Fatal("ggml peer should stay while the same runtime GGUF is resident")
 	}
 }
 

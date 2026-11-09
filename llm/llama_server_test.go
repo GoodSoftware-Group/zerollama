@@ -1471,6 +1471,67 @@ func TestSetupLlamaServerCommandEnv(t *testing.T) {
 	}
 }
 
+func TestRewriteSingleVisibleDevicePin(t *testing.T) {
+	envs := map[string]string{"CUDA_VISIBLE_DEVICES": "0"}
+	rewriteSingleVisibleDevicePin(envs, []ml.DeviceInfo{{DeviceID: ml.DeviceID{ID: "0", Library: "CUDA"}}})
+	if envs["LLAMA_ARG_DEVICE"] != "CUDA0" {
+		t.Fatalf("single visible GPU: %#v", envs)
+	}
+	both := map[string]string{"CUDA_VISIBLE_DEVICES": "0,1"}
+	rewriteSingleVisibleDevicePin(both, []ml.DeviceInfo{
+		{DeviceID: ml.DeviceID{ID: "0", Library: "CUDA"}},
+		{DeviceID: ml.DeviceID{ID: "1", Library: "CUDA"}},
+	})
+	if _, ok := both["LLAMA_ARG_DEVICE"]; ok {
+		t.Fatalf("two GPUs should keep the inherited pin, got %#v", both)
+	}
+}
+
+func TestStripModelDevicePins(t *testing.T) {
+	got := StripModelDevicePins([]string{
+		"PATH=/bin",
+		"LLAMA_ARG_DEVICE=CUDA1",
+		"llama_arg_main_gpu=0",
+		"CUDA_VISIBLE_DEVICES=0",
+		"LLAMA_ARG_N_GPU_LAYERS=99",
+	})
+	want := []string{"PATH=/bin", "CUDA_VISIBLE_DEVICES=0", "LLAMA_ARG_N_GPU_LAYERS=99"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("StripModelDevicePins = %#v, want %#v", got, want)
+	}
+}
+
+func TestFindLlamaServerGPUBackendSkipsELFWithoutInit(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("ELF backend check")
+	}
+	if _, err := exec.LookPath("gcc"); err != nil {
+		t.Skip("gcc not installed")
+	}
+	dir := t.TempDir()
+	srcDir := t.TempDir()
+	writeSO := func(name, src string) string {
+		c := filepath.Join(srcDir, name+".c")
+		if err := os.WriteFile(c, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		so := filepath.Join(dir, name)
+		cmd := exec.Command("gcc", "-shared", "-fPIC", "-o", so, c)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("gcc %s: %v\n%s", name, err, out)
+		}
+		return so
+	}
+	writeSO("libggml-cuda.so", "int other(void){return 1;}\n")
+	if got := findLlamaServerGPUBackend(dir); got != "" {
+		t.Fatalf("backend without ggml_backend_init = %q", got)
+	}
+	want := writeSO("libggml-hip.so", "int ggml_backend_init(void){return 1;}\n")
+	if got := findLlamaServerGPUBackend(dir); got != want {
+		t.Fatalf("backend = %q, want %q", got, want)
+	}
+}
+
 func TestFilteredEnvLogValue(t *testing.T) {
 	attrs := filteredEnv([]string{
 		"OLLAMA_DEBUG=1",

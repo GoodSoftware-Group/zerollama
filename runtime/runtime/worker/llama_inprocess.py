@@ -69,7 +69,7 @@ class LlamaInprocessWorker:
     def is_running(self) -> bool:
         return self._session is not None
 
-    def start(self, extra_args: list[str] | None = None) -> None:
+    def start(self, extra_args: list[str] | None = None, extra_env: dict[str, str] | None = None) -> None:
         with self._lock:
             hints = parse_llama_server_args(extra_args or [])
             if inprocess_speculative_requested(hints):
