@@ -3422,10 +3422,13 @@ components:
           type: string
           enum: [silence_started, transcribing, generating, first_token, audio_done]
           description: >
-            silence_started — server_vad quiet wait began;
-            transcribing — ASR started (also conversation.item.input_audio_transcription.started);
-            generating — chat prompt submitted (Modelfile / ChatML render, think off);
-            first_token — first assistant content token;
+            silence_started — server_vad quiet wait began, sent at the first quiet
+            before the turn commits;
+            transcribing — sent with conversation.item.input_audio_transcription.started
+            only after input_audio_buffer.speech_stopped;
+            generating — chat prompt submitted (Modelfile / ChatML render, think off),
+            held until that same commit;
+            first_token — first assistant content token, held until that same commit;
             audio_done — final PCM flushed (pairs with response.output_audio.done).
         silence_duration_ms:
           type: integer
@@ -3471,7 +3474,8 @@ components:
       description: >
         Duplex ASR result after a committed clip. `asr_backend` is the backend
         that produced `transcript` for this turn (`whisper_fallback` when Qwen
-        fell through to Whisper).
+        fell through to Whisper). A transcript with no letter or digit is an
+        empty string, and duplex does not speak a reply for that turn.
       required: [type, transcript]
       properties:
         type:
@@ -3479,6 +3483,9 @@ components:
           enum: [conversation.item.input_audio_transcription.completed]
         transcript:
           type: string
+          description: >
+            Heard words. Empty when the clip had no letter or digit
+            (punctuation and whitespace count as silence).
         asr:
           type: string
           description: Duplex asr= query tag when set.
@@ -6347,24 +6354,32 @@ paths:
         `./scripts/smoke/duplex_voice_hygiene.sh` and
         `realtime_probe -check-hygiene`.
 
-        Duplex emits `response.status` events (`RealtimeResponseStatus`) with
-        `silence_started` (quiet wait began; `silence_duration_ms`),
-        `transcribing`, `generating`, `first_token`, and `audio_done`, plus
-        `conversation.item.input_audio_transcription.started` when ASR begins.
+        Duplex emits `response.status` events (`RealtimeResponseStatus`).
+        `silence_started` (with `silence_duration_ms`) is sent when the quiet
+        wait begins, before the turn commits. `transcribing`,
+        `conversation.item.input_audio_transcription.started`, `generating`,
+        and `first_token` are sent only after
+        `input_audio_buffer.speech_stopped`, so a client that mutes the mic
+        on those events still records the rest of the sentence.
+        `audio_done` follows the last PCM chunk.
         Opening `session.created` is `RealtimeSessionCreated` (`asr`,
         `asr_backend`). Each ASR finish is `RealtimeTranscriptionCompleted`
         (same fields; `asr_backend` may be `whisper_fallback` when Qwen3-ASR
-        was unavailable — see `RealtimeASRBackend`).
-        Transcription starts about 100 ms into the quiet wait; the chat model
-        and voice synthesize during that wait. When the first clause is ready
-        at commit it plays immediately.
+        was unavailable — see `RealtimeASRBackend`). A transcript with no
+        letter or digit is an empty string, and duplex does not speak a reply
+        for that turn.
+        A guess transcript starts about 100 ms into the quiet wait, and the
+        chat model and voice may synthesize during that wait. The client does
+        not see those stages until the turn commits. When the first clause is
+        ready at commit it plays immediately.
         When it is not, a cached `um` in the same voice holds the floor, then
         one `One moment.` if the opening is still missing; the model's
         opening fades in over that hold and is the only assistant text kept
         in history. A leading model filler such as `Well,` is spoken in the
         same phrase as the words that follow. The first words start at a comma,
-        semicolon, colon, or about 16 characters; a later stretch waits for
-        about 48.
+        semicolon, or a colon that does not follow a digit, or about 16
+        characters. A clock or ratio such as 15:49 stays in one phrase. A later
+        stretch waits for about 48.
       operationId: realtimeAudio
       parameters:
         - name: model
