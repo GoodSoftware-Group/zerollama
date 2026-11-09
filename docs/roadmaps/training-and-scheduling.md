@@ -48,6 +48,8 @@ Open borrowings / follow-ons:
 
 **Suggested order:** **T9 → T10 → T11 → T6**. Do **T2** when auth becomes a deployment requirement. Keep **T5** optional unless the Python path becomes the limiting factor.
 
+`training.py` `process_training_request` (dataset, collator, train, save in one function) is **R8** on the serving structure backlog: [core-serving.md](core-serving.md#code-structure). Split it while already editing that request path.
+
 ### Non-goals (for this track)
 
 Keep the current non-goals from [../gpu-training.md](../design/training/gpu-training.md) and the track docs: no second in-tree training backend, no vendored Studio UI, no promise of Unsloth Core parity, and no implicit GPU sharing with a separate Studio product.

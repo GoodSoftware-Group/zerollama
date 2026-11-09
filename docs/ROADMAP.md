@@ -30,6 +30,7 @@ This file is the **executive roadmap**: a short view of what matters next.
 - **Surfaces:** **LAYA4** and **AR10** stay parked until the active surfaces justify more investment.
 - **Integrations:** LM Studio fixture cache and MLX compatibility matrix stay later-tier.
 - **Media:** long-tail runner/value expansion and deeper native acceleration stay behind the near-term product backlog.
+- **Code structure:** delete the unused `zzauditvp` voice clone, then collapse the duplicated digest scan and split the oversized serving files (**R1 → R7**). Details: [core-serving.md](roadmaps/core-serving.md#code-structure).
 
 ## Track roadmaps
 

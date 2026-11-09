@@ -97,3 +97,35 @@ Near-term product-track Apple work:
 | **M24** GGUF MTP on ggml Metal | **Partial** | Mature the `ZEROLLAMA_GGML_MTP=1` path and decide when it is safe outside targeted labs | [../apple-silicon-metal.md](../design/apple/apple-silicon-metal.md) |
 
 Research-track Apple items live in [../RESEARCH_ROADMAP.md#apple-silicon--metal-experiments](../RESEARCH_ROADMAP.md#apple-silicon--metal-experiments): **M17**, **M18**, **M19**, **M25**, **M26**.
+
+---
+
+## Code structure
+
+Structural cleanup from a first-party scan on 9 Nov 2026 (vendored llama.cpp, ggml, and xgrammar left out). These items remove a second copy or pull a self-contained chunk out of a file that has grown past the serving path. They do not change admission, scheduling, or the HTTP wire.
+
+**Suggested order:** **R1 → R2 → R3 → R4 → R5 → R6 → R7**. **R8–R10** wait until someone is already editing that file.
+
+| ID | Status | Open work |
+|----|--------|-----------|
+| **R1** | **Open** | Delete `server/zzauditvp`. It is a byte-identical copy of `server/voicepipe` (14 files, still `package voicepipe`, including the 2,335-line session test). Nothing imports it. |
+| **R2** | **Open** | One digest scan. `blobNamesInManifest` (`server/remotestore/invariants.go`) and `extractDigestsFromJSON` (`server/remotestore/storaged/ops.go`) walk `sha256:` and `sha256-` the same way. Garbage collection and fetch call one function. |
+| **R3** | **Open** | Pull health out of `runtime/runtime/engine.py` (3,800 lines). `_health_body` and the `_kv_*_health` helpers are about 1,200 lines of snapshot building inside the load and decode class. |
+| **R4** | **Open** | Share the batch preamble in `engine.py`. `generate_batch` (197 lines) and `stream_generate_batch` (212 lines) both import the same invariants and both take the same serial fallback before admit. |
+| **R5** | **Open** | Move `ChatHandler` (829 lines) and `GenerateHandler` (789 lines) out of `server/routes.go` (4,959 lines). Each handler gets its own file. `routes.go` keeps `Serve` and the route table. The two handlers stay separate: tools, thinking, and images already diverged. |
+| **R6** | **Open** | Split `llm/llama_server.go` (4,251 lines, 136 functions). Process launch (`startLlamaServer`, `Load`, the VRAM estimate) and the HTTP methods (`Completion` is 298 lines, then `Chat`, speak, transcribe) become two files. |
+| **R7** | **Open** | One loopback process shell under `server/modality`. `whispercli`, `qwen3asr`, `kokoro`, and `neuralvad` each bind a port, start a command, capture stderr, and `waitReady`. The HTTP API stays per modality. |
+
+### Later, while already in the file
+
+| ID | Status | Open work |
+|----|--------|-----------|
+| **R8** | **Later** | `training.py` `process_training_request` is about 430 lines of dataset, collator, train, and save. The save tail can leave the request parser. See [training-and-scheduling.md](training-and-scheduling.md). |
+| **R9** | **Later** | `openai.FromChatRequestWithContext` is 384 lines of one conversion. Split it into messages, tools, and reasoning when the next OpenAI field lands. |
+| **R10** | **Later** | `envconfig/config.go` is 185 getters. Group runtime, training, and Slurm only while editing that file. |
+
+### Leave these alone
+
+- `x/imagegen/mlx/mlx.go` is 3,417 lines of cgo bindings. The longest function is 67 lines.
+- `runtime/runtime/worker/libllama_ctypes.py` holds one lock around decode. Splitting the file splits that critical section across modules.
+- New call sites use the existing invariant helpers (`ProxyGGUFPath`, `admit_token_budget`, `loaded_ctx_must_grow`) instead of growing another copy.
