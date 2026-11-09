@@ -90,20 +90,21 @@ def _replace_flag(args: list[str], names: frozenset[str], value: str) -> list[st
 
 
 def talk_lane_candidates(args: list[str]) -> list[list[str]]:
-    """Keep the requested context. Drop extra slots before shrinking context.
+    """One slot, then a smaller context if that still does not fit.
 
-    One conversation (the ear) has to stay on a single 24GB card. Four slots
-    at 32k do not. 8k is the floor because duplex replies fit inside it.
+    Duplex is a single speaker. Extra slots reserve KV the reply never uses,
+    fill the card, and the next turn then clamps context down to a few
+    hundred tokens. 8k is the floor because duplex replies fit inside it.
     """
-    out = [list(args)]
     one_slot = _replace_flag(args, _NP_FLAGS, "1")
-    if one_slot != out[-1]:
-        out.append(one_slot)
+    out = [one_slot]
     ctx = _flag_value(one_slot, _CTX_FLAGS)
     if ctx is not None and ctx > 8192:
         for smaller in (16384, 8192):
             if smaller < ctx:
-                out.append(_replace_flag(one_slot, _CTX_FLAGS, str(smaller)))
+                shrunk = _replace_flag(one_slot, _CTX_FLAGS, str(smaller))
+                if shrunk != out[-1]:
+                    out.append(shrunk)
     return out
 
 

@@ -51,3 +51,15 @@ func hasSpokenLetter(text string) bool {
 	}
 	return false
 }
+
+// heardWords reports whether a transcript has a letter or a digit.
+// A period, an ellipsis, or whitespace is silence. Duplex must not start
+// a spoken reply from that.
+func heardWords(text string) bool {
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
+}

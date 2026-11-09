@@ -1224,6 +1224,28 @@ func TestSentenceStreamStartsAtAClause(t *testing.T) {
 	}
 	stream = SentenceStream{}
 	got = nil
+	if err := stream.Push("The time is 15:49.", emit); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Flush(emit); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(got, "|"), "15:|") || !strings.Contains(strings.Join(got, " "), "15:49.") {
+		t.Fatalf("clock time split: %q", got)
+	}
+	stream = SentenceStream{}
+	got = nil
+	if err := stream.Push("Wait: the cup is here.", emit); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Flush(emit); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, "|") != "Wait:|the cup is here." {
+		t.Fatalf("clause colon: %q", got)
+	}
+	stream = SentenceStream{}
+	got = nil
 	long := strings.TrimSpace(strings.Repeat("alpha ", 12))
 	if err := stream.Push(long, emit); err != nil {
 		t.Fatal(err)
@@ -1868,10 +1890,10 @@ func TestSpeakStreamPlaysHold(t *testing.T) {
 	var releaseSpeak sync.Once
 	hold := Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 400, 1000)}
 	go Serve(context.Background(), server, nil, Engine{
-		Duplex:   true,
+		Duplex:    true,
 		InputRate: 16000,
-		Hold:     hold,
-		HoldMore: Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 200, 800)},
+		Hold:      hold,
+		HoldMore:  Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 200, 800)},
 		Hear: func(ctx context.Context, wav []byte, language string) (string, error) {
 			return "hello", nil
 		},

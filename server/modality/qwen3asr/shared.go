@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Shared keeps one Qwen3-ASR process for a weight directory across requests.
@@ -57,6 +58,9 @@ func (s *Shared) Transcribe(ctx context.Context, modelDir string, wav []byte, la
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "", err
 	}
+	if errors.Is(err, ErrBusy) {
+		return s.waitBusy(ctx, proc, wav, name)
+	}
 	// Process may have crashed after a successful start. Restart once.
 	if !proc.Ready() {
 		s.mu.Lock()
@@ -73,6 +77,32 @@ func (s *Shared) Transcribe(ctx context.Context, modelDir string, wav []byte, la
 		}
 	}
 	return "", err
+}
+
+// waitBusy retries while another clip holds the GPU. A guess that was
+// cancelled still runs to the end of that call; the committed clip waits
+// for it instead of stacking another thread.
+func (s *Shared) waitBusy(ctx context.Context, proc *Server, wav []byte, name string) (string, error) {
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", ctx.Err()
+		case <-timer.C:
+		}
+		text, err := proc.Transcribe(ctx, wav, name)
+		if !errors.Is(err, ErrBusy) {
+			return text, err
+		}
+		if time.Now().After(deadline) {
+			return "", err
+		}
+	}
 }
 
 func (s *Shared) ensure(ctx context.Context, modelDir string) (*Server, error) {
@@ -95,7 +125,22 @@ func (s *Shared) ensure(ctx context.Context, modelDir string) (*Server, error) {
 			proc := s.proc
 			s.mu.Unlock()
 			if err := proc.Wait(ctx); err != nil {
-				return nil, err
+				// A killed or crashed child keeps startErr set. Wait would
+				// return that forever, so drop it and boot another process.
+				if proc.Ready() || proc.Loading() {
+					return nil, err
+				}
+				s.mu.Lock()
+				same := s.proc == proc && !s.booting
+				if same {
+					s.proc = nil
+					s.dir = ""
+				}
+				s.mu.Unlock()
+				if same {
+					proc.Close()
+				}
+				continue
 			}
 			return proc, nil
 		}

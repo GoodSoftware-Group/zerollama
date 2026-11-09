@@ -1,6 +1,7 @@
 package qwen3asr
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -64,6 +66,48 @@ func TestPostTranscribeOmitsEmptyLanguage(t *testing.T) {
 	defer srv.Close()
 	if _, err := PostTranscribe(context.Background(), srv.Client(), srv.URL, []byte("x"), ""); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPostTranscribeBusy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"busy"}`))
+	}))
+	defer srv.Close()
+	_, err := PostTranscribe(context.Background(), srv.Client(), srv.URL, []byte("x"), "")
+	if !errors.Is(err, ErrBusy) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestParseHealthBusy(t *testing.T) {
+	ok, busy := parseHealth([]byte(`{"status":"ok"}`))
+	if !ok || busy != 0 {
+		t.Fatalf("ok=%v busy=%s", ok, busy)
+	}
+	ok, busy = parseHealth([]byte(`{"status":"ok","busy_ms":1500}`))
+	if !ok || busy != 1500*time.Millisecond {
+		t.Fatalf("ok=%v busy=%s", ok, busy)
+	}
+	if ok, _ := parseHealth([]byte(`{"status":"loading"}`)); ok {
+		t.Fatal("loading counted as ready")
+	}
+}
+
+func TestLimitWriterKeepsCopyAlive(t *testing.T) {
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	w := &limitWriter{dst: &buf, mu: &mu, max: 4}
+	n, err := io.Copy(w, strings.NewReader(strings.Repeat("abcdefghij", 20)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 200 {
+		t.Fatalf("copied %d", n)
+	}
+	if buf.String() != "abcd" {
+		t.Fatalf("kept %q", buf.String())
 	}
 }
 

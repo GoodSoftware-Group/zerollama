@@ -36,7 +36,8 @@ def test_candidates_drop_slots_before_context():
 
     args = ["-np", "4", "-c", "32768", "-ts", "1,1"]
     cands = talk_lane_candidates(args)
-    assert cands[0] == args
-    assert cands[1][cands[1].index("-np") + 1] == "1"
-    assert cands[1][cands[1].index("-c") + 1] == "32768"
+    assert cands[0][cands[0].index("-np") + 1] == "1"
+    assert cands[0][cands[0].index("-c") + 1] == "32768"
+    assert "-ts" in cands[0]
     assert cands[-1][cands[-1].index("-c") + 1] == "8192"
+    assert all(c[c.index("-np") + 1] == "1" for c in cands)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -25,6 +26,18 @@ import (
 // ErrUnavailable means the resident process could not start. Callers use Whisper.
 var ErrUnavailable = errors.New("qwen3-asr unavailable")
 
+// ErrBusy means one clip already holds the GPU. Callers wait and retry.
+// It is not a missing install.
+var ErrBusy = errors.New("qwen3-asr busy")
+
+// wedgeHealthWait is how long /health may take before a live process is
+// treated as stuck. A healthy process answers on loopback in milliseconds.
+const wedgeHealthWait = time.Second
+
+// wedgeBusy is how long one clip may hold the GPU before the process is
+// restarted. Speculative guesses pile up behind a call that never returns.
+const wedgeBusy = 15 * time.Second
+
 // Server is one python3 -m runtime.asr.qwen3_serve process.
 type Server struct {
 	mu        sync.Mutex
@@ -38,6 +51,7 @@ type Server struct {
 	retired   bool
 	everReady bool
 	gen       int
+	reviveMu  sync.Mutex
 	errMu     sync.Mutex
 	errBuf    bytes.Buffer
 	modelDir  string
@@ -341,13 +355,25 @@ func (s *Server) failStart(ready chan struct{}, gen int, err error) {
 }
 
 func healthOK(body []byte) bool {
+	ok, _ := parseHealth(body)
+	return ok
+}
+
+func parseHealth(body []byte) (ok bool, busy time.Duration) {
 	var parsed struct {
 		Status string `json:"status"`
+		BusyMS int64  `json:"busy_ms"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return false
+		return false, 0
 	}
-	return parsed.Status == "ok"
+	if parsed.Status != "ok" {
+		return false, 0
+	}
+	if parsed.BusyMS > 0 {
+		busy = time.Duration(parsed.BusyMS) * time.Millisecond
+	}
+	return true, busy
 }
 
 // Wait blocks until the model is ready or the start failed.
@@ -442,7 +468,61 @@ func (s *Server) Transcribe(ctx context.Context, wav []byte, language string) (s
 	if !alive {
 		return "", fmt.Errorf("qwen3-asr is not running")
 	}
+	if err := s.reviveIfWedged(ctx); err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	base = s.baseURL
+	client = s.client
+	s.mu.Unlock()
 	return PostTranscribe(ctx, client, base, wav, language)
+}
+
+// reviveIfWedged restarts a process that is still running but no longer
+// answering, or that has held the GPU longer than wedgeBusy. A dead process
+// is left for ensure to replace.
+func (s *Server) reviveIfWedged(ctx context.Context) error {
+	if !s.Ready() {
+		return nil
+	}
+	s.reviveMu.Lock()
+	defer s.reviveMu.Unlock()
+	if !s.Ready() {
+		return nil
+	}
+	ok, busy := s.probeHealth(wedgeHealthWait)
+	if ok && busy < wedgeBusy {
+		return nil
+	}
+	slog.Warn("qwen3-asr wedged; restarting", "health_ok", ok, "busy", busy.String())
+	return s.Restart(ctx)
+}
+
+// probeHealth calls /health. ok is false when the process does not answer.
+func (s *Server) probeHealth(wait time.Duration) (ok bool, busy time.Duration) {
+	s.mu.Lock()
+	base := s.baseURL
+	s.mu.Unlock()
+	if base == "" || wait <= 0 {
+		return false, 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/health", nil)
+	if err != nil {
+		return false, 0
+	}
+	client := &http.Client{Timeout: wait}
+	res, err := client.Do(req)
+	if err != nil {
+		return false, 0
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(res.Body, 256))
+	if err != nil || res.StatusCode != http.StatusOK {
+		return false, 0
+	}
+	return parseHealth(body)
 }
 
 // Restart stops the current process and starts another on a new port.
@@ -561,6 +641,9 @@ func PostTranscribe(ctx context.Context, client *http.Client, baseURL string, wa
 	if res.StatusCode == http.StatusServiceUnavailable {
 		return "", ErrUnavailable
 	}
+	if res.StatusCode == http.StatusTooManyRequests {
+		return "", ErrBusy
+	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return "", fmt.Errorf("qwen3-asr HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(body)))
 	}
@@ -583,15 +666,19 @@ type limitWriter struct {
 	max int
 }
 
+// Write stores up to max bytes and always reports the full input consumed.
+// A short count makes io.Copy stop reading. The child's stderr pipe then
+// fills and the next request, including /health, blocks in its access log.
 func (w *limitWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.dst.Len() >= w.max {
-		return len(p), nil
+	if w.dst.Len() < w.max {
+		remain := w.max - w.dst.Len()
+		chunk := p
+		if len(chunk) > remain {
+			chunk = chunk[:remain]
+		}
+		_, _ = w.dst.Write(chunk)
 	}
-	remain := w.max - w.dst.Len()
-	if len(p) > remain {
-		p = p[:remain]
-	}
-	return w.dst.Write(p)
+	return len(p), nil
 }

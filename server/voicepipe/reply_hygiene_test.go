@@ -8,6 +8,26 @@ func TestSpokenReplyHygieneOK(t *testing.T) {
 	}
 }
 
+func TestCommitSupersedesGuess(t *testing.T) {
+	if !commitSupersedesGuess(507, 330) || !commitSupersedesGuess(901, 330) {
+		t.Fatal("expected a longer commit to win")
+	}
+	if commitSupersedesGuess(256, 256) || commitSupersedesGuess(400, 330) || commitSupersedesGuess(0, 100) {
+		t.Fatal("quiet tail or empty commit should keep the guess")
+	}
+}
+
+func TestHeardWords(t *testing.T) {
+	if !heardWords("Hello.") || !heardWords("  42 ") {
+		t.Fatal("expected words")
+	}
+	for _, c := range []string{"", "   ", ".", "...", "!", "？"} {
+		if heardWords(c) {
+			t.Fatalf("expected silence for %q", c)
+		}
+	}
+}
+
 func TestSpokenReplyHygieneRejectsRoleLeaks(t *testing.T) {
 	cases := []string{
 		"",

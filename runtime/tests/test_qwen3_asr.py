@@ -45,9 +45,37 @@ def test_ear_transcribe_uses_injected_model(tmp_path):
     assert text == "hello world"
     assert len(fake.calls) == 1
     path, lang = fake.calls[0]
-    assert lang == "English"
+    # The first pass leaves language unset so silence stays empty.
+    assert lang is None
     assert path.endswith(".wav")
     assert not os.path.exists(path)
+
+
+def test_ear_retries_english_when_text_has_no_latin(tmp_path):
+    class _Hi:
+        def __init__(self) -> None:
+            self.calls: list[str | None] = []
+
+        def transcribe(self, audio, language=None, return_time_stamps=False):
+            self.calls.append(language)
+            if language:
+                return [_FakeResult("Hi.")]
+            return [_FakeResult("はい。")]
+
+    fake = _Hi()
+    ear = Ear(str(tmp_path), device="cpu", model=fake)
+    assert ear.transcribe(b"RIFF", language="English") == "Hi."
+    assert fake.calls == [None, "English"]
+
+
+def test_ear_drops_punctuation_only(tmp_path):
+    class _Punct:
+        def transcribe(self, audio, language=None, return_time_stamps=False):
+            assert language is None
+            return [_FakeResult(".")]
+
+    ear = Ear(str(tmp_path), device="cpu", model=_Punct())
+    assert ear.transcribe(b"RIFF", language="English") == ""
 
 
 def test_ear_rejects_missing_directory_without_model():
@@ -117,8 +145,61 @@ def test_serve_health_and_transcribe(tmp_path):
         out = json.loads(resp.read().decode())
         assert resp.status == 200
         assert out == {"text": "hello world"}
-        assert fake.calls[-1][1] == "English"
+        assert fake.calls[-1][1] is None
         conn.close()
     finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_serve_second_clip_is_busy_while_health_answers(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    class _Blocking:
+        def transcribe(self, audio, language=None, return_time_stamps=False):
+            started.set()
+            assert release.wait(5)
+            return [_FakeResult("one")]
+
+    ear = Ear(str(tmp_path), device="cpu", model=_Blocking())
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(ear))
+    host, port = server.server_address
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def post(conn: HTTPConnection) -> int:
+        body = b"RIFF"
+        conn.request(
+            "POST",
+            "/transcribe",
+            body=body,
+            headers={"Content-Type": "audio/wav", "Content-Length": str(len(body))},
+        )
+        resp = conn.getresponse()
+        resp.read()
+        return resp.status
+
+    try:
+        first = HTTPConnection(host, port, timeout=5)
+        worker = threading.Thread(target=post, args=(first,))
+        worker.start()
+        assert started.wait(2)
+        second = HTTPConnection(host, port, timeout=5)
+        assert post(second) == 429
+        health = HTTPConnection(host, port, timeout=5)
+        health.request("GET", "/health")
+        resp = health.getresponse()
+        body = json.loads(resp.read().decode())
+        assert resp.status == 200
+        assert body["status"] == "ok"
+        assert body["busy_ms"] >= 0
+        release.set()
+        worker.join(5)
+        first.close()
+        second.close()
+        health.close()
+    finally:
+        release.set()
         server.shutdown()
         server.server_close()

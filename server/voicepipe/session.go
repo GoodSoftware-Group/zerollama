@@ -101,7 +101,7 @@ type Engine struct {
 	SpeechScore SpeechScorer
 	// OnTurnReset clears neural state when an utterance ends or a barge starts.
 	OnTurnReset func()
-	Hear func(ctx context.Context, wav []byte, language string) (string, error)
+	Hear        func(ctx context.Context, wav []byte, language string) (string, error)
 	// HearEx is Hear plus the STT backend that produced the text (qwen3-asr,
 	// whisper, whisper_fallback, llama-asr). Prefer this for duplex so the
 	// socket can surface asr_backend on transcription.completed.
@@ -117,7 +117,7 @@ type Engine struct {
 	// (qwen3-asr, whisper, llama-asr) advertised on session.created.
 	ASR        string
 	ASRBackend string
-	Reply    func(ctx context.Context, instructions, user string, prior []Exchange) (string, error)
+	Reply      func(ctx context.Context, instructions, user string, prior []Exchange) (string, error)
 	// StreamReply speaks each sentence as the model writes it. Generation continues
 	// while that sentence's audio plays. When it is set, Reply is not called.
 	StreamReply func(ctx context.Context, instructions, user string, prior []Exchange, emit func(sentence string) error) error
@@ -205,45 +205,54 @@ func Serve(ctx context.Context, conn io.WriteCloser, src io.Reader, eng Engine) 
 }
 
 type session struct {
-	ctx         context.Context
-	w           io.Writer
-	eng         Engine
-	mu          sync.Mutex
-	pcm         []byte
-	text        string
-	lang        string
-	inst        string
-	voice       string
-	emotion     string
-	turn        context.CancelFunc
-	gen         int
-	replyGen    int
-	vad         bool
-	vadTurn     Turn
-	gate        Gate
-	history     []Exchange
-	earGen      int
-	earPending  bool
-	earCancel   context.CancelFunc
-	earFinish   earFinishFn
-	guessCh     chan guessResult
-	guessCancel func()
-	early       *earlyReply
-	idle        *time.Timer
-	idleGen     int
-	spec        *time.Timer
-	specGen     int
-	heldPCM     []byte
-	speculating bool
-	earWaiters  int
-	kick        chan struct{}
-	warmKey     string
-	warmCancel  context.CancelFunc
-	warmDone    bool
+	ctx              context.Context
+	w                io.Writer
+	eng              Engine
+	mu               sync.Mutex
+	pcm              []byte
+	text             string
+	lang             string
+	inst             string
+	voice            string
+	emotion          string
+	turn             context.CancelFunc
+	gen              int
+	replyGen         int
+	vad              bool
+	vadTurn          Turn
+	gate             Gate
+	history          []Exchange
+	earGen           int
+	earPending       bool
+	earCancel        context.CancelFunc
+	earFinish        earFinishFn
+	guessCh          chan guessResult
+	guessCancel      func()
+	early            *earlyReply
+	idle             *time.Timer
+	idleGen          int
+	spec             *time.Timer
+	specGen          int
+	heldPCM          []byte
+	speculating      bool
+	earWaiters       int
+	kick             chan struct{}
+	warmKey          string
+	warmCancel       context.CancelFunc
+	warmDone         bool
 	hold             Clip
 	holdMore         Clip
 	silenceAnnounced bool
 	sttAnnounced     bool
+	// stagesOpen is set when the utterance commits. generating and first_token
+	// before that are held, because the ear stops the mic when it sees them.
+	stagesOpen bool
+	heldStatus []heldStage
+}
+
+type heldStage struct {
+	status string
+	extra  map[string]any
 }
 
 // earlyReply is a chat completion started during the silence. Sentences are
@@ -270,6 +279,17 @@ type guessResult struct {
 	text    string
 	backend string
 	err     error
+	ms      int
+}
+
+// commitSupersedesGuess reports that the closed turn contains speech the
+// early transcript did not. A longer tail than this is a new syllable, not
+// the quiet padding left on both clips.
+func commitSupersedesGuess(commitMS, guessMS int) bool {
+	if commitMS <= 0 {
+		return false
+	}
+	return commitMS > guessMS+100
 }
 
 // earFinishFn transcribes one finished WAV and names the STT backend used.
@@ -455,6 +475,7 @@ func (s *session) onAppend(ev map[string]any) {
 		s.dropGuess()
 	}
 	if step.Started {
+		s.closeStages()
 		s.warmEar()
 		s.warmReply()
 		_ = s.send(map[string]any{"type": "input_audio_buffer.speech_started"})
@@ -762,11 +783,13 @@ func (s *session) speculate(pcm []byte) {
 		s.mu.Unlock()
 		return
 	}
-	s.announceTranscribing()
+	guessPath := DumpEarWAV("guess", wav)
+	guessMS := wavPCMMS(wav)
 	ctx, cancel := context.WithCancel(s.ctx)
 	ch := make(chan guessResult, 1)
 	go func() {
 		text, backend, err := finish(ctx, wav)
+		NoteEar(guessPath, text, backend, true, err)
 		if err == nil {
 			err = ctx.Err()
 		}
@@ -779,7 +802,7 @@ func (s *session) speculate(pcm []byte) {
 		if start != nil {
 			start()
 		}
-		ch <- guessResult{text: text, backend: backend, err: err}
+		ch <- guessResult{text: text, backend: backend, err: err, ms: guessMS}
 	}()
 	var once sync.Once
 	stop := func() {
@@ -814,13 +837,14 @@ func (s *session) dropGuess() {
 	if early != nil {
 		early.cancel()
 	}
+	s.closeStages()
 }
 
 // prepareEarlyLocked starts the chat model for a transcript that is ready
 // before the silence ends. The caller runs the returned function outside the lock.
 func (s *session) prepareEarlyLocked(user string) func() {
 	user = strings.TrimSpace(user)
-	if user == "" || s.eng.StreamReply == nil || s.early != nil {
+	if !heardWords(user) || s.eng.StreamReply == nil || s.early != nil {
 		return nil
 	}
 	inst, voice, lang, emotion := s.inst, s.voice, s.lang, s.emotion
@@ -1005,34 +1029,53 @@ func (s *session) begin(pcm []byte) {
 		s.fail(err)
 		return
 	}
+	commitPath := ""
+	commitMS := 0
+	if err == nil {
+		commitPath = DumpEarWAV("commit", wav)
+		commitMS = wavPCMMS(wav)
+	}
+	// The ear holds the mic when it sees transcribing. Say it only after the
+	// turn has closed, so the rest of the sentence is still recorded.
+	s.announceTranscribing()
+	s.openStages()
 	s.start(func(ctx context.Context) error {
 		var text, backend string
 		var err error
+		transcribedCommit := true
 		if guess == nil && finish == nil {
 			var stop bool
 			guess, guessCancel, finish, earCancel, stop = s.waitForEar(ctx)
 			if stop {
+				NoteEar(commitPath, "", "", false, ctx.Err())
 				return ctx.Err()
 			}
-		}
-		if guess == nil {
-			s.announceTranscribing()
 		}
 		if guess != nil {
 			select {
 			case <-ctx.Done():
+				NoteEar(commitPath, "", "", false, ctx.Err())
 				if guessCancel != nil {
 					guessCancel()
 				}
 				return ctx.Err()
 			case res := <-guess:
 				text, backend, err = res.text, res.backend, res.err
+				transcribedCommit = false
+				if commitSupersedesGuess(commitMS, res.ms) {
+					if early := s.takeEarly(); early != nil {
+						early.cancel()
+					}
+					text, backend, err = s.hearOnce(ctx, wav, lang)
+					transcribedCommit = true
+				}
 			}
 			if guessCancel != nil {
 				guessCancel()
 			}
-			if err != nil && ctx.Err() == nil && wav != nil {
+			if !transcribedCommit && err != nil && ctx.Err() == nil && wav != nil {
 				text, backend, err = s.hearOnce(ctx, wav, lang)
+				transcribedCommit = true
 			}
 		} else if finish != nil {
 			text, backend, err = finish(ctx, wav)
@@ -1042,6 +1085,7 @@ func (s *session) begin(pcm []byte) {
 		} else {
 			text, backend, err = s.hearOnce(ctx, wav, lang)
 		}
+		NoteEar(commitPath, text, backend, transcribedCommit, err)
 		if err != nil {
 			if early := s.takeEarly(); early != nil {
 				early.cancel()
@@ -1050,6 +1094,12 @@ func (s *session) begin(pcm []byte) {
 			return err
 		}
 		text = strings.TrimSpace(text)
+		if !heardWords(text) {
+			if early := s.takeEarly(); early != nil {
+				early.cancel()
+			}
+			text = ""
+		}
 		ev := map[string]any{
 			"type":       "conversation.item.input_audio_transcription.completed",
 			"transcript": text,
@@ -1066,6 +1116,10 @@ func (s *session) begin(pcm []byte) {
 		if err := s.send(ev); err != nil {
 			s.warmNextEar()
 			return err
+		}
+		if text == "" {
+			s.warmNextEar()
+			return nil
 		}
 		if early := s.takeEarly(); early != nil {
 			return s.playEarly(ctx, early)
@@ -1135,6 +1189,10 @@ func (s *session) onCreate() {
 }
 
 func (s *session) speakReply(ctx context.Context, user string) error {
+	if !heardWords(user) {
+		s.warmNextEar()
+		return nil
+	}
 	s.mu.Lock()
 	inst, voice, lang, emotion := s.inst, s.voice, s.lang, s.emotion
 	prior := append([]Exchange(nil), s.history...)
@@ -1847,6 +1905,13 @@ func (s *session) reportStatus(status string, extra map[string]any) {
 	if status == "" {
 		return
 	}
+	s.mu.Lock()
+	if s.vad && !s.stagesOpen && (status == StageGenerating || status == StageFirstToken) {
+		s.heldStatus = append(s.heldStatus, heldStage{status: status, extra: extra})
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
 	ev := map[string]any{"type": "response.status", "status": status}
 	for k, v := range extra {
 		if k == "" || k == "type" || k == "status" {
@@ -1855,6 +1920,24 @@ func (s *session) reportStatus(status string, extra map[string]any) {
 		ev[k] = v
 	}
 	_ = s.send(ev)
+}
+
+func (s *session) openStages() {
+	s.mu.Lock()
+	s.stagesOpen = true
+	held := s.heldStatus
+	s.heldStatus = nil
+	s.mu.Unlock()
+	for _, stage := range held {
+		s.reportStatus(stage.status, stage.extra)
+	}
+}
+
+func (s *session) closeStages() {
+	s.mu.Lock()
+	s.stagesOpen = false
+	s.heldStatus = nil
+	s.mu.Unlock()
 }
 
 func (s *session) announceSilence() {

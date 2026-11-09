@@ -43,7 +43,7 @@ type SentenceStream struct {
 func (s *SentenceStream) Push(delta string, emit func(string) error) error {
 	for _, r := range delta {
 		s.buf.WriteRune(r)
-		if r == '.' || r == '!' || r == '?' || r == '\n' || r == ',' || r == ';' || r == ':' {
+		if r == '.' || r == '!' || r == '?' || r == '\n' || r == ',' || r == ';' || (r == ':' && !digitBeforeBreak(s.buf.String())) {
 			if err := s.emit(emit, false); err != nil {
 				return err
 			}
@@ -54,6 +54,16 @@ func (s *SentenceStream) Push(delta string, emit func(string) error) error {
 		}
 	}
 	return nil
+}
+
+// digitBeforeBreak reports a clock or ratio colon, as in 15:49. The colon
+// is the last rune. A clause colon ("this: that") still starts a new phrase.
+func digitBeforeBreak(text string) bool {
+	r := []rune(text)
+	if len(r) < 2 {
+		return false
+	}
+	return unicode.IsDigit(r[len(r)-2])
 }
 
 // Flush emits any text that had no closing punctuation.

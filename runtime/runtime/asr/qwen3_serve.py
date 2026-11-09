@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 from urllib.parse import parse_qs
@@ -65,17 +66,28 @@ def _parse(argv: Optional[list[str]]) -> argparse.Namespace:
 
 
 def _handler(ear: Ear):
+    # One GPU call at a time. A second request returns 429 instead of waiting
+    # on this lock: duplex cancels the guess as soon as more audio arrives,
+    # and a waiting thread would stay up after that socket closed.
     lock = threading.Lock()
+    state = threading.Lock()
+    busy_since = 0.0
 
     class Handler(BaseHTTPRequestHandler):
+        # Access lines go to stderr. A full stderr pipe blocks this write
+        # before the response bytes, so /health would stop answering.
         def log_message(self, fmt: str, *args) -> None:  # noqa: A003
-            sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+            return
 
         def do_GET(self) -> None:  # noqa: N802
             if self.path.split("?", 1)[0] != "/health":
                 self.send_error(404)
                 return
-            body = b'{"status":"ok"}'
+            payload: dict[str, object] = {"status": "ok"}
+            with state:
+                if busy_since > 0:
+                    payload["busy_ms"] = int((time.monotonic() - busy_since) * 1000)
+            body = json.dumps(payload).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -83,6 +95,7 @@ def _handler(ear: Ear):
             self.wfile.write(body)
 
         def do_POST(self) -> None:  # noqa: N802
+            nonlocal busy_since
             path = self.path.split("?", 1)[0]
             if path != "/transcribe":
                 self.send_error(404)
@@ -92,12 +105,20 @@ def _handler(ear: Ear):
             except ValueError as e:
                 self._json(400, {"error": str(e)})
                 return
+            if not lock.acquire(blocking=False):
+                self._json(429, {"error": "busy"})
+                return
+            with state:
+                busy_since = time.monotonic()
             try:
-                with lock:
-                    text = ear.transcribe(wav, language=language)
+                text = ear.transcribe(wav, language=language)
             except Exception as e:
                 self._json(500, {"error": str(e)})
                 return
+            finally:
+                with state:
+                    busy_since = 0.0
+                lock.release()
             self._json(200, {"text": text})
 
         def _json(self, status: int, payload: dict) -> None:

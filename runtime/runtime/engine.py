@@ -1703,6 +1703,11 @@ class InferenceEngine:
     ) -> tuple[int | None, dict[str, Any]]:
         if num_ctx is None or num_ctx <= 0:
             return num_ctx, {}
+        # The running llama-server already reserved this context. Free VRAM is
+        # what remains after that reservation, so a fresh fit check clamps a
+        # warm 8k duplex turn down to a few hundred tokens and drops the cache.
+        if self._resident_ctx_covers(gguf, num_ctx):
+            return num_ctx, {}
         eff = self._effective_vram_free_for_suggest()
         if eff is None:
             return num_ctx, {}
@@ -1723,6 +1728,21 @@ class InferenceEngine:
             priority=priority,
             **kw,
         )
+
+    def _resident_ctx_covers(self, gguf: Path, num_ctx: int) -> bool:
+        loaded = self._loaded_vram_num_ctx
+        if not isinstance(loaded, int) or loaded < num_ctx:
+            return False
+        server = self._server
+        if server is None or not server.is_running():
+            return False
+        model = getattr(server, "model", None)
+        if model is None:
+            return False
+        try:
+            return Path(model).resolve() == Path(gguf).resolve()
+        except OSError:
+            return False
 
     def _check_admit_policy(
         self,

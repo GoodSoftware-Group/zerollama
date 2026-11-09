@@ -67,29 +67,61 @@ class Ear:
         self._model = Qwen3ASRModel.from_pretrained(self.model_dir, **kwargs)
 
     def transcribe(self, wav: bytes, language: Optional[str] = None) -> str:
-        """Transcribe one WAV. language is a canonical name such as English."""
+        """Transcribe one WAV.
+
+        The first pass leaves language unset. Qwen then returns empty on
+        silence instead of Okay / Hello / a period. A short English "Hi"
+        can still come back as Japanese はい。 When the caller asked for
+        English and the text has no Latin letters, a second pass forces
+        English.
+        """
         with self._lock:
             self._load_unlocked()
             assert self._model is not None
-            lang = (language or "").strip() or None
             path = _write_wav(wav)
             try:
-                results = self._model.transcribe(
-                    audio=path,
-                    language=lang,
-                    return_time_stamps=False,
-                )
+                text = _heard_words(self._infer(path, None))
+                lang = (language or "").strip()
+                if text and _english_requested(lang) and not _has_latin(text):
+                    forced = _heard_words(self._infer(path, lang))
+                    if forced:
+                        text = forced
+                return text
             finally:
                 try:
                     os.unlink(path)
                 except OSError:
                     pass
-            if not results:
-                return ""
-            text = getattr(results[0], "text", None)
-            if text is None and isinstance(results[0], dict):
-                text = results[0].get("text")
-            return (text or "").strip()
+
+    def _infer(self, path: str, language: Optional[str]) -> str:
+        assert self._model is not None
+        results = self._model.transcribe(
+            audio=path,
+            language=language,
+            return_time_stamps=False,
+        )
+        if not results:
+            return ""
+        text = getattr(results[0], "text", None)
+        if text is None and isinstance(results[0], dict):
+            text = results[0].get("text")
+        return text or ""
+
+
+def _heard_words(text: Optional[str]) -> str:
+    """Drop a transcript that is only punctuation or whitespace."""
+    text = (text or "").strip()
+    if any(ch.isalnum() for ch in text):
+        return text
+    return ""
+
+
+def _english_requested(language: str) -> bool:
+    return language.lower() in {"en", "english"}
+
+
+def _has_latin(text: str) -> bool:
+    return any(ch.isascii() and ch.isalpha() for ch in text)
 
 
 def _torch_float32() -> Any:

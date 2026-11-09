@@ -258,7 +258,7 @@ Registered tags: `piper-lessac:latest`, `whisper-base:latest`, `chatterbox:lates
 | `OLLAMA_WHISPER_SERVER` | whisper.cpp `whisper-server` (default: `whisper-server` on `PATH`). A duplex call keeps one CPU process for every clip when this binary is 1.9.1 or newer. Missing falls back to `OLLAMA_WHISPER_BIN`. File transcription stays on the CLI. |
 | `OLLAMA_WHISPER_MODEL` | Default GGML path if `backend_paths.whisper_model` is unset. |
 | `OLLAMA_QWEN3_ASR` | Local Qwen3-ASR weight directory if `backend_paths.qwen3_asr` is unset. Must already exist; a Hub id is not downloaded. |
-| `OLLAMA_QWEN3_ASR_DEVICE` | `device_map` for Qwen3-ASR (default `cpu`). Set `cuda:0` to load on a GPU. |
+| `OLLAMA_QWEN3_ASR_DEVICE` | `device_map` for Qwen3-ASR (default `cpu`). On the dual-4090 lane set `cuda:1` so recognition shares the talk GPU and stays off the eye. |
 | `OLLAMA_WHISPER_VAD_MODEL` | Silero VAD ggml path if `backend_paths.vad_model` is unset. Used when file Whisper `vad=true`. Distinct from neural live turn-taking. |
 | `OLLAMA_NEURAL_VAD` | Local Silero ONNX for live `server_vad` (duplex + llama-server proxy). One CPU `python3 -m runtime.asr.vad_serve` process; 8 kHz / 16 kHz only. Missing file or package leaves amplitude. No download. |
 | `OLLAMA_WHISPER_EXTRA_ARGS` | Extra CLI tokens (space-separated) appended to Whisper. |
