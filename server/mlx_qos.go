@@ -3,6 +3,8 @@ package server
 import (
 	"regexp"
 	"strings"
+
+	"github.com/ollama/ollama/envconfig"
 )
 
 // mlxSessionClass is the scheduling/KV intent tier for an MLX request.
@@ -408,8 +410,19 @@ func zerollamaVersionCapabilities() map[string]any {
 		"propose_sidecar":         true,
 		// MultiDecode forest decode (llama-server --multidecode / POST /v1/multidecode).
 		// Clients probe once; Hermes batch may silently pack shared-prefix forests.
-		"multidecode":             true,
-		"chat_completions_batch":  true,
+		"multidecode":            true,
+		"chat_completions_batch": true,
+		// Robot perception. wired is true only when the sibling URL is set.
+		// segment.grasp_ready stays false: a SAM2 mask is not a grasp.
+		"detect": map[string]any{
+			"route": "/v1/detect",
+			"wired": envconfig.DetectURL() != "",
+		},
+		"segment": map[string]any{
+			"route":       "/v1/segment",
+			"wired":       envconfig.SegmentURL() != "",
+			"grasp_ready": false,
+		},
 	}
 }
 

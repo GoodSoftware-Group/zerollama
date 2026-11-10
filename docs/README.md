@@ -46,6 +46,7 @@ Public docs stay in [index.mdx](index.mdx), [docs.json](docs.json), [api/](api),
 * [Entity extract](capabilities/extract.md) — `POST /v1/extract` / `/v1/gliner` for zero-shot span extraction.
 * [Video](capabilities/video.md) — video understanding in chat plus async video generation.
 * [Image](capabilities/image.md) — MLX fast path and ComfyUI utility path.
+* [Object detect](detect.md) — **why** `POST /v1/detect` is OWLv2 boxes, not the camera chat model; `wire_only` when the sibling is unset. Segment stub: [segment.md](segment.md). Ladder: [robot-perception-ladder.md](robot-perception-ladder.md).
 
 ### Runbooks
 

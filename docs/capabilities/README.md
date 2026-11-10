@@ -31,6 +31,7 @@ Use capability docs to answer:
 - [Entity extract](extract.md)
 - [Video](video.md)
 - [Image](image.md)
+- [Object detect](../detect.md) — `POST /v1/detect` boxes; segment stub stays `grasp_ready: false`
 
 ## How this layer fits
 

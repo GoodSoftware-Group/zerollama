@@ -2916,6 +2916,8 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/v1/extract", s.ExtractHandler)
 	r.POST("/v1/gliner", s.GlinerHandler)
 	r.POST("/v1/gliner-decide", s.GlinerDecideHandler)
+	r.POST("/v1/detect", s.DetectHandler)
+	r.POST("/v1/segment", s.SegmentHandler)
 	r.POST("/api/router/decide", s.RouterDecideHandler)
 	r.GET("/api/router/inventory", s.RouterInventoryHandler)
 	r.POST("/v1/route", s.RouteHandler)

@@ -709,6 +709,8 @@ func AsMap() map[string]EnvVar {
 		"ZEROLLAMA_OPENJEV_URL":                    {"ZEROLLAMA_OPENJEV_URL", OpenJevURL(), "Base URL for DiffusionGemma/OpenJev Decider (llama-diffusion-gemma-server /v1/systemone; DG2)"},
 		"ZEROLLAMA_GLINER_URL":                     {"ZEROLLAMA_GLINER_URL", GlinerURL(), "Base URL for GLiNER.cpp sibling (gliner-server /v1/extract|/v1/gliner; GL2)"},
 		"ZEROLLAMA_GLINER_DECIDE_URL":              {"ZEROLLAMA_GLINER_DECIDE_URL", GlinerDecideURL(), "Base URL for GLiNER2.5-Decide sibling (/v1/systemone|/v1/gliner-decide; GD*)"},
+		"ZEROLLAMA_DETECT_URL":                     {"ZEROLLAMA_DETECT_URL", DetectURL(), "Base URL for the OWLv2 object-detect sibling (POST /v1/detect). Unset answers status=wire_only"},
+		"ZEROLLAMA_SEGMENT_URL":                    {"ZEROLLAMA_SEGMENT_URL", SegmentURL(), "Base URL for the SAM2 segment sibling (POST /v1/segment). Unset answers status=wire_only; grasp_ready stays false"},
 		"ZEROLLAMA_OPENJEV_TEMP":                   {"ZEROLLAMA_OPENJEV_TEMP", fmt.Sprintf("%g", OpenJevTemperature()), "DG4b OpenJev softmax temperature"},
 		"ZEROLLAMA_OPENJEV_CALIBRATED":             {"ZEROLLAMA_OPENJEV_CALIBRATED", fmt.Sprintf("%v", OpenJevCalibrated()), "DG8: choice/score calibrated:true when on"},
 		"ZEROLLAMA_OPENJEV_NOUL_BIAS":              {"ZEROLLAMA_OPENJEV_NOUL_BIAS", fmt.Sprintf("%g", OpenJevNoulBias()), "DG9: subtract from noul positive-class logit before softmax"},
@@ -1060,6 +1062,18 @@ func GlinerURL() string {
 // span NER. See docs/design/surfaces/gliner-decide.md.
 func GlinerDecideURL() string {
 	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_GLINER_DECIDE_URL")), "/")
+}
+
+// DetectURL is the OWLv2 sibling for POST /v1/detect. Empty means the route
+// stays on the wire and answers status=wire_only instead of calling a model.
+func DetectURL() string {
+	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_DETECT_URL")), "/")
+}
+
+// SegmentURL is the SAM2 sibling for POST /v1/segment. Empty means
+// status=wire_only. A loaded sibling is still not grasp-ready.
+func SegmentURL() string {
+	return strings.TrimSuffix(strings.TrimSpace(Var("ZEROLLAMA_SEGMENT_URL")), "/")
 }
 
 // OpenJevTemperature is the DG4b softmax temperature for OpenJev gather probs.

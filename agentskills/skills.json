@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "skill_count": 33,
+  "skill_count": 35,
   "skills": [
     {
       "name": "account-auth",
@@ -712,6 +712,30 @@
         "hermes-provider"
       ],
       "path": "multidecode/SKILL.md"
+    },
+    {
+      "name": "object-detect",
+      "description": "Open-vocabulary boxes via zerollama POST /v1/detect (OWLv2 sibling). Not the camera chat model.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": ["macos", "linux"],
+      "category": "mlops",
+      "tags": ["zerollama", "detect", "owlv2", "vision", "robot"],
+      "related_skills": ["zerollama-integration", "object-segment"],
+      "path": "object-detect/SKILL.md"
+    },
+    {
+      "name": "object-segment",
+      "description": "Mask request via zerollama POST /v1/segment. grasp_ready is false; a mask is not a grasp.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": ["macos", "linux"],
+      "category": "mlops",
+      "tags": ["zerollama", "segment", "sam2", "vision", "robot"],
+      "related_skills": ["zerollama-integration", "object-detect"],
+      "path": "object-segment/SKILL.md"
     },
     {
       "name": "openai-responses-compat",

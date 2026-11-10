@@ -1,0 +1,5 @@
+# Local OWLv2 sibling. Install into a venv; do not point this at the runtime venv.
+# Weights stay a local directory (ZEROLLAMA_OWL_MODEL). Never a Hub repo id.
+torch
+transformers
+pillow

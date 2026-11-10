@@ -38,6 +38,7 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"/api/embeddings", "/api/rerank", "/v1/reranking", "/api/fleet/assign-hold", "/api/image/workflows",
 		"/v1/chat/completions", "/v1/chat/completions/batch",
 		"/v1/decisions", "/v1/systemone", "/v1/multidecode", "/v1/extract", "/v1/gliner", "/v1/gliner-decide",
+		"/v1/detect", "/v1/segment",
 		"/v1/responses", "/v1/messages",
 	} {
 		if _, ok := paths[p]; !ok {
@@ -62,6 +63,7 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"DecisionAction", "ChoiceAnswer", "ScoreAnswer", "NoulAnswer",
 		"MultiDecodeRequest", "MultiDecodeResponse", "MultiDecodeLeafResult",
 		"ExtractRequest", "ExtractResponse", "ExtractEntity", "GlinerRequest",
+		"DetectRequest", "DetectResponse", "DetectBox", "SegmentRequest", "SegmentResponse",
 		"RealtimeResponseStatus",
 		"RealtimeASRBackend", "RealtimeSessionCreated", "RealtimeTranscriptionCompleted",
 		"RouterCorpusEntry", "RepairRequest", "RepairResponse",

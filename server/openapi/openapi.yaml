@@ -17,7 +17,7 @@ info:
     unload, status, T11 recipes). See docs/design/training/gpu-training.md.
 
     LocalAI control plane (LA7/LA9/LA11/LA11b/LA15/LA16/LA17/LA21/LA22): `/api/repair`,
-    `/api/score`, `/v1/rerank`, `/v1/decisions`, `/v1/multidecode`, `/v1/extract`, `/v1/gliner`, `/v1/gliner-decide`, `/api/router/*`, `/api/aliases`, `/api/load`, `/api/unload`, experimental web_search/fetch.
+    `/api/score`, `/v1/rerank`, `/v1/decisions`, `/v1/multidecode`, `/v1/extract`, `/v1/gliner`, `/v1/gliner-decide`, `/v1/detect`, `/v1/segment`, `/api/router/*`, `/api/aliases`, `/api/load`, `/api/unload`, experimental web_search/fetch.
     In-band alias and router rewrite may set `X-Zerollama-*` response headers.
     Failed-load cooldown (LA18) returns 503 with `Retry-After`.
 
@@ -3491,6 +3491,115 @@ components:
           description: Duplex asr= query tag when set.
         asr_backend:
           $ref: "#/components/schemas/RealtimeASRBackend"
+    DetectRequest:
+      type: object
+      description: >
+        One camera frame for POST /v1/detect. `image` is base64 or a data URL.
+        `image_base64`, `image_url`, and `frame` are accepted aliases.
+        `queries` are the open-vocabulary labels. `labels` and `text` are aliases.
+      properties:
+        image:
+          type: string
+          description: Base64 image bytes, or a data URL.
+        image_base64:
+          type: string
+        image_url:
+          type: string
+          description: Data URL. An http URL is not fetched.
+        frame:
+          type: string
+        queries:
+          type: array
+          items:
+            type: string
+          description: Labels to look for, such as cup or person.
+        labels:
+          type: array
+          items:
+            type: string
+        text:
+          type: string
+          description: One label when queries is omitted.
+        threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.1
+    DetectBox:
+      type: object
+      required: [label, score, box]
+      properties:
+        label:
+          type: string
+        score:
+          type: number
+        box:
+          type: array
+          minItems: 4
+          maxItems: 4
+          items:
+            type: number
+          description: Pixel box [x1, y1, x2, y2], origin at the top left of the decoded image.
+    DetectResponse:
+      type: object
+      required: [status, detections]
+      properties:
+        status:
+          type: string
+          enum: [ok, wire_only]
+          description: >
+            ok when OWLv2 ran. wire_only when ZEROLLAMA_DETECT_URL is unset
+            or the sibling has no weights. detections is empty in that case.
+        model:
+          type: string
+        detections:
+          type: array
+          items:
+            $ref: "#/components/schemas/DetectBox"
+        image:
+          type: object
+          properties:
+            width:
+              type: integer
+            height:
+              type: integer
+        reason:
+          type: string
+          description: Present when status is wire_only.
+    SegmentRequest:
+      type: object
+      description: One of image, image_base64, image_url, or frame is required.
+      properties:
+        image:
+          type: string
+        image_base64:
+          type: string
+        image_url:
+          type: string
+        frame:
+          type: string
+        box:
+          type: array
+          items:
+            type: number
+          description: Pixel box [x1, y1, x2, y2] to segment. Optional on the wire_only stub.
+        query:
+          type: string
+    SegmentResponse:
+      type: object
+      required: [status, grasp_ready]
+      properties:
+        status:
+          type: string
+          enum: [ok, wire_only]
+        grasp_ready:
+          type: boolean
+          description: Always false. A mask is not a grasp.
+        mask:
+          nullable: true
+          description: Omitted or null while the SAM2 sibling is a stub.
+        reason:
+          type: string
     VideoCreateRequest:
       type: object
       required: [model, prompt]
@@ -6128,6 +6237,70 @@ paths:
                 $ref: "#/components/schemas/InferenceError"
         "502":
           description: Upstream decide sibling error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /v1/detect:
+    post:
+      tags: [Vision]
+      summary: Detect objects in one camera frame
+      description: |
+        Open-vocabulary boxes from a local OWLv2 sibling. The route is always
+        registered. When `ZEROLLAMA_DETECT_URL` is unset, or the sibling has no
+        weights, the body is `status=wire_only` and `detections` is empty.
+        That is JSON, not gin's HTML 404. A running sibling returns `status=ok`
+        and pixel boxes `[x1, y1, x2, y2]`. Docs: docs/detect.md.
+      operationId: detectV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DetectRequest"
+      responses:
+        "200":
+          description: Boxes, or a wire_only stub
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DetectResponse"
+        "400":
+          description: Missing image or, on the sibling, missing queries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "502":
+          description: Detect sibling did not answer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /v1/segment:
+    post:
+      tags: [Vision]
+      summary: Segment one region of a camera frame
+      description: |
+        Mask request for a SAM2 sibling. `ZEROLLAMA_SEGMENT_URL` unset answers
+        `status=wire_only`, `mask=null`, and `grasp_ready=false`. A loaded
+        sibling is still not grasp-ready. Docs: docs/segment.md.
+      operationId: segmentV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SegmentRequest"
+      responses:
+        "200":
+          description: Mask, or a wire_only stub
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SegmentResponse"
+        "400":
+          description: Missing image
           content:
             application/json:
               schema:
