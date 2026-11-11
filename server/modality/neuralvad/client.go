@@ -58,6 +58,17 @@ type Shared struct {
 
 var defaultShared = &Shared{}
 
+// CloseShared stops the shared neural VAD process (serve shutdown).
+func CloseShared() {
+	defaultShared.mu.Lock()
+	proc := defaultShared.proc
+	defaultShared.proc = nil
+	defaultShared.mu.Unlock()
+	if proc != nil {
+		proc.Close()
+	}
+}
+
 // NeuralVADPath is OLLAMA_NEURAL_VAD when that path is an existing file.
 func NeuralVADPath() string {
 	p := strings.TrimSpace(envconfig.NeuralVAD())

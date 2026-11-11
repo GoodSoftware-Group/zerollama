@@ -74,6 +74,15 @@ func decodeWAV(data []byte) ([]float32, error) {
 	if audioFormat != 1 && audioFormat != 3 {
 		return nil, fmt.Errorf("unsupported WAV format: %d (need PCM=1 or float=3)", audioFormat)
 	}
+	if numChannels <= 0 {
+		return nil, fmt.Errorf("invalid WAV channel count: %d", numChannels)
+	}
+	if bitsPerSample < 8 || bitsPerSample%8 != 0 {
+		return nil, fmt.Errorf("invalid WAV bit depth: %d", bitsPerSample)
+	}
+	if sampleRate < 2 {
+		return nil, fmt.Errorf("invalid WAV sample rate: %d", sampleRate)
+	}
 	if audioData == nil {
 		return nil, fmt.Errorf("no data chunk found in WAV file")
 	}
@@ -123,7 +132,20 @@ func decodeWAVSamples(data []byte, format uint16, bits, channels int) []float32 
 }
 
 func resampleLinear(samples []float32, fromRate, toRate int) []float32 {
+	if fromRate < 2 || toRate < 2 || len(samples) == 0 {
+		return samples
+	}
 	n := int(float64(len(samples)) / float64(fromRate) * float64(toRate))
+	if n <= 0 {
+		return samples[:0]
+	}
+	if n == 1 || len(samples) == 1 {
+		out := make([]float32, n)
+		for i := range out {
+			out[i] = samples[0]
+		}
+		return out
+	}
 	out := make([]float32, n)
 	for i := range n {
 		pos := float64(i) * float64(len(samples)-1) / float64(n-1)

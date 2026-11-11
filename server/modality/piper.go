@@ -55,6 +55,11 @@ func SpeechPiper(ctx context.Context, cfg model.ConfigV2, text, voice string, sp
 // postPiper is the process for POST /v1/audio/speech. The live socket keeps its own.
 var postPiper piperphrase.Shared
 
+// ClosePiperShared stops the POST /v1/audio/speech Piper process(es).
+func ClosePiperShared() {
+	postPiper.Close()
+}
+
 func execPiper(ctx context.Context, text, modelPath, configPath, scale, silence, noise, width, speaker, phonemes, tashkeel, espeak string) ([]byte, string, error) {
 	bin := envconfig.PiperBin()
 	if rate, ok := piperConfigRate(configPath); ok {

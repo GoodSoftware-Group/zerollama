@@ -162,6 +162,8 @@ func Serve(ctx context.Context, conn io.WriteCloser, src io.Reader, eng Engine) 
 		src = r
 	}
 	s := &session{ctx: ctx, w: conn, eng: eng, lang: eng.Language, voice: eng.Voice, emotion: strings.TrimSpace(eng.Emotion), inst: eng.Instructions, kick: make(chan struct{}), hold: eng.Hold, holdMore: eng.HoldMore}
+	s.startWriter()
+	defer s.stopWriter()
 	defer s.dropEar()
 	defer s.dropGuess()
 	defer s.dropWarm()
@@ -180,7 +182,7 @@ func Serve(ctx context.Context, conn io.WriteCloser, src io.Reader, eng Engine) 
 		s.gate.Score = eng.SpeechScore
 		s.gate.OnReset = eng.OnTurnReset
 	}
-	if err := s.send(s.created()); err != nil {
+	if err := s.sendWait(s.created()); err != nil {
 		return err
 	}
 	if eng.PrepareHolds != nil {
@@ -197,11 +199,17 @@ func Serve(ctx context.Context, conn io.WriteCloser, src io.Reader, eng Engine) 
 		case 0x8:
 			return nil
 		case 0x9:
-			_ = writeFrame(conn, 0xA, payload)
+			_ = s.writeOpcode(0xA, payload, false)
 		case 0x1:
 			s.handle(payload)
 		}
 	}
+}
+
+type outFrame struct {
+	opcode  byte
+	payload []byte
+	result  chan error
 }
 
 type session struct {
@@ -209,6 +217,10 @@ type session struct {
 	w                io.Writer
 	eng              Engine
 	mu               sync.Mutex
+	writeMu          sync.Mutex
+	out              chan outFrame
+	outClosed        bool
+	writerDone       sync.WaitGroup
 	pcm              []byte
 	text             string
 	lang             string
@@ -283,13 +295,14 @@ type guessResult struct {
 }
 
 // commitSupersedesGuess reports that the closed turn contains speech the
-// early transcript did not. A longer tail than this is a new syllable, not
-// the quiet padding left on both clips.
+// early transcript did not. Draft may open with less than hearTailMS of quiet
+// while commit always trims to hearTailMS, so that padding alone is not new
+// speech.
 func commitSupersedesGuess(commitMS, guessMS int) bool {
 	if commitMS <= 0 {
 		return false
 	}
-	return commitMS > guessMS+100
+	return commitMS > guessMS+hearTailMS
 }
 
 // earFinishFn transcribes one finished WAV and names the STT backend used.
@@ -483,24 +496,26 @@ func (s *session) onAppend(ev map[string]any) {
 		s.warmEar()
 	}
 	if step.Draft != nil {
-		s.announceSilence()
+		// Start STT before status frames: a slow/unread client must not stall the ear.
 		s.speculate(step.Draft)
+		s.announceSilence()
 	}
 	if step.Commit != nil {
 		s.stopSpeculate()
 		s.stopIdle()
-		s.announceSilence()
 		_ = s.send(map[string]any{"type": "input_audio_buffer.speech_stopped"})
 		s.begin(step.Commit)
+		s.announceSilence()
 		return
 	}
 	if step.Quiet {
-		s.announceSilence()
 		s.stopSpeculate()
+		s.armIdle()
+		s.announceSilence()
 	} else {
 		s.armSpeculate()
+		s.armIdle()
 	}
-	s.armIdle()
 }
 
 func (s *session) stopIdle() {
@@ -550,9 +565,9 @@ func (s *session) fireIdle(gen int) {
 	if len(pcm) < 2 {
 		return
 	}
-	s.announceSilence()
 	_ = s.send(map[string]any{"type": "input_audio_buffer.speech_stopped"})
 	s.begin(pcm)
+	s.announceSilence()
 }
 
 func (s *session) stopSpeculate() {
@@ -1971,12 +1986,76 @@ func (s *session) announceTranscribing() {
 	s.reportStatus(StageTranscribing, nil)
 }
 
+func (s *session) startWriter() {
+	s.writeMu.Lock()
+	s.out = make(chan outFrame, 64)
+	s.outClosed = false
+	s.writeMu.Unlock()
+	s.writerDone.Add(1)
+	go func() {
+		defer s.writerDone.Done()
+		for f := range s.out {
+			err := writeFrame(s.w, f.opcode, f.payload)
+			if f.result != nil {
+				f.result <- err
+			}
+		}
+	}()
+}
+
+func (s *session) stopWriter() {
+	s.writeMu.Lock()
+	if s.outClosed || s.out == nil {
+		s.writeMu.Unlock()
+		return
+	}
+	s.outClosed = true
+	out := s.out
+	s.writeMu.Unlock()
+	close(out)
+	s.writerDone.Wait()
+}
+
+func (s *session) writeOpcode(opcode byte, payload []byte, wait bool) error {
+	f := outFrame{opcode: opcode, payload: payload}
+	if wait {
+		f.result = make(chan error, 1)
+	}
+	s.writeMu.Lock()
+	if s.outClosed || s.out == nil {
+		s.writeMu.Unlock()
+		return io.ErrClosedPipe
+	}
+	select {
+	case s.out <- f:
+		s.writeMu.Unlock()
+	case <-s.ctx.Done():
+		s.writeMu.Unlock()
+		return s.ctx.Err()
+	}
+	if !wait {
+		return nil
+	}
+	select {
+	case err := <-f.result:
+		return err
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+}
+
 func (s *session) send(ev map[string]any) error {
+	return s.sendEvent(ev, false)
+}
+
+func (s *session) sendWait(ev map[string]any) error {
+	return s.sendEvent(ev, true)
+}
+
+func (s *session) sendEvent(ev map[string]any, wait bool) error {
 	b, err := json.Marshal(ev)
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return writeFrame(s.w, 0x1, b)
+	return s.writeOpcode(0x1, b, wait)
 }

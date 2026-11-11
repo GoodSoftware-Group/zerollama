@@ -223,3 +223,8 @@ func (s *Shared) Close() {
 		proc.Close()
 	}
 }
+
+// CloseShared stops the package default Qwen3-ASR process (serve shutdown).
+func CloseShared() {
+	defaultShared.Close()
+}

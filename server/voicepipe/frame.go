@@ -59,10 +59,11 @@ func writeFrame(w io.Writer, opcode byte, payload []byte) error {
 	} else {
 		header = append(header, 126, byte(len(payload)>>8), byte(len(payload)))
 	}
-	if _, err := w.Write(header); err != nil {
-		return err
-	}
-	_, err := w.Write(payload)
+	// One Write so a concurrent writer cannot interleave between header and payload.
+	frame := make([]byte, len(header)+len(payload))
+	copy(frame, header)
+	copy(frame[len(header):], payload)
+	_, err := w.Write(frame)
 	return err
 }
 
@@ -86,9 +87,9 @@ func WriteClientFrame(w io.Writer, payload []byte) error {
 	for i := range payload {
 		masked[i] = payload[i] ^ key[i%4]
 	}
-	if _, err := w.Write(header); err != nil {
-		return err
-	}
-	_, err := w.Write(masked)
+	frame := make([]byte, len(header)+len(masked))
+	copy(frame, header)
+	copy(frame[len(header):], masked)
+	_, err := w.Write(frame)
 	return err
 }

@@ -356,10 +356,10 @@ func writeFrame(w io.Writer, opcode byte, payload []byte, mask bool) error {
 		}
 		payload = masked
 	}
-	if _, err := w.Write(header); err != nil {
-		return err
-	}
-	_, err := w.Write(payload)
+	frame := make([]byte, len(header)+len(payload))
+	copy(frame, header)
+	copy(frame[len(header):], payload)
+	_, err := w.Write(frame)
 	return err
 }
 

@@ -258,17 +258,22 @@ def test_serve_speak_and_stream():
         server.server_close()
 
 
-def test_remote_kokoro_emotion_matches_local():
+def _load_tts_remote_server():
     import importlib.util
     from pathlib import Path
-
-    from runtime.tts.kokoro import apply_emotion
 
     path = Path(__file__).resolve().parents[2] / "scripts" / "tts_remote_server.py"
     spec = importlib.util.spec_from_file_location("tts_remote_server_emotion", path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    return mod
+
+
+def test_remote_kokoro_emotion_matches_local():
+    from runtime.tts.kokoro import apply_emotion
+
+    mod = _load_tts_remote_server()
     for word in ("calm", "sad", "serious", "neutral", "happy", "excited", "angry"):
         got = mod.kokoro_request_speed(1, f" {word.upper()} ")
         want, canon = apply_emotion(1, word)
@@ -285,6 +290,26 @@ def test_remote_kokoro_emotion_matches_local():
         assert False, "range"
     except ValueError as e:
         assert "0.5" in str(e)
+
+
+def test_tts_remote_hand_start_defaults_and_ref_allowlist(tmp_path, monkeypatch):
+    """A6: loopback default + ref-audio confined to allowlist."""
+    allow = tmp_path / "refs"
+    allow.mkdir()
+    good = allow / "clip.wav"
+    good.write_bytes(b"RIFF")
+    outside = tmp_path / "escape.wav"
+    outside.write_bytes(b"RIFF")
+
+    monkeypatch.setenv("TTS_HOST", "127.0.0.1")
+    monkeypatch.setenv("TTS_REF_AUDIO_DIR", str(allow))
+    monkeypatch.delenv("TTS_REF_AUDIO", raising=False)
+    mod = _load_tts_remote_server()
+    assert mod.HOST == "127.0.0.1"
+    assert mod.MAX_BODY_BYTES == 32 << 20
+    assert mod.resolve_ref_audio(str(good)) == str(good.resolve())
+    assert mod.resolve_ref_audio(str(outside)) is None
+    assert mod.resolve_ref_audio(str(allow / ".." / "escape.wav")) is None
 
 
 def test_pcm16_wav_roundtrip_header():

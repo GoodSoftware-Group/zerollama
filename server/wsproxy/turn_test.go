@@ -294,7 +294,7 @@ func TestSessionUpdateReappliesNeuralThreshold(t *testing.T) {
 			},
 		},
 	})
-	if err := st.clientText(backend, func(byte, []byte) error { return nil }, body); err != nil {
+	if err := st.clientText(backend, func(byte, []byte) error { return nil }, func(byte, []byte) error { return nil }, body); err != nil {
 		t.Fatal(err)
 	}
 	if st.gate.Turn.Threshold != voicepipe.NeuralDefaultThreshold {

@@ -15,7 +15,7 @@ This file is the **executive roadmap**: a short view of what matters next.
 - **Surfaces and integrations:** Eliza route hardening, **LAYA1/LAYA2**, and the **AR7** auto-router gate. Details: [surfaces-and-integrations.md](roadmaps/surfaces-and-integrations.md#zerollama-remote-cloud-eliza), [structured surfaces](roadmaps/surfaces-and-integrations.md#structured-inference-surfaces).
 - **Training and scheduling:** **T9 → T10 → T11 → T6**, plus **SL1/SL2** Slurm follow-through. Details: [training-and-scheduling.md](roadmaps/training-and-scheduling.md#gpu-training-fine-tuning), [Slurm](roadmaps/training-and-scheduling.md#slurm).
 - **Media:** Wan cancel / TTL, `mmgp` 16 GB offload, first image workflow calibration, and mesh service bake. Details: [media.md](roadmaps/media.md#video-generation--dit-media-toolkit-wan--ltx--h3), [image](roadmaps/media.md#image-generation--mlx-fast-path--comfyui-utility-partial), [mesh](roadmaps/media.md#mesh--glb-generation--trellis-lab-http-not-started).
-- **Audio:** one writer per realtime socket (six `voicepipe` tests fail on master), body caps on the speech endpoints, and Piper plus sidecar lifetime. Details: [media.md](roadmaps/media.md#speech-transcription-and-realtime-voice).
+- **Audio:** **A1–A7** done (realtime writer, body caps, Piper slots, sidecar shutdown, WAV guard, TTS hand-start harden, music wav prune). **A8** later. Details: [media.md](roadmaps/media.md#speech-transcription-and-realtime-voice).
 
 ## Next
 

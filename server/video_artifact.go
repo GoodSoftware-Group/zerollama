@@ -164,9 +164,10 @@ func deleteVideoArtifact(jobID string) error {
 		return errors.New("invalid job id")
 	}
 	mp4 := videoArtifactPath(id)
+	wav := filepath.Join(videoArtifactRoot(), id+".wav")
 	meta := videoArtifactMetaPath(id)
 	var first error
-	for _, p := range []string{mp4, meta} {
+	for _, p := range []string{mp4, wav, meta} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			if first == nil {
 				first = err
@@ -210,7 +211,7 @@ func pruneExpiredVideoArtifacts() int {
 		}
 		name := e.Name()
 		ext := filepath.Ext(name)
-		if ext != ".mp4" && ext != ".json" {
+		if ext != ".mp4" && ext != ".json" && ext != ".wav" {
 			continue
 		}
 		id := strings.TrimSuffix(name, ext)
@@ -223,7 +224,11 @@ func pruneExpiredVideoArtifacts() int {
 		seen[id] = struct{}{}
 
 		mp4 := videoArtifactPath(id)
+		wav := filepath.Join(videoArtifactRoot(), id+".wav")
 		st, err := os.Stat(mp4)
+		if errors.Is(err, os.ErrNotExist) {
+			st, err = os.Stat(wav)
+		}
 		metaPath := videoArtifactMetaPath(id)
 		var meta videoArtifactMeta
 		if b, rerr := os.ReadFile(metaPath); rerr == nil {

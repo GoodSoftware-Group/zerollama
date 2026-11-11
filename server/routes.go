@@ -3258,6 +3258,9 @@ func Serve(listeners ...net.Listener) error {
 		if darwinSidecar != nil {
 			darwinSidecar.Stop()
 		}
+		// Stop long-lived audio sidecars that were started with exec.Command
+		// and no parent-death signal (Kokoro, Qwen3-ASR, neural VAD, Piper).
+		modality.CloseAudioShared()
 		shutdownViaSignal.Store(true)
 		done()
 	}()

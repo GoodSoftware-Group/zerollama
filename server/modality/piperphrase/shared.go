@@ -6,86 +6,125 @@ import (
 	"sync"
 )
 
-// Shared is one Piper process for a binary and its flags. The same flags
-// reuse the process. A different flag set, or a failed utterance, starts another.
+// Shared keeps one Piper process per binary+flag set. Concurrent requests with
+// different voices/flags each get their own process; switching flags no longer
+// kills a process that another request is still reading.
 type Shared struct {
-	mu   sync.Mutex
-	key  string
-	proc *Proc
+	mu    sync.Mutex
+	slots map[string]*leasedProc
 }
 
-// Close stops the process.
+type leasedProc struct {
+	proc *Proc
+	refs int
+	dead bool
+}
+
+// Close stops every process.
 func (s *Shared) Close() {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
-	proc := s.proc
-	s.proc = nil
-	s.key = ""
+	slots := s.slots
+	s.slots = nil
 	s.mu.Unlock()
-	if proc != nil {
-		proc.Close()
+	for _, sl := range slots {
+		if sl != nil && sl.proc != nil {
+			sl.proc.Close()
+		}
 	}
 }
 
 // Speak writes one WAV utterance on a process started without --output_raw.
 func (s *Shared) Speak(ctx context.Context, bin string, args []string, text, wavPath string) ([]byte, error) {
-	proc, err := s.procFor(bin, args)
+	key := slotKey(bin, args)
+	proc, err := s.acquire(key, bin, args)
 	if err != nil {
 		return nil, err
 	}
+	defer s.release(key)
 	data, err := proc.Speak(ctx, text, wavPath)
 	if err != nil {
-		s.drop(proc)
+		s.retire(key, proc)
 	}
 	return data, err
 }
 
 // SpeakPCM emits s16le mono from a process started with --output_raw.
 func (s *Shared) SpeakPCM(ctx context.Context, bin string, args []string, text string, onChunk func([]byte) error) error {
-	proc, err := s.procFor(bin, args)
+	key := slotKey(bin, args)
+	proc, err := s.acquire(key, bin, args)
 	if err != nil {
 		return err
 	}
+	defer s.release(key)
 	if err := proc.SpeakPCM(ctx, text, onChunk); err != nil {
-		s.drop(proc)
+		s.retire(key, proc)
 		return err
 	}
 	return nil
 }
 
-func (s *Shared) procFor(bin string, args []string) (*Proc, error) {
-	key := bin + "\x00" + strings.Join(args, "\x00")
+func slotKey(bin string, args []string) string {
+	return bin + "\x00" + strings.Join(args, "\x00")
+}
+
+func (s *Shared) acquire(key, bin string, args []string) (*Proc, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.proc != nil && s.key == key {
-		return s.proc, nil
+	if s.slots == nil {
+		s.slots = make(map[string]*leasedProc)
 	}
-	old := s.proc
-	s.proc = nil
-	s.key = ""
-	if old != nil {
-		old.Close()
+	if sl, ok := s.slots[key]; ok && sl != nil && sl.proc != nil && !sl.dead {
+		sl.refs++
+		return sl.proc, nil
 	}
 	proc, err := Start(bin, args)
 	if err != nil {
 		return nil, err
 	}
-	s.proc = proc
-	s.key = key
+	s.slots[key] = &leasedProc{proc: proc, refs: 1}
 	return proc, nil
 }
 
-func (s *Shared) drop(proc *Proc) {
+func (s *Shared) release(key string) {
 	s.mu.Lock()
-	same := s.proc == proc
-	if same {
-		s.proc = nil
-		s.key = ""
+	sl := s.slots[key]
+	if sl == nil {
+		s.mu.Unlock()
+		return
+	}
+	if sl.refs > 0 {
+		sl.refs--
+	}
+	closeNow := sl.dead && sl.refs == 0
+	if closeNow {
+		delete(s.slots, key)
+	}
+	proc := sl.proc
+	s.mu.Unlock()
+	if closeNow && proc != nil {
+		proc.Close()
+	}
+}
+
+// retire marks a failed process so new acquires start a fresh one. The process
+// is closed once the last reader releases.
+func (s *Shared) retire(key string, proc *Proc) {
+	s.mu.Lock()
+	sl := s.slots[key]
+	if sl == nil || sl.proc != proc {
+		s.mu.Unlock()
+		return
+	}
+	sl.dead = true
+	closeNow := sl.refs == 0
+	if closeNow {
+		delete(s.slots, key)
 	}
 	s.mu.Unlock()
-	if same && proc != nil {
+	if closeNow {
 		proc.Close()
 	}
 }

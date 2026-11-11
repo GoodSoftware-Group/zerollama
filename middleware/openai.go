@@ -1093,12 +1093,16 @@ func (w *TranscriptionWriter) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// maxAudioUploadBytes caps /v1/audio/transcriptions multipart bodies (same
+// order as other handlers' 32 MiB MaxBytesReader).
+const maxAudioUploadBytes = 32 << 20
+
 // TranscriptionMiddleware handles /v1/audio/transcriptions requests.
 // It accepts multipart/form-data with an audio file and converts it to a chat request.
 func TranscriptionMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Parse multipart form (limit 25MB).
-		if err := c.Request.ParseMultipartForm(25 << 20); err != nil {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxAudioUploadBytes)
+		if err := c.Request.ParseMultipartForm(maxAudioUploadBytes); err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, "failed to parse multipart form: "+err.Error()))
 			return
 		}
@@ -1116,9 +1120,13 @@ func TranscriptionMiddleware() gin.HandlerFunc {
 		}
 		defer file.Close()
 
-		audioData, err := io.ReadAll(file)
+		audioData, err := io.ReadAll(io.LimitReader(file, maxAudioUploadBytes+1))
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusInternalServerError, openai.NewError(http.StatusInternalServerError, "failed to read audio file"))
+			return
+		}
+		if len(audioData) > maxAudioUploadBytes {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, openai.NewError(http.StatusRequestEntityTooLarge, "audio file exceeds 32 MiB"))
 			return
 		}
 
@@ -1474,6 +1482,7 @@ func TranscriptionMiddleware() gin.HandlerFunc {
 // SpeechMiddleware validates OpenAI POST /v1/audio/speech JSON and stores the request on context.
 func SpeechMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<20)
 		var req openai.SpeechCreateRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.AbortWithStatusJSON(http.StatusBadRequest, openai.NewError(http.StatusBadRequest, err.Error()))

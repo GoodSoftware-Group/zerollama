@@ -128,6 +128,11 @@ func spliceTurn(client net.Conn, clientReader io.Reader, backend net.Conn, backe
 		defer clientMu.Unlock()
 		return writeFrame(client, op, p, false)
 	}
+	writeBackend := func(op byte, p []byte) error {
+		st.writeMu.Lock()
+		defer st.writeMu.Unlock()
+		return writeFrame(backend, op, p, true)
+	}
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -140,7 +145,7 @@ func spliceTurn(client net.Conn, clientReader io.Reader, backend net.Conn, backe
 				return
 			}
 			if op != 0x1 {
-				if err := writeFrame(backend, op, payload, true); err != nil {
+				if err := writeBackend(op, payload); err != nil {
 					return
 				}
 				if op == 0x8 {
@@ -148,7 +153,7 @@ func spliceTurn(client net.Conn, clientReader io.Reader, backend net.Conn, backe
 				}
 				continue
 			}
-			if err := st.clientText(backend, writeClient, payload); err != nil {
+			if err := st.clientText(backend, writeClient, writeBackend, payload); err != nil {
 				return
 			}
 		}
@@ -175,7 +180,7 @@ func spliceTurn(client net.Conn, clientReader io.Reader, backend net.Conn, backe
 	wg.Wait()
 }
 
-func (st *turnState) clientText(backend net.Conn, writeClient func(byte, []byte) error, payload []byte) error {
+func (st *turnState) clientText(backend net.Conn, writeClient, writeBackend func(byte, []byte) error, payload []byte) error {
 	if has, v := turnValue(payload); has {
 		on, turn, err := voicepipe.ParseTurn(v)
 		if err != nil {
@@ -195,7 +200,7 @@ func (st *turnState) clientText(backend net.Conn, writeClient func(byte, []byte)
 	}
 	switch eventType(payload) {
 	case "input_audio_buffer.append":
-		return st.appendAudio(backend, writeClient, payload)
+		return st.appendAudio(backend, writeClient, writeBackend, payload)
 	case "input_audio_buffer.commit":
 		return st.forwardCommit(backend, payload)
 	case "input_audio_buffer.clear":
@@ -210,24 +215,25 @@ func (st *turnState) clientText(backend net.Conn, writeClient func(byte, []byte)
 		st.replying = false
 		st.mu.Unlock()
 	}
-	return writeFrame(backend, 0x1, payload, true)
+	return writeBackend(0x1, payload)
 }
 
-func (st *turnState) appendAudio(backend net.Conn, writeClient func(byte, []byte) error, payload []byte) error {
+func (st *turnState) appendAudio(backend net.Conn, writeClient, writeBackend func(byte, []byte) error, payload []byte) error {
 	var ev map[string]any
 	if json.Unmarshal(payload, &ev) != nil {
-		return writeFrame(backend, 0x1, payload, true)
+		return writeBackend(0x1, payload)
 	}
 	raw, _ := ev["audio"].(string)
 	pcm, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil || len(pcm) == 0 {
-		return writeFrame(backend, 0x1, payload, true)
+		return writeBackend(0x1, payload)
 	}
 	st.writeMu.Lock()
 	defer st.writeMu.Unlock()
 	st.mu.Lock()
 	if !st.on || st.gate.Rate <= 0 {
 		st.mu.Unlock()
+		// Already hold writeMu — write directly.
 		return writeFrame(backend, 0x1, payload, true)
 	}
 	step := st.gate.Push(pcm, st.replying)

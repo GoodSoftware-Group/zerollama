@@ -1696,6 +1696,7 @@ func TestChatStartsDuringSilence(t *testing.T) {
 	modelStarted := make(chan struct{})
 	synthed := make(chan struct{})
 	nextReady := make(chan struct{})
+	var noteSynth sync.Once
 	var mu sync.Mutex
 	n := 0
 	turn := DuplexDefaultTurn()
@@ -1736,7 +1737,7 @@ func TestChatStartsDuringSilence(t *testing.T) {
 		},
 		Speak: func(ctx context.Context, text, voice, language, emotion string) (Clip, error) {
 			if text == "Yes." {
-				close(synthed)
+				noteSynth.Do(func() { close(synthed) })
 			}
 			return Clip{PCM: []byte{0, 0}, Rate: 8000}, nil
 		},
@@ -1776,8 +1777,17 @@ func TestChatStartsDuringSilence(t *testing.T) {
 		t.Fatal("next transcriber waited for the turn to commit")
 	}
 	_ = client.SetReadDeadline(time.Now().Add(40 * time.Millisecond))
-	if _, _, err := readFrame(br); err == nil {
-		t.Fatal("audio was sent before the turn committed")
+	for {
+		ev, err := readJSONErr(t, br)
+		if err != nil {
+			break
+		}
+		switch ev["type"] {
+		case "response.output_audio.delta", "response.output_audio.done":
+			t.Fatal("audio was sent before the turn committed")
+		case "error":
+			t.Fatal(ev)
+		}
 	}
 	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
 	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(0, 7840)})
@@ -1945,6 +1955,7 @@ func TestReadyOpeningSkipsHold(t *testing.T) {
 	heard := make(chan struct{})
 	release := make(chan struct{})
 	synthed := make(chan struct{})
+	var noteSynth sync.Once
 	turn := DuplexDefaultTurn()
 	hold := Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 2000, 1000)}
 	go Serve(context.Background(), server, nil, Engine{
@@ -1971,7 +1982,7 @@ func TestReadyOpeningSkipsHold(t *testing.T) {
 			return emit("The capital is Paris.")
 		},
 		Speak: func(ctx context.Context, text, voice, language, emotion string) (Clip, error) {
-			close(synthed)
+			noteSynth.Do(func() { close(synthed) })
 			return Clip{MIME: "audio/pcm", Rate: 8000, PCM: tonePCM(8000, 40, 2000)}, nil
 		},
 	})
@@ -2323,13 +2334,25 @@ func TestFailSendsModelLoadCode(t *testing.T) {
 
 func readJSON(t *testing.T, r *bufio.Reader) map[string]any {
 	t.Helper()
-	opcode, payload, err := readFrame(r)
-	if err != nil || opcode != 0x1 {
-		t.Fatal(err, opcode)
-	}
-	var ev map[string]any
-	if err := json.Unmarshal(payload, &ev); err != nil {
+	ev, err := readJSONErr(t, r)
+	if err != nil {
 		t.Fatal(err)
 	}
 	return ev
+}
+
+func readJSONErr(t *testing.T, r *bufio.Reader) (map[string]any, error) {
+	t.Helper()
+	opcode, payload, err := readFrame(r)
+	if err != nil {
+		return nil, err
+	}
+	if opcode != 0x1 {
+		return nil, fmt.Errorf("opcode %d", opcode)
+	}
+	var ev map[string]any
+	if err := json.Unmarshal(payload, &ev); err != nil {
+		return nil, err
+	}
+	return ev, nil
 }

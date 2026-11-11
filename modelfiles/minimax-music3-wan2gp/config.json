@@ -4,7 +4,7 @@
   "music_generation": {
     "duration_sec": 10,
     "steps": 30,
-    "timeout_sec": 14400
+    "timeout_sec": 10800
   },
   "backend_paths": {
     "music3_mlx_model": "~/.zerollama/third_party/wan2gp/ckpts",

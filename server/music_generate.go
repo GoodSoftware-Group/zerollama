@@ -264,6 +264,12 @@ func buildMusic3JobPayload(cfg model.ConfigV2, req openai.SpeechCreateRequest, s
 	if cfg.MusicGeneration != nil && cfg.MusicGeneration.TimeoutSec > 0 {
 		timeout = cfg.MusicGeneration.TimeoutSec
 	}
+	// Exclusive GPU watch is capped at videoExclusiveWatchLimit; a longer job
+	// timeout would keep generating after the hold is released.
+	maxHoldSec := int(videoExclusiveWatchLimit / time.Second)
+	if maxHoldSec > 0 && timeout > maxHoldSec {
+		timeout = maxHoldSec
+	}
 
 	pythonBin := resolveMusic3Python(repo)
 
