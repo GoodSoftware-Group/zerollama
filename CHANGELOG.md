@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Directory image describe — Nov 2026
+
+`zerollama describe DIRECTORY` and `POST /api/describe` write a content-hash catalog of pictures (SigLIP tags by default; optional vision caption and OWLv2 boxes). The caller keeps the catalog; the server never opens a folder path. Resume skips unchanged files, adds new ones, drops missing paths. Builtin labels embed phrases (`a photograph`, …); empty tag lists stay empty (no forced winner). HEIC on Darwin converts via `sips` for the model call.
+
 ### Pirate Face search and pull
 
 `zerollama search QUERY` lists Pirate Face GGUF torrents (no daemon). `zerollama pull pirateface://owner/repo[/file.gguf]` (and `--source` / `POST /api/pull` `source`) resolves the torrent API file list + sha256, downloads one GGUF via throwaway `uvx --from huggingface_hub --with pirateface` (`hf download`), copies the verified blob into the local store, then seeds to ratio 1.0 with `aria2c` against the `.torrent` layout when present. Search and listings survive a Hugging Face **takedown** (`hf:false` + seeders); a Hub **outage** still fails the byte path. Do not `pip install pirateface` into the runtime venv.

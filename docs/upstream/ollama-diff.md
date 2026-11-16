@@ -13,13 +13,16 @@
 | **Long turns** | Prefix cache reuses a repeated start | Faster BPE (~3–7×) before that cache. MultiDecode branches several questions off one copy of the opening |
 | **Many threads, one opening** | A hit when that exact prefix is still in some slot | `prompt_cache_key` pins the slot across turns. Agent profile (`ZEROLLAMA_L3_PROFILE=agent`) copies a shared system prompt onto a different thread. Disk slot files (~1h) on Linux subprocess; off by default on Mac |
 | **Talking** | A recording can be written down through the chat model | Live back-and-forth on `GET /v1/realtime` (pause, speak the first words while the rest generates, stop if interrupted). File speech and transcription on the same server |
-| **A song** | | `POST /v1/audio/generations` — MiniMax Music 3 on Mac; runs beside chat |
+| **A song** | | `POST /v1/audio/generations` — MiniMax Music 3 (Mac mlx-audio; Linux Wan2GP). Runs beside chat |
 | **Pictures and video** | A picture in the chat | Draw a picture, watch a video, make a short video |
 | **Where is the thing** | | `POST /v1/detect` returns boxes around named things in a picture |
-| **A busy GPU** | One queue | QoS; `ps` shows who holds the card; training waits |
-| **Convergence** | — | Phase 17 also speaks Go→llama-server; Mac default stays ggml |
+| **Tag a folder** | Per-file chat / embed | `zerollama describe` + `POST /api/describe` — content-hash catalog, resume, optional caption/boxes |
+| **Which model** | Client names the model | Auto-router / Jev / System One gallery routing |
+| **Odd GGUFs / LAN** | Gallery pull | Pirate Face `search` / `pull`; remote storage discover/doctor |
+| **A busy GPU** | One queue | QoS; `ps` shows who holds the card; T6 defer; T10 GRPO; T11 chat-export recipes |
+| **Convergence** | — | Phase 17 also speaks Go→llama-server; Mac default stays ggml; pin **b12119** |
 
-Training, LM Studio import, fleet, extract, and rerank are documented below. Decision models exist on both sides.
+Training, LM Studio import, fleet, extract, rerank, and DeepInfer/DeepGEMM idea ports are documented below. Decision models exist on both sides.
 
 ### M4 Max decode A/B (`llama3.2:3b`, `num_ctx=4096`, 6 epochs)
 

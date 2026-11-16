@@ -19,10 +19,13 @@ Same CLI, REST, and clients. Upstream is the local chat daemon. Zerollama is tha
 | **Long turns** | Prefix cache reuses a repeated start | Faster tokenize before that cache runs (~3–7×; Qwen2 chat **389→81 ms** on a 1 MiB prompt). Several follow-ups can branch off one copy of the opening. |
 | **Lots of chats, same instructions** | If the last request left that exact text in memory, the next one can skip rereading it. A busy server may already have forgotten. | Give each chat a name. The next message in that chat skips rereading the long instructions and tools. A different chat that uses those same instructions can skip them too. Restart within about an hour and it can still remember. |
 | **Talking** | Send a recording and the chat model can write down what it heard. | A live conversation: it waits until you pause, answers out loud, and starts the first words while it is still finishing the sentence. Talk over it and it stops. You can also turn writing into a voice, or a recording into writing. |
-| **A song** | | On a Mac, ask for a song and get the audio back. That work runs beside chat, so the agent does not have to wait for the song to finish. |
+| **A song** | | Ask for a song and get the audio back (Mac mlx-audio; Linux Wan2GP path). That work runs beside chat. |
 | **Pictures and video** | Show it a picture in the chat. | Draw a picture. Watch a video you send and answer about it. Make a short video. |
 | **Where is the thing** | | Name something in a picture (“cup”, “person”) and get a box around it, instead of a paragraph describing the scene. |
-| **A busy GPU** | One queue | Live chat jumps ahead. `ps` shows who holds the card. Training waits until the line is quiet. |
+| **Tag a folder of pictures** | One chat (or embed) per file | `zerollama describe ./photos` writes one JSON for the folder. Same API for a webapp. Resumes after a kill; new files get picked up next run. |
+| **Which model for this turn** | You name the model | An auto-router can pick a specialist (or stick with the last good one) from what is loaded. |
+| **Odd GGUFs / LAN blobs** | Gallery pull | `zerollama search` / `pull pirateface://…` for Pirate Face torrents. Share blobs on the LAN with `storage serve` (discover / doctor). |
+| **A busy GPU** | One queue | Live chat jumps ahead. `ps` shows who holds the card. Training waits until the line is quiet; chat exports become SFT rows; GRPO is a job kind. |
 
 Deeper comparison: [ollama-diff.md](docs/upstream/ollama-diff.md).
 
@@ -107,6 +110,20 @@ Generate images and short videos from the daemon you already pointed your agent 
 
 → [wan-t2v.md](docs/design/media/wan-t2v.md) · [ltx-t2v.md](docs/design/media/ltx-t2v.md) · [h3-cuda-port.md](docs/design/media/h3-cuda-port.md) · [media-uploads.md](docs/design/media/media-uploads.md)
 
+### Tag a folder of pictures
+
+Point the CLI at a directory. You get one JSON file of labels (SigLIP phrases by default). Optional captions and object boxes. A webapp stores the same catalog and calls `POST /api/describe` with new or changed files only.
+
+```bash
+zerollama describe ./photos
+zerollama describe ./photos --labels "dog,beach,receipt"
+zerollama describe ./photos --caption qwen2.5vl
+```
+
+Writes `./photos.json` beside the folder (or `-o`). Same command resumes: unchanged pictures are skipped, new ones are added, missing paths are dropped. HEIC on a Mac goes through `sips` for the model call.
+
+→ OpenAPI `POST /api/describe` · `zerollama describe --help`
+
 ### Talk on the same socket
 
 `GET /v1/realtime` is a conversation. The server hears a pause, writes down what you said, and starts speaking the first clause while the rest of the answer is still generating. Talk over it and that reply stops.
@@ -122,14 +139,15 @@ Generate images and short videos from the daemon you already pointed your agent 
 
 → [quick-voice.md](docs/design/media/quick-voice.md) · [multimodal-backends.md](docs/design/media/multimodal-backends.md) · [music-c.md](docs/design/media/music-c.md)
 
-### Pull names and make snap judgments
+### Pull names, route a turn, make snap judgments
 
-“Who’s mentioned?” “Is this urgent?” “Which of these hits is best?” as real answers — not “please reply in JSON” against the chat model.
+“Who’s mentioned?” “Is this urgent?” “Which model should handle this?” as real answers — not “please reply in JSON” against the chat model.
 
 | Want | API | Engines |
 |------|-----|---------|
 | Pull people / places / orgs | `POST /v1/extract` · `/v1/gliner` | GLiNER C++/ONNX |
-| Yes/no, route, score | `POST /v1/decisions` · `/v1/systemone` | Laya · CLM · OpenJev / DiffusionGemma (opt-in calibrated) · GLiNER-Decide |
+| Yes/no, route, score | `POST /v1/decisions` · `/v1/systemone` | Laya · CLM · OpenJev / DiffusionGemma (opt-in calibrated) · GLiNER-Decide · System One gallery |
+| Pick a specialist for this turn | `/api/router/*` · `POST /v1/route` | Auto-router (sticky, multi-question, cross-modal suggest headers) |
 | Rank candidates | `POST /v1/rerank` · `/api/score` | LocalAI-style control plane |
 | Boxes in a camera frame | `POST /v1/detect` · `/v1/segment` | OWLv2 boxes; segment mask is a stub (`grasp_ready` false) |
 
@@ -147,12 +165,14 @@ Live chat jumps ahead of background jobs. You can see *who* is holding the card.
 | Timeouts / kicks you can trust | HTTP **504** vs disconnect **499**; `done_reason=preempted` + reason → retry |
 | Schemas that actually stick | Bound `think` + `response_format` / GBNF |
 | Load / pin / batch | `/api/can-load`, `/api/propose-load`, **`POST /api/load`**, `/api/pin`, `/api/cache/pin`, Hermes batch |
-| “Broken model” that’s a template | `zerollama doctor --repair-models` |
-| Fine-tune without killing chat | `/api/train/*` + idle-wait / defer — submit; runs when the GPU is quiet |
+| “Broken model” that’s a template | `zerollama doctor --repair-models` (minefield traps through 166) |
+| Fine-tune without killing chat | `/api/train/*` + idle-wait / defer — chat can pause new ggml loads while a deferred job waits ([t6](docs/design/training/t6-unified-queue.md)) |
 | GRPO / RL job kind (lab) | `kind=grpo` dry-run by default; `grpo_run=true` needs `trl` — [t10-grpo.md](docs/design/training/t10-grpo.md) |
-| Spreadsheet → SFT rows | `zerollama train recipe data.csv -o sft.jsonl` — [t11-recipes.md](docs/design/training/t11-recipes.md) |
+| Chat export → SFT rows | `zerollama train recipe` presets: ShareGPT, OpenAI, Alpaca, ChatGPT `mapping`, Claude `chat_messages` — [t11-recipes.md](docs/design/training/t11-recipes.md) |
 | Reuse LM Studio downloads | `zerollama list` / `pull` from `~/.lmstudio/models` (GGUF symlink, MLX repack) |
-| Share models across machines | `zerollama fleet serve` · `zerollama storage serve` (lab `:18090`) |
+| Multi-shard GGUF | Load models whose weights span several blob files from the manifest |
+| Share models across machines | `zerollama fleet serve` · `zerollama storage serve` (lab `:18090`) · `storage discover` / `storage doctor` (mDNS) |
+| Pirate Face GGUF | `zerollama search QUERY` · `zerollama pull pirateface://owner/repo[/file.gguf]` |
 
 ```bash
 curl -s http://127.0.0.1:11434/api/version | jq '{distribution, capabilities: .zerollama.capabilities}'
@@ -162,7 +182,7 @@ curl -s http://127.0.0.1:11434/api/version | jq '{distribution, capabilities: .z
 
 ## CLI
 
-Richer `ls` / `ps` than upstream — MoE size, host-safe context, PERF from `bench`, and which harness holds VRAM.
+Richer `ls` / `ps` than upstream — MoE size, host-safe context, PERF from `bench`, and which harness holds VRAM. Also: `describe` (folder → JSON), `search` / Pirate Face `pull`, `storage`, `train recipe`, `doctor --repair-models`.
 
 ```text
 NAME                         ID              SIZE      PARAMS                 CTX         PERF     MODIFIED
@@ -232,14 +252,15 @@ Vendor pin: **`6f1e6543` / b12119** — [runtime/LLAMA_CPP_PIN.md](runtime/LLAMA
 |------|------|
 | Harness / Hermes | [agent-qos-and-project-tracking.md](docs/design/serving/agent-qos-and-project-tracking.md) · [hermes-zerollama-gap.md](docs/design/surfaces/hermes-zerollama-gap.md) |
 | MultiDecode | [multidecode-llama-cpp.md](docs/design/surfaces/multidecode-llama-cpp.md) |
-| Decide / extract / see | [laya-llama-cpp.md](docs/design/surfaces/laya-llama-cpp.md) · [clm.md](docs/design/surfaces/clm.md) · [diffusion-gemma-llama-cpp.md](docs/design/surfaces/diffusion-gemma-llama-cpp.md) · [gliner-cpp.md](docs/design/surfaces/gliner-cpp.md) · [gliner-decide.md](docs/design/surfaces/gliner-decide.md) · [detect.md](docs/detect.md) |
+| Decide / extract / see / route | [laya-llama-cpp.md](docs/design/surfaces/laya-llama-cpp.md) · [clm.md](docs/design/surfaces/clm.md) · [diffusion-gemma-llama-cpp.md](docs/design/surfaces/diffusion-gemma-llama-cpp.md) · [gliner-cpp.md](docs/design/surfaces/gliner-cpp.md) · [gliner-decide.md](docs/design/surfaces/gliner-decide.md) · [detect.md](docs/detect.md) |
 | Speed | [faster-bpe-tokenize.md](docs/upstream/faster-bpe-tokenize.md) · [gpu-profiles-l3.md](docs/design/serving/gpu-profiles-l3.md) |
 | Voice / music | [quick-voice.md](docs/design/media/quick-voice.md) · [multimodal-backends.md](docs/design/media/multimodal-backends.md) · [music-c.md](docs/design/media/music-c.md) |
 | Video / image | [wan-t2v.md](docs/design/media/wan-t2v.md) · [ltx-t2v.md](docs/design/media/ltx-t2v.md) · [h3-cuda-port.md](docs/design/media/h3-cuda-port.md) |
 | Train / idle queue | [gpu-training.md](docs/design/training/gpu-training.md) · [t6-unified-queue.md](docs/design/training/t6-unified-queue.md) · [t10-grpo.md](docs/design/training/t10-grpo.md) · [t11-recipes.md](docs/design/training/t11-recipes.md) |
-| Serving ideas (not vendor) | [deepinfer-borrowings.md](docs/upstream/deepinfer-borrowings.md) · [deepinfer-ladder.md](docs/upstream/deepinfer-ladder.md) · [vllm-borrowings.md](docs/upstream/vllm-borrowings.md) |
+| Serving ideas (not vendor) | [deepinfer-borrowings.md](docs/upstream/deepinfer-borrowings.md) · [deepinfer-ladder.md](docs/upstream/deepinfer-ladder.md) · [deepgemm-borrowings.md](docs/upstream/deepgemm-borrowings.md) · [vllm-borrowings.md](docs/upstream/vllm-borrowings.md) |
 | Doctor | [model-serving-minefield.md](docs/runbooks/model-serving-minefield.md) · [doctor-model-repair.md](docs/runbooks/doctor-model-repair.md) |
 | Storage / fleet | [remote-model-storage.md](docs/design/surfaces/remote-model-storage.md) · [fleet-management.md](docs/design/training/fleet-management.md) |
+| Pin / gallery stamp | [runtime/LLAMA_CPP_PIN.md](runtime/LLAMA_CPP_PIN.md) (**b12119**) · `version.OllamaCompat` |
 
 ## Agent skills
 
