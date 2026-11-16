@@ -1194,6 +1194,23 @@ func pullModelOnce(ctx context.Context, name string, regOpts *registryOptions, f
 		regOpts = &registryOptions{}
 	}
 
+	if IsPirateFacePull(name) || IsPirateFacePull(strings.TrimSpace(regOpts.HFSource)) {
+		local := model.ParseName(name)
+		if IsPirateFacePull(name) {
+			if ref, err := ParsePirateFaceSource(name); err == nil {
+				local = pfLocalName(ref)
+			}
+		}
+		deleteMap := buildPullDeleteMap(local)
+		imported, err := tryPullPirateFace(ctx, name, local, regOpts, deleteMap, fn)
+		if err != nil {
+			return err
+		}
+		if imported {
+			return nil
+		}
+	}
+
 	if IsHFPull(name) || strings.TrimSpace(regOpts.HFSource) != "" {
 		local := model.ParseName(name)
 		if IsHFPull(name) {

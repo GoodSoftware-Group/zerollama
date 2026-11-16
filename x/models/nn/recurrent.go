@@ -242,6 +242,42 @@ func GatedDelta(b *batch.Batch, q, k, v, gDecay, beta *mlx.Array, opts ...Recurr
 	return mlx.Concatenate(outs, 1), states
 }
 
+// Mamba2Scan runs the Mamba2 selective-scan step with recurrent state
+// management. hidden is [B, L, H, D], bState/cState are [B, L, G, S] with
+// H%G == 0, dt is [B, L, H], and a/d/dtBias are [H]. Prior state comes from
+// exactly one of WithRecurrentHistory or WithRecurrentState.
+//
+// Splits behave as in GatedDelta. Returns the delta state at each boundary,
+// ending with the forward-end state.
+func Mamba2Scan(b *batch.Batch, hidden, bState, cState, dt, a, d, dtBias *mlx.Array, opts ...RecurrentOption) (*mlx.Array, []*mlx.Array) {
+	cfg := resolveRecurrentConfig(opts)
+	prior := cfg.deltaState
+	if cfg.history != nil {
+		prior = cfg.history.DeltaState()
+	}
+
+	L := int32(hidden.Dim(1))
+	mask := paddingMask(b, L)
+	if n := len(cfg.splits); n == 0 || n == int(L)-1 {
+		y, end, interior := mlx.Mamba2Scan(hidden, bState, cState, dt, prior, a, d, dtBias, mask, n > 0)
+		return y, append(interior, end)
+	}
+
+	segs := segmentRanges(cfg.splits, L)
+	outs := make([]*mlx.Array, 0, len(segs))
+	states := make([]*mlx.Array, 0, len(segs))
+	state := prior
+	for _, seg := range segs {
+		var y *mlx.Array
+		y, state, _ = mlx.Mamba2Scan(
+			sliceSeg(hidden, seg), sliceSeg(bState, seg), sliceSeg(cState, seg), sliceSeg(dt, seg),
+			state, a, d, dtBias, sliceSeg(mask, seg), false)
+		outs = append(outs, y)
+		states = append(states, state)
+	}
+	return mlx.Concatenate(outs, 1), states
+}
+
 // RecurrentHistory is an opaque per-forward view a recurrent cache
 // hands to the SSM kernel wrappers — prior conv and delta state
 // tensors. Models do not construct this directly; pass it through

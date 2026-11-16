@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 
 	"github.com/ollama/ollama/x/mlxrunner/batch"
 	"github.com/ollama/ollama/x/mlxrunner/cache"
@@ -23,31 +24,31 @@ func init() {
 
 // Config holds LFM2 model configuration from config.json.
 type Config struct {
-	HiddenSize            int32   `json:"hidden_size"`
-	NumHiddenLayers       int32   `json:"num_hidden_layers"`
-	NumAttentionHeads     int32   `json:"num_attention_heads"`
-	NumKeyValueHeads      int32   `json:"num_key_value_heads"`
-	VocabSize             int32   `json:"vocab_size"`
-	NormEps               float32 `json:"norm_eps"`
-	RopeTheta             float32 `json:"rope_theta"`
-	MaxPositionEmbeddings int32   `json:"max_position_embeddings"`
-	ConvBias              bool    `json:"conv_bias"`
-	ConvLCache            int32   `json:"conv_L_cache"`
-	BlockDim              int32   `json:"block_dim"`
-	BlockFFDim            int32   `json:"block_ff_dim"`
-	BlockMultipleOf       int32   `json:"block_multiple_of"`
-	BlockFFNDimMultiplier float32 `json:"block_ffn_dim_multiplier"`
-	BlockAutoAdjustFFDim  bool    `json:"block_auto_adjust_ff_dim"`
-	FullAttnIdxs          []int   `json:"full_attn_idxs"`
+	HiddenSize            int32    `json:"hidden_size"`
+	NumHiddenLayers       int32    `json:"num_hidden_layers"`
+	NumAttentionHeads     int32    `json:"num_attention_heads"`
+	NumKeyValueHeads      int32    `json:"num_key_value_heads"`
+	VocabSize             int32    `json:"vocab_size"`
+	NormEps               float32  `json:"norm_eps"`
+	RopeTheta             float32  `json:"rope_theta"`
+	MaxPositionEmbeddings int32    `json:"max_position_embeddings"`
+	ConvBias              bool     `json:"conv_bias"`
+	ConvLCache            int32    `json:"conv_L_cache"`
+	BlockDim              int32    `json:"block_dim"`
+	BlockFFDim            int32    `json:"block_ff_dim"`
+	BlockMultipleOf       int32    `json:"block_multiple_of"`
+	BlockFFNDimMultiplier float32  `json:"block_ffn_dim_multiplier"`
+	BlockAutoAdjustFFDim  bool     `json:"block_auto_adjust_ff_dim"`
+	FullAttnIdxs          []int    `json:"full_attn_idxs"`
 	LayerTypes            []string `json:"layer_types"`
 
-	HeadDim        int32                             `json:"-"`
-	IntermediateSize int32                           `json:"-"`
-	Scale          float32                           `json:"-"`
-	QuantGroupSize int                               `json:"-"`
-	QuantBits      int                               `json:"-"`
-	QuantMode      string                            `json:"-"`
-	TensorQuant    map[string]*model.TensorQuantInfo `json:"-"`
+	HeadDim          int32                             `json:"-"`
+	IntermediateSize int32                             `json:"-"`
+	Scale            float32                           `json:"-"`
+	QuantGroupSize   int                               `json:"-"`
+	QuantBits        int                               `json:"-"`
+	QuantMode        string                            `json:"-"`
+	TensorQuant      map[string]*model.TensorQuantInfo `json:"-"`
 }
 
 // Model is the LFM2 causal LM.
@@ -59,18 +60,16 @@ type Model struct {
 
 	tok *tokenizer.Tokenizer
 	*Config
-
-	weightPrefix string
 }
 
 // Layer is one LFM2 decoder block (attention or ShortConv + shared MLP).
 type Layer struct {
-	IsAttention   bool
-	SelfAttn      *Attention
-	Conv          *ShortConv
-	FeedForward   *MLP
-	OperatorNorm  *nn.RMSNorm
-	FFNNorm       *nn.RMSNorm
+	IsAttention  bool
+	SelfAttn     *Attention
+	Conv         *ShortConv
+	FeedForward  *MLP
+	OperatorNorm *nn.RMSNorm
+	FFNNorm      *nn.RMSNorm
 }
 
 // Attention is LFM2 full attention (GQA + Q/K RMSNorm + RoPE).
@@ -97,13 +96,20 @@ type MLP struct {
 	W2 nn.LinearLayer
 }
 
-func resolveWeightPrefix(tensors map[string]*mlx.Array) string {
-	for _, prefix := range []string{"", "language_model."} {
-		if tensors[prefix+"model.embed_tokens.weight"] != nil {
-			return prefix
+// languagePaths finds the decoder stem (ending in the directory that holds
+// embed_tokens) and the LM head key. Text checkpoints use model.*; LFM2-VL
+// nests the same stack at model.language_model.* with the head at lm_head.
+func languagePaths(tensors map[string]*mlx.Array) (stem, lmHead string) {
+	for _, candidate := range []struct{ embed, head string }{
+		{"model.embed_tokens.weight", "lm_head"},
+		{"language_model.model.embed_tokens.weight", "language_model.lm_head"},
+		{"model.language_model.embed_tokens.weight", "lm_head"},
+	} {
+		if tensors[candidate.embed] != nil {
+			return strings.TrimSuffix(candidate.embed, "embed_tokens.weight"), candidate.head
 		}
 	}
-	return ""
+	return "model.", "lm_head"
 }
 
 func effectiveFFDim(cfg *Config) int32 {
@@ -151,27 +157,39 @@ func newModel(root *model.Root) (base.Model, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
-
 	var cfg Config
 	if err := json.Unmarshal(configData, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	if err := Prepare(&cfg, root, configData); err != nil {
+		return nil, err
+	}
+	tok, err := LoadTokenizer(root, configData)
+	if err != nil {
+		return nil, err
+	}
+	return NewPrepared(&cfg, tok), nil
+}
 
+// Prepare fills derived fields and quantization metadata. configData is the
+// JSON blob whose top-level quantization object should apply; a nil root
+// skips manifest quant metadata.
+func Prepare(cfg *Config, root *model.Root, configData []byte) error {
 	if cfg.HiddenSize <= 0 {
-		return nil, fmt.Errorf("invalid hidden_size: %d", cfg.HiddenSize)
+		return fmt.Errorf("invalid hidden_size: %d", cfg.HiddenSize)
 	}
 	if cfg.NumAttentionHeads <= 0 {
-		return nil, fmt.Errorf("invalid num_attention_heads: %d", cfg.NumAttentionHeads)
+		return fmt.Errorf("invalid num_attention_heads: %d", cfg.NumAttentionHeads)
 	}
 	if cfg.NumKeyValueHeads <= 0 {
 		cfg.NumKeyValueHeads = cfg.NumAttentionHeads
 	}
 	if cfg.HiddenSize%cfg.NumAttentionHeads != 0 {
-		return nil, fmt.Errorf("hidden_size (%d) must be divisible by num_attention_heads (%d)", cfg.HiddenSize, cfg.NumAttentionHeads)
+		return fmt.Errorf("hidden_size (%d) must be divisible by num_attention_heads (%d)", cfg.HiddenSize, cfg.NumAttentionHeads)
 	}
 	cfg.HeadDim = cfg.HiddenSize / cfg.NumAttentionHeads
 	if cfg.NumAttentionHeads%cfg.NumKeyValueHeads != 0 {
-		return nil, fmt.Errorf("num_attention_heads (%d) must be divisible by num_key_value_heads (%d)", cfg.NumAttentionHeads, cfg.NumKeyValueHeads)
+		return fmt.Errorf("num_attention_heads (%d) must be divisible by num_key_value_heads (%d)", cfg.NumAttentionHeads, cfg.NumKeyValueHeads)
 	}
 	if cfg.NormEps == 0 {
 		cfg.NormEps = 1e-5
@@ -186,43 +204,56 @@ func newModel(root *model.Root) (base.Model, error) {
 		cfg.BlockDim = cfg.HiddenSize
 	}
 	if cfg.BlockFFDim <= 0 {
-		return nil, fmt.Errorf("invalid block_ff_dim: %d", cfg.BlockFFDim)
+		return fmt.Errorf("invalid block_ff_dim: %d", cfg.BlockFFDim)
 	}
-	cfg.FullAttnIdxs = resolveFullAttnIdxs(&cfg)
+	cfg.FullAttnIdxs = resolveFullAttnIdxs(cfg)
 	if len(cfg.FullAttnIdxs) == 0 {
-		return nil, fmt.Errorf("no full_attn_idxs / full_attention layer_types in config")
+		return fmt.Errorf("no full_attn_idxs / full_attention layer_types in config")
 	}
-	cfg.IntermediateSize = effectiveFFDim(&cfg)
+	cfg.IntermediateSize = effectiveFFDim(cfg)
 	cfg.Scale = float32(1.0 / math.Sqrt(float64(cfg.HeadDim)))
 
-	if qt := root.QuantType(); qt != "" {
-		cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode = model.QuantizationParams(qt)
-		if gs := root.GroupSize(); gs > 0 {
-			cfg.QuantGroupSize = gs
-		}
-	} else {
-		// config.json quantization{bits,group_size} from mlx-lm convert —
-		// blob metadata is often empty for these imports.
-		var quantCfg struct {
-			Quantization struct {
-				GroupSize int `json:"group_size"`
-				Bits      int `json:"bits"`
-			} `json:"quantization"`
-		}
-		_ = json.Unmarshal(configData, &quantCfg)
-		if quantCfg.Quantization.Bits > 0 {
-			cfg.QuantBits = quantCfg.Quantization.Bits
-			cfg.QuantGroupSize = quantCfg.Quantization.GroupSize
-			if cfg.QuantGroupSize <= 0 {
-				cfg.QuantGroupSize = 64
+	if root != nil {
+		if qt := root.QuantType(); qt != "" {
+			cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode = model.QuantizationParams(qt)
+			if gs := root.GroupSize(); gs > 0 {
+				cfg.QuantGroupSize = gs
 			}
-			cfg.QuantMode = "affine"
-		} else {
-			cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode = model.QuantizationParams("")
+		} else if err := applyConfigQuant(cfg, configData); err != nil {
+			return err
 		}
+		cfg.TensorQuant = root.AllTensorQuant()
+	} else if err := applyConfigQuant(cfg, configData); err != nil {
+		return err
 	}
-	cfg.TensorQuant = root.AllTensorQuant()
+	return nil
+}
 
+func applyConfigQuant(cfg *Config, configData []byte) error {
+	var quantCfg struct {
+		Quantization struct {
+			GroupSize int `json:"group_size"`
+			Bits      int `json:"bits"`
+		} `json:"quantization"`
+	}
+	if len(configData) > 0 {
+		_ = json.Unmarshal(configData, &quantCfg)
+	}
+	if quantCfg.Quantization.Bits > 0 {
+		cfg.QuantBits = quantCfg.Quantization.Bits
+		cfg.QuantGroupSize = quantCfg.Quantization.GroupSize
+		if cfg.QuantGroupSize <= 0 {
+			cfg.QuantGroupSize = 64
+		}
+		cfg.QuantMode = "affine"
+		return nil
+	}
+	cfg.QuantGroupSize, cfg.QuantBits, cfg.QuantMode = model.QuantizationParams("")
+	return nil
+}
+
+// LoadTokenizer reads the manifest tokenizer the way the text model does.
+func LoadTokenizer(root *model.Root, configData []byte) (*tokenizer.Tokenizer, error) {
 	tokData, err := root.Manifest.ReadConfig("tokenizer.json")
 	if err != nil {
 		return nil, fmt.Errorf("load tokenizer config: %w", err)
@@ -238,41 +269,46 @@ func newModel(root *model.Root) (base.Model, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse tokenizer: %w", err)
 	}
+	return tok, nil
+}
 
+// NewPrepared allocates an empty layer stack for a config Prepare already filled.
+func NewPrepared(cfg *Config, tok *tokenizer.Tokenizer) *Model {
 	return &Model{
 		Layers: make([]*Layer, cfg.NumHiddenLayers),
-		Config: &cfg,
+		Config: cfg,
 		tok:    tok,
-	}, nil
+	}
 }
 
 // LoadWeights assigns tensors to model fields.
 func (m *Model) LoadWeights(tensors map[string]*mlx.Array) error {
-	m.weightPrefix = resolveWeightPrefix(tensors)
-	prefix := m.weightPrefix
+	stem, lmHeadKey := languagePaths(tensors)
 	linears := model.NewLinearFactory(tensors, m.QuantGroupSize, m.QuantBits, m.QuantMode, m.TensorQuant)
 
-	embedTokens := model.MakeEmbeddingLayer(tensors, prefix+"model.embed_tokens", m.QuantGroupSize, m.QuantBits, m.QuantMode, m.TensorQuant)
+	embedTokens := model.MakeEmbeddingLayer(tensors, stem+"embed_tokens", m.QuantGroupSize, m.QuantBits, m.QuantMode, m.TensorQuant)
 	if embedTokens == nil {
-		return fmt.Errorf("missing embedding weight: %smodel.embed_tokens.weight", prefix)
+		return fmt.Errorf("missing embedding weight: %sembed_tokens.weight", stem)
 	}
 	m.EmbedTokens = embedTokens
 
-	normWeight := tensors[prefix+"model.embedding_norm.weight"]
+	normWeight := tensors[stem+"embedding_norm.weight"]
 	if normWeight == nil {
-		return fmt.Errorf("missing final norm weight: %smodel.embedding_norm.weight", prefix)
+		return fmt.Errorf("missing final norm weight: %sembedding_norm.weight", stem)
 	}
 	m.Norm = nn.NewRMSNorm(normWeight, m.NormEps)
 
 	// LFM2 always ties the LM head to embeddings (mlx-lm as_linear).
-	if lmHead := linears.Make(prefix + "lm_head"); lmHead != nil {
+	if lmHead := linears.Make(lmHeadKey); lmHead != nil {
+		m.LMHead = lmHead
+	} else if lmHead := linears.Make(stem + "lm_head"); lmHead != nil {
 		m.LMHead = lmHead
 	} else {
 		m.LMHead = m.EmbedTokens.AsLinear()
 	}
 
 	for i := range int(m.NumHiddenLayers) {
-		layerPrefix := fmt.Sprintf("%smodel.layers.%d", prefix, i)
+		layerPrefix := fmt.Sprintf("%slayers.%d", stem, i)
 		isAttn := slices.Contains(m.FullAttnIdxs, i)
 		layer := &Layer{IsAttention: isAttn}
 
@@ -344,11 +380,16 @@ func (m *Model) LoadWeights(tensors map[string]*mlx.Array) error {
 }
 
 func (m *Model) Forward(b *batch.Batch, caches []cache.Cache) *mlx.Array {
+	return m.ForwardEmbeddings(m.EmbedTokens.Forward(b.InputIDs), b, caches)
+}
+
+// ForwardEmbeddings runs the decoder from an already-embedded sequence so a
+// vision wrapper can scatter image tokens before the first layer.
+func (m *Model) ForwardEmbeddings(h *mlx.Array, b *batch.Batch, caches []cache.Cache) *mlx.Array {
 	dims := b.InputIDs.Dims()
 	B, L := int32(dims[0]), int32(dims[1])
 	positions := mlx.FromValues(b.SeqOffsets, len(b.SeqOffsets))
 
-	h := m.EmbedTokens.Forward(b.InputIDs)
 	for i, layer := range m.Layers {
 		var c cache.Cache
 		if caches != nil && i < len(caches) {

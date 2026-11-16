@@ -1374,7 +1374,7 @@ type RepairResponse struct {
 // PullRequest is the request passed to [Client.Pull].
 type PullRequest struct {
 	Model    string `json:"model"`
-	Source   string `json:"source,omitempty"`   // huggingface:// URI; Model is the local tag name
+	Source   string `json:"source,omitempty"`   // huggingface:// or pirateface:// URI; Model is the local tag name
 	Insecure bool   `json:"insecure,omitempty"` // Deprecated: ignored
 	Username string `json:"username"`           // Deprecated: ignored
 	Password string `json:"password"`           // Deprecated: ignored

@@ -95,6 +95,10 @@ type Config struct {
 		Bits      int `json:"bits"`
 	} `json:"quantization"`
 
+	// PreciseGatedDeltaDecay keeps the gated-delta decay gate in float32.
+	// Kev was trained with that recurrence.
+	PreciseGatedDeltaDecay bool `json:"-"`
+
 	// Computed fields.
 	Scale   float32 `json:"-"`
 	RopeDim int32   `json:"-"`
@@ -1436,10 +1440,18 @@ func (g *GatedDeltaNet) Forward(x *mlx.Array, b *batch.Batch, c cache.Cache, B, 
 	q = mlx.MulScalar(mlx.RMSNormFn(q, nil, 1e-6), invScale*invScale)
 	k = mlx.MulScalar(mlx.RMSNormFn(k, nil, 1e-6), invScale)
 
-	gDecay := softplus(mlx.Add(alpha, g.DtBias))
-	gDecay = mlx.Mul(gDecay, g.AExp)
+	decayAlpha, decayBias, decayA := alpha, g.DtBias, g.AExp
+	if cfg.PreciseGatedDeltaDecay {
+		decayAlpha = alpha.AsType(mlx.DTypeFloat32)
+		decayBias = g.DtBias.AsType(mlx.DTypeFloat32)
+		decayA = g.AExp.AsType(mlx.DTypeFloat32)
+	}
+	gDecay := softplus(mlx.Add(decayAlpha, decayBias))
+	gDecay = mlx.Mul(gDecay, decayA)
 	gDecay = mlx.Exp(mlx.MulScalar(gDecay, -1))
-	gDecay = gDecay.AsType(alpha.DType())
+	if !cfg.PreciseGatedDeltaDecay {
+		gDecay = gDecay.AsType(alpha.DType())
+	}
 
 	betaGate := mlx.Sigmoid(beta)
 

@@ -1517,6 +1517,10 @@ func PullHandler(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	source, err := cmd.Flags().GetString("source")
+	if err != nil {
+		return err
+	}
 
 	client, err := api.ClientFromEnvironment()
 	if err != nil {
@@ -1583,7 +1587,7 @@ func PullHandler(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	request := api.PullRequest{Model: args[0], Insecure: insecure}
+	request := api.PullRequest{Model: args[0], Insecure: insecure, Source: source}
 	if err := client.Pull(cmd.Context(), &request, fn); err != nil {
 		return pullFixHint(err)
 	}
@@ -2523,6 +2527,7 @@ func NewCLI() *cobra.Command {
 	}
 
 	pullCmd.Flags().Bool("insecure", false, "Use an insecure registry")
+	pullCmd.Flags().String("source", "", "Optional huggingface:// or pirateface:// URI (MODEL is the local tag)")
 
 	pushCmd := &cobra.Command{
 		Use:     "push MODEL",
@@ -2660,6 +2665,7 @@ func NewCLI() *cobra.Command {
 
 	doctorCmd := NewDoctorCommand()
 	benchCmd := NewBenchCommand()
+	searchCmd := NewSearchCommand()
 	templateCmd := NewTemplateCommand()
 	trainCmd := NewTrainCommand()
 
@@ -2679,6 +2685,7 @@ func NewCLI() *cobra.Command {
 		copyCmd,
 		deleteCmd,
 		benchCmd,
+		searchCmd,
 		serveCmd,
 	} {
 		switch cmd {
@@ -2760,6 +2767,7 @@ func NewCLI() *cobra.Command {
 		templateCmd,
 		trainCmd,
 		benchCmd,
+		searchCmd,
 		NewRepairCommand(),
 		NewBlobsCommand(),
 		NewFleetCommand(),

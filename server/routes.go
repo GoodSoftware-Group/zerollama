@@ -1838,7 +1838,7 @@ func (s *Server) PullHandler(c *gin.Context) {
 		return
 	}
 
-	if IsHFPull(rawModel) {
+	if IsPirateFacePull(rawModel) || IsHFPull(rawModel) {
 		ch := make(chan any)
 		go func() {
 			defer close(ch)

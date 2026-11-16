@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Pirate Face search and pull
+
+`zerollama search QUERY` lists Pirate Face GGUF torrents (no daemon). `zerollama pull pirateface://owner/repo[/file.gguf]` (and `--source` / `POST /api/pull` `source`) resolves the torrent API file list + sha256, downloads one GGUF via throwaway `uvx --from huggingface_hub --with pirateface` (`hf download`), copies the verified blob into the local store, then seeds to ratio 1.0 with `aria2c` against the `.torrent` layout when present. Search and listings survive a Hugging Face **takedown** (`hf:false` + seeders); a Hub **outage** still fails the byte path. Do not `pip install pirateface` into the runtime venv.
+
 ### MTPLX 2.10–2.12 rematch (mlxrunner) — Oct 2026
 
 **Why not vendor:** MTPLX's Mac app, `mlx-mtplx` fork, TensorOps flash-decode kernels, Forge, and NOTICE banner stay out. Steal serving policy only; rematch M5 verify on **stock MLX**.

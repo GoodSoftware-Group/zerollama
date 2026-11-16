@@ -61,7 +61,7 @@ Requires a storage serve built with remote pull (capability.pull=true).`,
 		},
 	}
 	cmd.Flags().StringVar(&secret, "secret", "", "Shared HMAC secret")
-	cmd.Flags().StringVar(&source, "source", "", "Optional huggingface:// URI (model is the local tag)")
+	cmd.Flags().StringVar(&source, "source", "", "Optional huggingface:// or pirateface:// URI (model is the local tag)")
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "Allow insecure registry HTTP")
 	return cmd
 }

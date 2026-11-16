@@ -90,12 +90,18 @@ func QuantizedMatmul(x, w, scales, biases *Array, transpose bool, groupSize, bit
 }
 
 func GatherQMM(x, w, scales *Array, biases, lhsIndices, rhsIndices *Array, transpose bool, groupSize, bits int, mode string, sortedIndices bool) *Array {
+	return GatherQMMScaled(x, w, scales, biases, lhsIndices, rhsIndices, transpose, groupSize, bits, mode, nil, sortedIndices)
+}
+
+// GatherQMMScaled is GatherQMM with an NVFP4 per-expert global scale. A nil
+// scale leaves the kernel unscaled.
+func GatherQMMScaled(x, w, scales *Array, biases, lhsIndices, rhsIndices *Array, transpose bool, groupSize, bits int, mode string, globalScale *Array, sortedIndices bool) *Array {
 	cMode := C.CString(mode)
 	defer C.free(unsafe.Pointer(cMode))
 	optGroupSize := C.mlx_optional_int{value: C.int(groupSize), has_value: true}
 	optBits := C.mlx_optional_int{value: C.int(bits), has_value: true}
 
-	var b, lhs, rhs C.mlx_array
+	var b, lhs, rhs, gs C.mlx_array
 	if biases != nil {
 		b = biases.ctx
 	}
@@ -105,10 +111,32 @@ func GatherQMM(x, w, scales *Array, biases, lhsIndices, rhsIndices *Array, trans
 	if rhsIndices != nil {
 		rhs = rhsIndices.ctx
 	}
+	if globalScale != nil {
+		gs = globalScale.ctx
+	}
 
 	out := New("GATHER_QMM")
-	var noGlobalScale C.mlx_array
-	mlxCheck(C.mlx_gather_qmm(&out.ctx, x.ctx, w.ctx, scales.ctx, b, lhs, rhs, C.bool(transpose), optGroupSize, optBits, cMode, noGlobalScale, C.bool(sortedIndices), DefaultStream().ctx))
+	mlxCheck(C.mlx_gather_qmm(&out.ctx, x.ctx, w.ctx, scales.ctx, b, lhs, rhs, C.bool(transpose), optGroupSize, optBits, cMode, gs, C.bool(sortedIndices), DefaultStream().ctx))
+	return out
+}
+
+// GatherWeightedSum reduces K expert rows per token in float32, then rounds
+// back to values' dtype. values is [N*K, D], scores is [N, K], and optional
+// indices maps each slot back to a row of values.
+func GatherWeightedSum(values, scores, indices *Array) *Array {
+	dt := values.DType()
+	if indices != nil {
+		values = Take(values, Flatten(indices), 0)
+	}
+	values = Reshape(values, int32(scores.Dim(0)), int32(scores.Dim(1)), int32(values.Dim(1)))
+	sum := Sum(Mul(values.AsType(DTypeFloat32), ExpandDims(scores.AsType(DTypeFloat32), -1)), 1, false)
+	return sum.AsType(dt)
+}
+
+// Arange returns [start, stop) with the given step and dtype.
+func Arange(start, stop, step float64, dtype DType) *Array {
+	out := New("ARANGE")
+	mlxCheck(C.mlx_arange(&out.ctx, C.double(start), C.double(stop), C.double(step), C.mlx_dtype(dtype), DefaultStream().ctx))
 	return out
 }
 
@@ -238,6 +266,10 @@ func Softplus(a *Array) *Array {
 func ReLU(a *Array) *Array {
 	return Maximum(a, NewScalarArray(float32(0)))
 }
+
+// Nvfp4MaxProduct is the product of the maximum E4M3 and E2M1 values.
+// Checkpoint global scales are stored as multiples of this constant.
+const Nvfp4MaxProduct = 448 * 6
 
 // GLU applies Gated Linear Unit: splits x along last dim into two halves,
 // returns first * sigmoid(second).

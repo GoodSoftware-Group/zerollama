@@ -155,7 +155,7 @@ Engine / model research (kernels, packs, or big surface):
 | Prefill yield / interleave | Useful if multi-stream; single-stream agent traffic less urgent. |
 | Memory sibling ledger / `--os-reserve-gib` | Admission polish if concurrent MLX loads matter. |
 | Prism Bonsai 2 (Hadamard 2-bit) | Pack + exact 2-bit verify GEMV; see `docs/design/serving/prism-ternary.md`. |
-| Qwen3.8 Flash Next / n-gram | We already have `x/models/qwen4_exp`; rematch speculative/sparse bits as needed. |
+| Qwen3.8 Flash Next / n-gram | MLX load path is `x/models/qwen4_exp` (hyper-connections, sigmoid GDN, QSA, PLE, MTP) plus `x/models/qwenvision`. llama.cpp `qwen4exp` remains the GGUF path. |
 | Qwen-Image-2.1 MLX packs | Image Gen — prefer Comfy for agent utility unless Mac-only path is wanted. |
 | Laya `POST /v1/decisions` | **Parked (MLX sidecar / mlxrunner).** **Why parked:** CPU/CUDA `LLM_ARCH_LAYA` covers the product path first (LAYA1–2). Active: [laya-llama-cpp.md](../design/surfaces/laya-llama-cpp.md) · [findings](../design/surfaces/laya-llama-cpp-findings.md). When unparked: external `ZEROLLAMA_LAYA_URL` proxy, same public `/v1/decisions` — no second API. |
 | Gemma 4 HF `*-drafter` auto-download | Still: load if in manifest only. |

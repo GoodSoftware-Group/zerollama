@@ -106,18 +106,10 @@ func New(root *model.Root) (Model, error) {
 		return nil, fmt.Errorf("failed to read config.json: %w", err)
 	}
 
-	var archConfig struct {
-		Architectures []string `json:"architectures"`
+	arch, err := architectureFromConfig(configData)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(configData, &archConfig); err != nil {
-		return nil, fmt.Errorf("failed to parse config.json: %w", err)
-	}
-
-	if len(archConfig.Architectures) == 0 {
-		return nil, fmt.Errorf("no architectures found in config.json")
-	}
-
-	arch := archConfig.Architectures[0]
 	slog.Info("Model architecture", "arch", arch)
 
 	mu.Lock()
@@ -129,6 +121,38 @@ func New(root *model.Root) (Model, error) {
 	}
 
 	return fn(root)
+}
+
+// modelTypeArchitectures covers checkpoints that publish model_type and omit
+// architectures. google/siglip2-base-patch16-224 is one of those.
+var modelTypeArchitectures = map[string]string{
+	"siglip":               "SiglipModel",
+	"siglip_vision_model":  "SiglipVisionModel",
+	"siglip_text_model":    "SiglipTextModel",
+	"siglip2":              "Siglip2Model",
+	"siglip2_vision_model": "Siglip2VisionModel",
+	"siglip2_text_model":   "Siglip2TextModel",
+	"qwen4_exp":            "Qwen4ExpForConditionalGeneration",
+	"qwen4_exp_text":       "Qwen4ExpForCausalLM",
+	"lfm2_vl":              "Lfm2VlForConditionalGeneration",
+	"nemotron_h":           "NemotronHForCausalLM",
+}
+
+func architectureFromConfig(configData []byte) (string, error) {
+	var archConfig struct {
+		Architectures []string `json:"architectures"`
+		ModelType     string   `json:"model_type"`
+	}
+	if err := json.Unmarshal(configData, &archConfig); err != nil {
+		return "", fmt.Errorf("failed to parse config.json: %w", err)
+	}
+	if len(archConfig.Architectures) > 0 && archConfig.Architectures[0] != "" {
+		return archConfig.Architectures[0], nil
+	}
+	if arch, ok := modelTypeArchitectures[archConfig.ModelType]; ok {
+		return arch, nil
+	}
+	return "", fmt.Errorf("no architectures found in config.json")
 }
 
 // NewDraft constructs the draft model described by the manifest config, if any.

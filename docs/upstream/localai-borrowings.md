@@ -146,6 +146,18 @@ Request: `{ "model", "prompt", "candidates": ["a","b"], "length_normalize?", "in
 
 Downloads via Hub API + resolve URL, stages GGUF blob, runs `createModel` (guess + template). Local tag derived from repo/filename when URI-only.
 
+### Pirate Face search and pull (`server/pirateface_*.go`)
+
+**Why:** Pirate Face indexes community torrents for Hugging Face GGUFs. Search and the per-repo file list work without the Hub. A repo removed from Hugging Face (`hf:false`) can still download from peers. A silent Hub outage still fails the byte transfer (`pf` / `hf download` ask the Hub first).
+
+| Command | Example |
+|---------|---------|
+| Search | `zerollama search qwen2.5` (no serve required) |
+| Pull URI | `zerollama pull pirateface://owner/repo/file.gguf` |
+| `source` field | `{"model":"qwen","source":"pirateface://owner/repo/file.gguf"}` |
+
+Search (`GET https://pirateface.co/s/QUERY`, honor `PF_API`) prints seeded GGUF-like rows and a next-step `zerollama pull pirateface://owner/repo`. Multi-quant repos stop before download and list one URI per file. Download uses a throwaway `uvx -p 3.13 --from huggingface_hub --with pirateface==… hf download REPO FILE` (never install `pirateface` into the runtime venv — it drops a Hugging Face hook). After the published sha256 matches, the blob is copied into the local store (not a symlink into a temp dir), then the pull seeds with `aria2c --seed-ratio=1.0` against the `.torrent` layout when available (`ZEROLLAMA_PIRATEFACE_SEED_RATIO=0` skips). Peers can see this machine’s public IP until seeding stops.
+
 ### Model bench cache (LA10)
 
 **Why:** Operators need *on-this-box* throughput hints in daily workflow—not a separate benchmark suite.
@@ -316,6 +328,14 @@ zerollama pull mymodel --source huggingface://org/repo/file.gguf   # API: explic
 
 **Workaround (still valid):** `zerollama pull <model>` for registry tags, or `create` FROM existing tag.
 
+Pirate Face (swarm catalog; see Pirate Face search and pull above):
+
+```bash
+zerollama search qwen2.5
+zerollama pull pirateface://Divij/Qwen2.5-0.5B-Instruct-Q4_K_M/qwen2.5-0.5b-instruct-q4_k_m.gguf
+zerollama pull qwen --source pirateface://owner/repo/file.gguf
+```
+
 ### Outbound URL SSRF (LA15)
 
 **Why:** User-supplied `video_url`, experimental `web_fetch` URLs, Hugging Face redirects, and registry blob `Location` hops must not reach loopback, RFC1918, link-local, or cloud metadata.
@@ -436,6 +456,7 @@ Refs: [v4.9.0](https://github.com/mudler/LocalAI/releases/tag/v4.9.0) · [v4.8.0
 | Fleet warm + affinity scoring | `fleet/score`, `/internal/score` | **LA6** ✓ |
 | Manifest repair without re-pull | `zerollama repair`, `POST /api/repair` | **LA7** ✓ |
 | `huggingface://` pull | `hf_import` | **LA8** ✓ |
+| Pirate Face search + `pirateface://` pull | `pirateface_search` / `pirateface_import` | ✓ (swarm; not LA) |
 | `Score` RPC / `POST /api/score` | `llm.Scorer`, 3 ggml backends | **LA9** ✓ |
 | Operator throughput cache | `zerollama bench`, `TOK/S` in `ls` | **LA10** ✓ |
 | Failed-load cooldown + Retry-After | `load_cooldown`, `ZEROLLAMA_LOAD_COOLDOWN` | **LA18** ✓ |
