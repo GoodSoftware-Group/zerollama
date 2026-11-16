@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/auth"
+	"github.com/ollama/ollama/describe"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/version"
@@ -418,6 +419,53 @@ func (c *Client) Embed(ctx context.Context, req *EmbedRequest) (*EmbedResponse, 
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// Describe tags or captions images against a caller-kept catalog (POST /api/describe).
+func (c *Client) Describe(ctx context.Context, req *describe.Request) (*describe.Response, error) {
+	wire := describeClientWire(*req)
+	var resp describe.Response
+	if err := c.do(ctx, http.MethodPost, "/api/describe", wire, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func describeClientWire(req describe.Request) map[string]any {
+	images := make([]map[string]any, 0, len(req.Images))
+	for _, img := range req.Images {
+		item := map[string]any{"id": img.ID}
+		if img.SHA256 != "" {
+			item["sha256"] = img.SHA256
+		}
+		if len(img.Data) > 0 {
+			item["data"] = img.Data // json encodes []byte as base64
+		}
+		images = append(images, item)
+	}
+	out := map[string]any{"images": images}
+	if len(req.Fields) > 0 {
+		out["fields"] = req.Fields
+	}
+	if len(req.Labels) > 0 {
+		out["labels"] = req.Labels
+	}
+	if req.MinScore > 0 {
+		out["min_score"] = req.MinScore
+	}
+	if req.TagModel != "" {
+		out["tag_model"] = req.TagModel
+	}
+	if req.CaptionModel != "" {
+		out["caption_model"] = req.CaptionModel
+	}
+	if req.WantObjects {
+		out["objects"] = true
+	}
+	if len(req.Catalog) > 0 {
+		out["catalog"] = req.Catalog
+	}
+	return out
 }
 
 // Embeddings generates an embedding from a model.

@@ -17,7 +17,7 @@ info:
     unload, status, T11 recipes). See docs/design/training/gpu-training.md.
 
     LocalAI control plane (LA7/LA9/LA11/LA11b/LA15/LA16/LA17/LA21/LA22): `/api/repair`,
-    `/api/score`, `/v1/rerank`, `/v1/decisions`, `/v1/multidecode`, `/v1/extract`, `/v1/gliner`, `/v1/gliner-decide`, `/v1/detect`, `/v1/segment`, `/api/router/*`, `/api/aliases`, `/api/load`, `/api/unload`, experimental web_search/fetch.
+    `/api/score`, `/v1/rerank`, `/v1/decisions`, `/v1/multidecode`, `/v1/extract`, `/v1/gliner`, `/v1/gliner-decide`, `/v1/detect`, `/v1/segment`, `/api/describe`, `/api/router/*`, `/api/aliases`, `/api/load`, `/api/unload`, experimental web_search/fetch.
     In-band alias and router rewrite may set `X-Zerollama-*` response headers.
     Failed-load cooldown (LA18) returns 503 with `Retry-After`.
 
@@ -3491,6 +3491,131 @@ components:
           description: Duplex asr= query tag when set.
         asr_backend:
           $ref: "#/components/schemas/RealtimeASRBackend"
+    DescribeRequest:
+      type: object
+      required: [images]
+      properties:
+        fields:
+          type: array
+          items:
+            type: string
+            enum: [file, tags, caption, objects]
+          description: Categories to fill. Default is tags (file facts are always recorded).
+        labels:
+          type: array
+          items:
+            type: string
+          description: Tag phrases. Empty uses the built-in coarse list.
+        min_score:
+          type: number
+          default: 0.2
+          description: Keep a SigLIP label only when cosine similarity is at least this.
+        tag_model:
+          type: string
+          description: SigLIP / SigLIP 2 embedding model for tags.
+        caption_model:
+          type: string
+          description: Vision chat model when caption is requested.
+        objects:
+          type: boolean
+          description: Also run POST /v1/detect (requires ZEROLLAMA_DETECT_URL).
+        catalog:
+          type: array
+          items:
+            $ref: "#/components/schemas/DescribeEntry"
+          description: Entries the caller already stored (no image bytes).
+        images:
+          type: array
+          maxItems: 8
+          items:
+            type: object
+            required: [id]
+            properties:
+              id:
+                type: string
+                description: Opaque id (relative path or database id).
+              sha256:
+                type: string
+                description: Content hash when data is omitted.
+              data:
+                type: string
+                format: byte
+                description: Base64 image bytes when the hash is new or fields are stale.
+    DescribeEntry:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+        sha256:
+          type: string
+        file:
+          type: object
+          properties:
+            bytes:
+              type: integer
+            width:
+              type: integer
+            height:
+              type: integer
+            mtime:
+              type: string
+              format: date-time
+        tags:
+          type: array
+          items:
+            type: object
+            properties:
+              label:
+                type: string
+              score:
+                type: number
+        caption:
+          type: string
+        caption_error:
+          type: string
+        text:
+          type: array
+          items:
+            type: string
+        objects:
+          type: object
+          properties:
+            status:
+              type: string
+            detections:
+              type: array
+              items:
+                $ref: "#/components/schemas/DetectBox"
+            reason:
+              type: string
+        error:
+          type: string
+        tag_model:
+          type: string
+        caption_model:
+          type: string
+        labels:
+          type: array
+          items:
+            type: string
+        min_score:
+          type: number
+    DescribeResponse:
+      type: object
+      required: [images]
+      properties:
+        images:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/DescribeEntry"
+              - type: object
+                required: [action]
+                properties:
+                  action:
+                    type: string
+                    enum: [processed, kept, needs_image, error]
     DetectRequest:
       type: object
       description: >
@@ -7240,6 +7365,38 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+  /api/describe:
+    post:
+      tags: [Describe]
+      summary: Describe images against a caller-kept catalog
+      description: |
+        Tag, caption, or detect objects in images. The caller stores the catalog
+        and sends only new or changed pictures (id + sha256, with bytes when needed).
+        The server never opens a directory path. At most 8 images with data per call.
+        Used by `zerollama describe DIRECTORY` and by webapps.
+      operationId: describeImages
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DescribeRequest"
+      responses:
+        "200":
+          description: Entries to upsert into the caller's catalog
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DescribeResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
   /api/rerank:
     post:
       tags: [Rerank]

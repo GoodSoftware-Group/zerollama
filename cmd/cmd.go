@@ -2666,6 +2666,7 @@ func NewCLI() *cobra.Command {
 	doctorCmd := NewDoctorCommand()
 	benchCmd := NewBenchCommand()
 	searchCmd := NewSearchCommand()
+	describeCmd := NewDescribeCommand()
 	templateCmd := NewTemplateCommand()
 	trainCmd := NewTrainCommand()
 
@@ -2686,6 +2687,7 @@ func NewCLI() *cobra.Command {
 		deleteCmd,
 		benchCmd,
 		searchCmd,
+		describeCmd,
 		serveCmd,
 	} {
 		switch cmd {
@@ -2768,6 +2770,7 @@ func NewCLI() *cobra.Command {
 		trainCmd,
 		benchCmd,
 		searchCmd,
+		describeCmd,
 		NewRepairCommand(),
 		NewBlobsCommand(),
 		NewFleetCommand(),

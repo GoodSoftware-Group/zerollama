@@ -2903,6 +2903,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/api/chat", s.withInferenceRequestLogging("/api/chat", s.hostMemGuard(), s.assignmentTokenMiddleware(), s.routeAheadMiddleware(autoroute.SurfaceChat), s.openaiRemoteChatProxy(), s.runtimeChatProxy(), s.ChatHandler)...)
 	r.POST("/api/embed", s.EmbedHandler)
 	r.POST("/api/embeddings", s.EmbeddingsHandler)
+	r.POST("/api/describe", s.DescribeHandler)
 	r.GET("/api/aliases", s.AliasesHandler)
 	r.POST("/api/aliases", s.AliasesHandler)
 	r.POST("/api/score", s.ScoreHandler)
