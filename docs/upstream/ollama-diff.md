@@ -1,8 +1,35 @@
 # Upstream Ollama comparison (zerollama vs `ollama/ollama`)
 
-**Audience:** contributors deciding what to cherry-pick from vanilla Ollama without rebasing zerollama.
+**Audience:** contributors deciding what to cherry-pick from vanilla Ollama without rebasing zerollama — and anyone asking “what’s different in product terms?”
 
-**Related:** [ROADMAP.md](../ROADMAP.md#phase-17--upstream-gguf-path-alignment), [llama-cpp-backend.md](../design/serving/llama-cpp-backend.md), [python-migration.md](../design/serving/python-migration.md), [development.md](../development.md#compare-with-upstream-ollama).
+**Related:** [ROADMAP.md](../ROADMAP.md#phase-17--upstream-gguf-path-alignment), [phase17-llama-server.md](../design/serving/phase17-llama-server.md), [llama-cpp-backend.md](../design/serving/llama-cpp-backend.md), [python-migration.md](../design/serving/python-migration.md), [development.md](../development.md#compare-with-upstream-ollama). Public summary: [README.md](../../README.md#how-zerollama-differs-from-upstream-ollama).
+
+---
+
+## Product / marketing differences (short)
+
+| | **Upstream Ollama** | **Zerollama** |
+|---|---|---|
+| **Long turns** | Prefix cache reuses a repeated start | Faster BPE (~3–7×) before that cache. MultiDecode branches several questions off one copy of the opening |
+| **Many threads, one opening** | A hit when that exact prefix is still in some slot | `prompt_cache_key` pins the slot across turns. Agent profile (`ZEROLLAMA_L3_PROFILE=agent`) copies a shared system prompt onto a different thread. Disk slot files (~1h) on Linux subprocess; off by default on Mac |
+| **Talking** | A recording can be written down through the chat model | Live back-and-forth on `GET /v1/realtime` (pause, speak the first words while the rest generates, stop if interrupted). File speech and transcription on the same server |
+| **A song** | | `POST /v1/audio/generations` — MiniMax Music 3 on Mac; runs beside chat |
+| **Pictures and video** | A picture in the chat | Draw a picture, watch a video, make a short video |
+| **Where is the thing** | | `POST /v1/detect` returns boxes around named things in a picture |
+| **A busy GPU** | One queue | QoS; `ps` shows who holds the card; training waits |
+| **Convergence** | — | Phase 17 also speaks Go→llama-server; Mac default stays ggml |
+
+Training, LM Studio import, fleet, extract, and rerank are documented below. Decision models exist on both sides.
+
+### M4 Max decode A/B (`llama3.2:3b`, `num_ctx=4096`, 6 epochs)
+
+| Arm | Generate tok/s |
+|-----|----------------|
+| Stock Ollama | ~155 |
+| Zerollama ggml Metal | **~166 (+6.9%)** |
+| Zerollama `--llama-server-backend` | ~158 |
+
+Reproduce: `./scripts/phase/m4_upstream_vs_zerollama_bench.sh` (stops `:11434` / `:11435` — lab only). Detail: [phase17-llama-server.md § M7](../design/serving/phase17-llama-server.md#m7-benchmark-metal-m4-max).
 
 ---
 
@@ -63,7 +90,7 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 
 - **Two schedulers** (Go ggml + Python runtime) plus VRAM broker (Phase 8).
 - **`--llama-cpp-backend`** / `ZEROLLAMA_LLAMA_CPP_BACKEND=1` — routes eligible text GGUF through Python runtime instead of ggml (test harness toward upstream shape).
-- **Unique:** training API, Eliza cloud default, Phase 15 native KV pool, Apple M1–M6 operator track.
+- **Unique:** training API, Eliza cloud default, Phase 15 native KV pool, Apple operator track, megaprompt/QoS/media/decide surfaces (see product table above).
 
 ### Side-by-side
 

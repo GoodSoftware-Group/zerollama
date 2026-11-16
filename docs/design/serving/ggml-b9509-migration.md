@@ -36,7 +36,7 @@ zerollama serve
 
 **Why two trees:** Ollama historically split **ggml** (direct backend for `ollamarunner`) and **llama.cpp** (CGO for `llamarunner`). Both must stay on the **same pin** or symbol/layout drift breaks CGO links.
 
-**Phase 17 (parallel track):** upstream routes plain text GGUF as **Go → llama-server** subprocess — see [phase17-llama-server.md](phase17-llama-server.md). **ggml remains Mac default** after M7 benchmark (~164 vs ~158 tok/s @ 4k ctx). This migration keeps ggml **mergeable** while Phase 17 lands upstream-shaped routing.
+**Phase 17 (parallel track):** upstream routes plain text GGUF as **Go → llama-server** subprocess — see [phase17-llama-server.md](phase17-llama-server.md). **ggml remains Mac default** after M7 benchmark (~**166** vs ~**155** tok/s @ 4k ctx on M4 Max). This migration keeps ggml **mergeable** while Phase 17 lands upstream-shaped routing.
 
 ---
 

@@ -336,7 +336,7 @@ See [ROADMAP.md](../../ROADMAP.md#apple-silicon--metal-track). Summary:
 | **M4** MLX vs runtime policy doc + routing guards | **Shipped** — [mlx-routing-policy.md](mlx-routing-policy.md) |
 | **M5** Phase 15 KV + multi-seq on Metal | **Shipped** — `./scripts/gpu/metal_signoff.sh` |
 | **M6** MPS LoRA training (PEFT adapters) | **Shipped** — same `/api/train` + `lora_adapter/` output as CUDA |
-| **M7** Upstream-shape GGUF benchmark | **Done** — ggml ~164 vs upstream ~158 tok/s @ 4k ctx; [phase17-llama-server.md](../serving/phase17-llama-server.md) |
+| **M7** Upstream-shape GGUF benchmark | **Done** — ggml ~**166** vs upstream ~**155** tok/s @ 4k ctx on M4 Max (+6.9%); [phase17-llama-server.md](../serving/phase17-llama-server.md#m7-benchmark-metal-m4-max) |
 | **M24** GGUF MTP on ggml Metal | **Partial** — ollama-engine binds `mtp.*` + `DraftForward`. Spec loop not wired. llama-server `draft-mtp` stays **off** for qwen35 (SWA/GDN). MLX safetensors already speculate. Do **not** load `qwen3.6-mtp` on `:11434`. |
 | **MLX DSv4 Flash (M26)** | `DeepseekV4ForCausalLM` (`x/models/deepseekv4`). CSA (ratio 4) + HCA (128) + SWA raw KV. **Why not stub MHA:** most layers are compressed. Load with **`create --experimental --link`**, not a blob copy. [doc](../../research/mlx-deepseek-v4-flash.md) · [findings](../../research/mlx-deepseek-v4-flash-findings.md). |
 

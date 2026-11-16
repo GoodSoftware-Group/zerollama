@@ -719,10 +719,22 @@
       "version": "1.0.0",
       "author": "Hermes Agent",
       "license": "MIT",
-      "platforms": ["macos", "linux"],
+      "platforms": [
+        "macos",
+        "linux"
+      ],
       "category": "mlops",
-      "tags": ["zerollama", "detect", "owlv2", "vision", "robot"],
-      "related_skills": ["zerollama-integration", "object-segment"],
+      "tags": [
+        "zerollama",
+        "detect",
+        "owlv2",
+        "vision",
+        "robot"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "object-segment"
+      ],
       "path": "object-detect/SKILL.md"
     },
     {
@@ -731,10 +743,22 @@
       "version": "1.0.0",
       "author": "Hermes Agent",
       "license": "MIT",
-      "platforms": ["macos", "linux"],
+      "platforms": [
+        "macos",
+        "linux"
+      ],
       "category": "mlops",
-      "tags": ["zerollama", "segment", "sam2", "vision", "robot"],
-      "related_skills": ["zerollama-integration", "object-detect"],
+      "tags": [
+        "zerollama",
+        "segment",
+        "sam2",
+        "vision",
+        "robot"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "object-detect"
+      ],
       "path": "object-segment/SKILL.md"
     },
     {

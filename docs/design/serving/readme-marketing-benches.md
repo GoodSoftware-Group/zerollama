@@ -42,5 +42,5 @@ Related: [faster-bpe-tokenize.md](../../upstream/faster-bpe-tokenize.md) · [fin
 
 | Claim | Status | Notes |
 |-------|--------|-------|
-| Prompt cache (L3) turn-2 TTFT | Doc’d | [gpu-profiles-l3.md](gpu-profiles-l3.md); `l3_cache_smoke.sh` on lab ports when GPU free |
-| Decode ~+7% vs upstream Metal | Prior lab | `./scripts/phase/m4_upstream_vs_zerollama_bench.sh` — **lab ports only** (script stops `:11434`) |
+| Prompt cache (L3) turn-2 TTFT | Shipped | Upstream also reuses a repeated prefix. README sells the rest: a named thread returns to the same slot, the agent profile copies that opening onto a different thread, and disk can keep it for about an hour. [gpu-profiles-l3.md](gpu-profiles-l3.md). |
+| Decode ~+7% vs upstream Metal | **Measured (M4 Max)** | `llama3.2:3b` @ `num_ctx=4096`, 6 epochs — upstream ~**155** vs zerollama ggml ~**166** tok/s (+6.9%); Phase 17 llama-server ~158. Reproduce: `./scripts/phase/m4_upstream_vs_zerollama_bench.sh` — **lab ports only** (script stops `:11434`) · [phase17-llama-server.md](phase17-llama-server.md#m7-benchmark-metal-m4-max) |

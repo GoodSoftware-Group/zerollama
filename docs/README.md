@@ -14,13 +14,11 @@ Put a doc in the bucket that matches its **role**, not just its topic:
 Public docs stay in [index.mdx](index.mdx), [docs.json](docs.json), [api/](api), and [integrations/](integrations). A shipped feature gets a capability page, then links out to a runbook or design note. Do not start a new root doc when it belongs in one of the buckets above.
 
 ### Getting Started
-* [Quickstart](https://docs.ollama.com/quickstart)
+* [README — Zerollama vs upstream](../README.md#how-zerollama-differs-from-upstream-ollama) — product differences + M4 decode bench
+* [Mac dev setup](runbooks/mac-dev-setup.md) — build `./zerollama` (not ollama.com installers)
+* [Upstream Ollama comparison](upstream/ollama-diff.md) — architecture + cherry-picks
 * [Examples](examples.md)
-* [Importing models](https://docs.ollama.com/import)
-* [MacOS Documentation](https://docs.ollama.com/macos)
-* [Linux Documentation](https://docs.ollama.com/linux)
-* [Windows Documentation](https://docs.ollama.com/windows)
-* [Docker Documentation](https://docs.ollama.com/docker)
+* API shape still matches Ollama: [Quickstart](https://docs.ollama.com/quickstart) · [Import](https://docs.ollama.com/import) · [macOS](https://docs.ollama.com/macos) / [Linux](https://docs.ollama.com/linux) / [Windows](https://docs.ollama.com/windows) / [Docker](https://docs.ollama.com/docker)
 
 ### Reference
 

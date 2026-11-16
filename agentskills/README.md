@@ -1,6 +1,6 @@
 # zerollama Agent Skills
 
-33 `SKILL.md` packages describing how to use [zerollama](https://github.com/GoodSoftware-Group/zerollama) — generated from the server's own OpenAPI spec, CLI, and source, intended for distribution to any agent/tool that can consume the `SKILL.md` (frontmatter + markdown) format.
+35 `SKILL.md` packages describing how to use [zerollama](https://github.com/GoodSoftware-Group/zerollama) — generated from the server's own OpenAPI spec, CLI, and source, intended for distribution to any agent/tool that can consume the `SKILL.md` (frontmatter + markdown) format.
 
 See [skills.json](skills.json) for the machine-readable manifest (name, description, version, category, tags, related_skills) used to generate this table.
 
@@ -52,6 +52,8 @@ python3 .tools/add_compat_checks.py   # idempotent; re-scrapes endpoints per ski
 | [`model-authoring`](model-authoring/SKILL.md) | Create custom model variants, quantize, copy, and repair manifests on a zerollama server (Modelfile-style /api/create, /api/copy, /api/repair). |
 | [`model-suggester`](model-suggester/SKILL.md) | Pick the right zerollama model for a task: match required capabilities (tools/vision/embedding/thinking), context length, and available VRAM against local inventory, LM Studio cache, and cloud fallback before recommending a pull or a :cloud route. |
 | [`multidecode`](multidecode/SKILL.md) | Shared-prefix forest decode via zerollama POST /v1/multidecode — custom harness packs tokens/pos/parent (or sticky parent_node_ids); not chat, not Hermes batch (that path may accelerate silently). |
+| [`object-detect`](object-detect/SKILL.md) | Open-vocabulary boxes via zerollama POST /v1/detect (OWLv2 sibling). Not the camera chat model. |
+| [`object-segment`](object-segment/SKILL.md) | Mask request via zerollama POST /v1/segment. grasp_ready is false; a mask is not a grasp. |
 | [`openai-responses-compat`](openai-responses-compat/SKILL.md) | Talk to a zerollama server using OpenAI's Responses API wire format (/v1/responses) instead of Chat Completions. |
 | [`rerank-candidates`](rerank-candidates/SKILL.md) | Score fixed candidate continuations against a shared prompt via a zerollama server, for classification, routing, or reranking without full generation. |
 | [`speech-to-text`](speech-to-text/SKILL.md) | Transcribe audio to text via a zerollama server's OpenAI-compatible transcription API (Whisper or multimodal chat models). |

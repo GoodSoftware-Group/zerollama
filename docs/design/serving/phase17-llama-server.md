@@ -247,19 +247,19 @@ Workflow: [llama/README.md](../../../llama/README.md) · [runtime/LLAMA_CPP_PIN.
 
 ---
 
-## M7 benchmark (Metal, Jun 2026)
+## M7 benchmark (Metal, M4 Max)
 
-Fair run: idle GPU, `llama3.2:3b`, `num_ctx=4096`, 6 epochs.
+Fair run: idle GPU, `llama3.2:3b`, `num_ctx=4096`, 6 epochs (+1 warmup). Sequential arms (no Metal contention).
 
-| Arm | Host | Generate tok/s |
-|-----|------|----------------|
-| Upstream Go → llama-server | `:11435` | ~158.3 |
-| Zerollama ggml Metal | `:11436` | ~164.1 |
-| Zerollama `--llama-server-backend` | `:11434` | ~158 |
+| Arm | Host | Generate tok/s (avg) | Min–max |
+|-----|------|----------------------|---------|
+| Upstream Go → llama-server | `:11435` | **~155.3** | 134.9–160.2 |
+| Zerollama ggml Metal (Mac default) | `:11434` | **~166.1 (+6.9%)** | 165.5–167.0 |
+| Zerollama `--llama-server-backend` | `:11434` | **~158.1** | 155.4–159.1 |
 
-**Decision:** keep **ggml Metal** as Mac default; Phase 17 is for **mergeability** and upstream parity, not immediate throughput wins.
+Prefill on the same run favored upstream (~1530 vs ~1400 prompt tok/s). **Decision:** keep **ggml Metal** as Mac default; Phase 17 is for **mergeability** and upstream parity, not a Mac throughput upgrade.
 
-Reproduce: `./scripts/phase/m4_upstream_vs_zerollama_bench.sh`
+Reproduce: `./scripts/phase/m4_upstream_vs_zerollama_bench.sh` — **lab ports only** (script stops listeners on `:11434` / `:11435`).
 
 ---
 
