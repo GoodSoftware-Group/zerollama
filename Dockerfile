@@ -175,9 +175,21 @@ RUN --mount=type=cache,target=/root/.ccache \
         && cmake --install build --component MLX --strip
 
 FROM base AS build
+# cmd imports the training and runtime embeds, which link pkg-config python3-embed
+# (3.10+). Alma's default python3 is 3.6 and has no embed .pc, so pin 3.11 and
+# expose it under the name cgo asks for. Stay on this Alma base: the linux
+# tarball from --target archive still links glibc 2.28.
+RUN dnf install -y python3.11 python3.11-devel pkgconf-pkg-config gawk \
+    && pc="$(find /usr -name 'python-3.11-embed.pc' | head -n 1)" \
+    && test -n "$pc" \
+    && mkdir -p /opt/pc \
+    && cp "$pc" /opt/pc/python3-embed.pc
+ENV PKG_CONFIG_PATH=/opt/pc
 WORKDIR /go/src/github.com/ollama/ollama
 COPY go.mod go.sum .
-RUN curl -fsSL https://golang.org/dl/go$(awk '/^go/ { print $2 }' go.mod).linux-$(case $(uname -m) in x86_64) echo amd64 ;; aarch64) echo arm64 ;; esac).tar.gz | tar xz -C /usr/local
+RUN curl --retry 3 -fsSL https://golang.org/dl/go$(awk '/^go/ { print $2 }' go.mod).linux-$(case $(uname -m) in x86_64) echo amd64 ;; aarch64) echo arm64 ;; esac).tar.gz -o /tmp/go.tar.gz \
+    && tar xzf /tmp/go.tar.gz -C /usr/local \
+    && rm /tmp/go.tar.gz
 ENV PATH=/usr/local/go/bin:$PATH
 RUN go mod download
 COPY . .
@@ -187,8 +199,24 @@ ARG CGO_CFLAGS
 ARG CGO_CXXFLAGS
 ENV CGO_CFLAGS="${CGO_CFLAGS}"
 ENV CGO_CXXFLAGS="${CGO_CXXFLAGS}"
+# RUNPATH, not RPATH: direct deps (libpython) resolve next to the ggml plugins,
+# and dlopen of those plugins does not pick up the Alma OpenSSL copy.
+ENV CGO_LDFLAGS="-Wl,-rpath,$$ORIGIN/../lib/ollama -Wl,--enable-new-dtags"
 RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -buildmode=pie -o /bin/zerollama .
+# Ship libpython and the Alma libs it needs (OpenSSL 1.1, libffi) inside
+# lib/ollama. Skip glibc and libstdc++ so the host's copies are used.
+RUN set -eu \
+    && mkdir -p /opt/pyruntime \
+    && libs="$(ldd /bin/zerollama | awk '/=> \// {print $3}')" \
+    && for lib in $libs; do \
+         base="$(basename "$lib")"; \
+         case "$base" in \
+           libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libresolv.so*|ld-linux*|libstdc++.so*|libgcc_s.so*) continue ;; \
+         esac; \
+         cp -L "$lib" "/opt/pyruntime/$base"; \
+       done \
+    && ls /opt/pyruntime/libpython3.11.so* >/dev/null
 
 FROM --platform=linux/amd64 scratch AS amd64
 # COPY --from=cuda-11 dist/lib/ollama/ /lib/ollama/
@@ -209,6 +237,7 @@ COPY --from=rocm-7 dist/lib/ollama /lib/ollama
 
 FROM ${FLAVOR} AS archive
 COPY --from=cpu dist/lib/ollama /lib/ollama
+COPY --from=build /opt/pyruntime/ /lib/ollama/
 COPY --from=build /bin/zerollama /bin/zerollama
 
 FROM ubuntu:24.04
@@ -216,13 +245,18 @@ RUN apt-get update \
     && apt-get install -y ca-certificates libvulkan1 libopenblas0 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=archive /bin /usr/bin
+COPY --from=archive /bin/zerollama /usr/bin/zerollama
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 COPY --from=archive /lib/ollama /usr/lib/ollama
 ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV OLLAMA_HOST=0.0.0.0:11434
+# libpython is in the image so the binary loads. training.py, the runtime tree,
+# and llama-server are not, so leave the embeds off. Mount the repo and override
+# these to turn them back on.
+ENV ZEROLLAMA_GPU_JOBS=false
+ENV ZEROLLAMA_RUNTIME_EMBED=0
 EXPOSE 11434
-ENTRYPOINT ["/bin/zerollama"]
+ENTRYPOINT ["/usr/bin/zerollama"]
 CMD ["serve"]
