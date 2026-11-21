@@ -38,7 +38,7 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"/api/train/jobs", "/api/train/jobs/{id}", "/api/train/jobs/{id}/events", "/api/train/unload", "/api/train/status", "/api/train/recipes",
 		"/api/embeddings", "/api/rerank", "/v1/reranking", "/api/fleet/assign-hold", "/api/image/workflows",
 		"/v1/chat/completions", "/v1/chat/completions/batch",
-		"/v1/decisions", "/v1/systemone", "/v1/multidecode", "/v1/extract", "/v1/gliner", "/v1/gliner-decide",
+		"/v1/decisions", "/v1/systemone", "/v1/multidecode", "/api/prefill", "/v1/prefill", "/v1/extract", "/v1/gliner", "/v1/gliner-decide",
 		"/v1/detect", "/v1/segment", "/api/describe",
 		"/v1/responses", "/v1/messages",
 	} {
@@ -63,6 +63,7 @@ func TestDocumentInjectsVersionAndServer(t *testing.T) {
 		"DecisionsRequest", "DecisionQuestion", "DecisionsResponse",
 		"DecisionAction", "ChoiceAnswer", "ScoreAnswer", "NoulAnswer",
 		"MultiDecodeRequest", "MultiDecodeResponse", "MultiDecodeLeafResult",
+		"PrefillRequest", "PrefillResponse",
 		"ExtractRequest", "ExtractResponse", "ExtractEntity", "GlinerRequest",
 		"DetectRequest", "DetectResponse", "DetectBox", "SegmentRequest", "SegmentResponse",
 		"DescribeRequest", "DescribeResponse", "DescribeEntry",

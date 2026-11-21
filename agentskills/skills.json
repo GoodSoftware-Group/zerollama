@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "skill_count": 35,
+  "skill_count": 37,
   "skills": [
     {
       "name": "account-auth",
@@ -652,7 +652,8 @@
       "related_skills": [
         "zerollama-integration",
         "download-model",
-        "doctor-model"
+        "doctor-model",
+        "weight-edit"
       ],
       "path": "model-authoring/SKILL.md"
     },
@@ -783,6 +784,30 @@
         "hermes-provider"
       ],
       "path": "openai-responses-compat/SKILL.md"
+    },
+    {
+      "name": "prompt-prefill",
+      "description": "Draft the next zerollama chat with POST /api/prefill (same body as /v1/prefill) before the last word, so the finished /api/chat continues from that prefix. Not /api/cache/warm, and not a faster cold decode.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "prefill",
+        "prompt-cache",
+        "llama-server",
+        "agent"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "hermes-provider"
+      ],
+      "path": "prompt-prefill/SKILL.md"
     },
     {
       "name": "rerank-candidates",
@@ -926,6 +951,31 @@
       "path": "video-understanding-chat/SKILL.md"
     },
     {
+      "name": "weight-edit",
+      "description": "Inspect, apply, or restore a geodesic-patch v1 weight edit on a linked safetensors model via POST /api/weights/edits. Not /api/create, and not a GGUF quantize.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "weights",
+        "geodesic-patch",
+        "safetensors",
+        "edit"
+      ],
+      "related_skills": [
+        "model-authoring",
+        "zerollama-integration",
+        "download-model"
+      ],
+      "path": "weight-edit/SKILL.md"
+    },
+    {
       "name": "zerollama-integration",
       "description": "Connect any agent harness to a zerollama server.",
       "version": "1.0.0",
@@ -961,6 +1011,8 @@
         "batch-inference",
         "fleet-vram-admission",
         "model-authoring",
+        "weight-edit",
+        "prompt-prefill",
         "agent-web-tools",
         "anthropic-messages-compat",
         "openai-responses-compat",

@@ -1,6 +1,6 @@
 # zerollama Agent Skills
 
-35 `SKILL.md` packages describing how to use [zerollama](https://github.com/GoodSoftware-Group/zerollama) — generated from the server's own OpenAPI spec, CLI, and source, intended for distribution to any agent/tool that can consume the `SKILL.md` (frontmatter + markdown) format.
+37 `SKILL.md` packages describing how to use [zerollama](https://github.com/GoodSoftware-Group/zerollama) — generated from the server's own OpenAPI spec, CLI, and source, intended for distribution to any agent/tool that can consume the `SKILL.md` (frontmatter + markdown) format.
 
 See [skills.json](skills.json) for the machine-readable manifest (name, description, version, category, tags, related_skills) used to generate this table.
 
@@ -55,9 +55,11 @@ python3 .tools/add_compat_checks.py   # idempotent; re-scrapes endpoints per ski
 | [`object-detect`](object-detect/SKILL.md) | Open-vocabulary boxes via zerollama POST /v1/detect (OWLv2 sibling). Not the camera chat model. |
 | [`object-segment`](object-segment/SKILL.md) | Mask request via zerollama POST /v1/segment. grasp_ready is false; a mask is not a grasp. |
 | [`openai-responses-compat`](openai-responses-compat/SKILL.md) | Talk to a zerollama server using OpenAI's Responses API wire format (/v1/responses) instead of Chat Completions. |
+| [`prompt-prefill`](prompt-prefill/SKILL.md) | Draft the next zerollama chat with POST /api/prefill (same body as /v1/prefill) before the last word, so the finished /api/chat continues from that prefix. Not /api/cache/warm, and not a faster cold decode. |
 | [`rerank-candidates`](rerank-candidates/SKILL.md) | Score fixed candidate continuations against a shared prompt via a zerollama server, for classification, routing, or reranking without full generation. |
 | [`speech-to-text`](speech-to-text/SKILL.md) | Transcribe audio to text via a zerollama server's OpenAI-compatible transcription API (Whisper or multimodal chat models). |
 | [`text-to-speech`](text-to-speech/SKILL.md) | Synthesize speech audio from text via a zerollama server's OpenAI-compatible speech API (Piper, Chatterbox, Orpheus, Kokoro, Irodori). |
 | [`typed-decisions`](typed-decisions/SKILL.md) | Answer typed System-1 questions (choice / score / noul) via zerollama POST /v1/decisions — Laya GGUF (calibrated), Contrastive-LM (calibrated), DiffusionGemma/OpenJev (DG8/DG9 opt-in), or GLiNER2.5-Decide (uncalibrated self-host); not chat, not score endpoint, not rerank, not NER extract. |
 | [`video-understanding-chat`](video-understanding-chat/SKILL.md) | Send video clips into a zerollama chat request for vision-language understanding (video_url/videos in /v1/chat/completions), distinct from generating video. |
+| [`weight-edit`](weight-edit/SKILL.md) | Inspect, apply, or restore a geodesic-patch v1 weight edit on a linked safetensors model via POST /api/weights/edits. Not /api/create, and not a GGUF quantize. |
 | [`zerollama-integration`](zerollama-integration/SKILL.md) | Connect any agent harness to a zerollama server. |

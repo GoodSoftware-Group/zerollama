@@ -13,7 +13,8 @@ info:
     includes Hermes/M15e extensions (`timeout`, `/api/cache/pin`,
     `/v1/chat/completions/batch`, can-load topology, `preempted_reason`),
     LocalAI routes (`/api/aliases`, `/api/score`, `/api/router/*`, `/api/repair`,
-    experimental web_*), `/api/train/*`, realtime/duplex audio, and fleet holds.
+    experimental web_*), `/api/train/*`, `/api/weights/edits*`,
+    `POST /api/prefill` and `POST /v1/prefill`, realtime/duplex audio, and fleet holds.
     This `docs/openapi.yaml` is the upstream-shaped reference and may lag.
 servers:
   - url: http://localhost:11434

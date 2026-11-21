@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [zerollama, ollama, local, inference, qos, kv-cache, batch, prompt-cache, cache-warm]
     category: mlops
-    related_skills: [install-zerollama, configure-zerollama-env, hermes-provider, generate-image, generate-video, download-model, text-to-speech, speech-to-text, generate-embeddings, rerank-candidates, batch-inference, fleet-vram-admission, model-authoring, agent-web-tools, anthropic-messages-compat, openai-responses-compat, account-auth, distill-and-train, video-understanding-chat, cloud-model-routing, diagnose-server-health, benchmark-model-speed, launch-agent-integration, fleet-management, gpu-capability-discovery, lmstudio-cache-import, doctor-model, model-suggester, install-multimedia-model]
+    related_skills: [install-zerollama, configure-zerollama-env, hermes-provider, generate-image, generate-video, download-model, text-to-speech, speech-to-text, generate-embeddings, rerank-candidates, batch-inference, fleet-vram-admission, model-authoring, weight-edit, prompt-prefill, agent-web-tools, anthropic-messages-compat, openai-responses-compat, account-auth, distill-and-train, video-understanding-chat, cloud-model-routing, diagnose-server-health, benchmark-model-speed, launch-agent-integration, fleet-management, gpu-capability-discovery, lmstudio-cache-import, doctor-model, model-suggester, install-multimedia-model]
 ---
 
 # Zerollama Integration Skill
@@ -88,7 +88,9 @@ Zerollama is OpenAI-compatible (`/v1/chat/completions`) plus these extensions:
 | Project label | `options.zerollama.project_name` | shows in `zerollama ps` |
 | KV/prompt cache key | `prompt_cache_key` (top-level or options) | stable key = cache reuse |
 | Cache pinning | `POST /api/cache/pin` | keep prefix cache alive |
-| Cache warming | `POST /api/cache/warm` | prefill + optionally pin an L3 slot, no generated text |
+| Cache warming | `POST /api/cache/warm` | whole prefix into an L3 slot, no generated text |
+| Chat draft | `POST /api/prefill`, `POST /v1/prefill` | same messages as the finished chat, cut before the last word. llama-server only. See `prompt-prefill` |
+| Weight edit | `POST /api/weights/edits` | geodesic-patch on a linked safetensors tag. See `weight-edit` |
 | Model keep-alive | `keep_alive` (top-level) | pin model in VRAM between turns |
 | Explicit load/unload | `POST /api/load`, `POST /api/unload` | LocalAI also `POST /backend/load`. Unload key is `model`. Generate `keep_alive: 0` remains the Ollama unload. |
 | Batch inference | `POST /v1/chat/completions/batch` | max 8, same model, text-only |
@@ -170,6 +172,16 @@ Response:
   normal L3 eviction; pin to hold it across idle gaps.
 - The Python runtime also exposes loopback-only `POST /internal/cache/warm`
   for the Go server's own prefill path.
+
+## Chat draft (`/api/prefill`)
+
+`POST /api/prefill` is not cache warm. Warm runs a whole prompt into a named
+L3 slot. Prefill takes the same `messages`, `tools`, and `think` as the
+finished `/api/chat`, drops the last word, and stores that prefix on
+llama-server. The follow-up chat has to send the same thread or the restore
+misses. MLX, cloud, and the Mac ggml runner return **501**. One later request
+can force a miss with `options.cache_reset` (OpenAI `cache_prompt: false`).
+Do not put `LLAMA_WARM_DISK` on the JSON body. Detail: skill `prompt-prefill`.
 
 ## Sizing Context (num_ctx)
 

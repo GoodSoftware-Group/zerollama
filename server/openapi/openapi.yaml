@@ -1894,6 +1894,67 @@ components:
         node_ids:
           type: array
           items: { type: integer }
+    PrefillRequest:
+      type: object
+      required: [model, messages]
+      description: >
+        Draft the next chat before the last word. The server renders with the
+        same chat template as POST /api/chat, cuts before the last word, and
+        stores that prefix. The finished /api/chat must send the same messages,
+        tools, and think value. WHY not llama-server's own /v1/prefill template:
+        a different render is not a prefix of the next chat, so the restore misses.
+        WHY not POST /api/cache/warm: warm runs a whole prompt into an L3 slot.
+        This call leaves the last word for the follow-up. Media is 400. A last
+        message that is one unfinished word returns zeros and does not run.
+        MLX, cloud, and the Mac ggml runner return 501. Probe
+        zerollama.capabilities.prefill; 501 is the signal this runner cannot
+        prefill. Docs: docs/design/serving/kinetic-prompt-reuse.md.
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        tools:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolDefinition"
+        think:
+          oneOf:
+            - type: boolean
+            - type: string
+              enum: [high, medium, low]
+        options:
+          type: object
+          additionalProperties: true
+          description: >
+            Forwarded onto the saved logits so a later top-k still matches.
+            options.cache_reset and options.zerollama.cache_reset are the
+            one-request miss on a later chat, not on this draft.
+        keep_alive:
+          oneOf:
+            - type: string
+            - type: number
+      example:
+        model: llama3.2:3b
+        messages:
+          - role: user
+            content: "Summarize this.\n\nWhat is"
+    PrefillResponse:
+      type: object
+      required: [object, cached_tokens, prompt_tokens]
+      properties:
+        object:
+          type: string
+          enum: [prefill]
+        cached_tokens:
+          type: integer
+          description: How much of the draft was already in the slot
+        prompt_tokens:
+          type: integer
+          description: How much of the draft was evaluated
     ExtractEntity:
       type: object
       required: [text, label, start, end, score]
@@ -6025,6 +6086,7 @@ paths:
                     propose_sidecar: true
                     chat_completions_batch: true
                     multidecode: true
+                    prefill: true
                     request_timeout: true
                     preempted_reason: true
                     stable_multi_model_swap: false
@@ -6064,6 +6126,7 @@ paths:
                       extra_body: ["zerollama", "options", "prompt_cache_key", "timeout", "keep_alive", "think"]
                     routes:
                       text: "/api/generate, /api/chat, /v1/chat/completions, /v1/chat/completions/batch"
+                      prefill: "POST /api/prefill, POST /v1/prefill — draft before the last word; not /api/cache/warm"
                       vision: "/api/chat, /v1/chat/completions (images in messages)"
                       video_understanding: "/api/chat, /v1/chat/completions (videos in messages)"
                       image_generation: "/api/generate (image models), /v1/images/generations, /v1/images/edits"
@@ -6356,6 +6419,75 @@ paths:
                 $ref: "#/components/schemas/InferenceError"
         "501":
           description: Runner does not support multidecode
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /api/prefill:
+    post:
+      summary: Prefill a chat draft before the last word
+      description: >
+        Same handler as POST /v1/prefill. Renders the messages with the chat
+        template /api/chat uses, drops the last word, and stores the prefix
+        without sampling. Send the finished text to /api/chat with the same
+        messages, tools, and think. A cold unique prompt is not faster; the
+        next request that shares this prefix is. llama-server only.
+      operationId: prefill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrefillRequest"
+      responses:
+        "200":
+          description: Draft stored. cached_tokens is the part already in the slot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrefillResponse"
+        "400":
+          description: Missing model or messages, media in the draft, or the template dropped the cut
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "501":
+          description: Cloud, MLX, or a runner that is not llama-server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+  /v1/prefill:
+    post:
+      summary: Prefill a chat draft before the last word
+      description: >
+        Same handler as POST /api/prefill. WHY the cut is before the last word:
+        the finished chat appends that word and continues from the saved prefix.
+        Probe zerollama.capabilities.prefill. Docs:
+        docs/design/serving/kinetic-prompt-reuse.md · skill agentskills/prompt-prefill/.
+      operationId: prefillV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrefillRequest"
+      responses:
+        "200":
+          description: Draft stored. cached_tokens is the part already in the slot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrefillResponse"
+        "400":
+          description: Missing model or messages, media in the draft, or the template dropped the cut
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InferenceError"
+        "501":
+          description: Cloud, MLX, or a runner that is not llama-server
           content:
             application/json:
               schema:

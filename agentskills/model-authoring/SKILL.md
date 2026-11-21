@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [zerollama, ollama, create, modelfile, quantize, copy, repair, manifest]
     category: mlops
-    related_skills: [zerollama-integration, download-model, doctor-model]
+    related_skills: [zerollama-integration, download-model, doctor-model, weight-edit]
 ---
 
 # Model Authoring Skill
@@ -34,6 +34,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/create   # 2
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/copy   # 200/400 = route exists; 404 = missing on this build
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/repair   # 200/400 = route exists; 404 = missing on this build
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/blobs/:digest   # 200/400 = route exists; 404 = missing on this build
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/api/weights/edits/inspect -d '{}'   # 400/415 = route exists; 404 = missing on this build
 ```
 
 A **404** on an endpoint above (or an unrecognized flag/subcommand) means this build predates the feature this skill
@@ -60,6 +61,7 @@ rather than assuming the request shape is wrong.
 | `/api/blobs/:digest` | `POST` | Upload a raw layer blob (used internally by `create` for local file-based Modelfiles; rarely called directly by agents) |
 | `/api/copy` | `POST` | `{source, destination}` — duplicate a model under a new name |
 | `/api/repair` | `POST` | `{model?, models?, all?, write?}` — detect/fix manifest metadata drift. `write:false` (default-safe) is a dry run; `write:true` applies fixes |
+| `/api/weights/edits` | `POST` | Apply a geodesic-patch to a **linked safetensors** tag and register `destination`. Not a quantize. See skill `weight-edit` |
 
 ## How to Run
 
