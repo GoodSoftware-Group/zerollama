@@ -83,6 +83,7 @@ ready," not necessarily "request-level bug."
 | Serve mode | Go API reachable (`:11434`/`:8080`), runtime sidecar reachable (`:8081`), which layout matches (Mac daily vs CI/smoke) |
 | Sidecar health | `/health` autoconfig pick, `llama_backend`, `vram_probe_effective`, fallback flags |
 | Models | A usable local text GGUF exists; `--models` flag finds orphaned/broken/repairable manifest registrations |
+| Who is loaded | `zerollama ps` prints `client_ip` in PROJECT when no project id/name is set. `/api/ps` has `zerollama.last_client_ip` and session `client_ip`. |
 | Flash-MoE / agent KV lab | `zerollama freetoken` (and doctor `freetoken MoE policy` line): GGUF expert_count advice + synthetic placeholder vs summary prefill table. Server sticky `elide_from` uses `prompt_cache_key`. No weight load. Do not export `--moe-slot-bank` without a sidecar. |
 
 ## Reading a JSON report

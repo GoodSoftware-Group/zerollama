@@ -14,7 +14,7 @@ metadata:
 
 # Zerollama Integration (Hermes) Skill
 
-Wire this Hermes agent to a [zerollama](https://github.com/NousResearch/zerollama)
+Wire this Hermes agent to a [zerollama](https://github.com/GoodSoftware-Group/zerollama)
 server — an Ollama fork with fleet QoS scheduling, prompt/KV cache pinning,
 and batch inference. This is the Hermes-specific half of the integration; the
 harness-agnostic zerollama API contract, `num_ctx` sizing, and pitfalls live
@@ -41,6 +41,9 @@ describes — check [`CHANGELOG.md`](../CHANGELOG.md) for when it
 landed, or upgrade (`git pull && ./scripts/build/build_zerollama_mac.sh`)
 rather than assuming the request shape is wrong.
 
+Hermes probes `GET /slots` for serving `n_ctx`. Zerollama returns a
+llama-server-shaped array from the primary loaded runner (empty when
+idle). There is no slot restore and no `action=` API.
 
 ## When to Use
 

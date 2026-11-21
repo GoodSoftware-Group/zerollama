@@ -106,9 +106,11 @@ curl -s http://localhost:11434/v1/messages \
 - **`POST /api/chat` / `POST /api/generate` reject `:cloud` models** — use
   `/v1/chat/completions` or `/v1/messages` instead; this is intentional,
   not a bug.
-- **Missing `ELIZACLOUD_API_KEY`** — the server logs a one-time warning and
-  cloud calls will 401; check server logs, not just the client error, when
-  debugging.
+- **Missing or rejected `ELIZACLOUD_API_KEY`** — `/api/tags` and
+  `/v1/models` merge `:cloud` rows only when the key is set **and** the
+  catalog returns HTTP 200. A missing key or 401/403 clears the cache so
+  unusable remote models are not listed. Cloud calls themselves still 401;
+  check server logs, not only the client error.
 - **Some responses are raw upstream JSON, not reshaped** — e.g.
   `GET /v1/models/:model` for a cloud id returns Eliza's JSON as-is rather
   than Ollama's `ShowResponse` shape; don't assume every field you'd get

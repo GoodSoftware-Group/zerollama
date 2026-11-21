@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [zerollama, ollama, local, inference, qos, kv-cache, batch, prompt-cache, cache-warm]
     category: mlops
-    related_skills: [install-zerollama, configure-zerollama-env, hermes-provider, generate-image, generate-video, download-model, text-to-speech, speech-to-text, generate-embeddings, rerank-candidates, batch-inference, fleet-vram-admission, model-authoring, weight-edit, prompt-prefill, agent-web-tools, anthropic-messages-compat, openai-responses-compat, account-auth, distill-and-train, video-understanding-chat, cloud-model-routing, diagnose-server-health, benchmark-model-speed, launch-agent-integration, fleet-management, gpu-capability-discovery, lmstudio-cache-import, doctor-model, model-suggester, install-multimedia-model]
+    related_skills: [install-zerollama, configure-zerollama-env, hermes-provider, generate-image, generate-video, download-model, text-to-speech, speech-to-text, generate-embeddings, rerank-candidates, batch-inference, fleet-vram-admission, model-authoring, weight-edit, prompt-prefill, describe-images, remote-model-storage, agent-web-tools, anthropic-messages-compat, openai-responses-compat, account-auth, distill-and-train, video-understanding-chat, cloud-model-routing, diagnose-server-health, benchmark-model-speed, launch-agent-integration, fleet-management, gpu-capability-discovery, lmstudio-cache-import, doctor-model, model-suggester, install-multimedia-model]
 ---
 
 # Zerollama Integration Skill
@@ -90,9 +90,13 @@ Zerollama is OpenAI-compatible (`/v1/chat/completions`) plus these extensions:
 | Cache pinning | `POST /api/cache/pin` | keep prefix cache alive |
 | Cache warming | `POST /api/cache/warm` | whole prefix into an L3 slot, no generated text |
 | Chat draft | `POST /api/prefill`, `POST /v1/prefill` | same messages as the finished chat, cut before the last word. llama-server only. See `prompt-prefill` |
+| Picture catalog | `POST /api/describe` or `zerollama describe DIR` | Caller keeps the JSON catalog. See `describe-images` |
+| Remote blobs | `zerollama storage serve` (lab `:18090`) | Fetch-on-miss into a local cache. See `remote-model-storage` |
 | Weight edit | `POST /api/weights/edits` | geodesic-patch on a linked safetensors tag. See `weight-edit` |
 | Model keep-alive | `keep_alive` (top-level) | pin model in VRAM between turns |
 | Explicit load/unload | `POST /api/load`, `POST /api/unload` | LocalAI also `POST /backend/load`. Unload key is `model`. Generate `keep_alive: 0` remains the Ollama unload. |
+| Name aliases | `GET`/`POST /api/aliases` | One-hop map in `~/.ollama/aliases.yaml`. Chains rejected. |
+| Score router | `POST /api/router/decide` | `~/.ollama/router.yaml`. `classifier: knn` uses an embedder plus `GET`/`POST /api/router/corpus`. |
 | Batch inference | `POST /v1/chat/completions/batch` | max 8, same model, text-only |
 | Thinking control | `think` (bool or `high`/`medium`/`low`/`xhigh`) | top-level on /v1. Qwen 3.8 omitted think is **low** (mlx-serve); `high`/`xhigh` inject the long guidance. `reasoning_budget_tokens` (0 off, &gt;0 on) outranks `reasoning_effort` / `enable_thinking`. Native `think` still wins. |
 | Pre-flight VRAM | `POST /api/can-load` | returns `can_load`, `vram_*`, `tensor_parallel` |
@@ -121,7 +125,7 @@ Zerollama is OpenAI-compatible (`/v1/chat/completions`) plus these extensions:
 | Tool autocorrect | default on | String `"3"` / `"true"` become integer/boolean from the tool schema. A required top-level key buried in a nested object (e.g. `edit.path`) is hoisted. Truncated Qwen tool JSON keeps the name and ships `{}` (never half-parsed args). OpenAI `arguments` is always a JSON object string. LFM2 pythonic calls cut off mid-argument also ship name + `{}`. A Qwen `<tool_call>` that never gets `</tool_call>` still parses on done. `<tool_calls:` (with colon) is the Hunyuan-style plural wrapper; `<tool_calls>` without colon is not. Laguna bare JSON `{name, arguments}` is only a tool call when that name is in the request's tool list; a tagged `<tool_call>` is never filtered. Gemma 4 dropped `<|"|>` strings keep inner commas/braces until the next argument key. Truncated Gemma `call:name{` ships name + `{}`. Laguna tagged `<tool_call>` JSON that is truncated also ships name + `{}` (bare inferred JSON still must name a declared tool). Glimmer truncated ATEM keeps completed parameters (non-ATEM tool bodies salvage the recipient + `{}`). Harmony truncated tool JSON ships name + `{}`. FunctionGemma missing `<end_function_call>` still parses on done. DeepSeek missing tool-call closers still parse on done (truncated JSON is name + `{}`). Cogito fenced `function` calls do the same. Ministral truncated `[ARGS]` ships name + `{}`. Olmo3 missing `</function_calls>` still parses on done (truncated args are name + `{}`). GLM missing `</tool_call>` still parses on done (truncated XML is name + `{}`). Cohere truncated `<|START_ACTION|>` JSON ships name + `{}`. Empty history tool-call ids become stable `call_N`. Mixed thinking+content streams put `logprobs` on the content chunk, not reasoning; reasoning-only drops them. Completions use the four-array OpenAI logprobs shape. Each logprob entry includes vocab `id` when known. Completions `logprobs: 0` still returns chosen-token logprobs (`1`–`5` add alternatives; outside 0–5 is 400). Unparsed LFM2/Gemma/FunctionGemma/`<function_calls>`/ATEM tool wrappers are cut from assistant text. Muse ATEM invoke names keep the trailing identifier (error-echo prefixes dropped). `ZEROLLAMA_TOOL_AUTOCORRECT=0` disables type coerce/hoist only. |
 | Completions `echo` | `echo` | `/v1/completions` prepends the prompt to the completion text. |
 | `logit_bias` | map of token id → additive logit | `/v1` chat, completions, Responses. MLX sampler + llama-server. Cap 256 entries. |
-| Structured output | `response_format` / Responses `text.format` | `json_object` constrains to JSON on chat **and** `/v1/responses`. `json_schema` accepts nested `json_schema.schema` or a flat `schema` field. |
+| Structured output | `response_format` / Responses `text.format` | `json_object` constrains to JSON on chat **and** `/v1/responses`. `json_schema` accepts nested `json_schema.schema` or a flat `schema` field. MLX grammar/json_schema goes through xgrammar. |
 | FIM | `/v1/completions` `suffix` | Prompt-only templates (typical MLX) wrap Qwen `<|fim_prefix|>` / `<|fim_suffix|>` / `<|fim_middle|>`. Templates that already use `.Suffix` are unchanged. MLX tags list `insert`. Streaming holds an all-whitespace first chunk and prepends it to the first real text so indent matches non-stream. |
 | HF sampling defaults | omitted `temperature` / `top_p` / `top_k` | MLX uses `generation_config.json`; Modelfile PARAMETER and the request still win. `/v1` chat, completions, and Responses do not inject 1.0 when omitted. `top_k`, `min_p`, `typical_p`, `repetition_penalty`/`repeat_penalty` map to Ollama options and the MLX sampler. `typical_p` 1.0 is off. `max_completion_tokens` is an alias of `max_tokens`. `stop` is honored on MLX (not only llama-server). FIM/reserved specials are never sampled (think/tool tags still are). |
 | Per-request spec | `enable_pld` / `enable_mtp` / `enable_drafter` | mlx-serve flags. Omit = process default. `enable_drafter` aliases `enable_mtp`. MoE models park MTP unless you set `enable_mtp`/`enable_drafter`. Qwen 3.5/Next checkpoints that ship `mtp.*` use that head (not only a sidecar). `logprobs` and `format`/`grammar` park spec; tools do not. |
@@ -271,6 +275,8 @@ curl -s http://localhost:11434/api/metrics
 - `generate-image` — image generation/editing (MLX + ComfyUI)
 - `generate-video` — text-to-video generation (Wan, async jobs)
 - `download-model` — pulling/registering models before use
+- `describe-images` — folder catalog via SigLIP / optional caption
+- `remote-model-storage` — central model disk, fetch on miss
 - `text-to-speech` / `speech-to-text` — audio synthesis and transcription
 - `generate-embeddings` / `rerank-candidates` — vectors and candidate scoring
 - `batch-inference` — fan out multiple same-model chat completions in one call

@@ -164,6 +164,13 @@ Same as above, minus step 1 — supply your own `training_data` directly
 
 Wrap the payload in `{"kind": "train", "payload": {...}, "priority": "normal"|"low"|"high", "queue_on_busy": true}`.
 
+Unknown `priority` or `slo_class` is **400** (not coerced to normal).
+`overnight` and `realtime` are aliases. Submit/defer echoes
+`"priority":"low"|"normal"|"high"`. While a `defer-*` job is waiting,
+`ZEROLLAMA_TRAINING_DEFER_PAUSES_GGML` (default `queue_on_busy`) pauses
+**new** ggml loads; cancel/promote clears that pause. `/api/status`
+exposes `defer_pauses_ggml`.
+
 ## Job lifecycle API
 
 | Endpoint | Method | Notes |
@@ -175,6 +182,46 @@ Wrap the payload in `{"kind": "train", "payload": {...}, "priority": "normal"|"l
 | `/api/train/jobs/:id` | `DELETE` | Cancel a running Python job or a waiting `defer-*` job |
 | `/api/train/unload` | `POST` | Unload the cached training model from GPU |
 | `/api/train/status` | `GET` | Health + queue extras |
+| `/api/train/recipes` | `POST` | Ingest only (JSON or multipart). Returns `{n_rows, training_data}` — does **not** start a GPU job |
+
+## Workflow D — GRPO (`kind=grpo` or `rl`)
+
+Same queue as SFT. Default is a **dry-run** (`grpo_run` false, `trained=false`).
+`grpo_run: true` needs `trl>=0.14,<1` and a free GPU. Do not send
+`reward_funcs` as strings. `file://` `reward_url` is rejected.
+
+```bash
+curl -s http://localhost:11434/api/train/jobs -d '{
+  "kind": "grpo",
+  "payload": {
+    "model_name": "Qwen/Qwen2.5-0.5B-Instruct",
+    "prompts": ["Write a haiku about GPUs"],
+    "reward_builtin": "length",
+    "grpo_run": false,
+    "output_dir": "/tmp/grpo_out"
+  }
+}'
+```
+
+Builtins: `length`, `nonempty`, `format_json`, `exact_match` (needs
+`references`). Or `reward_url` (http(s) POST → `{rewards:[…]}`) or
+`reward_hf` (`org/name`). Docs: `docs/design/training/t10-grpo.md`.
+
+## Workflow E — Recipe ingest (no train)
+
+Turn ShareGPT / OpenAI / Alpaca / ChatGPT `mapping` / Claude
+`chat_messages` into `{prompt,response}` rows, then pass `training_data`
+into Workflow B.
+
+```bash
+zerollama train recipe conversations.json --preset chatgpt_export -o /tmp/sft.jsonl
+zerollama train recipe claude.json --preset claude_export -o /tmp/sft.jsonl
+# presets: sharegpt | openai | alpaca | prompt_response | chatgpt_export | claude_export | auto
+curl -s http://localhost:11434/api/train/recipes -d '{"preset":"auto","text":"..."}'
+```
+
+`auto` detects ChatGPT `mapping`, then Claude `chat_messages`, then
+ShareGPT. Docs: `docs/design/training/t11-recipes.md`.
 
 ## Workflow C — Ternary (1.58-bit) QAT (advanced, standalone)
 
@@ -201,6 +248,11 @@ quantization issue.
 
 ## Pitfalls
 
+- **`kind=grpo` without `grpo_run: true` does not train** — the job
+  validates and returns `trained=false`. Set `grpo_run` only on a lab GPU
+  with `trl` installed.
+- **`POST /api/train/recipes` never enqueues** — it only returns rows.
+  Submit those rows with `POST /api/train/jobs`.
 - **No native teacher-logit distillation loss** — this is SFT-on-teacher-outputs
   ("distillation" in the practical/data sense), not KL-divergence-to-teacher-logits
   training. Don't expect a `teacher_model` field in the job payload.

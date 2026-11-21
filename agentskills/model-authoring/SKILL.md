@@ -33,7 +33,6 @@ curl -s http://localhost:11434/api/version | jq   # server build (if reachable)
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/create   # 200/400 = route exists; 404 = missing on this build
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/copy   # 200/400 = route exists; 404 = missing on this build
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/repair   # 200/400 = route exists; 404 = missing on this build
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/blobs/:digest   # 200/400 = route exists; 404 = missing on this build
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/api/weights/edits/inspect -d '{}'   # 400/415 = route exists; 404 = missing on this build
 ```
 
@@ -86,10 +85,19 @@ curl -s http://localhost:11434/api/copy -d '{
   "destination": "gemma3-backup"
 }'
 
-# 4. Dry-run repair to see what would change (all models)
+# 3b. Link an MLX safetensors directory in place (no shard copy)
+zerollama create --experimental --link NAME
+# copies JSON/tokenizer only; mlxrunner loads the original shards.
+# Do not run create without --link on that directory (it can delete sources).
+
+# 4. Name redirect without copying blobs (~/.ollama/aliases.yaml, one hop)
+curl -s http://localhost:11434/api/aliases
+curl -s -X POST http://localhost:11434/api/aliases -d '{"name":"gpt-4","target":"gemma3"}'
+
+# 5. Dry-run repair to see what would change (all models)
 curl -s http://localhost:11434/api/repair -d '{"all": true, "write": false}'
 
-# 5. Apply the repair for one model once verified
+# 6. Apply the repair for one model once verified
 curl -s http://localhost:11434/api/repair -d '{"model": "gemma3", "write": true}'
 ```
 
@@ -110,6 +118,9 @@ curl -s http://localhost:11434/api/repair -d '{"model": "gemma3", "write": true}
 - **Naming collisions** — `/api/create`/`/api/copy` overwrite an existing
   model at the destination name without a confirmation prompt; check
   `/api/tags` first if the name might already be in use.
+- **Aliases are one hop** — `~/.ollama/aliases.yaml` plus
+  `GET`/`POST /api/aliases`. Chains are rejected. Chat, generate, embed,
+  score, and show rewrite the name; this is not a blob copy.
 
 ## Related
 

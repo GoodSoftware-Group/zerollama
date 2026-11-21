@@ -109,9 +109,13 @@ the same order) plus `total_duration`/`load_duration`/`prompt_eval_count`.
 
 - **Batch order is preserved** — `embeddings[i]` corresponds to `input[i]`;
   don't re-sort inputs before indexing results.
-- **`dimensions` only works on models trained for it** — asking for a
-  truncated dimension on a model without matryoshka-style training either
-  errors or silently returns the full size; check the model card first.
+- **`dimensions` larger than the vector is HTTP 400** — ask for a smaller
+  matryoshka size, not a bigger one. Models without that training may
+  still error or return the full size.
+- **llama-server embed batch matches context** — chat's default
+  `NumBatch=512` is no longer passed as `-ub` on embeddings, so BERT /
+  nomic / gemma past ~512 tokens should not 400 while `-c` is already
+  2k–8k. If an old binary still 400s there, rebuild llama-server.
 - **`truncate: false` (default) errors on over-length input** — set
   `truncate: true` if you'd rather silently truncate than fail long inputs.
 - **Don't mix embedding models across an index** — vectors from different

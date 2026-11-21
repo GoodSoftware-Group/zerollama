@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "skill_count": 37,
+  "skill_count": 39,
   "skills": [
     {
       "name": "account-auth",
@@ -182,6 +182,33 @@
       "path": "configure-zerollama-env/SKILL.md"
     },
     {
+      "name": "describe-images",
+      "description": "Catalog pictures in a folder with zerollama describe or POST /api/describe (SigLIP tags by default; optional vision caption and OWLv2 boxes). The caller keeps the JSON; the server never opens a folder path.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "describe",
+        "images",
+        "siglip",
+        "catalog",
+        "vision"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "generate-embeddings",
+        "object-detect",
+        "video-understanding-chat"
+      ],
+      "path": "describe-images/SKILL.md"
+    },
+    {
       "name": "diagnose-server-health",
       "description": "Run zerollama doctor to diagnose local runtime readiness (venvs, libllama, MLX, sidecar health, model blob integrity) and apply safe auto-fixes.",
       "version": "1.0.0",
@@ -293,7 +320,8 @@
         "generate-video",
         "doctor-model",
         "model-suggester",
-        "install-multimedia-model"
+        "install-multimedia-model",
+        "remote-model-storage"
       ],
       "path": "download-model/SKILL.md"
     },
@@ -810,6 +838,32 @@
       "path": "prompt-prefill/SKILL.md"
     },
     {
+      "name": "remote-model-storage",
+      "description": "Keep one canonical OLLAMA_MODELS tree on a big disk and fetch blobs into a capped local cache with zerollama storage serve (lab :18090). Not an inference server and not NFS.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "category": "mlops",
+      "tags": [
+        "zerollama",
+        "storage",
+        "models",
+        "blobs",
+        "rdma",
+        "cache"
+      ],
+      "related_skills": [
+        "zerollama-integration",
+        "download-model",
+        "install-zerollama"
+      ],
+      "path": "remote-model-storage/SKILL.md"
+    },
+    {
       "name": "rerank-candidates",
       "description": "Score fixed candidate continuations against a shared prompt via a zerollama server, for classification, routing, or reranking without full generation.",
       "version": "1.0.0",
@@ -1013,6 +1067,8 @@
         "model-authoring",
         "weight-edit",
         "prompt-prefill",
+        "describe-images",
+        "remote-model-storage",
         "agent-web-tools",
         "anthropic-messages-compat",
         "openai-responses-compat",

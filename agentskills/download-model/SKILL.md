@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [zerollama, ollama, pull, model-management, registry, comfyui, wan]
     category: mlops
-    related_skills: [zerollama-integration, generate-image, generate-video, doctor-model, model-suggester, install-multimedia-model]
+    related_skills: [zerollama-integration, generate-image, generate-video, doctor-model, model-suggester, install-multimedia-model, remote-model-storage]
 ---
 
 # Download Model Skill
@@ -76,7 +76,29 @@ curl -s -X DELETE http://localhost:11434/api/delete -d '{"model": "gemma3"}'
 connection; leave it unset unless the user explicitly needs it.
 
 CLI equivalents work the same way: `zerollama pull gemma3`,
-`zerollama list`, `zerollama rm gemma3`.
+`zerollama list`, `zerollama rm gemma3`. `zerollama ls image_gen` (and
+`image-gen`) filters the same set as `ls image` (capability wire value
+stays `image`).
+
+Gallery pulls send `User-Agent: ollama/<semver>` from `version.OllamaCompat`
+(currently **0.40.14**). A git describe in that header is HTTP **412**.
+Check `GET /api/version` fields `version`, `ollama_compat`, and `git`.
+
+## Other weight sources
+
+| Source | How |
+|---|---|
+| Ollama gallery | `zerollama pull gemma3` or `POST /api/pull` `{"model":"gemma3"}` |
+| Hugging Face GGUF | `zerollama pull huggingface://org/repo/file.gguf` or `--source` / pull body `source` (local tag is `model`) |
+| Pirate Face | `zerollama search QUERY` (no daemon). Then `zerollama pull pirateface://owner/repo[/file.gguf]` |
+
+Pirate Face resolves the torrent file list + sha256, downloads one GGUF
+(`uvx --from huggingface_hub --with pirateface`), copies the verified blob
+into the local store, and seeds to ratio 1.0 with `aria2c` when a
+`.torrent` layout exists. Search still works after a Hub **takedown**
+(`hf:false` + seeders). A Hub **outage** fails the byte path. Do not
+`pip install pirateface` into `runtime/.venv`. If the repo has several
+GGUFs, pull lists them and stops before downloading.
 
 ## Image models (`comfy/*`)
 
@@ -121,6 +143,8 @@ registers `wan2.1-t2v-1.3b` / `wan2.2-ti2v-5b` manifests. Confirm with
 | MLX image (`z-image-turbo`, `flux2-klein-9b`) | `POST /api/pull` |
 | ComfyUI image (`comfy/*`) | `scripts/register_comfy_models.sh` + separate ComfyUI weight download |
 | Wan video (`wan2.*`) | `scripts/video/install_wan_video.sh` + `register_wan_models.sh` |
+| LTX MLX (Darwin) | `./scripts/video/install_ltx_mlx.sh` (`--13b-only` / default 2B) |
+| HF / Pirate Face GGUF | `huggingface://` or `pirateface://` on `pull` (see above) |
 
 ## Pitfalls
 
@@ -145,3 +169,4 @@ registers `wan2.1-t2v-1.3b` / `wan2.2-ti2v-5b` manifests. Confirm with
 - `generate-video` — using a Wan video model once it's registered
 - `model-suggester` — deciding which model to pull in the first place
 - `install-multimedia-model` — pick one music/TTS/STT/image/video option and install only that
+- `remote-model-storage` — keep the canonical tree on another disk

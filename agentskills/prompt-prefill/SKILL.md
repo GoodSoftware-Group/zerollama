@@ -40,9 +40,10 @@ against a host you don't control:
 ```bash
 zerollama --version                      # binary build
 curl -s http://localhost:11434/api/version | jq   # server build (if reachable)
-curl -s http://localhost:11434/api/version | jq '.zerollama.capabilities.prefill'   # true means the route exists
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/api/prefill -d '{}'   # 400/422 = route exists; 404 = missing on this build
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/v1/prefill -d '{}'   # 400/422 = route exists; 404 = missing on this build
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11434/api/chat   # 200/400 = route exists; 404 = missing on this build
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:11434/api/cache/warm -d '{}'   # 400/422 = route exists; 404 = missing on this build
 ```
 
 A **404** on an endpoint above (or an unrecognized flag/subcommand) means this build predates the feature this skill

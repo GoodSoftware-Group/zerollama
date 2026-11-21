@@ -138,6 +138,12 @@ For keyframes you need the **2.2** profile (`wan2.2-ti2v-5b`):
 Checkpoints live under `~/.zerollama/third_party/wan/` — config-only
 manifests, not Ollama blobs.
 
+**Darwin LTX (not Wan):** `./scripts/video/install_ltx_mlx.sh` registers
+`ltxv-2b-mlx:lab` (fast, 4 steps) and `--13b-only` registers
+`ltxv-13b-mlx:lab`. MLX jobs take `options.keyframes` as a **first-frame**
+image. `last_frame_image` is HTTP 400. CUDA distilled tag is
+`ltxv-2b-distilled:lab` (`--2b-only` on the Wan2GP installer).
+
 ## Pitfalls
 
 - **Never poll synchronously in a blocking loop with short sleeps** — jobs

@@ -1,6 +1,6 @@
 # zerollama Agent Skills
 
-37 `SKILL.md` packages describing how to use [zerollama](https://github.com/GoodSoftware-Group/zerollama) — generated from the server's own OpenAPI spec, CLI, and source, intended for distribution to any agent/tool that can consume the `SKILL.md` (frontmatter + markdown) format.
+39 `SKILL.md` packages describing how to use [zerollama](https://github.com/GoodSoftware-Group/zerollama) — generated from the server's own OpenAPI spec, CLI, and source, intended for distribution to any agent/tool that can consume the `SKILL.md` (frontmatter + markdown) format.
 
 See [skills.json](skills.json) for the machine-readable manifest (name, description, version, category, tags, related_skills) used to generate this table.
 
@@ -33,6 +33,7 @@ python3 .tools/add_compat_checks.py   # idempotent; re-scrapes endpoints per ski
 | [`benchmark-model-speed`](benchmark-model-speed/SKILL.md) | Benchmark local model decode speed (chat) or generation wall time (image/video) on a zerollama server and cache results for zerollama ls. |
 | [`cloud-model-routing`](cloud-model-routing/SKILL.md) | Route chat/embedding/message requests on a zerollama server to remote Eliza Cloud models using the :cloud model suffix, instead of local GGUF inference. |
 | [`configure-zerollama-env`](configure-zerollama-env/SKILL.md) | Help a user navigate zerollama's ~1000 environment variables and YAML profiles (OLLAMA_*/ZEROLLAMA_*) — discover current effective config, prefer profiles over raw flags, and verify changes instead of guessing. |
+| [`describe-images`](describe-images/SKILL.md) | Catalog pictures in a folder with zerollama describe or POST /api/describe (SigLIP tags by default; optional vision caption and OWLv2 boxes). The caller keeps the JSON; the server never opens a folder path. |
 | [`diagnose-server-health`](diagnose-server-health/SKILL.md) | Run zerollama doctor to diagnose local runtime readiness (venvs, libllama, MLX, sidecar health, model blob integrity) and apply safe auto-fixes. |
 | [`distill-and-train`](distill-and-train/SKILL.md) | Fine-tune (LoRA/QLoRA) a local model on a zerollama server, including distilling a larger model into a smaller one via synthetic SFT data, plus the ternary QAT path for extreme quantization. |
 | [`doctor-model`](doctor-model/SKILL.md) | Diagnose a specific local model's manifest/blob health (ok/repairable/orphaned/broken), config-level footguns, live minefield traps, and Modelfile repair for empty-response / slash-collapse (zerollama doctor --models / --repair-models). |
@@ -56,6 +57,7 @@ python3 .tools/add_compat_checks.py   # idempotent; re-scrapes endpoints per ski
 | [`object-segment`](object-segment/SKILL.md) | Mask request via zerollama POST /v1/segment. grasp_ready is false; a mask is not a grasp. |
 | [`openai-responses-compat`](openai-responses-compat/SKILL.md) | Talk to a zerollama server using OpenAI's Responses API wire format (/v1/responses) instead of Chat Completions. |
 | [`prompt-prefill`](prompt-prefill/SKILL.md) | Draft the next zerollama chat with POST /api/prefill (same body as /v1/prefill) before the last word, so the finished /api/chat continues from that prefix. Not /api/cache/warm, and not a faster cold decode. |
+| [`remote-model-storage`](remote-model-storage/SKILL.md) | Keep one canonical OLLAMA_MODELS tree on a big disk and fetch blobs into a capped local cache with zerollama storage serve (lab :18090). Not an inference server and not NFS. |
 | [`rerank-candidates`](rerank-candidates/SKILL.md) | Score fixed candidate continuations against a shared prompt via a zerollama server, for classification, routing, or reranking without full generation. |
 | [`speech-to-text`](speech-to-text/SKILL.md) | Transcribe audio to text via a zerollama server's OpenAI-compatible transcription API (Whisper or multimodal chat models). |
 | [`text-to-speech`](text-to-speech/SKILL.md) | Synthesize speech audio from text via a zerollama server's OpenAI-compatible speech API (Piper, Chatterbox, Orpheus, Kokoro, Irodori). |

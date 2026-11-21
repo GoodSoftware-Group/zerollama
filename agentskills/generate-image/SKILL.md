@@ -108,6 +108,13 @@ MLX doesn't support.
 
 ## Pitfalls
 
+- **A failed Z-Image / MLX generation is an `error` JSON body** — OpenAI
+  `/v1/images/generations` no longer returns an empty HTTP 200. The
+  request is forced `stream=false`.
+- **Darwin loads one large MLX model at a time** —
+  `ZEROLLAMA_MLX_EXCLUSIVE` defaults on. A second safetensors model evicts
+  the first. `503` with `error_code` `gpu_lease` / `mlx_jetsam` /
+  `mlx_exclusive` is a residency failure, not a missing tag.
 - **404/empty on `/api/image/workflows`** — the model isn't registered as a
   `comfy/*` manifest, or `OLLAMA_COMFYUI_WORKFLOWS_ROOT` isn't set when
   `zerollama serve` doesn't start from the repo root.

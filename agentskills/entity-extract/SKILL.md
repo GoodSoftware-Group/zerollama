@@ -46,7 +46,6 @@ describes — check [`CHANGELOG.md`](../CHANGELOG.md) for when it
 landed, or upgrade (`git pull && ./scripts/build/build_zerollama_mac.sh`)
 rather than assuming the request shape is wrong.
 
-
 ## Compatibility
 
 ```bash

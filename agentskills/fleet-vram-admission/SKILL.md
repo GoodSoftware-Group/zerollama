@@ -108,6 +108,16 @@ curl -s -X DELETE http://localhost:11434/api/pin/<pin_id>
 
 ## Pitfalls
 
+- **Crash-loop loads cool down** — repeated failed loads return **503**
+  with `Retry-After` (`ZEROLLAMA_LOAD_COOLDOWN`). Wait; do not respawn
+  the same load immediately.
+- **Hard VRAM ceiling** — `ZEROLLAMA_VRAM_BUDGET` (`80%` or `12GiB`) caps
+  discovery and Python free-VRAM probes below physical RAM.
+- **Darwin MLX exclusive** — default `ZEROLLAMA_MLX_EXCLUSIVE` evicts
+  other safetensors runners before load. `503` `mlx_exclusive` /
+  `mlx_jetsam` / `gpu_lease` is not "model not found".
+- **Sole iGPU is kept** — if dropping integrated GPUs would leave zero
+  devices, Vulkan/ROCm APU stays. `OLLAMA_IGPU_ENABLE=0` still forces CPU.
 - **Pins don't load models** — `/api/pin` only blocks eviction of an
   *already-loaded* model; pin after the model is warm, not as a substitute
   for pulling/loading it.

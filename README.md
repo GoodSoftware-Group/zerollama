@@ -268,7 +268,7 @@ Vendor pin: **`b94959a6` / b12557** — [runtime/LLAMA_CPP_PIN.md](runtime/LLAMA
 
 ## Agent skills
 
-**37** [`SKILL.md`](agentskills/README.md) packages so Cursor / Claude / Copilot agents can use zerollama without reverse-engineering the API.
+**39** [`SKILL.md`](agentskills/README.md) packages so Cursor / Claude / Copilot agents can use zerollama without reverse-engineering the API.
 
 ```bash
 npx skills add GoodSoftware-Group/zerollama

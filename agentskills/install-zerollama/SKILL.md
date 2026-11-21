@@ -157,6 +157,10 @@ serve without changing the host, and never kill a process listening on
 
 - **Go 1.22 is not enough** — `go.mod` requires **1.24.1+**; docs that say
   otherwise are stale.
+- **Gallery User-Agent is a semver, not git describe** — `version.OllamaCompat`
+  (currently **0.40.14**) is what `registry.ollama.ai` sees. A hash in that
+  header is HTTP 412. `GET /api/version` splits `version`, `ollama_compat`,
+  and `git`.
 - **CLI tools alone often fail CGO** — `mac_cgo_env.sh` looks for
   `python3-embed` under `/Applications/Xcode.app/...`; without full
   Xcode.app or the Homebrew fallback, expect `python3-embed not found`.
