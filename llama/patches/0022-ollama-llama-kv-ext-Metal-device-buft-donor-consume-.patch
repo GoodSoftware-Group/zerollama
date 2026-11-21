@@ -46,10 +46,10 @@ index c95415f..b4c8798 100644
  #endif
  
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index c77acc3..28ca5bb 100644
+index a9fb75b..b49cb01 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
-@@ -279,19 +279,35 @@ llama_kv_cache::llama_kv_cache(
+@@ -282,19 +282,35 @@ llama_kv_cache::llama_kv_cache(
      for (auto & [buft, ctx] : ctx_map) {
          ggml_backend_buffer_t buf = nullptr;
  

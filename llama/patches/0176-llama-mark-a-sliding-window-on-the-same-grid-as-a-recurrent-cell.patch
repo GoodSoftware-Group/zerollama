@@ -1,0 +1,132 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 20 Nov 2026 18:35:51 -0800
+Subject: [PATCH] llama: mark a sliding window on the same grid as a recurrent
+ cell
+
+A window that overwrites itself is copied with the recurrent state. A full-size cache still rewinds in place, so it stays out of the mark.
+---
+ src/llama-kv-cache.cpp          | 15 ++++++++++++++-
+ src/llama-mark-grid.h           | 26 ++++++++++++++++++++++++++
+ tools/server/server-context.cpp | 12 ++++++++----
+ 3 files changed, 48 insertions(+), 5 deletions(-)
+
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 5147cba..cebc87b 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -1,6 +1,7 @@
+ #include "llama-kv-cache.h"
+ 
+ #include "llama-dca.h"
++#include "llama-mark-grid.h"
+ #include "llama-impl.h"
+ #include "llama-io.h"
+ #include "llama-model.h"
+@@ -1308,12 +1309,24 @@ llama_mark_cost llama_kv_cache::mark_cost() const {
+         }
+         const int64_t npos = layer.k->ne[1];
+         const int64_t nstr = layer.k->ne[2] > 0 ? layer.k->ne[2] : 1;
++        size_t token = 0;
+         const ggml_tensor * ts[] = { layer.k, layer.v, layer.k_idx, layer.k_scale, layer.v_scale };
+         for (const ggml_tensor * t : ts) {
+             if (!t || !seen.insert(t).second) {
+                 continue;
+             }
+-            cost.per_token += ggml_nbytes(t) / (size_t) (npos * nstr);
++            token += ggml_nbytes(t) / (size_t) (npos * nstr);
++        }
++        // A window that overwrites itself is part of the mark: one sequence's
++        // window, not one token of a cache that can be cut back.
++        if (llama_mark_window(n_swa, n_seq_max, (uint64_t) npos)) {
++            if (token > 0 && (size_t) n_swa > SIZE_MAX / token) {
++                cost.recurrent = SIZE_MAX;
++            } else {
++                cost.recurrent += token * (size_t) n_swa;
++            }
++        } else {
++            cost.per_token += token;
+         }
+     }
+     return cost;
+diff --git a/src/llama-mark-grid.h b/src/llama-mark-grid.h
+index fe6aa20..a08625b 100644
+--- a/src/llama-mark-grid.h
++++ b/src/llama-mark-grid.h
+@@ -10,6 +10,17 @@
+ // A recurrent model with no attention cache uses one byte per token, so the
+ // gap widens to the cap.
+ 
++// True when this cache is a sliding window that overwrites old positions.
++// `cells` is the cache length. A full-size cache is longer than one window
++// per sequence plus a batch of slack, and that cache rewinds in place.
++inline bool llama_mark_window(uint32_t n_swa, uint32_t n_seq, uint64_t cells) {
++    if (n_swa == 0 || n_seq == 0 || cells == 0) {
++        return false;
++    }
++    const uint64_t ring = (uint64_t) n_swa * (uint64_t) n_seq + 2048;
++    return cells <= ring;
++}
++
+ inline int32_t llama_mark_spacing(uint64_t mark, uint64_t per_token) {
+     if (mark == 0) {
+         return 256;
+@@ -56,6 +67,21 @@ int main() {
+     if (llama_mark_spacing(5000, 0) != 5120) {
+         return 1;
+     }
++    if (llama_mark_window(0, 1, 4608) || llama_mark_window(4096, 0, 4608) || llama_mark_window(4096, 1, 0)) {
++        return 1;
++    }
++    // A ring of one window plus a batch.
++    if (!llama_mark_window(4096, 1, 4608)) {
++        return 1;
++    }
++    // One window per sequence, unified.
++    if (!llama_mark_window(4096, 4, 4096ull * 4 + 512)) {
++        return 1;
++    }
++    // A full context is longer than the window and rewinds in place.
++    if (llama_mark_window(4096, 1, 8192)) {
++        return 1;
++    }
+     std::printf("mark grid ok\n");
+     return 0;
+ }
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 5b316da..6589d50 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -50,8 +50,9 @@
+ namespace {
+ 
+ // Kinetic warm-start grid (grid() in kinetic-models warm/mod.rs).
+-// Attention caches rewind in place. A recurrent or hybrid state does not, so
+-// prefill records a checkpoint on this grid and a later prompt resumes from
++// A full attention cache rewinds in place. A recurrent state does not, and
++// neither does a sliding window once it starts overwriting old positions.
++// Prefill records a checkpoint on this grid and a later prompt resumes from
+ // the last shared mark instead of replaying from token 0.
+ //
+ // 0 is auto. 8192 is the historical spacing GPU profiles still pass as
+@@ -1857,15 +1858,18 @@ private:
+         // the min position of a hybrid memory is the position of its recurrent state, not the start of the SWA window
+         n_swa_reuse = llama_model_is_recurrent(model_tgt) || llama_model_is_hybrid(model_tgt) ? 0 : n_swa;
+         {
+-            const bool needs_mark = llama_model_is_recurrent(model_tgt) || llama_model_is_hybrid(model_tgt);
++            const bool cannot_rewind = llama_model_is_recurrent(model_tgt) || llama_model_is_hybrid(model_tgt);
+             size_t mark_bytes = 0;
+             size_t token_bytes = 0;
+             llama_get_mark_cost(ctx_tgt, &mark_bytes, &token_bytes);
++            // swa_full cleared n_swa above. A pure window uses the measured
++            // bytes; an unmeasured one keeps the turn and end checkpoints.
++            const bool needs_mark = cannot_rewind || (n_swa > 0 && mark_bytes > 0);
+             prompt_mark_grid = params_base.n_ctx_checkpoints > 0
+                     ? mark_grid_from_every(params_base.checkpoint_every_nt, needs_mark, mark_bytes, token_bytes)
+                     : 0;
+             if (needs_mark && prompt_mark_grid > 0) {
+-                SRV_DBG("mark grid from %zu recurrent bytes and %zu bytes per token\n", mark_bytes, token_bytes);
++                SRV_DBG("mark grid from %zu mark bytes and %zu bytes per token\n", mark_bytes, token_bytes);
+             }
+         }
+         // Multi-GPU SWA (gemma4 iswa dual-KV): creating context checkpoints during

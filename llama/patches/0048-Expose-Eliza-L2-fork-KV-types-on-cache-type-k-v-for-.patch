@@ -11,10 +11,10 @@ onto checkpoint_min_step so ZEROLLAMA_LLAMA_FORK profiles work on ggml-org.
  1 file changed, 17 insertions(+)
 
 diff --git a/common/arg.cpp b/common/arg.cpp
-index 67b492e..683dbf1 100644
+index 192f706..708528a 100644
 --- a/common/arg.cpp
 +++ b/common/arg.cpp
-@@ -287,6 +287,14 @@ const std::vector<ggml_type> kv_cache_types = {
+@@ -289,6 +289,14 @@ const std::vector<ggml_type> kv_cache_types = {
      GGML_TYPE_IQ4_NL,
      GGML_TYPE_Q5_0,
      GGML_TYPE_Q5_1,
@@ -29,7 +29,7 @@ index 67b492e..683dbf1 100644
  };
  
  static ggml_type kv_cache_type_from_str(const std::string & s) {
-@@ -1662,6 +1670,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+@@ -1695,6 +1703,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
              params.checkpoint_min_step = value;
          }
      ).set_env("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT").set_examples({LLAMA_EXAMPLE_SERVER}));

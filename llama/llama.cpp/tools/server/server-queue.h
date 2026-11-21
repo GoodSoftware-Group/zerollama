@@ -19,6 +19,7 @@ private:
     bool sleeping = false;
     bool req_stop_sleeping = false;
     int64_t time_last_task = 0;
+    int n_inflight = 0; // requests that keep the server awake, see wait_until_no_sleep()
 
     // queues
     std::deque<server_task> queue_tasks;
@@ -44,6 +45,7 @@ private:
     // callback functions
     std::function<bool(server_task &&, bool)> callback_new_task;
     std::function<void(void)>                 callback_update_slots;
+    std::function<bool(void)>                 callback_idle;
     std::vector<std::function<void(bool)>>    callback_sleeping_state;
 
 public:
@@ -58,6 +60,10 @@ public:
     // Add a new task, but defer until one slot is available
     void defer(server_task && task);
 
+    // True when a task is waiting for a slot. A draft prefill uses this to
+    // stay behind work that was already deferred.
+    bool has_deferred_task();
+
     // Get the next id for creating a new task
     int get_new_id();
 
@@ -67,7 +73,11 @@ public:
 
     // if sleeping, request exiting sleep state and wait until it is done
     // returns immediately if not sleeping
+    // the server then stays awake until the caller calls release_inflight()
     void wait_until_no_sleep();
+
+    // let the server sleep again once the caller no longer uses the server state
+    void release_inflight();
 
     bool is_sleeping() {
         std::unique_lock<std::mutex> lock(mutex_tasks);
@@ -125,6 +135,12 @@ public:
     // Register the function to be called when all slots data is ready to be processed
     void on_update_slots(std::function<void(void)> callback) {
         callback_update_slots = std::move(callback);
+    }
+
+    // Called while the queue is empty. Return true if a piece of work ran,
+    // so the loop looks for a new task before running another piece.
+    void on_idle(std::function<bool(void)> callback) {
+        callback_idle = std::move(callback);
     }
 
     // Register callback for sleeping state change; multiple callbacks are allowed

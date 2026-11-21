@@ -188,6 +188,14 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_memory_hybrid::memory_breakdo
     return mb;
 }
 
+llama_mark_cost llama_memory_hybrid::mark_cost() const {
+    llama_mark_cost cost = mem_attn->mark_cost();
+    const llama_mark_cost recr = mem_recr->mark_cost();
+    cost.recurrent += recr.recurrent;
+    cost.per_token += recr.per_token;
+    return cost;
+}
+
 void llama_memory_hybrid::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
     mem_attn->state_write(io, seq_id, flags);
     mem_recr->state_write(io, seq_id, flags);

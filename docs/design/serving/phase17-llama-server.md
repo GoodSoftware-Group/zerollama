@@ -233,13 +233,13 @@ Env `OLLAMA_STREAM_KEEPALIVE_INTERVAL` (default `15`, `0` = off). Emits `status:
 
 ---
 
-## llama.cpp pin (`b12119`)
+## llama.cpp pin (`b12557`)
 
-Zerollama pins **ggml-org/llama.cpp** tag **`b12119`** (`6f1e6543704bc5b080c7a98e7b6f707b31f6ed51`) via `LLAMA_CPP_VERSION` and `LLAMA_CPP_COMMIT`. Rollback is **`b11870`** (`LLAMA_CPP_*.prev`). The live patch series is `llama/patches/` **0001–0163**.
+Zerollama pins **ggml-org/llama.cpp** tag **`b12557`** (`b94959a64d011915d77a5381c7d4846dcda99530`) via `LLAMA_CPP_VERSION` and `LLAMA_CPP_COMMIT`. Rollback is **`b12119`** (`LLAMA_CPP_*.prev`). The live patch series is **186** format-patches in `llama/patches/` (`0001`–`0186`; **0162–0186** prompt reuse, [kinetic-prompt-reuse.md](kinetic-prompt-reuse.md)). The b12119 quilt **0001–0163** is archived in `llama/patches.obsolete-b12119/`.
 
-**Vendor tree:** `vendor/llama-cpp-b12119/` + `./scripts/vendor/sync_vendor_llama.sh` → in-tree `ml/backend/ggml/ggml` and `llama/llama.cpp`. See [ggml-b9509-migration.md](ggml-b9509-migration.md).
+**Vendor tree:** `vendor/llama-cpp-b12557/` + `./scripts/vendor/sync_vendor_llama.sh` → in-tree `ml/backend/ggml/ggml` and `llama/llama.cpp`. See [ggml-b9509-migration.md](ggml-b9509-migration.md).
 
-**Why `sync_vendor_llama.sh` checks patch count:** syncing a bare tag ships upstream-only ggml while `build-info.cpp` still reports `b12119` — CGO then misses `ggml_backend_dev_reset`, the no-alloc scheduler, kv-ext, and `/kv/seq-copy`.
+**Why `sync_vendor_llama.sh` checks patch count:** syncing a bare tag ships upstream-only ggml while `build-info.cpp` still reports `b12557` — CGO then misses `ggml_backend_dev_reset`, the no-alloc scheduler, kv-ext, and `/kv/seq-copy`.
 
 **Patch doctor:** `./scripts/vendor/llama_patch_doctor.sh` · `/health.llama_patches` · `zerollama doctor` (llama.cpp patches check)
 

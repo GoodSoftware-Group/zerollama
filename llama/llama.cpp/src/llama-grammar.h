@@ -3,6 +3,7 @@
 #include "llama.h"
 
 #include <map>
+#include <memory>
 #include <regex>
 #include <set>
 #include <string>
@@ -143,8 +144,8 @@ struct llama_grammar {
     const llama_vocab * vocab;
     const ollama_vocab * o_vocab;
 
-    const llama_grammar_rules  rules;  // TODO: shared ptr
-          llama_grammar_stacks stacks;
+    const std::shared_ptr<const llama_grammar_rules> rules;
+    llama_grammar_stacks stacks;
 
     // buffer for partially generated UTF-8 sequence from accepted tokens
     llama_partial_utf8 partial_utf8;

@@ -1,0 +1,365 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 20 Nov 2026 18:44:46 -0800
+Subject: [PATCH] llama: keep a prompt cache entry a longer one cannot resume
+
+A longer prompt used to drop every shorter prefix. A state that cannot rewind stays when the longer prompt has no mark at that length.
+---
+ tools/server/server-context.cpp    |   9 +++
+ tools/server/server-slot-sched.cpp |  28 ++++++--
+ tools/server/server-slot-sched.h   |   4 ++
+ tools/server/server-warm-cover.h   | 105 +++++++++++++++++++++++++++++
+ tools/server/server-warm-disk.h    |  94 +++++++++++++++++++++++---
+ 5 files changed, 226 insertions(+), 14 deletions(-)
+ create mode 100644 tools/server/server-warm-cover.h
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 6589d50..1ffb886 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2157,6 +2157,15 @@ private:
+                     SRV_WRN("prompt disk cache disabled: %s\n", e.what());
+                 }
+             }
++            // PART removal can cut a full attention cache to any prefix. A
++            // window or a recurrent state can return only to a mark.
++            prompt_cache->rewinds = ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_PART && n_swa == 0;
++            if (prompt_cache->warm) {
++                prompt_cache->warm->set_rewinds(prompt_cache->rewinds);
++            }
++            if (!prompt_cache->rewinds) {
++                SRV_INF("%s", "prompt cache keeps a shorter state when a longer one has no mark there\n");
++            }
+         } else {
+             SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
+         }
+diff --git a/tools/server/server-slot-sched.cpp b/tools/server/server-slot-sched.cpp
+index 4a5f213..40d174e 100644
+--- a/tools/server/server-slot-sched.cpp
++++ b/tools/server/server-slot-sched.cpp
+@@ -107,13 +107,29 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
+         return nullptr;
+     }
+ 
+-    // remove any cached prompts that are fully contained in the current prompt
++    // Drop a shorter prompt only when this one can restore every length it
++    // could. A state that cannot rewind keeps its entry if there is no mark
++    // at its end.
++    std::vector<int64_t> new_marks;
++    new_marks.reserve(prompt.checkpoints.size());
++    for (const auto & ck : prompt.checkpoints) {
++        new_marks.push_back(ck->n_tokens);
++    }
++    const llama_tokens & new_toks = prompt.tokens.get_tokens();
+     for (auto it = states.begin(); it != states.end();) {
+-        const int len = it->prompt.tokens.get_common_prefix(prompt.tokens);
+-
+-        if (len == (int) it->prompt.tokens.size() && are_lora_equal(it->prompt.lora, prompt.lora)) {
+-            SRV_TRC(" - removing obsolete cached prompt with length %d\n", len);
+-
++        if (!are_lora_equal(it->prompt.lora, prompt.lora)) {
++            ++it;
++            continue;
++        }
++        std::vector<int64_t> old_marks;
++        old_marks.reserve(it->prompt.checkpoints.size());
++        for (const auto & ck : it->prompt.checkpoints) {
++            old_marks.push_back(ck->n_tokens);
++        }
++        const llama_tokens & old_toks = it->prompt.tokens.get_tokens();
++        if (llama_warm_covers(rewinds, old_toks.data(), old_toks.size(), old_marks.data(), old_marks.size(),
++                    new_toks.data(), new_toks.size(), new_marks.data(), new_marks.size())) {
++            SRV_TRC(" - removing obsolete cached prompt with length %zu\n", old_toks.size());
+             it = states.erase(it);
+         } else {
+             ++it;
+diff --git a/tools/server/server-slot-sched.h b/tools/server/server-slot-sched.h
+index e648af9..4408075 100644
+--- a/tools/server/server-slot-sched.h
++++ b/tools/server/server-slot-sched.h
+@@ -96,6 +96,10 @@ struct server_prompt_cache {
+     // skips a restore that would take longer than running the tokens
+     llama_warm_cost cost;
+ 
++    // A full attention cache can be cut to any shorter prefix. When this is
++    // false, a shorter entry stays unless the new one has a mark there.
++    bool rewinds = true;
++
+     // in bytes, 0 = no limit
+     size_t limit_size = 0;
+ 
+diff --git a/tools/server/server-warm-cover.h b/tools/server/server-warm-cover.h
+new file mode 100644
+index 0000000..b0ff074
+--- /dev/null
++++ b/tools/server/server-warm-cover.h
+@@ -0,0 +1,105 @@
++#pragma once
++
++// Whether a longer cached prompt makes a shorter one redundant.
++// A cache that rewinds can return to any shorter length. A recurrent or
++// sliding-window state can return only to a saved mark, or to its own end.
++// LLAMA_WARM_COVER_TEST compiles the checks below.
++
++#include <cstddef>
++#include <cstdint>
++
++// Longest length at or before `len` that this entry can restore. `end` is
++// the saved state's length. `marks` are checkpoint lengths.
++inline int64_t llama_warm_reach(bool rewinds, int64_t end, const int64_t * marks, size_t n_marks, int64_t len) {
++    if (len > end) {
++        len = end;
++    }
++    if (len <= 0) {
++        return 0;
++    }
++    if (rewinds || len == end) {
++        return len;
++    }
++    int64_t best = 0;
++    if (marks != nullptr) {
++        for (size_t i = 0; i < n_marks; i++) {
++            if (marks[i] <= len && marks[i] > best) {
++                best = marks[i];
++            }
++        }
++    }
++    return best;
++}
++
++// True when `neu` starts with `old` and can restore every length `old` can,
++// including `old`'s end. An equal-length entry is not covered: the caller
++// already skips storing a duplicate.
++inline bool llama_warm_covers(
++        bool rewinds,
++        const int32_t * old_tokens, size_t old_n,
++        const int64_t * old_marks, size_t old_marks_n,
++        const int32_t * new_tokens, size_t new_n,
++        const int64_t * new_marks, size_t new_marks_n) {
++    if (old_n == 0 || old_n >= new_n || old_tokens == nullptr || new_tokens == nullptr) {
++        return false;
++    }
++    for (size_t i = 0; i < old_n; i++) {
++        if (old_tokens[i] != new_tokens[i]) {
++            return false;
++        }
++    }
++    auto reachable = [&](int64_t m) {
++        return llama_warm_reach(rewinds, (int64_t) new_n, new_marks, new_marks_n, m) == m;
++    };
++    if (!reachable((int64_t) old_n)) {
++        return false;
++    }
++    if (old_marks != nullptr) {
++        for (size_t i = 0; i < old_marks_n; i++) {
++            if (!reachable(old_marks[i])) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
++#if defined(LLAMA_WARM_COVER_TEST)
++#include <cstdio>
++
++int main() {
++    const int32_t old_t[] = { 1, 2, 3 };
++    const int32_t neu_t[] = { 1, 2, 3, 4, 5 };
++    const int32_t other[] = { 1, 9, 3, 4, 5 };
++    if (!llama_warm_covers(true, old_t, 3, nullptr, 0, neu_t, 5, nullptr, 0)) {
++        return 1;
++    }
++    if (llama_warm_covers(true, old_t, 3, nullptr, 0, other, 5, nullptr, 0)) {
++        return 1;
++    }
++    if (llama_warm_covers(true, old_t, 3, nullptr, 0, old_t, 3, nullptr, 0)) {
++        return 1;
++    }
++    // No mark at token 3, so the shorter state is the only way back there.
++    if (llama_warm_covers(false, old_t, 3, nullptr, 0, neu_t, 5, nullptr, 0)) {
++        return 1;
++    }
++    const int64_t at_end[] = { 3 };
++    if (!llama_warm_covers(false, old_t, 3, nullptr, 0, neu_t, 5, at_end, 1)) {
++        return 1;
++    }
++    const int64_t old_marks[] = { 2 };
++    const int64_t grid[] = { 2, 4 };
++    const int32_t long_t[] = { 1, 2, 3, 4, 5, 6 };
++    // The new prompt reaches 2 and 4, not the old end at 3.
++    if (llama_warm_covers(false, old_t, 3, old_marks, 1, long_t, 6, grid, 2)) {
++        return 1;
++    }
++    const int64_t both[] = { 2, 3 };
++    if (!llama_warm_covers(false, old_t, 3, old_marks, 1, long_t, 6, both, 2)) {
++        return 1;
++    }
++    std::printf("warm cover ok\n");
++    return 0;
++}
++#endif
+diff --git a/tools/server/server-warm-disk.h b/tools/server/server-warm-disk.h
+index 6c5c9fd..d380437 100644
+--- a/tools/server/server-warm-disk.h
++++ b/tools/server/server-warm-disk.h
+@@ -7,6 +7,8 @@
+ // one at a time, which a GPU resume must not restore. The oldest files go first
+ // once the directory passes its byte budget.
+ 
++#include "server-warm-cover.h"
++
+ #include <algorithm>
+ #include <cstdint>
+ #include <cstdio>
+@@ -147,6 +149,14 @@ public:
+         return budget_;
+     }
+ 
++    // A full attention cache can be cut back to any shorter length. A
++    // recurrent or sliding-window cache cannot, so a shorter file stays
++    // unless the new one has a mark at every length the shorter one can
++    // restore. Set once, before the first store.
++    void set_rewinds(bool v) {
++        rewinds_ = v;
++    }
++
+     size_t count() const {
+         std::lock_guard<std::mutex> g(mu_);
+         return files_.size();
+@@ -314,6 +324,9 @@ private:
+         uint64_t model_id = 0;
+         std::vector<int32_t> tokens;
+         uint32_t n_ckpt = 0;
++        // Checkpoint lengths. Empty when the file has none. The saved state
++        // itself is at tokens.size(), which is not repeated here.
++        std::vector<int64_t> marks;
+         uint64_t main_size = 0;
+         uint64_t drft_size = 0;
+         uint64_t file_bytes = 0;
+@@ -403,13 +416,6 @@ private:
+         return read_raw(in, dst.data(), (size_t) n);
+     }
+ 
+-    static bool prefix_of(const std::vector<int32_t> & shorter, const std::vector<int32_t> & longer) {
+-        if (shorter.size() >= longer.size()) {
+-            return false;
+-        }
+-        return std::equal(shorter.begin(), shorter.end(), longer.begin());
+-    }
+-
+     static uint64_t hash_tokens(uint64_t model, const std::vector<int32_t> & tokens) {
+         uint64_t h = model;
+         for (size_t i = 0; i < tokens.size(); i++) {
+@@ -467,6 +473,38 @@ private:
+         return meta_status::ok;
+     }
+ 
++    // Checkpoint lengths, after read_meta_stream. The state bytes stay unread:
++    // read() continues from there. A bad file returns false.
++    bool read_marks(std::istream & in, file_meta & meta) const {
++        if (!in.seekg((std::streamoff) (meta.main_size + meta.drft_size), std::ios::cur) || !in) {
++            return false;
++        }
++        meta.marks.clear();
++        meta.marks.reserve(meta.n_ckpt);
++        for (uint32_t i = 0; i < meta.n_ckpt; i++) {
++            int64_t n_tok = 0;
++            int32_t id_task = 0;
++            int32_t pos_min = 0;
++            int32_t pos_max = 0;
++            uint64_t n_tgt = 0;
++            uint64_t n_dft = 0;
++            uint64_t n_spec = 0;
++            if (!read_i64(in, n_tok) || !read_i32(in, id_task) || !read_i32(in, pos_min) || !read_i32(in, pos_max) ||
++                    !read_u64(in, n_tgt) || !read_u64(in, n_dft) || !read_u64(in, n_spec)) {
++                return false;
++            }
++            if (n_tgt > budget_ || n_dft > budget_ || n_spec > budget_) {
++                return false;
++            }
++            meta.marks.push_back(n_tok);
++            const uint64_t skip = n_tgt + n_dft + n_spec;
++            if (skip > 0 && (!in.seekg((std::streamoff) skip, std::ios::cur) || !in)) {
++                return false;
++            }
++        }
++        return true;
++    }
++
+     meta_status read_meta(const std::filesystem::path & path, file_meta & meta) const {
+         std::ifstream in(path, std::ios::binary);
+         if (!in) {
+@@ -476,6 +514,9 @@ private:
+         if (st != meta_status::ok) {
+             return st;
+         }
++        if (!read_marks(in, meta)) {
++            return meta_status::bad;
++        }
+         std::error_code ec;
+         meta.file_bytes = (uint64_t) std::filesystem::file_size(path, ec);
+         if (ec) {
+@@ -556,10 +597,20 @@ private:
+             throw std::runtime_error("failed to read back " + dst.string());
+         }
+ 
++        std::vector<int64_t> new_marks;
++        new_marks.reserve(entry.ckpts.size());
++        for (const auto & c : entry.ckpts) {
++            new_marks.push_back(c.n_tokens);
++        }
++
+         std::lock_guard<std::mutex> g(mu_);
+         std::vector<std::filesystem::path> dead;
+         for (auto it = files_.begin(); it != files_.end(); ) {
+-            if (it->path == dst || prefix_of(it->tokens, entry.tokens)) {
++            const bool covered = llama_warm_covers(
++                    rewinds_,
++                    it->tokens.data(), it->tokens.size(), it->marks.data(), it->marks.size(),
++                    entry.tokens.data(), entry.tokens.size(), new_marks.data(), new_marks.size());
++            if (it->path == dst || covered) {
+                 if (it->path != dst) {
+                     dead.push_back(it->path);
+                 }
+@@ -605,6 +656,7 @@ private:
+     std::filesystem::path dir_;
+     uint64_t model_id_ = 0;
+     uint64_t budget_ = k_budget;
++    bool rewinds_ = true;
+     mutable std::mutex mu_;
+     std::vector<file_meta> files_;
+     std::thread writer_;
+@@ -717,6 +769,32 @@ int main() {
+         }
+     }
+ 
++    {
++        std::filesystem::remove_all(dir);
++        llama_warm_disk disk(dir, 42, 100000);
++        disk.set_rewinds(false);
++        llama_warm_entry a;
++        a.tokens = { 1, 2, 3 };
++        a.main   = { 1 };
++        llama_warm_entry b = a;
++        b.tokens = { 1, 2, 3, 4, 5, 6 };
++        disk.store(a);
++        disk.flush();
++        disk.store(b);
++        disk.flush();
++        if (disk.count() != 2) {
++            return warm_fail("mark keep count");
++        }
++        llama_warm_ckpt at;
++        at.n_tokens = 3;
++        b.ckpts.push_back(at);
++        disk.store(b);
++        disk.flush();
++        if (disk.count() != 1) {
++            return warm_fail("mark drop count");
++        }
++    }
++
+     uint64_t one = 0;
+     {
+         std::filesystem::remove_all(dir);

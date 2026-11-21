@@ -165,6 +165,16 @@ struct common_sampler {
         cur_p = { cur.data(), cur.size(), -1, false };
     }
 
+    void set_logits_row(const float * logits, int32_t n_vocab) {
+        GGML_ASSERT(logits != nullptr);
+        GGML_ASSERT(n_vocab > 0);
+        cur.resize(n_vocab);
+        for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
+            cur[token_id] = llama_token_data{token_id, logits[token_id], 0.0f};
+        }
+        cur_p = { cur.data(), cur.size(), -1, false };
+    }
+
     common_time_meas tm() {
         return common_time_meas(t_total_us, params.no_perf);
     }
@@ -203,6 +213,13 @@ struct common_sampler * common_sampler_init(
         throw std::invalid_argument("penalty_present must be finite");
     }
     const llama_vocab * vocab = llama_model_get_vocab(model);
+    if (!common_grammar_value(params.grammar).empty()) {
+        for (const auto & b : params.logit_bias) {
+            if (b.bias == -INFINITY && llama_vocab_is_eog(vocab, b.token)) {
+                throw std::invalid_argument("EOG tokens cannot be banned when a grammar is set");
+            }
+        }
+    }
     llama_sampler_chain_params lparams = llama_sampler_chain_default_params();
 
     lparams.no_perf = params.no_perf;
@@ -255,7 +272,8 @@ struct common_sampler * common_sampler_init(
                     break;
                 }
                 default:
-                    GGML_ASSERT(false && "unknown trigger type");
+                    throw std::runtime_error(
+                        "unknown grammar trigger type: " + std::to_string(trigger.type));
             }
         }
 
@@ -676,6 +694,61 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
 
     if (grammar_should_apply(gsmpl)) {
         llama_sampler_apply(grmr,  &cur_p);
+    }
+
+    llama_sampler_apply(chain, &cur_p);
+
+    GGML_ASSERT(cur_p.selected != -1 && "no selected token during sampling - check your sampling configuration");
+
+    id = cur_p.data[cur_p.selected].id;
+
+    return id;
+}
+
+llama_token common_sampler_sample_logits(struct common_sampler * gsmpl, const float * logits, int32_t n_vocab, bool grammar_first) {
+    const auto tm = gsmpl->tm();
+
+    llama_token id = LLAMA_TOKEN_NULL;
+
+    auto & grmr    = gsmpl->grmr;
+    auto & rbudget = gsmpl->rbudget;
+    auto & chain   = gsmpl->chain;
+    auto & cur_p   = gsmpl->cur_p;
+
+    gsmpl->set_logits_row(logits, n_vocab);
+
+    llama_sampler_apply(rbudget, &cur_p);
+
+    if (grammar_first && grammar_should_apply(gsmpl)) {
+        llama_sampler_apply(grmr, &cur_p);
+    }
+
+    llama_sampler_apply(chain, &cur_p);
+
+    id = cur_p.data[cur_p.selected].id;
+
+    if (grammar_first || !grammar_should_apply(gsmpl)) {
+        return id;
+    }
+
+    {
+        llama_token_data       single_token_data       = { id, 1.0f, 0.0f };
+        llama_token_data_array single_token_data_array = { &single_token_data, 1, -1, false };
+
+        llama_sampler_apply(grmr, &single_token_data_array);
+
+        const bool is_valid = single_token_data_array.data[0].logit != -INFINITY;
+        if (is_valid) {
+            return id;
+        }
+    }
+
+    gsmpl->set_logits_row(logits, n_vocab);
+
+    llama_sampler_apply(rbudget, &cur_p);
+
+    if (grammar_should_apply(gsmpl)) {
+        llama_sampler_apply(grmr, &cur_p);
     }
 
     llama_sampler_apply(chain, &cur_p);

@@ -4,17 +4,22 @@ Date: Sat, 24 Oct 2026 20:34:53 -0700
 Subject: [PATCH] convert: native FP8 pack for 128x128 weight_scale_inv
 
 ---
- conversion/base.py     | 32 ++++++++++++++--
- conversion/base.py.rej | 53 ++++----------------------
- convert_hf_to_gguf.py  |  3 +-
- gguf-py/gguf/quants.py | 84 ++++++++++++++++++++++++++++++++++--------
- 4 files changed, 106 insertions(+), 66 deletions(-)
+ conversion/base.py             | 32 +++++++++++--
+ convert_hf_to_gguf.py          |  3 +-
+ ggml/src/ggml-cuda/mmq.cu      |  3 ++
+ ggml/src/ggml-cuda/mmq.cu.rej  | 12 -----
+ ggml/src/ggml-cuda/mmq.cuh     | 12 +++++
+ ggml/src/ggml-cuda/mmq.cuh.rej | 27 -----------
+ gguf-py/gguf/quants.py         | 84 ++++++++++++++++++++++++++++------
+ 7 files changed, 114 insertions(+), 59 deletions(-)
+ delete mode 100644 ggml/src/ggml-cuda/mmq.cu.rej
+ delete mode 100644 ggml/src/ggml-cuda/mmq.cuh.rej
 
 diff --git a/conversion/base.py b/conversion/base.py
-index e671055..ff52ebd 100644
+index d32a4e4..9493918 100644
 --- a/conversion/base.py
 +++ b/conversion/base.py
-@@ -184,6 +184,7 @@ class ModelBase:
+@@ -193,6 +193,7 @@ class ModelBase:
          self._fp8_native = fp8_native
          self._fp8_native_tensors: set[str] = set()
          self._fp8_native_scales: dict[str, Callable[[], Tensor]] = dict()
@@ -22,7 +27,7 @@ index e671055..ff52ebd 100644
          if self._fp8_native and self._fp8_as_q8:
              logger.warning("--fp8-native overrides --fp8-as-q8")
              self._fp8_as_q8 = False
-@@ -513,17 +514,28 @@ class ModelBase:
+@@ -560,17 +561,28 @@ class ModelBase:
                              is_fp8_e4m3 = w().dtype == torch.float8_e4m3fn
                          except Exception:
                              is_fp8_e4m3 = False
@@ -54,7 +59,7 @@ index e671055..ff52ebd 100644
                                  )
                              self.model_tensors[weight_name] = lambda w=w, s=s, bs=block_size: dequant_simple(w(), s(), bs)
                              tensors_to_remove.append(name)
-@@ -1183,6 +1195,18 @@ class ModelBase:
+@@ -1252,6 +1264,18 @@ class ModelBase:
          scale_t = LazyTorchTensor.to_eager(self._fp8_native_scales[name]())
          scale = scale_t.detach().float().cpu().numpy()
          qs = data_torch.view(torch.uint8).cpu().numpy()
@@ -73,7 +78,7 @@ index e671055..ff52ebd 100644
          # Per-row scale: (out_features,) or (out_features, 1); else scalar / broadcast.
          if scale.ndim >= 1 and scale.size == qs.shape[0]:
              scale_arg = scale.reshape(qs.shape[0])
-@@ -1191,7 +1215,7 @@ class ModelBase:
+@@ -1260,7 +1284,7 @@ class ModelBase:
          else:
              raise ValueError(
                  f"{name}: unsupported FP8 scale shape {scale.shape} for --fp8-native "
@@ -82,71 +87,11 @@ index e671055..ff52ebd 100644
              )
          return gguf.quants.FP8_E4M3.pack_e4m3_with_scale(qs, scale_arg)
  
-diff --git a/conversion/base.py.rej b/conversion/base.py.rej
-index ebff5c4..227f74a 100644
---- a/conversion/base.py.rej
-+++ b/conversion/base.py.rej
-@@ -1,48 +1,9 @@
- diff a/conversion/base.py b/conversion/base.py	(rejected hunks)
--@@ -536,7 +536,9 @@ class ModelBase:
--                 if quant_format == "float-quantized" or quant_format == "int-quantized" or quant_format == "naive-quantized":
--                     block_size = weight_config.get("block_structure", None)
--                     strategy = weight_config.get("strategy")
---                    assert strategy == "channel" or strategy == "block"
--+                    # WHY tensor: compressed-tensors FP8 e2e (e.g. nm-testing TinyLlama) uses
--+                    # per-tensor weight_scale + F8_E4M3 — same pack path as ModelOpt.
--+                    assert strategy in ("channel", "block", "tensor")
--                     assert weight_config.get("group_size") is None  # didn't find a model using this yet
--                     is_fp8 = (
--                         quant_format == "float-quantized"
--@@ -548,10 +550,32 @@ class ModelBase:
--                             weight_name = name.removesuffix("_scale")
--                             w = self.model_tensors[weight_name]
--                             s = self.model_tensors[name]
---                            self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), block_size)
--+                            is_native_fp8 = False
--+                            try:
--+                                is_native_fp8 = w().dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
--+                            except Exception:
--+                                is_native_fp8 = False
--+                            can_native = False
--+                            if self._fp8_native and is_fp8 and is_native_fp8:
--+                                if strategy in ("tensor", "channel") and block_size is None:
--+                                    can_native = True
--+                                elif block_size is not None:
--+                                    bs = tuple(int(x) for x in block_size)
--+                                    can_native = bool(bs) and (bs[-1] % 32 == 0)
--+                            if can_native:
--+                                self._fp8_native_tensors.add(weight_name)
--+                                self._fp8_native_scales[weight_name] = s
--+                                self._fp8_native_block_sizes[weight_name] = (
--+                                    None if block_size is None else tuple(int(x) for x in block_size)
--+                                )
--+                                tensors_to_remove.append(name)
--+                            else:
--+                                self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), block_size)
--+                                tensors_to_remove.append(name)
--+                                if self._fp8_as_q8 and is_fp8:
--+                                    self._fp8_dequantized.add(weight_name)
--+                        if name.endswith(".input_scale"):
-+@@ -624,6 +636,7 @@ class ModelBase:
-+                             # Keep E4M3 bytes; absorb per-tensor/per-row scale at pack time.
-+                             self._fp8_native_tensors.add(weight_name)
-+                             self._fp8_native_scales[weight_name] = s
-++                            self._fp8_native_block_sizes[weight_name] = None
-                              tensors_to_remove.append(name)
---                            if self._fp8_as_q8 and is_fp8:
---                                self._fp8_dequantized.add(weight_name)
--                 elif quant_format == "pack-quantized":
--                     assert weight_config.get("strategy") == "group"
--                     assert weight_config.get("type", "int") == "int"
-+                         else:
-+                             is_fp8_weight = False
 diff --git a/convert_hf_to_gguf.py b/convert_hf_to_gguf.py
-index 5ec13ab..a0400e0 100755
+index 557cdb5..47f7139 100755
 --- a/convert_hf_to_gguf.py
 +++ b/convert_hf_to_gguf.py
-@@ -159,7 +159,8 @@ def parse_args() -> argparse.Namespace:
+@@ -168,7 +168,8 @@ def parse_args() -> argparse.Namespace:
      parser.add_argument(
          "--fp8-native", action="store_true",
          help="Write ModelOpt/FP8 E4M3 weights as GGML FP8_E4M3 (block scale + E4M3 bytes) without full F16 dequant. "
@@ -156,6 +101,101 @@ index 5ec13ab..a0400e0 100755
      )
  
      parser.add_argument(
+diff --git a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu
+index d8df8d6..3aacd6c 100644
+--- a/ggml/src/ggml-cuda/mmq.cu
++++ b/ggml/src/ggml-cuda/mmq.cu
+@@ -28,6 +28,9 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
+         case GGML_TYPE_Q8_0:
+             mul_mat_q_case<GGML_TYPE_Q8_0, GGML_PREC_Q8>(ctx, args, stream);
+             break;
++        case GGML_TYPE_FP8_E4M3:
++            mul_mat_q_case<GGML_TYPE_FP8_E4M3, GGML_PREC_Q8>(ctx, args, stream);
++            break;
+ // -----------------------------------------------------------------------
+         case GGML_TYPE_Q2_K:
+             mul_mat_q_case<GGML_TYPE_Q2_K, GGML_PREC_Q8>(ctx, args, stream);
+diff --git a/ggml/src/ggml-cuda/mmq.cu.rej b/ggml/src/ggml-cuda/mmq.cu.rej
+deleted file mode 100644
+index 23bd597..0000000
+--- a/ggml/src/ggml-cuda/mmq.cu.rej
++++ /dev/null
+@@ -1,12 +0,0 @@
+-diff a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu	(rejected hunks)
+-@@ -28,7 +28,9 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
+-         case GGML_TYPE_Q8_0:
+-             mul_mat_q_case<GGML_TYPE_Q8_0>(ctx, args, stream);
+-             break;
+--// -----------------------------------------------------------------------
+-+        case GGML_TYPE_FP8_E4M3:
+-+            mul_mat_q_case<GGML_TYPE_FP8_E4M3>(ctx, args, stream);
+-+            break;
+-         case GGML_TYPE_Q2_K:
+-             mul_mat_q_case<GGML_TYPE_Q2_K>(ctx, args, stream);
+-             break;
+diff --git a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh
+index 44a279e..5ed24de 100644
+--- a/ggml/src/ggml-cuda/mmq.cuh
++++ b/ggml/src/ggml-cuda/mmq.cuh
+@@ -645,6 +645,12 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
+                     ggml_cuda_mmq_load_tiles_q8_0<type, J, fallback, false>,
+                     ggml_cuda_mmq_vec_dot_q8_0_q8_1_dp4a<type, J, fallback>,
+                     ggml_cuda_mmq_write_back_dp4a<type, J, fallback, prec_src1>);
++            case GGML_TYPE_FP8_E4M3:
++                return ggml_cuda_mmq_util_funcs(
++                    VDR_FP8_E4M3_Q8_1_MMQ,
++                    ggml_cuda_mmq_load_tiles_fp8_e4m3<type, J, fallback>,
++                    ggml_cuda_mmq_vec_dot_q8_0_q8_1_dp4a<type, J, fallback>,
++                    ggml_cuda_mmq_write_back_dp4a<type, J, fallback, prec_src1>);
+ // ---------------------------------------------------------------------------------------------
+             case GGML_TYPE_Q2_K:
+                 return ggml_cuda_mmq_util_funcs(
+@@ -815,6 +821,12 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
+                 ggml_cuda_mmq_load_tiles_q8_0<type, J, fallback, has_fusion>,
+                 ggml_cuda_mmq_vec_dot_q8_0_q8_1_mma<type, J, fallback, MMQ_Q8_1_DS_LAYOUT_D4>,
+                 ggml_cuda_mmq_write_back_mma<type, J, fallback, prec_src1, has_fusion>);
++        case GGML_TYPE_FP8_E4M3:
++            return ggml_cuda_mmq_util_funcs(
++                -1,
++                ggml_cuda_mmq_load_tiles_fp8_e4m3<type, J, fallback>,
++                ggml_cuda_mmq_vec_dot_q8_0_q8_1_mma<type, J, fallback, MMQ_Q8_1_DS_LAYOUT_D4>,
++                ggml_cuda_mmq_write_back_mma<type, J, fallback, prec_src1, false>);
+ // ---------------------------------------------------------------------------------------------
+         case GGML_TYPE_Q2_K:
+             return ggml_cuda_mmq_util_funcs(
+diff --git a/ggml/src/ggml-cuda/mmq.cuh.rej b/ggml/src/ggml-cuda/mmq.cuh.rej
+deleted file mode 100644
+index 86a4768..0000000
+--- a/ggml/src/ggml-cuda/mmq.cuh.rej
++++ /dev/null
+@@ -1,27 +0,0 @@
+-diff a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh	(rejected hunks)
+-@@ -587,6 +589,12 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
+-                     ggml_cuda_mmq_load_tiles_q8_0<type, J, fallback>,
+-                     ggml_cuda_mmq_vec_dot_q8_0_q8_1_dp4a<type, J, fallback>,
+-                     ggml_cuda_mmq_write_back_dp4a<type, J, fallback>);
+-+            case GGML_TYPE_FP8_E4M3:
+-+                return ggml_cuda_mmq_util_funcs(
+-+                    VDR_FP8_E4M3_Q8_1_MMQ,
+-+                    ggml_cuda_mmq_load_tiles_fp8_e4m3<type, J, fallback>,
+-+                    ggml_cuda_mmq_vec_dot_q8_0_q8_1_dp4a<type, J, fallback>,
+-+                    ggml_cuda_mmq_write_back_dp4a<type, J, fallback>);
+- // ---------------------------------------------------------------------------------------------
+-             case GGML_TYPE_Q2_K:
+-                 return ggml_cuda_mmq_util_funcs(
+-@@ -757,6 +765,12 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
+-                 ggml_cuda_mmq_load_tiles_q8_0<type, J, fallback>,
+-                 ggml_cuda_mmq_vec_dot_q8_0_q8_1_mma<type, J, fallback, MMQ_Q8_1_DS_LAYOUT_D4>,
+-                 ggml_cuda_mmq_write_back_mma<type, J, fallback>);
+-+        case GGML_TYPE_FP8_E4M3:
+-+            return ggml_cuda_mmq_util_funcs(
+-+                -1,
+-+                ggml_cuda_mmq_load_tiles_fp8_e4m3<type, J, fallback>,
+-+                ggml_cuda_mmq_vec_dot_q8_0_q8_1_mma<type, J, fallback, MMQ_Q8_1_DS_LAYOUT_D4>,
+-+                ggml_cuda_mmq_write_back_mma<type, J, fallback>);
+- // ---------------------------------------------------------------------------------------------
+-         case GGML_TYPE_Q2_K:
+-             return ggml_cuda_mmq_util_funcs(
 diff --git a/gguf-py/gguf/quants.py b/gguf-py/gguf/quants.py
 index 7b6527d..18fdab9 100644
 --- a/gguf-py/gguf/quants.py

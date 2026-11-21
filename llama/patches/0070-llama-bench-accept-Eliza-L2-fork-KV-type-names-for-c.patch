@@ -10,10 +10,10 @@ without TBQ/QJL/Polar aliases, L2 bench legs reject fork profiles.
  1 file changed, 26 insertions(+)
 
 diff --git a/tools/llama-bench/llama-bench.cpp b/tools/llama-bench/llama-bench.cpp
-index 96ae487..c9b7f30 100644
+index 1ddd73c..7b53de6 100644
 --- a/tools/llama-bench/llama-bench.cpp
 +++ b/tools/llama-bench/llama-bench.cpp
-@@ -518,6 +518,32 @@ static ggml_type ggml_type_from_name(const std::string & s) {
+@@ -521,6 +521,32 @@ static ggml_type ggml_type_from_name(const std::string & s) {
      if (s == "iq4_nl") {
          return GGML_TYPE_IQ4_NL;
      }

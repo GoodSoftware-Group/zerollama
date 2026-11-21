@@ -1,0 +1,246 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Sat, 21 Nov 2026 13:37:05 -0800
+Subject: [PATCH] llama: drop the disk cache file that was used least recently
+
+Restoring a prompt stamps that file as the newest. The byte budget counts every model in the directory, so a prompt that was just resumed is not the one removed when the directory is full.
+---
+ tools/server/server-slot-sched.cpp |   1 +
+ tools/server/server-warm-disk.h    | 167 +++++++++++++++++++++++++++--
+ 2 files changed, 160 insertions(+), 8 deletions(-)
+
+diff --git a/tools/server/server-slot-sched.cpp b/tools/server/server-slot-sched.cpp
+index 3b1f530..bd4d952 100644
+--- a/tools/server/server-slot-sched.cpp
++++ b/tools/server/server-slot-sched.cpp
+@@ -323,6 +323,7 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+ 
+                 SRV_DBG("slot %d: prompt disk cache restore, %zu tokens, f_keep = %.3f, took %.2f ms\n",
+                         id_slot, entry->tokens.size(), disk_pick->f_keep, (ggml_time_us() - t_start) / 1000.0);
++                warm->note_used(disk_pick->path);
+                 return true;
+             }
+         }
+diff --git a/tools/server/server-warm-disk.h b/tools/server/server-warm-disk.h
+index 2b19b6d..9f96252 100644
+--- a/tools/server/server-warm-disk.h
++++ b/tools/server/server-warm-disk.h
+@@ -6,8 +6,9 @@
+ // or device are left unread. CPU and GPU runs round differently, so the key
+ // includes the offload and the devices that wrote the state. Version 2 removes
+ // version 1 files: those kept tokens written one at a time, which a GPU resume
+-// must not restore. The oldest files go first once the directory passes its
+-// byte budget.
++// must not restore. The oldest files in the directory go first once it passes
++// its byte budget, whichever model wrote them. Restoring a file makes it the
++// newest, so a prompt that was just used is not the one the budget drops.
+ 
+ #include "server-warm-cover.h"
+ 
+@@ -162,14 +163,33 @@ public:
+                 files_.push_back(std::move(meta));
+             }
+         }
++        size_t protect = (size_t) -1;
+         if (!files_.empty()) {
+-            size_t protect = 0;
++            protect = 0;
+             for (size_t i = 1; i < files_.size(); i++) {
+                 if (files_[i].mtime >= files_[protect].mtime) {
+                     protect = i;
+                 }
+             }
+-            trim_files(protect);
++        }
++        trim_files(protect);
++    }
++
++    // The file was restored. Its timestamp becomes now, in the index and on
++    // disk, so a later trim keeps it ahead of files that have not been used.
++    void note_used(const std::filesystem::path & path) {
++        std::error_code ec;
++        std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now(), ec);
++        if (ec) {
++            return;
++        }
++        const int64_t stamp = mtime_of(path);
++        std::lock_guard<std::mutex> g(mu_);
++        for (auto & f : files_) {
++            if (f.path == path) {
++                f.mtime = stamp;
++                return;
++            }
+         }
+     }
+ 
+@@ -695,21 +715,61 @@ private:
+     }
+ 
+     // Caller holds mu_, or is the constructor before the object is shared.
++    // Files of other models count toward the same budget. A file newer than
++    // the one protect names is left in place: that is the state just written
++    // or the newest one this model can still resume.
+     void trim_files(size_t protect) {
+         std::vector<uint64_t> sizes;
+         std::vector<int64_t>  times;
++        std::vector<std::filesystem::path> extras;
+         sizes.reserve(files_.size());
+         times.reserve(files_.size());
+         for (const auto & f : files_) {
+             sizes.push_back(f.file_bytes);
+             times.push_back(f.mtime);
+         }
+-        const std::vector<size_t> drop = llama_warm_trim(sizes, times, budget_, protect);
+-        std::vector<char> gone(files_.size(), 0);
+         std::error_code ec;
++        for (const auto & ent : std::filesystem::directory_iterator(dir_, ec)) {
++            if (ec || !ent.is_regular_file(ec)) {
++                continue;
++            }
++            const std::string name = ent.path().filename().string();
++            if (name.size() < 6 || name.compare(name.size() - 6, 6, ".zwarm") != 0) {
++                continue;
++            }
++            bool known = false;
++            for (const auto & f : files_) {
++                if (f.path == ent.path()) {
++                    known = true;
++                    break;
++                }
++            }
++            if (known) {
++                continue;
++            }
++            const uint64_t bytes = (uint64_t) std::filesystem::file_size(ent.path(), ec);
++            if (ec) {
++                continue;
++            }
++            extras.push_back(ent.path());
++            sizes.push_back(bytes);
++            times.push_back(mtime_of(ent.path()));
++        }
++        std::vector<size_t> drop = llama_warm_trim(sizes, times, budget_, protect);
++        if (protect < times.size()) {
++            const int64_t keep_mtime = times[protect];
++            drop.erase(std::remove_if(drop.begin(), drop.end(), [&](size_t i) {
++                return i != protect && times[i] > keep_mtime;
++            }), drop.end());
++        }
++        std::vector<char> gone(files_.size(), 0);
+         for (size_t i : drop) {
+-            gone[i] = 1;
+-            std::filesystem::remove(files_[i].path, ec);
++            if (i < files_.size()) {
++                gone[i] = 1;
++                std::filesystem::remove(files_[i].path, ec);
++            } else {
++                std::filesystem::remove(extras[i - files_.size()], ec);
++            }
+         }
+         std::vector<file_meta> keep;
+         keep.reserve(files_.size());
+@@ -731,6 +791,7 @@ private:
+ };
+ 
+ #ifdef LLAMA_WARM_DISK_TEST
++#include <chrono>
+ #include <iostream>
+ 
+ static int warm_fail(const char * msg) {
+@@ -969,6 +1030,96 @@ int main() {
+         }
+     }
+ 
++    {
++        std::filesystem::remove_all(dir);
++        std::filesystem::path older;
++        std::filesystem::path newer;
++        uint64_t one_file = 0;
++        {
++            llama_warm_disk disk(dir, 42, 100000);
++            llama_warm_entry a;
++            a.tokens = { 1 };
++            a.main   = { 1, 2, 3, 4 };
++            llama_warm_entry b;
++            b.tokens = { 2 };
++            b.main   = { 1, 2, 3, 4 };
++            disk.store(a);
++            disk.flush();
++            disk.store(b);
++            disk.flush();
++            const int32_t qa[] = { 1 };
++            const int32_t qb[] = { 2 };
++            const auto pa = disk.better(qa, 1, -1.0f, -1.0f);
++            const auto pb = disk.better(qb, 1, -1.0f, -1.0f);
++            if (!pa || !pb) {
++                return warm_fail("used paths");
++            }
++            older = pb->path;
++            newer = pa->path;
++            disk.note_used(newer);
++            const auto written = std::filesystem::last_write_time(older);
++            std::filesystem::last_write_time(older, written - std::chrono::hours(1));
++            one_file = (uint64_t) std::filesystem::file_size(newer);
++        }
++        {
++            llama_warm_disk disk(dir, 42, one_file);
++            if (disk.count() != 1) {
++                return warm_fail("used trim count");
++            }
++            const int32_t qa[] = { 1 };
++            const int32_t qb[] = { 2 };
++            if (!disk.better(qa, 1, -1.0f, -1.0f) || disk.better(qb, 1, -1.0f, -1.0f)) {
++                return warm_fail("used file kept");
++            }
++        }
++    }
++
++    {
++        std::filesystem::remove_all(dir);
++        uint64_t one_file = 0;
++        {
++            llama_warm_disk first(dir, 42, 100000);
++            llama_warm_entry a;
++            a.tokens = { 3 };
++            a.main   = { 1, 2, 3, 4 };
++            first.store(a);
++            first.flush();
++        }
++        {
++            llama_warm_disk second(dir, 99, 100000);
++            llama_warm_entry b;
++            b.tokens = { 4 };
++            b.main   = { 1, 2, 3, 4 };
++            second.store(b);
++            second.flush();
++            const int32_t q[] = { 4 };
++            const auto pick = second.better(q, 1, -1.0f, -1.0f);
++            if (!pick) {
++                return warm_fail("other model path");
++            }
++            one_file = (uint64_t) std::filesystem::file_size(pick->path);
++            for (const auto & ent : std::filesystem::directory_iterator(dir)) {
++                if (ent.path() == pick->path) {
++                    continue;
++                }
++                const auto written = std::filesystem::last_write_time(ent.path());
++                std::filesystem::last_write_time(ent.path(), written - std::chrono::hours(1));
++            }
++        }
++        {
++            llama_warm_disk disk(dir, 99, one_file);
++            if (disk.count() != 1) {
++                return warm_fail("directory trim kept");
++            }
++        }
++        {
++            llama_warm_disk disk(dir, 42, 100000);
++            if (disk.count() != 0) {
++                return warm_fail("directory trim dropped other");
++            }
++        }
++    }
++
+     std::filesystem::remove_all(dir);
+     std::cout << "warm disk ok\n";
+     return 0;

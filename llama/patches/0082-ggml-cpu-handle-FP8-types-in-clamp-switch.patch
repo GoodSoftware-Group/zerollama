@@ -8,18 +8,48 @@ implement those formats, so classify them with the other unsupported
 types instead of leaving the enum switch incomplete.
 ---
  ggml/src/ggml-cpu/ops.cpp | 2 ++
- 1 file changed, 2 insertions(+)
+ src/llama-graph.cpp       | 1 +
+ src/llama-graph.cpp.rej   | 9 ---------
+ 3 files changed, 3 insertions(+), 9 deletions(-)
+ delete mode 100644 src/llama-graph.cpp.rej
 
 diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
-index 88a70a1..4344d31 100644
+index 95be7c1..b555a6b 100644
 --- a/ggml/src/ggml-cpu/ops.cpp
 +++ b/ggml/src/ggml-cpu/ops.cpp
-@@ -6143,6 +6143,8 @@ void ggml_compute_forward_clamp(
-                 ggml_compute_forward_clamp_f16(params, dst);
+@@ -6178,6 +6178,8 @@ void ggml_compute_forward_clamp(
+             {
+                 ggml_compute_forward_clamp_half<ggml_bf16_t>(params, dst);
              } break;
-         case GGML_TYPE_BF16:
 +        case GGML_TYPE_FP8_E4M3:
 +        case GGML_TYPE_FP8_E5M2:
          case GGML_TYPE_Q1_0:
          case GGML_TYPE_Q2_0:
          case GGML_TYPE_Q4_0:
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 96608f5..9fe045c 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -5,6 +5,7 @@
+ #include "llama-moe-cache.h"
+ #include "llama-batch.h"
+ #include "llama-cparams.h"
++#include "llama-dca.h"
+ #include "llama-sampler.h"
+ 
+ #include "llama-kv-cache.h"
+diff --git a/src/llama-graph.cpp.rej b/src/llama-graph.cpp.rej
+deleted file mode 100644
+index bdcbb25..0000000
+--- a/src/llama-graph.cpp.rej
++++ /dev/null
+@@ -1,9 +0,0 @@
+-diff a/src/llama-graph.cpp b/src/llama-graph.cpp	(rejected hunks)
+-@@ -4,6 +4,7 @@
+- #include "llama-model.h"
+- #include "llama-batch.h"
+- #include "llama-cparams.h"
+-+#include "llama-dca.h"
+- #include "llama-sampler.h"
+- 
+- #include "llama-kv-cache.h"

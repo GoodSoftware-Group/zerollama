@@ -5,26 +5,17 @@ Subject: [PATCH] fix: restore pretok_blob / use_blob decl in BPE tokenize
 
 ---
  common/CMakeLists.txt.rej                  |  13 ---
- common/speculative.cpp.rej                 |  37 --------
- conversion/base.py.rej                     |  18 ----
  ggml/include/ggml-rpc.h.rej                |  10 --
- ggml/src/ggml-cpu/arch-fallback.h.rej      |   9 --
  ggml/src/ggml-cuda/fattn.cu.rej            |  35 -------
  ggml/src/ggml-cuda/gated_delta_net.cu.rej  |  16 ----
  ggml/src/ggml-cuda/ggml-cuda.cu.rej        |   9 --
- ggml/src/ggml-cuda/mmq.cu.rej              |  11 ---
- ggml/src/ggml-cuda/mmq.cuh.rej             |  27 ------
  ggml/src/ggml-metal/CMakeLists.txt.rej     |  12 ---
  ggml/src/ggml-metal/ggml-metal-ops.cpp.rej |   9 --
  ggml/src/ggml-metal/ggml-metal-ops.h.rej   |  10 --
  ggml/src/ggml.c.rej                        |  19 ----
  gguf-py/gguf/constants.py.rej              |  13 ---
- src/llama-arch.cpp.rej                     |  23 -----
  src/llama-context.cpp.rej                  |  35 -------
- src/llama-graph.cpp.rej                    |   9 --
  src/llama-kv-cache.cpp.rej                 |  14 ---
- src/llama-model.cpp.rej                    |  55 -----------
- src/llama-model.h.rej                      |  12 ---
  src/llama-vocab.cpp.rej                    |  33 +++----
  src/llama-vocab.cpp.rej.rej                | 101 ---------------------
  src/unicode.cpp.rej                        |  38 --------
@@ -33,28 +24,19 @@ Subject: [PATCH] fix: restore pretok_blob / use_blob decl in BPE tokenize
  tools/server/server-schema.cpp.rej         |  49 ----------
  tools/server/server-task.h.rej             |   9 --
  tools/server/server.cpp.rej                |  15 ---
- 29 files changed, 13 insertions(+), 665 deletions(-)
+ 20 files changed, 13 insertions(+), 464 deletions(-)
  delete mode 100644 common/CMakeLists.txt.rej
- delete mode 100644 common/speculative.cpp.rej
- delete mode 100644 conversion/base.py.rej
  delete mode 100644 ggml/include/ggml-rpc.h.rej
- delete mode 100644 ggml/src/ggml-cpu/arch-fallback.h.rej
  delete mode 100644 ggml/src/ggml-cuda/fattn.cu.rej
  delete mode 100644 ggml/src/ggml-cuda/gated_delta_net.cu.rej
  delete mode 100644 ggml/src/ggml-cuda/ggml-cuda.cu.rej
- delete mode 100644 ggml/src/ggml-cuda/mmq.cu.rej
- delete mode 100644 ggml/src/ggml-cuda/mmq.cuh.rej
  delete mode 100644 ggml/src/ggml-metal/CMakeLists.txt.rej
  delete mode 100644 ggml/src/ggml-metal/ggml-metal-ops.cpp.rej
  delete mode 100644 ggml/src/ggml-metal/ggml-metal-ops.h.rej
  delete mode 100644 ggml/src/ggml.c.rej
  delete mode 100644 gguf-py/gguf/constants.py.rej
- delete mode 100644 src/llama-arch.cpp.rej
  delete mode 100644 src/llama-context.cpp.rej
- delete mode 100644 src/llama-graph.cpp.rej
  delete mode 100644 src/llama-kv-cache.cpp.rej
- delete mode 100644 src/llama-model.cpp.rej
- delete mode 100644 src/llama-model.h.rej
  delete mode 100644 src/llama-vocab.cpp.rej.rej
  delete mode 100644 src/unicode.cpp.rej
  delete mode 100644 tools/server/server-context.cpp.rej
@@ -82,73 +64,6 @@ index b068dfc..0000000
 -+    message(STATUS "llama-common: ZEROLLAMA_UMA HOLD_ANE for ane_draft_session (dlsym)")
 -+endif()
 -+
-diff --git a/common/speculative.cpp.rej b/common/speculative.cpp.rej
-deleted file mode 100644
-index c90c3d9..0000000
---- a/common/speculative.cpp.rej
-+++ /dev/null
-@@ -1,37 +0,0 @@
--diff a/common/speculative.cpp b/common/speculative.cpp	(rejected hunks)
--@@ -189,8 +189,11 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
-- 
--     std::vector<common_sampler_ptr> smpls;
-- 
---    common_speculative_impl_draft_simple(const common_params_speculative & params, uint32_t n_seq)
---        : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE, n_seq, params.draft.n_max)
--+    common_speculative_impl_draft_simple(
--+            const common_params_speculative & params,
--+            uint32_t n_seq,
--+            common_speculative_type type_in = COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE)
--+        : common_speculative_impl(type_in, n_seq, params.draft.n_max)
--         , params(params.draft)
--     {
--         auto * ctx_dft = this->params.ctx_dft;
--@@ -258,7 +261,11 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
-- 
--         common_ane_draft_log_init(type, llama_model_n_embd(llama_get_model(ctx_dft)));
-- 
---        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
--+        char arch_buf[64] = {};
--+        const bool is_dflash_draft =
--+            llama_model_meta_val_str(llama_get_model(ctx_dft), "general.architecture", arch_buf, sizeof(arch_buf)) > 0 &&
--+            strcmp(arch_buf, "dflash-draft") == 0;
--+        const bool dflash = (type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) || is_dflash_draft;
--         if (dflash || common_ane_draft_enabled()) {
--             common_ane_draft_bind_target_ctx(ctx_tgt);
--             llama_set_embeddings_pre_norm(ctx_tgt, true);
--@@ -2524,7 +2531,7 @@ common_params common_base_params_to_speculative(const common_params & params) {
-- 
--     result.cache_type_k  = params_spec.cache_type_k;
--     result.cache_type_v  = params_spec.cache_type_v;
---    result.n_outputs_max = params.n_parallel;
--+    result.n_outputs_max = std::max(params.n_parallel, (int32_t) params.n_batch);
--     result.n_outputs_max_per_seq = 1;
-- 
--     // dflash/dspark decode the whole noise block in a single pass and sample every block position on the backend
-diff --git a/conversion/base.py.rej b/conversion/base.py.rej
-deleted file mode 100644
-index 937b481..0000000
---- a/conversion/base.py.rej
-+++ /dev/null
-@@ -1,18 +0,0 @@
--diff a/conversion/base.py b/conversion/base.py	(rejected hunks)
--@@ -627,12 +627,12 @@ class ModelBase:
--                             continue
--                         w = self.model_tensors[weight_name]
--                         s = self.model_tensors[name]
---                        is_fp8_e4m3 = False
--+                        is_native_fp8 = False
--                         try:
---                            is_fp8_e4m3 = w().dtype == torch.float8_e4m3fn
--+                            is_native_fp8 = w().dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
--                         except Exception:
---                            is_fp8_e4m3 = False
---                        if self._fp8_native and is_fp8_e4m3:
--+                            is_native_fp8 = False
--+                        if self._fp8_native and is_native_fp8:
--                             # Keep E4M3 bytes; absorb per-tensor/per-row scale at pack time.
--                             self._fp8_native_tensors.add(weight_name)
--                             self._fp8_native_scales[weight_name] = s
 diff --git a/ggml/include/ggml-rpc.h.rej b/ggml/include/ggml-rpc.h.rej
 deleted file mode 100644
 index 32b89f1..0000000
@@ -165,21 +80,6 @@ index 32b89f1..0000000
 - #endif
 - 
 - #define GGML_RPC_MAX_SERVERS       16
-diff --git a/ggml/src/ggml-cpu/arch-fallback.h.rej b/ggml/src/ggml-cpu/arch-fallback.h.rej
-deleted file mode 100644
-index 0b1903e..0000000
---- a/ggml/src/ggml-cpu/arch-fallback.h.rej
-+++ /dev/null
-@@ -1,9 +0,0 @@
--diff a/ggml/src/ggml-cpu/arch-fallback.h b/ggml/src/ggml-cpu/arch-fallback.h	(rejected hunks)
--@@ -91,6 +93,7 @@
-- // quants.c
-- #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
-- #define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
--+#define ggml_vec_dot_fp8_e5m2_q8_0_generic ggml_vec_dot_fp8_e5m2_q8_0
-- // repack.cpp
-- #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
-- #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
 diff --git a/ggml/src/ggml-cuda/fattn.cu.rej b/ggml/src/ggml-cuda/fattn.cu.rej
 deleted file mode 100644
 index d90e72d..0000000
@@ -258,56 +158,6 @@ index 3a00642..0000000
 - }
 - 
 - static bool ggml_cuda_topk_moe_fusion(const struct ggml_cgraph * cgraph, int node_idx, ggml_cuda_topk_moe_args & args) {
-diff --git a/ggml/src/ggml-cuda/mmq.cu.rej b/ggml/src/ggml-cuda/mmq.cu.rej
-deleted file mode 100644
-index 97ea21c..0000000
---- a/ggml/src/ggml-cuda/mmq.cu.rej
-+++ /dev/null
-@@ -1,11 +0,0 @@
--diff a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu	(rejected hunks)
--@@ -31,6 +31,9 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
--         case GGML_TYPE_FP8_E4M3:
--             mul_mat_q_case<GGML_TYPE_FP8_E4M3>(ctx, args, stream);
--             break;
--+        case GGML_TYPE_FP8_E5M2:
--+            mul_mat_q_case<GGML_TYPE_FP8_E5M2>(ctx, args, stream);
--+            break;
--         case GGML_TYPE_Q2_K:
--             mul_mat_q_case<GGML_TYPE_Q2_K>(ctx, args, stream);
--             break;
-diff --git a/ggml/src/ggml-cuda/mmq.cuh.rej b/ggml/src/ggml-cuda/mmq.cuh.rej
-deleted file mode 100644
-index 309b9ef..0000000
---- a/ggml/src/ggml-cuda/mmq.cuh.rej
-+++ /dev/null
-@@ -1,27 +0,0 @@
--diff a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh	(rejected hunks)
--@@ -595,6 +597,12 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
--                     ggml_cuda_mmq_load_tiles_fp8_e4m3<type, J, fallback>,
--                     ggml_cuda_mmq_vec_dot_q8_0_q8_1_dp4a<type, J, fallback>,
--                     ggml_cuda_mmq_write_back_dp4a<type, J, fallback>);
--+            case GGML_TYPE_FP8_E5M2:
--+                return ggml_cuda_mmq_util_funcs(
--+                    VDR_FP8_E5M2_Q8_1_MMQ,
--+                    ggml_cuda_mmq_load_tiles_fp8_e5m2<type, J, fallback>,
--+                    ggml_cuda_mmq_vec_dot_q8_0_q8_1_dp4a<type, J, fallback>,
--+                    ggml_cuda_mmq_write_back_dp4a<type, J, fallback>);
-- // ---------------------------------------------------------------------------------------------
--             case GGML_TYPE_Q2_K:
--                 return ggml_cuda_mmq_util_funcs(
--@@ -771,6 +779,12 @@ static constexpr __device__ ggml_cuda_mmq_util_funcs ggml_cuda_mmq_get_util_func
--                 ggml_cuda_mmq_load_tiles_fp8_e4m3<type, J, fallback>,
--                 ggml_cuda_mmq_vec_dot_q8_0_q8_1_mma<type, J, fallback, MMQ_Q8_1_DS_LAYOUT_D4>,
--                 ggml_cuda_mmq_write_back_mma<type, J, fallback>);
--+        case GGML_TYPE_FP8_E5M2:
--+            return ggml_cuda_mmq_util_funcs(
--+                -1,
--+                ggml_cuda_mmq_load_tiles_fp8_e5m2<type, J, fallback>,
--+                ggml_cuda_mmq_vec_dot_q8_0_q8_1_mma<type, J, fallback, MMQ_Q8_1_DS_LAYOUT_D4>,
--+                ggml_cuda_mmq_write_back_mma<type, J, fallback>);
-- // ---------------------------------------------------------------------------------------------
--         case GGML_TYPE_Q2_K:
--             return ggml_cuda_mmq_util_funcs(
 diff --git a/ggml/src/ggml-metal/CMakeLists.txt.rej b/ggml/src/ggml-metal/CMakeLists.txt.rej
 deleted file mode 100644
 index a419c97..0000000
@@ -401,35 +251,6 @@ index 37d191e..0000000
 - 
 -         class Indexer:
 -             HEAD_COUNT = "{arch}.attention.indexer.head_count"
-diff --git a/src/llama-arch.cpp.rej b/src/llama-arch.cpp.rej
-deleted file mode 100644
-index b7abe88..0000000
---- a/src/llama-arch.cpp.rej
-+++ /dev/null
-@@ -1,23 +0,0 @@
--diff a/src/llama-arch.cpp b/src/llama-arch.cpp	(rejected hunks)
--@@ -377,6 +378,11 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
--     { LLM_KV_DFLASH_SELECTOR_RANK,    "%s.selector_rank"    },
--     { LLM_KV_DFLASH_SELECTOR_TOP_K,   "%s.selector_top_k"   },
-- 
--+    { LLM_KV_DFLASH_DRAFT_BLOCK_SIZE,  "%s.dflash.block_size"        },
--+    { LLM_KV_DFLASH_MASK_TOKEN_ID,     "%s.dflash.mask_token_id"     },
--+    { LLM_KV_DFLASH_TARGET_LAYER_IDS,  "%s.dflash.target_layer_ids"  },
--+    { LLM_KV_DFLASH_N_TARGET_FEATURES, "%s.dflash.n_target_features" },
--+
--     { LLM_KV_SHORTCONV_L_CACHE, "%s.shortconv.l_cache" },
--     // sentence-transformers dense modules feature dims
--     { LLM_KV_DENSE_2_FEAT_IN,        "%s.dense_2_feat_in"  },
--@@ -1000,6 +1008,9 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
--     // eagle3
--     {LLM_TENSOR_FC,                         {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
--     {LLM_TENSOR_D2T,                        {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
--+    // milady dflash-draft
--+    {LLM_TENSOR_DFLASH_FC,                  {LLM_TENSOR_LAYER_INPUT,     GGML_OP_MUL_MAT}},
--+    {LLM_TENSOR_DFLASH_HIDDEN_NORM,         {LLM_TENSOR_LAYER_INPUT,     GGML_OP_MUL}},
--     // dspark
--     {LLM_TENSOR_DSPARK_MARKOV_W1,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
--     {LLM_TENSOR_DSPARK_MARKOV_W2,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
 diff --git a/src/llama-context.cpp.rej b/src/llama-context.cpp.rej
 deleted file mode 100644
 index e169464..0000000
@@ -471,21 +292,6 @@ index e169464..0000000
 -     // fprintf(stderr, "splits: %d\n", ggml_backend_sched_get_n_splits(sched));
 - 
 -     return status;
-diff --git a/src/llama-graph.cpp.rej b/src/llama-graph.cpp.rej
-deleted file mode 100644
-index bdcbb25..0000000
---- a/src/llama-graph.cpp.rej
-+++ /dev/null
-@@ -1,9 +0,0 @@
--diff a/src/llama-graph.cpp b/src/llama-graph.cpp	(rejected hunks)
--@@ -4,6 +4,7 @@
-- #include "llama-model.h"
-- #include "llama-batch.h"
-- #include "llama-cparams.h"
--+#include "llama-dca.h"
-- #include "llama-sampler.h"
-- 
-- #include "llama-kv-cache.h"
 diff --git a/src/llama-kv-cache.cpp.rej b/src/llama-kv-cache.cpp.rej
 deleted file mode 100644
 index 7227775..0000000
@@ -506,85 +312,6 @@ index 7227775..0000000
 -     GGML_UNUSED(flags);
 - 
 -     io.write(&n_stream, sizeof(n_stream));
-diff --git a/src/llama-model.cpp.rej b/src/llama-model.cpp.rej
-deleted file mode 100644
-index c6a4d1b..0000000
---- a/src/llama-model.cpp.rej
-+++ /dev/null
-@@ -1,55 +0,0 @@
--diff a/src/llama-model.cpp b/src/llama-model.cpp	(rejected hunks)
--@@ -3192,6 +3194,8 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
--             }
--             // DSV4 DSpark drafters use DeepSeek-V4's normal RoPE; legacy DFlash backbones are NeoX
--             return model->hparams.dsv4_hc_mult > 0 ? LLAMA_ROPE_TYPE_NORM : LLAMA_ROPE_TYPE_NEOX;
--+        case LLM_ARCH_DFLASH_DRAFT:
--+            return LLAMA_ROPE_TYPE_NEOX;
-- 
--         case LLM_ARCH_QWEN2VL:
--         case LLM_ARCH_PADDLEOCR:
--@@ -3458,6 +3462,44 @@ uint32_t llama_model_target_layer_ids_n(const struct llama_model * model) {
--     return (uint32_t) model->target_layer_ids.size();
-- }
-- 
--+int32_t llama_model_dflash_n_target_features(const struct llama_model * model) {
--+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
--+        return 0;
--+    }
--+    return (int32_t) model->hparams.dflash_n_target_features;
--+}
--+
--+int32_t llama_model_dflash_mask_token_id(const struct llama_model * model) {
--+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
--+        return -1;
--+    }
--+    return (int32_t) model->hparams.dflash_mask_token_id;
--+}
--+
--+int32_t llama_model_dflash_block_size(const struct llama_model * model) {
--+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
--+        return 0;
--+    }
--+    return (int32_t) model->hparams.dflash_block_size;
--+}
--+
--+int32_t llama_model_dflash_n_target_layers(const struct llama_model * model) {
--+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
--+        return 0;
--+    }
--+    return (int32_t) model->hparams.dflash_n_target_layers;
--+}
--+
--+int32_t llama_model_dflash_target_layer_id(const struct llama_model * model, int32_t i) {
--+    if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT || i < 0) {
--+        return -1;
--+    }
--+    if ((uint32_t) i >= model->hparams.dflash_n_target_layers) {
--+        return -1;
--+    }
--+    return (int32_t) model->hparams.dflash_target_layer_ids[i];
--+}
--+
-- uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out) {
--     if (model->vocab.n_tokens() == 0 || model->tok_embd == nullptr) {
--         return 0;
-diff --git a/src/llama-model.h.rej b/src/llama-model.h.rej
-deleted file mode 100644
-index 3ddf5c0..0000000
---- a/src/llama-model.h.rej
-+++ /dev/null
-@@ -1,12 +0,0 @@
--diff a/src/llama-model.h b/src/llama-model.h	(rejected hunks)
--@@ -715,6 +715,10 @@ struct llama_model {
--     struct ggml_tensor * dflash_selector_next   = nullptr;
--     struct ggml_tensor * dflash_selector_hidden = nullptr;
-- 
--+    // milady dflash-draft
--+    struct ggml_tensor * dflash_fc          = nullptr;
--+    struct ggml_tensor * dflash_hidden_norm = nullptr;
--+
--     // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
--     std::vector<int32_t> target_layer_ids;
-- 
 diff --git a/src/llama-vocab.cpp.rej b/src/llama-vocab.cpp.rej
 index ac216dd..69afeb5 100644
 --- a/src/llama-vocab.cpp.rej

@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Prompt reuse (Kinetic ideas, llama.cpp 0162–0186) — Nov 2026
+
+**Why:** an agent resends the same tools and rules every turn. A cold prompt was left on the existing matmul. Burst int8 GEMM was not ported, so Metal, CUDA, and Arc decode tok/s are unchanged. The series makes a saved prompt restorable, and only when the copy is faster than running it.
+
+| Piece | Detail |
+|-------|--------|
+| Quilt | `llama/patches/` **0162–0186** on **b12557**. Vendor checkout `a520b5b` (186 commits). `LLAMA_CPP_VENDOR_HEAD` stays `6e18bf0` so a checkout parked there still receives the new files |
+| llama-server | Disk state under `llama.cpp/warm`, cost gate, mark grid, session-suffix draft, `POST /prefill` |
+| Go | `POST /api/prefill` and `POST /v1/prefill` render with `chatPrompt` (the same string `/api/chat` uses). `cache_reset` / OpenAI `cache_prompt: false` is a one-request miss. No new `LLAMA_*` HTTP fields |
+| Mac default | Unchanged ggml runner. These server pieces run when the model is on a llama-server built from this tree |
+| Not a bench | `zerollama bench` times cold decode. A flat number is the expected result. The July `~/.ollama/bench.json` rows still describe that |
+
+Doc: [kinetic-prompt-reuse.md](docs/design/serving/kinetic-prompt-reuse.md). Findings: [kinetic-prompt-reuse-findings.md](docs/design/serving/kinetic-prompt-reuse-findings.md).
+
 ### Directory image describe — Nov 2026
 
 `zerollama describe DIRECTORY` and `POST /api/describe` write a content-hash catalog of pictures (SigLIP tags by default; optional vision caption and OWLv2 boxes). The caller keeps the catalog; the server never opens a folder path. Resume skips unchanged files, adds new ones, drops missing paths. Builtin labels embed phrases (`a photograph`, …); empty tag lists stay empty (no forced winner). HEIC on Darwin converts via `sips` for the model call.

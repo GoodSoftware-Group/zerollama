@@ -9,10 +9,10 @@ Subject: [PATCH] unicode: GPT-2 + Llama3 all-ASCII byte pretok (0115)
  2 files changed, 272 insertions(+), 29 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index 1f1c681..a136427 100644
+index 6f37ef0..d0853ec 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
-@@ -505,6 +505,63 @@ static inline bool unicode_is_qwen2_regex_expr(const std::string & regex_expr) {
+@@ -510,6 +510,63 @@ static inline bool unicode_is_qwen2_regex_expr(const std::string & regex_expr) {
             "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
  }
  
@@ -76,7 +76,7 @@ index 1f1c681..a136427 100644
  // Same algorithm as unicode_regex_split_qwen2_ascii_seg but on raw ASCII bytes.
  static void unicode_regex_split_qwen2_ascii_bytes_seg(
          const unsigned char * text, size_t ini, size_t end, std::vector<size_t> & bpe_offsets) {
-@@ -544,17 +601,7 @@ static void unicode_regex_split_qwen2_ascii_bytes_seg(
+@@ -549,17 +606,7 @@ static void unicode_regex_split_qwen2_ascii_bytes_seg(
              if ((c & 2) || next_letter) {
                  ++pos;
                  // 8-wide letter consume (T02-ish) — bytes are proven ASCII
@@ -95,7 +95,7 @@ index 1f1c681..a136427 100644
                  add_token(pos);
                  continue;
              }
-@@ -618,18 +665,204 @@ static std::vector<std::string> unicode_regex_split_qwen2_ascii_bytes(const std:
+@@ -623,18 +670,204 @@ static std::vector<std::string> unicode_regex_split_qwen2_ascii_bytes(const std:
      bpe_offsets.reserve(std::max<size_t>(1, text.size() / 3));
      unicode_regex_split_qwen2_ascii_bytes_seg(
              (const unsigned char *) text.data(), 0, text.size(), bpe_offsets);

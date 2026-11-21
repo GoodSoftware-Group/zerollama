@@ -10,6 +10,7 @@ This file is the **executive roadmap**: a short view of what matters next.
 
 ## Now
 
+- **Prompt reuse is in the quilt, not in the running binary.** Patches **0162–0186** restore a repeated agent prefix. A cold prompt is the same speed. The gain shows up after `llama-server` is rebuilt from `vendor/llama-cpp-b12557` (lab port; Mac ggml stays the default). No new HTTP knobs. [kinetic-prompt-reuse.md](design/serving/kinetic-prompt-reuse.md) · [findings](design/serving/kinetic-prompt-reuse-findings.md).
 - **Core serving:** Phase **15** page bind / native decode closure, Phase **16** edge cleanup, and Phase **11** admission polish. Detailed backlog: [core-serving.md](roadmaps/core-serving.md#local-inference--actionable-phases).
 - **Apple serving:** keep product-track Apple work on **M16** Flash-MoE and **M24** GGUF MTP. Details: [core-serving.md](roadmaps/core-serving.md#apple-silicon--metal-track).
 - **Surfaces and integrations:** Eliza route hardening, **LAYA1/LAYA2**, and the **AR7** auto-router gate. Details: [surfaces-and-integrations.md](roadmaps/surfaces-and-integrations.md#zerollama-remote-cloud-eliza), [structured surfaces](roadmaps/surfaces-and-integrations.md#structured-inference-surfaces).
@@ -30,7 +31,7 @@ This file is the **executive roadmap**: a short view of what matters next.
 - **Training architecture:** **T2** only when auth is a deployment requirement; **T5** only if Python embed becomes the bottleneck.
 - **Surfaces:** **LAYA4** and **AR10** stay parked until the active surfaces justify more investment.
 - **Integrations:** LM Studio fixture cache and MLX compatibility matrix stay later-tier.
-- **Media:** long-tail runner/value expansion and deeper native acceleration stay behind the near-term product backlog.
+- **Media:** long-tail runner/value expansion and deeper native acceleration stay behind the near-term product backlog. **H1** Haru native duplex is a design note only ([haru-duplex.md](design/media/haru-duplex.md)); no bridge until a lab listen shows overlap. Cascade duplex is unchanged.
 - **Code structure:** collapse the duplicated digest scan and split the oversized serving files (**R2 → R7**). **R1** (the unused `zzauditvp` voice clone) is done. Details: [core-serving.md](roadmaps/core-serving.md#code-structure).
 
 ## Track roadmaps

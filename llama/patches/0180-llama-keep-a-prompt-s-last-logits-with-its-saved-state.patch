@@ -1,0 +1,255 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Sat, 21 Nov 2026 13:31:41 -0800
+Subject: [PATCH] llama: keep a prompt's last logits with its saved state
+
+A repeated prompt samples from the row saved with the state, including one restored from disk after a restart. The row is a trailer, so a file written without it still loads.
+---
+ tools/server/server-context.cpp    | 28 +++++++++++++
+ tools/server/server-slot-sched.cpp |  8 ++++
+ tools/server/server-slot-sched.h   | 17 ++++++++
+ tools/server/server-warm-disk.h    | 66 ++++++++++++++++++++++++++++++
+ 4 files changed, 119 insertions(+)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 6396250..cca69ae 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -590,6 +590,10 @@ struct server_slot {
+             if (cur_size_tgt == 0 || payload > prompt_cache.warm->budget()) {
+                 return;
+             }
++            payload += (uint64_t) prompt.logits.size() * sizeof(float);
++            if (payload > prompt_cache.warm->budget()) {
++                return;
++            }
+             try {
+                 llama_warm_entry ent;
+                 const auto & toks = prompt.tokens.get_tokens();
+@@ -618,12 +622,31 @@ struct server_slot {
+                     c.spec = ck->data_spec;
+                     ent.ckpts.push_back(std::move(c));
+                 }
++                ent.logits      = prompt.logits;
++                ent.logits_n    = prompt.logits_n;
++                ent.logits_k    = prompt.logits_k;
++                ent.logits_hash = prompt.logits_hash;
+                 prompt_cache.warm->store(std::move(ent));
+             } catch (const std::bad_alloc &) {
+                 SLT_WRN(*this, "%s", "prompt disk cache skipped, out of memory\n");
+             }
+         };
+ 
++        prompt.logits.clear();
++        prompt.logits_n    = 0;
++        prompt.logits_k    = 0;
++        prompt.logits_hash = 0;
++        if (ctx_tgt != nullptr && prompt_logits_hash != 0 && prompt_logits_n > 0 &&
++                prompt_logits_n == (int32_t) prompt.tokens.size() && !prompt_logits.empty()) {
++            const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(ctx_tgt)));
++            if ((int32_t) prompt_logits.size() == n_vocab) {
++                prompt.logits      = prompt_logits;
++                prompt.logits_n    = prompt_logits_n;
++                prompt.logits_k    = prompt_logits_k;
++                prompt.logits_hash = prompt_logits_hash;
++            }
++        }
++
+         auto * cur = prompt_cache.alloc(prompt, cur_size_tgt, cur_size_dft);
+         if (cur == nullptr) {
+             save_disk(nullptr);
+@@ -649,6 +672,11 @@ struct server_slot {
+         bool res = prompt_cache.load(prompt, tokens, lora_new, ctx_tgt, ctx_dft, id);
+         if (!res) {
+             SLT_WRN(*this, "%s", "failed to load prompt from cache\n");
++        } else if (prompt.logits_hash != 0 && prompt.logits_n == (int32_t) prompt.tokens.size() && !prompt.logits.empty()) {
++            prompt_logits      = prompt.logits;
++            prompt_logits_n    = prompt.logits_n;
++            prompt_logits_k    = prompt.logits_k;
++            prompt_logits_hash = prompt.logits_hash;
+         }
+ 
+         return res;
+diff --git a/tools/server/server-slot-sched.cpp b/tools/server/server-slot-sched.cpp
+index 8f1e5aa..3b1f530 100644
+--- a/tools/server/server-slot-sched.cpp
++++ b/tools/server/server-slot-sched.cpp
+@@ -170,6 +170,10 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
+             /*.tokens      =*/ prompt.tokens.clone(),
+             /*.checkpoints =*/ prompt.checkpoints,
+             /*.lora        =*/ prompt.lora,
++            /*.logits      =*/ prompt.logits,
++            /*.logits_n    =*/ prompt.logits_n,
++            /*.logits_k    =*/ prompt.logits_k,
++            /*.logits_hash =*/ prompt.logits_hash,
+         },
+         /*.data   =*/ {
+             /*.main =*/ std::move(state_data_tgt),
+@@ -311,6 +315,10 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+                     server_tokens(toks, false),
+                     std::move(ckpts),
+                     lora_new,
++                    std::move(entry->logits),
++                    entry->logits_n,
++                    entry->logits_k,
++                    entry->logits_hash,
+                 };
+ 
+                 SRV_DBG("slot %d: prompt disk cache restore, %zu tokens, f_keep = %.3f, took %.2f ms\n",
+diff --git a/tools/server/server-slot-sched.h b/tools/server/server-slot-sched.h
+index 226f9e4..df1c78d 100644
+--- a/tools/server/server-slot-sched.h
++++ b/tools/server/server-slot-sched.h
+@@ -30,9 +30,20 @@ struct server_prompt {
+     // TODO: slot files do not store it
+     std::vector<common_adapter_lora_info> lora;
+ 
++    // Logits after the last of these tokens. Empty when the row was not saved.
++    // logits_k < 0 is the whole vocabulary; a positive k is a top-k row.
++    std::vector<float> logits;
++    int32_t  logits_n    = 0;
++    int32_t  logits_k    = 0;
++    uint64_t logits_hash = 0;
++
+     void clear() {
+         tokens.clear();
+         checkpoints.clear();
++        logits.clear();
++        logits_n    = 0;
++        logits_k    = 0;
++        logits_hash = 0;
+     }
+ 
+     int n_tokens() const {
+@@ -44,6 +55,10 @@ struct server_prompt {
+             tokens.clone(),
+             checkpoints,
+             lora,
++            logits,
++            logits_n,
++            logits_k,
++            logits_hash,
+         };
+     }
+ 
+@@ -78,6 +93,8 @@ struct server_prompt_cache_state {
+             res += ckpt->size();
+         }
+ 
++        res += prompt.logits.size() * sizeof(float);
++
+         return res;
+     }
+ };
+diff --git a/tools/server/server-warm-disk.h b/tools/server/server-warm-disk.h
+index d43ee32..2b19b6d 100644
+--- a/tools/server/server-warm-disk.h
++++ b/tools/server/server-warm-disk.h
+@@ -39,6 +39,13 @@ struct llama_warm_entry {
+     std::vector<uint8_t> main;
+     std::vector<uint8_t> drft;
+     std::vector<llama_warm_ckpt> ckpts;
++
++    // Logits after the last token. Absent on files written before this trailer.
++    // logits_k < 0 is the whole vocabulary.
++    std::vector<float> logits;
++    int32_t  logits_n    = 0;
++    int32_t  logits_k    = 0;
++    uint64_t logits_hash = 0;
+ };
+ 
+ struct llama_warm_pick {
+@@ -127,6 +134,7 @@ public:
+     static constexpr uint64_t k_version = 2;
+     static constexpr uint32_t k_max_tokens = 1u << 20;
+     static constexpr uint32_t k_max_ckpts  = 4096;
++    static constexpr uint32_t k_max_logits = 1u << 22;
+ 
+     llama_warm_disk(std::filesystem::path dir, uint64_t model_id, uint64_t budget = k_budget)
+         : dir_(std::move(dir)), model_id_(model_id), budget_(budget) {
+@@ -327,6 +335,32 @@ public:
+                     return std::nullopt;
+                 }
+             }
++            // A file written without the row ends here. The trailer is the
++            // logits after the last token, so a restart can sample them.
++            if (in.peek() == std::char_traits<char>::eof()) {
++                return entry;
++            }
++            char tag[4];
++            if (!read_raw(in, tag, 4) || std::memcmp(tag, "ZLOG", 4) != 0) {
++                return std::nullopt;
++            }
++            int32_t n_row = 0;
++            int32_t k_row = 0;
++            uint64_t hash = 0;
++            uint32_t n_f = 0;
++            if (!read_i32(in, n_row) || !read_i32(in, k_row) || !read_u64(in, hash) || !read_u32(in, n_f)) {
++                return std::nullopt;
++            }
++            if (n_row != (int32_t) entry.tokens.size() || hash == 0 || n_f == 0 || n_f > k_max_logits) {
++                return std::nullopt;
++            }
++            entry.logits.resize(n_f);
++            if (!read_raw(in, entry.logits.data(), (size_t) n_f * sizeof(float))) {
++                return std::nullopt;
++            }
++            entry.logits_n    = n_row;
++            entry.logits_k    = k_row;
++            entry.logits_hash = hash;
+             return entry;
+         } catch (const std::exception &) {
+             return std::nullopt;
+@@ -598,6 +632,15 @@ private:
+                     out.write((const char *) c.spec.data(), (std::streamsize) c.spec.size());
+                 }
+             }
++            if (entry.logits_hash != 0 && entry.logits_n == (int32_t) entry.tokens.size() &&
++                    !entry.logits.empty() && entry.logits.size() <= k_max_logits) {
++                out.write("ZLOG", 4);
++                write_i32(out, entry.logits_n);
++                write_i32(out, entry.logits_k);
++                write_u64(out, entry.logits_hash);
++                write_u32(out, (uint32_t) entry.logits.size());
++                out.write((const char *) entry.logits.data(), (std::streamsize) (entry.logits.size() * sizeof(float)));
++            }
+             if (!out) {
+                 std::error_code ec;
+                 std::filesystem::remove(tmp, ec);
+@@ -776,6 +819,9 @@ int main() {
+         if (got->ckpts.size() != 1 || got->ckpts[0].n_tokens != 4 || got->ckpts[0].id_task != 3 || got->ckpts[0].tgt != ck.tgt || got->ckpts[0].spec != ck.spec) {
+             return warm_fail("checkpoint");
+         }
++        if (!got->logits.empty() || got->logits_hash != 0) {
++            return warm_fail("logits absent");
++        }
+         const int32_t shortq[] = { 1 };
+         llama_warm_entry long_ent = ent;
+         long_ent.tokens = { 1, 2, 3, 4, 5, 6, 7, 8 };
+@@ -869,6 +915,26 @@ int main() {
+         }
+     }
+ 
++    {
++        std::filesystem::remove_all(dir);
++        llama_warm_disk disk(dir, 42, 100000);
++        llama_warm_entry row;
++        row.tokens = { 1, 2, 3, 4 };
++        row.main   = { 9 };
++        row.logits = { 0.25f, -1.5f, 3.0f };
++        row.logits_n = 4;
++        row.logits_k = -1;
++        row.logits_hash = 0x1234;
++        disk.store(row);
++        disk.flush();
++        const int32_t q[] = { 1, 2, 3, 4 };
++        const auto pick = disk.better(q, 4, -1.0f, -1.0f);
++        const auto got = pick ? disk.read(pick->path) : std::nullopt;
++        if (!got || got->main != row.main || got->logits != row.logits || got->logits_n != 4 || got->logits_k != -1 || got->logits_hash != 0x1234) {
++            return warm_fail("logits trailer");
++        }
++    }
++
+     uint64_t one = 0;
+     {
+         std::filesystem::remove_all(dir);

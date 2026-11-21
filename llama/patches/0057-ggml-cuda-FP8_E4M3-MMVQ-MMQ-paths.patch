@@ -4,6 +4,9 @@ Date: Sat, 24 Oct 2026 20:34:53 -0700
 Subject: [PATCH] ggml-cuda: FP8_E4M3 MMVQ + MMQ paths
 
 ---
+ conversion/base.py.rej                        | 48 ----------
+ ggml/src/ggml-cpu/arch-fallback.h             |  1 +
+ ggml/src/ggml-cpu/arch-fallback.h.rej         |  9 --
  ggml/src/ggml-cuda/common.cuh                 | 36 +++++++
  ggml/src/ggml-cuda/dequantize.cuh             | 29 ------
  ggml/src/ggml-cuda/mmq-load-tiles.cuh         | 93 +++++++++++++++++++
@@ -14,17 +17,100 @@ Subject: [PATCH] ggml-cuda: FP8_E4M3 MMVQ + MMQ paths
  ggml/src/ggml-cuda/mmvq.cu                    |  9 ++
  .../mmq-instance-fp8_e4m3.cu                  |  5 +
  ggml/src/ggml-cuda/vecdotq.cuh                | 24 +++++
- 10 files changed, 210 insertions(+), 31 deletions(-)
+ 13 files changed, 211 insertions(+), 88 deletions(-)
+ delete mode 100644 conversion/base.py.rej
+ delete mode 100644 ggml/src/ggml-cpu/arch-fallback.h.rej
  create mode 100644 ggml/src/ggml-cuda/mmq.cu.rej
  create mode 100644 ggml/src/ggml-cuda/mmq.cuh.rej
  create mode 100644 ggml/src/ggml-cuda/template-instances/mmq-instance-fp8_e4m3.cu
 
+diff --git a/conversion/base.py.rej b/conversion/base.py.rej
+deleted file mode 100644
+index ebff5c4..0000000
+--- a/conversion/base.py.rej
++++ /dev/null
+@@ -1,48 +0,0 @@
+-diff a/conversion/base.py b/conversion/base.py	(rejected hunks)
+-@@ -536,7 +536,9 @@ class ModelBase:
+-                 if quant_format == "float-quantized" or quant_format == "int-quantized" or quant_format == "naive-quantized":
+-                     block_size = weight_config.get("block_structure", None)
+-                     strategy = weight_config.get("strategy")
+--                    assert strategy == "channel" or strategy == "block"
+-+                    # WHY tensor: compressed-tensors FP8 e2e (e.g. nm-testing TinyLlama) uses
+-+                    # per-tensor weight_scale + F8_E4M3 — same pack path as ModelOpt.
+-+                    assert strategy in ("channel", "block", "tensor")
+-                     assert weight_config.get("group_size") is None  # didn't find a model using this yet
+-                     is_fp8 = (
+-                         quant_format == "float-quantized"
+-@@ -548,10 +550,32 @@ class ModelBase:
+-                             weight_name = name.removesuffix("_scale")
+-                             w = self.model_tensors[weight_name]
+-                             s = self.model_tensors[name]
+--                            self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), block_size)
+-+                            is_native_fp8 = False
+-+                            try:
+-+                                is_native_fp8 = w().dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+-+                            except Exception:
+-+                                is_native_fp8 = False
+-+                            can_native = False
+-+                            if self._fp8_native and is_fp8 and is_native_fp8:
+-+                                if strategy in ("tensor", "channel") and block_size is None:
+-+                                    can_native = True
+-+                                elif block_size is not None:
+-+                                    bs = tuple(int(x) for x in block_size)
+-+                                    can_native = bool(bs) and (bs[-1] % 32 == 0)
+-+                            if can_native:
+-+                                self._fp8_native_tensors.add(weight_name)
+-+                                self._fp8_native_scales[weight_name] = s
+-+                                self._fp8_native_block_sizes[weight_name] = (
+-+                                    None if block_size is None else tuple(int(x) for x in block_size)
+-+                                )
+-+                                tensors_to_remove.append(name)
+-+                            else:
+-+                                self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), block_size)
+-+                                tensors_to_remove.append(name)
+-+                                if self._fp8_as_q8 and is_fp8:
+-+                                    self._fp8_dequantized.add(weight_name)
+-+                        if name.endswith(".input_scale"):
+-                             tensors_to_remove.append(name)
+--                            if self._fp8_as_q8 and is_fp8:
+--                                self._fp8_dequantized.add(weight_name)
+-                 elif quant_format == "pack-quantized":
+-                     assert weight_config.get("strategy") == "group"
+-                     assert weight_config.get("type", "int") == "int"
+diff --git a/ggml/src/ggml-cpu/arch-fallback.h b/ggml/src/ggml-cpu/arch-fallback.h
+index cf8c104..f7d4594 100644
+--- a/ggml/src/ggml-cpu/arch-fallback.h
++++ b/ggml/src/ggml-cpu/arch-fallback.h
+@@ -224,6 +224,7 @@
+ #elif defined(__riscv)
+ // quants.c
+ #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
++#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+ #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
+ // repack.cpp
+ #define ggml_quantize_mat_q8_0_4x1_generic ggml_quantize_mat_q8_0_4x1
+diff --git a/ggml/src/ggml-cpu/arch-fallback.h.rej b/ggml/src/ggml-cpu/arch-fallback.h.rej
+deleted file mode 100644
+index bc98adc..0000000
+--- a/ggml/src/ggml-cpu/arch-fallback.h.rej
++++ /dev/null
+@@ -1,9 +0,0 @@
+-diff a/ggml/src/ggml-cpu/arch-fallback.h b/ggml/src/ggml-cpu/arch-fallback.h	(rejected hunks)
+-@@ -88,6 +90,7 @@
+- #elif defined(__x86_64__) || defined(__i386__) || defined(_M_IX86) || defined(_M_X64)
+- // quants.c
+- #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
+-+#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+- // repack.cpp
+- #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
+- #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
 diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
-index 00476f0..c4d7517 100644
+index 053ed60..0e8dc40 100644
 --- a/ggml/src/ggml-cuda/common.cuh
 +++ b/ggml/src/ggml-cuda/common.cuh
-@@ -884,6 +884,35 @@ static __device__ __forceinline__ float ggml_cuda_ue4m3_to_fp32(uint8_t x) {
- #endif // defined(GGML_USE_HIP) && defined(CDNA3) && defined(FP8_AVAILABLE) && HIP_VERSION >= 60200000
+@@ -995,6 +995,35 @@ static __host__ __device__ __forceinline__ uint8_t ggml_cuda_fp32_to_f8_e4m3(flo
+ #endif // defined(FP8_AVAILABLE) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
  }
  
 +static __device__ __forceinline__ float ggml_cuda_fp8_e4m3_to_fp32(uint8_t x) {
@@ -59,7 +145,7 @@ index 00476f0..c4d7517 100644
  static __device__ __forceinline__ uint8_t ggml_cuda_fp32_to_ue4m3(float x) {
  #if defined(BLACKWELL_MMA_AVAILABLE) // This is used for NVFP4 subblock scale quantizations only
      if (!(x > 0.0f)) {
-@@ -1047,6 +1076,13 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q8_0> {
+@@ -1158,6 +1187,13 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q8_0> {
      static constexpr int bs = sizeof(block_q8_0);
  };
  
@@ -114,7 +200,7 @@ index b5ca25a..7de655b 100644
      const block_fp8_e4m3 * x = (const block_fp8_e4m3 *) vx;
  
 diff --git a/ggml/src/ggml-cuda/mmq-load-tiles.cuh b/ggml/src/ggml-cuda/mmq-load-tiles.cuh
-index 4951db7..49054bd 100644
+index 9a5a6a4..983be22 100644
 --- a/ggml/src/ggml-cuda/mmq-load-tiles.cuh
 +++ b/ggml/src/ggml-cuda/mmq-load-tiles.cuh
 @@ -564,6 +564,99 @@ template <ggml_type type, int J, bool fallback, bool has_fusion> static __device
@@ -218,10 +304,10 @@ index 4951db7..49054bd 100644
  
  template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_q2_K(
 diff --git a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu
-index 49e0ce9..756b082 100644
+index c9bcbc2..d8df8d6 100644
 --- a/ggml/src/ggml-cuda/mmq.cu
 +++ b/ggml/src/ggml-cuda/mmq.cu
-@@ -394,7 +394,7 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
+@@ -407,7 +407,7 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
          case GGML_TYPE_Q5_0:
          case GGML_TYPE_Q5_1:
          case GGML_TYPE_Q8_0:
@@ -249,10 +335,10 @@ index 0000000..23bd597
 +             mul_mat_q_case<GGML_TYPE_Q2_K>(ctx, args, stream);
 +             break;
 diff --git a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh
-index 308968b..dc4bfb6 100644
+index be2f114..44a279e 100644
 --- a/ggml/src/ggml-cuda/mmq.cuh
 +++ b/ggml/src/ggml-cuda/mmq.cuh
-@@ -73,6 +73,7 @@ static mmq_q8_1_ds_layout mmq_get_q8_1_ds_layout(const ggml_type type_x) {
+@@ -74,6 +74,7 @@ static mmq_q8_1_ds_layout mmq_get_q8_1_ds_layout(const ggml_type type_x) {
          case GGML_TYPE_Q5_1:
              return MMQ_Q8_1_DS_LAYOUT_DS4;
          case GGML_TYPE_Q8_0:
@@ -260,7 +346,7 @@ index 308968b..dc4bfb6 100644
              return MMQ_Q8_1_DS_LAYOUT_D4;
          case GGML_TYPE_MXFP4:
              return MMQ_Q8_1_DS_LAYOUT_D4;
-@@ -404,6 +405,7 @@ static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml
+@@ -405,6 +406,7 @@ static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml
          case GGML_TYPE_Q5_0:    return MMQ_DP4A_TXS_Q8_0;
          case GGML_TYPE_Q5_1:    return MMQ_DP4A_TXS_Q8_1;
          case GGML_TYPE_Q8_0:    return MMQ_DP4A_TXS_Q8_0;
@@ -268,7 +354,7 @@ index 308968b..dc4bfb6 100644
          case GGML_TYPE_MXFP4:   return MMQ_DP4A_TXS_Q8_1;
          case GGML_TYPE_NVFP4:   return MMQ_DP4A_TXS_Q8_0_16;
          case GGML_TYPE_Q2_K:    return MMQ_DP4A_TXS_Q2_K;
-@@ -1632,7 +1634,7 @@ extern DECL_MMQ_CASE(GGML_TYPE_Q4_1);
+@@ -1696,7 +1698,7 @@ extern DECL_MMQ_CASE(GGML_TYPE_Q4_1);
  extern DECL_MMQ_CASE(GGML_TYPE_Q5_0);
  extern DECL_MMQ_CASE(GGML_TYPE_Q5_1);
  extern DECL_MMQ_CASE(GGML_TYPE_Q8_0);
@@ -311,10 +397,10 @@ index 0000000..86a4768
 +         case GGML_TYPE_Q2_K:
 +             return ggml_cuda_mmq_util_funcs(
 diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
-index 1a9cf55..e8dd961 100644
+index 612d3e3..befdb65 100644
 --- a/ggml/src/ggml-cuda/mmvq.cu
 +++ b/ggml/src/ggml-cuda/mmvq.cu
-@@ -46,6 +46,7 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type)
+@@ -42,6 +42,7 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type)
          case GGML_TYPE_Q5_0:    return vec_dot_q5_0_q8_1;
          case GGML_TYPE_Q5_1:    return vec_dot_q5_1_q8_1;
          case GGML_TYPE_Q8_0:    return vec_dot_q8_0_q8_1;
@@ -322,7 +408,7 @@ index 1a9cf55..e8dd961 100644
          case GGML_TYPE_MXFP4:   return vec_dot_mxfp4_q8_1;
          case GGML_TYPE_NVFP4:   return vec_dot_nvfp4_q8_1;
          case GGML_TYPE_Q2_K:    return vec_dot_q2_K_q8_1;
-@@ -75,6 +76,7 @@ static constexpr __host__ __device__ int get_vdr_mmvq(ggml_type type) {
+@@ -71,6 +72,7 @@ static constexpr __host__ __device__ int get_vdr_mmvq(ggml_type type) {
          case GGML_TYPE_Q5_0:    return VDR_Q5_0_Q8_1_MMVQ;
          case GGML_TYPE_Q5_1:    return VDR_Q5_1_Q8_1_MMVQ;
          case GGML_TYPE_Q8_0:    return VDR_Q8_0_Q8_1_MMVQ;
@@ -330,7 +416,7 @@ index 1a9cf55..e8dd961 100644
          case GGML_TYPE_MXFP4:   return VDR_MXFP4_Q8_1_MMVQ;
          case GGML_TYPE_NVFP4:   return VDR_NVFP4_Q8_1_MMVQ;
          case GGML_TYPE_Q2_K:    return VDR_Q2_K_Q8_1_MMVQ;
-@@ -170,6 +172,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_pascal_older(gg
+@@ -166,6 +168,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_pascal_older(gg
          case GGML_TYPE_Q5_K:    return 5;
          case GGML_TYPE_Q6_K:    return 4;
          case GGML_TYPE_Q8_0:    return 4;
@@ -338,7 +424,7 @@ index 1a9cf55..e8dd961 100644
          default:                return MMVQ_MAX_BATCH_SIZE;
      }
  }
-@@ -1351,6 +1354,12 @@ static void mul_mat_vec_q_switch_type(
+@@ -1356,6 +1359,12 @@ static void mul_mat_vec_q_switch_type(
                   nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y, stride_channel_dst,
                   nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, stream);
              break;

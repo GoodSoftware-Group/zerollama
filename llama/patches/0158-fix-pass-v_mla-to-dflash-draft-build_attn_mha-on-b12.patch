@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Thu, 5 Nov 2026 01:58:54 +0000
+Subject: [PATCH] fix: pass v_mla to dflash draft build_attn_mha on b12119
+
+---
+ src/models/dflash-draft.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/models/dflash-draft.cpp b/src/models/dflash-draft.cpp
+index e90beac..f3dfbb2 100644
+--- a/src/models/dflash-draft.cpp
++++ b/src/models/dflash-draft.cpp
+@@ -279,7 +279,7 @@ llm_build_dflash_draft::llm_build_dflash_draft(
+         ggml_build_forward_expand(gf, Kcur);
+         ggml_build_forward_expand(gf, Vcur);
+ 
+-        cur = build_attn_mha(Qcur, Kcur, Vcur, nullptr, kq_mask, nullptr, nullptr,
++        cur = build_attn_mha(Qcur, Kcur, Vcur, nullptr, kq_mask, nullptr, nullptr, nullptr,
+                              /*n_kv_max=*/0, 1.0f / sqrtf(float(n_embd_head)), il);
+         cb(cur, "kqv_out", il);
+ 

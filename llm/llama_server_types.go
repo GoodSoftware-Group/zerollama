@@ -146,6 +146,8 @@ type ChatRequest struct {
 
 	Logprobs    bool
 	TopLogprobs int
+	// CacheReset asks llama-server not to reuse a saved prompt for this request.
+	CacheReset bool
 }
 
 type ChatResponse struct {

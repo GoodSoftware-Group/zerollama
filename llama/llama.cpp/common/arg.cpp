@@ -4,6 +4,7 @@
 #include "chat.h"
 #include "common.h"
 #include "download.h"
+#include "http.h"
 #include "json-schema-to-grammar.h"
 #include "json.h"
 #include "llama.h"
@@ -281,6 +282,7 @@ const std::vector<ggml_type> kv_cache_types = {
     GGML_TYPE_F32,
     GGML_TYPE_F16,
     GGML_TYPE_BF16,
+    GGML_TYPE_F8_E4M3,
     GGML_TYPE_Q8_0,
     GGML_TYPE_Q4_0,
     GGML_TYPE_Q4_1,
@@ -355,6 +357,14 @@ common_models_handler common_models_handler_init(const common_params & params, l
                                            params.speculative.types.end(),
                                            COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) != params.speculative.types.end();
 
+    const bool spec_type_draft_dflash2 = std::find(params.speculative.types.begin(),
+                                            params.speculative.types.end(),
+                                            COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH2) != params.speculative.types.end();
+
+    const bool spec_type_draft_lilicorr = std::find(params.speculative.types.begin(),
+                                             params.speculative.types.end(),
+                                             COMMON_SPECULATIVE_TYPE_DRAFT_LILICORR) != params.speculative.types.end();
+
     const bool spec_type_draft_eagle3 = std::find(params.speculative.types.begin(),
                                            params.speculative.types.end(),
                                            COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3) != params.speculative.types.end();
@@ -379,7 +389,7 @@ common_models_handler common_models_handler_init(const common_params & params, l
     opts.offline         = params.offline;
     opts.download_mtp    = spec_type_draft_mtp;
     opts.download_eagle3 = spec_type_draft_eagle3;
-    opts.download_dflash = spec_type_draft_dflash;
+    opts.download_dflash = spec_type_draft_dflash || spec_type_draft_dflash2 || spec_type_draft_lilicorr;
     opts.download_dspark = spec_type_draft_dspark;
     opts.download_mmproj = use_mmproj && !params.no_mmproj
                         && params.mmproj.path.empty() && params.mmproj.url.empty();
@@ -407,7 +417,26 @@ bool common_models_handler_is_preset_repo(const common_models_handler & handler)
     return !handler.plan.preset.url.empty();
 }
 
+static common_download_opts download_opts_for_url(const common_download_opts & opts, const std::string & url) {
+    common_download_opts result = opts;
+    try {
+        const auto hf    = common_http_parse_url(common_get_model_endpoint());
+        const auto parts = common_http_parse_url(url);
+
+        if (parts.scheme == hf.scheme &&
+            parts.host   == hf.host &&
+            parts.port   == hf.port &&
+            string_starts_with(result.bearer_token, "hf_")) {
+            return result;
+        }
+    } catch (const std::exception &) {
+    }
+    result.bearer_token.clear();
+    return result;
+}
+
 static std::vector<common_download_task> build_url_tasks(const common_params_model & model, common_download_opts opts) {
+    opts = download_opts_for_url(opts, model.url);
     auto parts = common_download_get_all_parts(model.url);
     std::vector<common_download_task> tasks;
 
@@ -496,7 +525,7 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
         common_download_task task;
         task.url        = params.mmproj.url;
         task.local_path = params.mmproj.path;
-        task.opts       = opts;
+        task.opts       = download_opts_for_url(opts, task.url);
         tasks.push_back(task);
     }
     bool had_spec_url = false;
@@ -504,7 +533,7 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
         common_download_task task;
         task.url        = params.speculative.draft.mparams.url;
         task.local_path = params.speculative.draft.mparams.path;
-        task.opts       = opts;
+        task.opts       = download_opts_for_url(opts, task.url);
         tasks.push_back(task);
         had_spec_url = true;
     }
@@ -891,6 +920,10 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
         throw std::invalid_argument("error: --prompt-cache-all not supported in interactive mode yet\n");
     }
 
+    if (params.sampling.ignore_eos && !common_grammar_value(params.sampling.grammar).empty()) {
+        throw std::invalid_argument("error: --ignore-eos is not supported with --grammar or --json-schema\n");
+    }
+
     const bool skip_model_download =
         // server will call common_params_handle_models() later, so we skip it here
         ctx_arg.ex == LLAMA_EXAMPLE_SERVER ||
@@ -930,8 +963,8 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
     }
 
     const bool mcp_enabled = !params.mcp_servers_config.empty() || !params.mcp_servers_json.empty();
-    if ((!params.server_tools.empty() || mcp_enabled) && !params.cors_origins_explicit) {
-        LOG_WRN("server tools or MCP servers are enabled, using localhost as default CORS origin (change via --cors-origins)\n");
+    if ((!params.server_tools.empty() || mcp_enabled || params.ui_mcp_proxy) && !params.cors_origins_explicit) {
+        LOG_WRN("server tools, MCP servers or MCP proxy are enabled, using localhost as default CORS origin (change via --cors-origins)\n");
         params.cors_origins = "localhost";
     }
 
@@ -1693,7 +1726,12 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_env("LLAMA_ARG_CTX_CHECKPOINTS").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"-cpent", "--checkpoint-every-n-tokens"}, "N",
-        string_format("create a checkpoint every n tokens during prefill (processing), -1 to disable (default: %d)", params.checkpoint_every_nt),
+        string_format(
+            "checkpoint every N tokens during prefill (default: %d)\n"
+            "0 = auto: a 256-token grid on hybrid and recurrent models, no extra grid otherwise\n"
+            "-1 = disable the grid\n"
+            "8192 on a hybrid or recurrent model is treated as auto (legacy profile spacing)",
+            params.checkpoint_every_nt),
         [](common_params & params, int value) {
             params.checkpoint_every_nt = value;
         }
@@ -1708,18 +1746,11 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.checkpoint_min_step = value;
         }
     ).set_env("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT").set_examples({LLAMA_EXAMPLE_SERVER}));
-    // Eliza fork L2 profiles emit --checkpoint-every-n-tokens; map onto ggml-org's
-    // checkpoint_min_step so ZEROLLAMA_LLAMA_FORK=1 argv does not crash at startup.
-    add_opt(common_arg(
-        {"-cpent", "--checkpoint-every-n-tokens"}, "N",
-        string_format("alias for --checkpoint-min-step (eliza L2 profiles; default: %d, -1 disables → 0)", params.checkpoint_min_step),
-        [](common_params & params, int value) {
-            params.checkpoint_min_step = value < 0 ? 0 : value;
-        }
-    ).set_env("LLAMA_ARG_CHECKPOINT_EVERY_NT").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"-cram", "--cache-ram"}, "N",
-        string_format("set the maximum cache size in MiB (default: %d, 0 for decision models, -1 - no limit, 0 - disable)"
+        string_format("set the maximum cache size in MiB (default: %d, 0 for decision models, -1 - no limit, 0 - disable). "
+            "Saved prompts are also written under the llama.cpp cache directory and reused after a restart (LLAMA_WARM_DISK=0 turns the copy off). "
+            "A saved prompt is restored only when that is faster than running it again (LLAMA_WARM_COST=0 disables the check) "
             "[(more info)](https://github.com/ggml-org/llama.cpp/pull/16391)", params.cache_ram_mib),
         [](common_params & params, int value) {
             params.cache_ram_mib = value;
@@ -2535,15 +2566,6 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.ppl_output_type = value;
         }
     ).set_examples({LLAMA_EXAMPLE_PERPLEXITY}));
-    add_opt(common_arg(
-        {"-dt", "--defrag-thold"}, "N",
-        string_format("KV cache defragmentation threshold (DEPRECATED)"),
-        [](common_params & params, const std::string & value) {
-            GGML_UNUSED(params);
-            GGML_UNUSED(value);
-            LOG_WRN("DEPRECATED: --defrag-thold is deprecated and no longer necessary to specify\n");
-        }
-    ).set_env("LLAMA_ARG_DEFRAG_THOLD"));
     if (ex == LLAMA_EXAMPLE_SERVER) {
         // this is to make sure this option appears in the server-specific section of the help message
         add_opt(common_arg(
@@ -2781,14 +2803,27 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_env("LLAMA_ARG_N_CPU_MOE"));
     add_opt(common_arg(
         {"--moe-cache-mib"}, "N",
-        "GPU cache size in MiB for the MoE experts kept in the CPU. with multiple GPUs, it is split among them like the layers (--tensor-split) (default: 0, disabled)",
+        "GPU cache size in MiB for the MoE experts kept in the CPU. With multiple GPUs, it is split among them like the layers (--tensor-split). Default: the memory left on the device after a 384 MiB reserve. 0 disables the cache",
         [](common_params & params, int value) {
             if (value < 0) {
                 throw std::invalid_argument("invalid value");
             }
+            params.moe_cache_auto = false;
             params.moe_cache_size = (size_t) value*1024*1024;
         }
     ).set_env("LLAMA_ARG_MOE_CACHE_MIB"));
+    add_opt(common_arg(
+        {"--moe-cache-cpu-share"}, "F",
+        "share of the MoE cache misses that the CPU computes from the host experts instead of uploading them to the GPU once the cache is full, from 0 to 1. Default: each miss runs on the host or is copied, whichever was faster when measured",
+        [](common_params & params, const std::string & value) {
+            const float share = std::stof(value);
+            if (share < 0.0f || share > 1.0f) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.moe_cache_cpu_share = share;
+            params.moe_cache_cpu_share_set = true;
+        }
+    ).set_env("LLAMA_ARG_MOE_CACHE_CPU_SHARE"));
     add_opt(common_arg(
         {"-ncffn", "--n-cpu-ffn"}, "N",
         "keep the dense FFN weights of the first N layers in the CPU\n"
@@ -2853,7 +2888,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             const std::regex regex{ R"([,/]+)" };
             std::sregex_token_iterator it{ arg_next.begin(), arg_next.end(), regex, -1 };
             std::vector<std::string> split_arg{ it, {} };
-            if (split_arg.size() >= llama_max_devices()) {
+            if (split_arg.size() > llama_max_devices()) {
                 throw std::invalid_argument(
                     string_format("got %zu input configs, but system only has %zu devices", split_arg.size(), llama_max_devices())
                 );
@@ -2919,7 +2954,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             const std::regex regex{ R"([,/]+)" };
             std::sregex_token_iterator it{ arg_next.begin(), arg_next.end(), regex, -1 };
             std::vector<std::string> split_arg{ it, {} };
-            if (split_arg.size() >= llama_max_devices()) {
+            if (split_arg.size() > llama_max_devices()) {
                 throw std::invalid_argument(
                     string_format("got %zu input configs, but system only has %zu devices", split_arg.size(), llama_max_devices())
                 );
@@ -3056,6 +3091,16 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.model.path = value;
         }
     ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_EXPORT_LORA, LLAMA_EXAMPLE_DOWNLOAD, LLAMA_EXAMPLE_TOKENIZE}).set_env("LLAMA_ARG_MODEL"));
+    add_opt(common_arg(
+        {"--ple", "--shard"}, "FNAME,...",
+        "extra GGUF shards for the model, comma separated; may be given more than once\n"
+        "paths may live anywhere, including on different drives; --ple is an alias for --shard",
+        [](common_params & params, const std::string & value) {
+            for (const auto & item : parse_csv_row(value)) {
+                params.model.shards.push_back(item);
+            }
+        }
+    ).set_examples({LLAMA_EXAMPLE_COMMON}).set_env("LLAMA_ARG_SHARD"));
     add_opt(common_arg(
         {"-mu", "--model-url"}, "MODEL_URL",
         "model download url (default: unused)",
@@ -3374,7 +3419,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--cors-origins"}, "ORIGINS",
         string_format(
             "comma-separated list of allowed origins for CORS (default: %s)\n"
-            "if set to special value 'localhost', reflect the Origin header only if it is localhost",
+            "if set to special value 'localhost', only allow same-origin requests (e.g. the built-in UI)",
         params.cors_origins.c_str()),
         [](common_params & params, const std::string & value) {
             params.cors_origins = value;
@@ -3430,7 +3475,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--ui-mcp-proxy", "--webui-mcp-proxy"},
         {"--no-ui-mcp-proxy", "--no-webui-mcp-proxy"},
-        "experimental: whether to enable MCP CORS proxy - do not enable in untrusted environments (default: disabled)",
+        "experimental: whether to enable MCP CORS proxy, for Llama Chat to reach public MCP servers without CORS headers; local and private addresses are refused - do not enable in untrusted environments (default: disabled)\n"
+        "note: for security reasons, this will limit --cors-origins to localhost by default",
         [](common_params & params, bool value) {
             params.ui_mcp_proxy = value;
         }
@@ -3456,6 +3502,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.server_tools_runtime = value;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_TOOLS_RUNTIME"));
+    add_opt(common_arg(
+        {"--allow-unauthenticated-tools"},
+        "allow server tools, MCP servers or MCP proxy on a non-loopback address without an API key - only for trusted networks (default: disabled)",
+        [](common_params & params) {
+            params.server_tools_allow_unauth = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_ALLOW_UNAUTHENTICATED_TOOLS"));
     add_opt(common_arg(
         {"--mcp-servers-config"}, "PATH",
         "experimental: path to JSON file with MCP server definitions (Cursor-compatible format) - do not enable in untrusted environments (default: none)\n"
@@ -3491,7 +3544,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--ui", "--webui"},
         {"--no-ui", "--no-webui"},
-        string_format("whether to enable the Web UI (default: %s)", params.ui ? "enabled" : "disabled"),
+        string_format("whether to enable Llama Chat, the built-in chat app (default: %s)", params.ui ? "enabled" : "disabled"),
         [](common_params & params, bool value) {
             params.ui = value;
         }
@@ -3697,6 +3750,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--media-allow-private-urls"},
+        "allow http(s) media URLs (e.g. image_url) that point to local or private addresses (default: disabled, only public addresses)",
+        [](common_params & params) {
+            params.media_allow_private_urls = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_MEDIA_ALLOW_PRIVATE_URLS"));
     add_opt(common_arg(
         {"--models-dir"}, "PATH",
         "directory containing models for the router server (default: disabled)",
@@ -4503,8 +4563,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_IMATRIX}).set_env("LLAMA_ARG_SPEC_DRAFT_MODEL"));
     add_opt(common_arg(
         {"--spec-type"}, common_speculative_all_types_str(),
-        string_format("comma-separated list of types of speculative decoding to use (default: %s)\n",
-            common_speculative_type_name_str(params.speculative.types).c_str()),
+        "comma-separated list of speculative decoding types. With none set, a session lookup drafts from earlier text in this server. --spec-type none or LLAMA_RAD1=0 turns that lookup off\n",
         [](common_params & params, const std::string & value) {
             const auto types_str = string_split<std::string>(value, ',');
             auto types = common_speculative_types_from_names(types_str);
@@ -4682,24 +4741,32 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--tts-lang"}, "FNAME",
         "language (ISO 639-1) for audio generation\n"
-        "see tts/README.md for per-model usage notes",
+        "see docs/multimodal/tts.md for per-model usage notes",
         [](common_params & params, const std::string & value) {
             params.tts_lang = value;
         }
-    ).set_examples({LLAMA_EXAMPLE_TTS}));
+    ).set_examples({LLAMA_EXAMPLE_TTS, LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
         {"--tts-voice"}, "VOICE",
         "voice for audio generation (model-dependent)\n"
-        "see tts/README.md for per-model usage notes",
+        "see docs/multimodal/tts.md for per-model usage notes",
         [](common_params & params, const std::string & value) {
             params.tts_voice = value;
         }
-    ).set_examples({LLAMA_EXAMPLE_TTS}));
+    ).set_examples({LLAMA_EXAMPLE_TTS, LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
         {"--tts-speaker-file"}, "FNAME",
         "speaker file path for audio generation",
         [](common_params & params, const std::string & value) {
             params.tts_speaker_file = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_TTS}));
+    add_opt(common_arg(
+        {"--tts-speaker-text"}, "TEXT",
+        "transcript of --tts-speaker-file, for models that need it to clone the voice\n"
+        "see docs/multimodal/tts.md for per-model usage notes",
+        [](common_params & params, const std::string & value) {
+            params.tts_speaker_text = value;
         }
     ).set_examples({LLAMA_EXAMPLE_TTS}));
 

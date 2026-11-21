@@ -6,14 +6,15 @@ Subject: [PATCH] chore: stage ollama compat + kv-ext for vendor
 ---
  include/llama-kv-ext.h                        | 245 ++++++++
  src/CMakeLists.txt                            |   7 +
- src/llama-kv-cache.h                          |  46 +-
+ src/llama-kv-cache.cpp                        |   4 +-
+ src/llama-kv-cache.h                          |  38 +-
  src/llama-memory-kv-ext.cpp                   | 553 ++++++++++++++++++
  .../llama-ollama-compat-util.cpp              |   1 +
  src/ollama-compat/llama-ollama-compat-util.h  |   1 +
  src/ollama-compat/llama-ollama-compat.cpp     |   1 +
  src/ollama-compat/llama-ollama-compat.h       |   1 +
  tools/mtmd/CMakeLists.txt                     |   4 +
- 9 files changed, 846 insertions(+), 13 deletions(-)
+ 10 files changed, 848 insertions(+), 7 deletions(-)
  create mode 100644 include/llama-kv-ext.h
  create mode 100644 src/llama-memory-kv-ext.cpp
  create mode 120000 src/ollama-compat/llama-ollama-compat-util.cpp
@@ -273,7 +274,7 @@ index 0000000..32705a3
 +#endif
 +
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 97250c2..0e72339 100644
+index 426c487..723261c 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -33,6 +33,7 @@ set(LLAMA_CORE_SOURCES
@@ -301,7 +302,7 @@ index 97250c2..0e72339 100644
  target_include_directories(llama PUBLIC ../include)
  target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
  
-@@ -74,5 +78,8 @@ target_link_libraries(llama PUBLIC ggml)
+@@ -75,5 +79,8 @@ target_link_libraries(llama PUBLIC ggml PRIVATE Threads::Threads)
  if (BUILD_SHARED_LIBS)
      set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
      target_compile_definitions(llama PRIVATE LLAMA_BUILD)
@@ -310,8 +311,25 @@ index 97250c2..0e72339 100644
  endif()
 +# zerollama Phase 15 v47: external buffer alias probe + validate (no tensor mutation)
 +target_compile_definitions(llama PRIVATE LLAMA_KV_EXT_EXTERNAL_ALIAS=1)
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 5dd0e5f..ef1b712 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -80,9 +80,11 @@ llama_kv_cache::llama_kv_cache(
+     const  layer_reuse_cb & reuse,
+     const  layer_share_cb & share,
+                const char * name_tag,
+-                     bool   is_indexer) :
++                     bool   is_indexer,
++                 uint32_t   kv_size_max) :
+     model(model), hparams(hparams), v_trans(v_trans),
+     n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_swa(n_swa), is_indexer(is_indexer),
++    kv_size_max_val(kv_size_max),
+     attn_rot_bufs(no_alloc), swa_type(swa_type), ctxs_bufs(no_alloc),
+     other(static_cast<llama_kv_cache *>(mem_other)),
+     v_cells_impl(other ? other->v_cells_impl : std::make_shared<llama_kv_cells_vec>()),
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 9ed36c5..fe426a8 100644
+index 1b40f6f..c7dcc01 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
 @@ -93,9 +93,6 @@ public:
@@ -324,22 +342,17 @@ index 9ed36c5..fe426a8 100644
      llama_kv_cache(
              const llama_model & model,
                           bool   no_alloc,
-@@ -109,12 +106,12 @@ public:
-                      uint32_t   n_seq_max,
-                      uint32_t   n_swa,
-                llama_swa_type   swa_type,
--               llama_memory_t   mem_other,
-         const layer_filter_cb & filter,
-         const  layer_reuse_cb & reuse,
-         const  layer_share_cb & share,
+@@ -116,7 +113,8 @@ public:
          // a model can hold more than one cache, so the tensor names have to stay unique
--                 const char *   name_tag = "");
-+                 const char *   name_tag = "",
+                  const char *   name_tag = "",
+         // lightning indexer keys are rotated with the indexer RoPE parameters
+-                       bool   is_indexer = false);
++                       bool   is_indexer = false,
 +                     uint32_t   kv_size_max = 0);
  
      ~llama_kv_cache() = default;
  
-@@ -158,14 +155,24 @@ public:
+@@ -160,14 +158,24 @@ public:
      uint32_t get_size()     const;
      uint32_t get_n_seq_max() const;
      uint32_t get_n_stream() const;
@@ -366,21 +379,7 @@ index 9ed36c5..fe426a8 100644
  
      const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
  
-@@ -313,12 +320,7 @@ private:
-     // note: this is not part of the KV state and it's only used to speed-up the find_slot() method
-     std::vector<uint32_t> v_heads;
- 
--    // TODO: temporary until we refactor to be able to share the same cells between 2 kv caches [TAG_KV_CACHE_SHARE_CELLS]
--    llama_kv_cache * other;
--
--    std::shared_ptr<llama_kv_cells_vec> v_cells_impl;
--
--    llama_kv_cells_vec & v_cells;
-+    std::vector<llama_kv_cells> v_cells;
- 
-     // maps from a sequence id to a stream id
-     std::vector<uint32_t> seq_to_stream;
-@@ -328,6 +330,24 @@ private:
+@@ -339,6 +347,24 @@ private:
  
      std::vector<kv_layer> layers;
  
@@ -997,10 +996,10 @@ index 0000000..05760aa
 +/Users/user1/Sites/inference/zerollama/llama/compat/llama-ollama-compat.h
 \ No newline at end of file
 diff --git a/tools/mtmd/CMakeLists.txt b/tools/mtmd/CMakeLists.txt
-index fc9f0bb..2ad8e97 100644
+index 9c37d60..628ab33 100644
 --- a/tools/mtmd/CMakeLists.txt
 +++ b/tools/mtmd/CMakeLists.txt
-@@ -96,6 +96,10 @@ set_target_properties(mtmd PROPERTIES
+@@ -126,6 +126,10 @@ set_source_files_properties(${MTMD_CORE_SOURCES}
  target_link_libraries     (mtmd PUBLIC ggml llama)
  target_link_libraries     (mtmd PRIVATE Threads::Threads vendor::hash vendor::miniaudio vendor::stb vendor::sheredom)
  target_include_directories(mtmd PUBLIC  .)
@@ -1010,4 +1009,4 @@ index fc9f0bb..2ad8e97 100644
 +target_compile_definitions(mtmd PRIVATE OLLAMA_COMPAT_MTMD_BUILD)
  target_compile_features   (mtmd PRIVATE cxx_std_17)
  
- if (MTMD_VIDEO)
+ # for M_PI, set here because a unity batch can include <cmath> before the source that needs it

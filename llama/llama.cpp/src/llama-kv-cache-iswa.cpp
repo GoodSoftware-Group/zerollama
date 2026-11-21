@@ -156,6 +156,14 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_kv_cache_iswa::memory_breakdo
     return mb;
 }
 
+llama_mark_cost llama_kv_cache_iswa::mark_cost() const {
+    llama_mark_cost cost = kv_base->mark_cost();
+    const llama_mark_cost swa = kv_swa->mark_cost();
+    cost.recurrent += swa.recurrent;
+    cost.per_token += swa.per_token;
+    return cost;
+}
+
 llama_memory_context_ptr llama_kv_cache_iswa::init_batch(llama_batch_allocr & balloc, uint32_t n_ubatch, bool embd_all) {
     // first try simple split
     do {

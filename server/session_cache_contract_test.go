@@ -169,6 +169,21 @@ func TestActiveSessionsIncludesKeyHotMap(t *testing.T) {
 	}
 }
 
+func TestChatOptionsCacheReset(t *testing.T) {
+	if chatOptionsCacheReset(map[string]any{"cache_reset": true}) != true {
+		t.Fatal("top-level cache_reset")
+	}
+	if chatOptionsCacheReset(map[string]any{"zerollama": map[string]any{"cache_reset": true}}) != true {
+		t.Fatal("zerollama cache_reset")
+	}
+	if chatOptionsCacheReset(map[string]any{"temperature": 0.8}) {
+		t.Fatal("unrelated options")
+	}
+	if !zerollamaVersionCapabilities()["prefill"].(bool) {
+		t.Fatal("prefill capability")
+	}
+}
+
 func TestZerollamaVersionAdvertisesCacheContract(t *testing.T) {
 	caps := zerollamaVersionCapabilities()
 	if caps["session_parent_defer"] != true || caps["cache_reset"] != true {

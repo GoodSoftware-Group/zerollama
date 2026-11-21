@@ -13,6 +13,7 @@ Inference runtime, llama.cpp pin, phases, admission, and GPU profiles.
 - [L1 — Per-GPU llama-server profiles (autotune)](./gpu-profiles-l1.md)
 - [L2 — elizaOS/llama.cpp fork evaluation](./gpu-profiles-l2.md)
 - [L3 — Prompt cache key → llama-server slot bridge](./gpu-profiles-l3.md)
+- [Prompt reuse (Kinetic ideas, patches 0162–0186)](./kinetic-prompt-reuse.md) — [findings](./kinetic-prompt-reuse-findings.md)
 - [Inference wishlist — host capacity & admission](./inference-wishlist-host.md)
 - [Invariants](./invariants.md)
 - [Launch model inventory (LaunchModel)](./launch-model-inventory.md)
@@ -35,3 +36,4 @@ Inference runtime, llama.cpp pin, phases, admission, and GPU profiles.
 - [Megaprompt tokenize benches (README evidence)](./readme-marketing-benches.md)
 - [Embedded Python runtime (single process)](./runtime-embed.md)
 - [Scheduling, VRAM, and queue policy](./scheduling-vram-policy.md)
+- [Weight-edit interface (decode → bind → apply)](./weight-patch.md)

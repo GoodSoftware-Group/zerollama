@@ -54,12 +54,11 @@ rsync -a --delete \
 # dropped the gemma4-assistant draft-stack load that way (expected 49, got 15).
 assistant_sentinel='hparams.n_layer_nextn = hparams.n_layer_all'
 vendor_asst="${VENDOR}/src/models/gemma4-assistant.cpp"
-if compgen -G "${ROOT}/llama/patches/*gemma4-assistant-draft-stack*.patch" >/dev/null; then
-  if ! grep -q "${assistant_sentinel}" "${vendor_asst}" 2>/dev/null; then
-    echo "error: refusing to rsync llama.cpp — vendor is missing patch 0163" >&2
+if [[ -f "${vendor_asst}" ]]; then
+  if ! grep -q "${assistant_sentinel}" "${vendor_asst}"; then
+    echo "error: refusing to rsync llama.cpp — vendor is missing the gemma4-assistant draft-stack load" >&2
     echo "  ${vendor_asst} lacks: ${assistant_sentinel}" >&2
     echo "  sync --delete would wipe the in-tree gemma4-assistant fix." >&2
-    echo "  git -C ${VENDOR} am ${ROOT}/llama/patches/*gemma4-assistant-draft-stack*.patch" >&2
     exit 1
   fi
 fi

@@ -15,7 +15,7 @@ Subject: [PATCH] ollama: extend ANE dflash draft hook and export APIs
  create mode 100644 common/speculative.cpp.rej
 
 diff --git a/common/ane_draft_hook.cpp b/common/ane_draft_hook.cpp
-index 849963b..07a24ba 100644
+index e960c38..e0ce989 100644
 --- a/common/ane_draft_hook.cpp
 +++ b/common/ane_draft_hook.cpp
 @@ -11,11 +11,46 @@
@@ -564,7 +564,7 @@ index 849963b..07a24ba 100644
 +#endif
 +}
 diff --git a/common/ane_draft_hook.h b/common/ane_draft_hook.h
-index ea7576d..3652292 100644
+index 670c3cd..ec9efcb 100644
 --- a/common/ane_draft_hook.h
 +++ b/common/ane_draft_hook.h
 @@ -57,6 +57,20 @@ bool common_ane_draft_try_drive_token(struct llama_context * ctx_dft, int32_t i_
@@ -589,7 +589,7 @@ index ea7576d..3652292 100644
  bool ane_dflash_qkv_host_fp32_enabled(void);
  
 diff --git a/common/ane_draft_session.mm b/common/ane_draft_session.mm
-index 3cf6f50..2215d5c 100644
+index 3cf6f50..6e845b6 100644
 --- a/common/ane_draft_session.mm
 +++ b/common/ane_draft_session.mm
 @@ -2807,12 +2807,23 @@ static bool ane_session_eval_dflash_chain12(int seq) {
@@ -718,7 +718,7 @@ index 3cf6f50..2215d5c 100644
          memcpy(g_session.lastDflashQ, q, (size_t) qn * sizeof(float));
      }
 diff --git a/common/speculative.cpp b/common/speculative.cpp
-index e6290ea..9699609 100644
+index b40eb55..f0fe183 100644
 --- a/common/speculative.cpp
 +++ b/common/speculative.cpp
 @@ -1,5 +1,7 @@
@@ -832,10 +832,10 @@ index 0000000..c4f7338
 +                     n_drafting--;
 + 
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 0a8369e..145e4e7 100644
+index 07ee04d..26e7b6d 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -4584,6 +4584,26 @@ void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
+@@ -4811,6 +4811,26 @@ void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
      ctx->set_nextn_layer_offset(offset);
  }
  
@@ -863,10 +863,10 @@ index 0a8369e..145e4e7 100644
      if (!ctx) {
          return nullptr;
 diff --git a/src/llama-ext.h b/src/llama-ext.h
-index d542c91..3035544 100644
+index e296448..3c3ad8f 100644
 --- a/src/llama-ext.h
 +++ b/src/llama-ext.h
-@@ -211,6 +211,89 @@ LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_mode
+@@ -178,6 +178,89 @@ LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_mode
  // returns the number of extracted layers from target model
  LLAMA_API uint32_t        llama_model_target_layer_ids_n(const struct llama_model * model);
  

@@ -15,6 +15,7 @@ Video, music, image, mesh, and voice.
 - [MiniMax Music 3 — findings & learnings](./music-c-findings.md)
 - [music-c — MiniMax Music 3 (hear first, C later)](./music-c.md)
 - [Quick voice stack](./quick-voice.md)
+- [Haru duplex — native full-duplex speech (design lead)](./haru-duplex.md)
 - [Stable Diffusion on Intel Arc A380 (OpenVINO GenAI)](./sd-openvino-a380.md)
 - [Stable Diffusion on Intel Arc A380 (Vulkan)](./sd-vulkan-a380.md)
 - [video-c — Pure-C multi-family video (x/video-c)](./video-c.md)

@@ -410,7 +410,11 @@ func zerollamaVersionCapabilities() map[string]any {
 		"propose_sidecar":         true,
 		// MultiDecode forest decode (llama-server --multidecode / POST /v1/multidecode).
 		// Clients probe once; Hermes batch may silently pack shared-prefix forests.
-		"multidecode":            true,
+		"multidecode": true,
+		// Zero-wait draft (llama-server POST /prefill). Clients probe once.
+		// WHY the flag is true even for a ggml model: the route exists. 501
+		// from the handler is what says this runner cannot prefill.
+		"prefill":                true,
 		"chat_completions_batch": true,
 		// Robot perception. wired is true only when the sibling URL is set.
 		// segment.grasp_ready stays false: a SAM2 mask is not a grasp.

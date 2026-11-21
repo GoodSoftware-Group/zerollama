@@ -47,7 +47,7 @@ func DumpEarWAV(kind string, wav []byte) string {
 		slog.Warn("duplex ear dump", "err", err)
 		return ""
 	}
-	if err := os.WriteFile(path, wav, 0o644); err != nil {
+	if err := os.WriteFile(path, wav, 0o600); err != nil {
 		slog.Warn("duplex ear dump", "path", path, "err", err)
 		return ""
 	}
@@ -68,7 +68,7 @@ func NoteEar(path, transcript, backend string, transcribed bool, transcribeErr e
 	body := fmt.Sprintf("transcribed: %t\nbackend: %s\ntranscript: %s\nerror: %s\n",
 		transcribed, strings.TrimSpace(backend), strings.TrimSpace(transcript), errText)
 	note := strings.TrimSuffix(path, filepath.Ext(path)) + ".txt"
-	if err := os.WriteFile(note, []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(note, []byte(body), 0o600); err != nil {
 		slog.Warn("duplex ear dump", "path", note, "err", err)
 		return
 	}

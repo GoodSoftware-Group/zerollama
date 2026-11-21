@@ -41,6 +41,7 @@ set(LLAMA_CORE_SOURCES
     llama-model.cpp
     llama-quant.cpp
     llama-sampler.cpp
+    llama-shortlist.cpp
     llama-vocab.cpp
     unicode-data.cpp
     unicode.cpp
@@ -72,9 +73,13 @@ configure_file(llama-version.h.in ${CMAKE_CURRENT_BINARY_DIR}/llama-version.h @O
 target_include_directories(llama PRIVATE . ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(llama PRIVATE ollama-compat)
 target_include_directories(llama PUBLIC ../include)
+# vec_dot and the Q4_K/Q6_K/Q8_0 block layouts live next to the CPU backend.
+target_include_directories(llama PRIVATE ../ggml/src ../ggml/src/ggml-cpu)
 target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
 
-target_link_libraries(llama PUBLIC ggml)
+find_package(Threads REQUIRED)
+target_link_libraries(llama PUBLIC ggml PRIVATE Threads::Threads)
+target_link_libraries(llama PRIVATE ggml-cpu)
 
 # zerollama M22: optional UMA broker client for Darwin Metal admission (libuma_client only).
 if (ZEROLLAMA_UMA)

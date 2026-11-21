@@ -43,7 +43,7 @@ index 7fd81b6..b068dfc 100644
 ++endif()
 ++
 diff --git a/common/ane_draft_session.mm b/common/ane_draft_session.mm
-index 2215d5c..ec55026 100644
+index 6e845b6..25ba78a 100644
 --- a/common/ane_draft_session.mm
 +++ b/common/ane_draft_session.mm
 @@ -14,6 +14,10 @@

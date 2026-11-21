@@ -10,5 +10,6 @@ Lab-only or future-facing notes that are not upstream borrowings. Upstream watch
 - [ANE in-process dflash draft](ane-draft-inprocess.md)
 - [ANE hybrid path](ane-hybrid-path.md)
 - [MLX DeepSeek-V4 Flash](mlx-deepseek-v4-flash.md) — [findings](mlx-deepseek-v4-flash-findings.md)
+- [Megakernel decode lab](megakernel-cuda-lab.md) — CUDA-lane measurements (copy floor, implied GB/s, graph on/off) before any persistent-kernel work. Idea donor: [megakernel-borrowings.md](../upstream/megakernel-borrowings.md)
 
 When a research item becomes near-term product work, move the open item into the roadmap and add a capability page once it is a working surface.

@@ -34,6 +34,10 @@ func resetStickyElideForTest() {
 	stickyElideOrder = nil
 }
 
+// chatOptionsCacheReset is the one-request cache miss.
+//
+// WHY both maps: the OpenAI adapter writes options.cache_reset when
+// cache_prompt is false. Harness clients send options.zerollama.cache_reset.
 func chatOptionsCacheReset(opts map[string]any) bool {
 	if opts == nil {
 		return false

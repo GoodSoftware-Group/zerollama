@@ -1,0 +1,164 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Sat, 21 Nov 2026 13:23:32 -0800
+Subject: [PATCH] llama: restore a prompt state only on the device that wrote
+ it
+
+CPU and GPU runs round differently. The disk cache key includes the offload and the devices, so a state from one is not resumed on the other.
+---
+ tools/server/server-context.cpp | 46 ++++++++++++++++++++++++--
+ tools/server/server-warm-disk.h | 57 ++++++++++++++++++++++++++++++---
+ 2 files changed, 97 insertions(+), 6 deletions(-)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 14fcfe7..6396250 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -26,6 +26,7 @@
+ #include "fit.h"
+ #include "llama.h"
+ #include "llama-mark-grid.h"
++#include "llama-model.h"
+ #include "llama-shortlist-top.h"
+ #include "log.h"
+ #include "sampling.h"
+@@ -2145,14 +2146,55 @@ private:
+                         const std::string dpath = params_base.speculative.draft.mparams.path;
+                         id = llama_warm_mix_bytes(id, dpath.data(), dpath.size());
+                     }
++                    // CPU and GPU runs round differently. The key is the offload
++                    // and the devices that actually hold the model.
++                    auto place = [](uint64_t cur, const llama_model * model) {
++                        if (model == nullptr) {
++                            return cur;
++                        }
++                        const uint32_t ngl = model->n_gpu_layers();
++                        if (ngl == 0 || model->devices.empty()) {
++                            const char * cpu = "cpu";
++                            return llama_warm_device(cur, ngl, 0, nullptr, 0, &cpu, 1);
++                        }
++                        std::vector<const char *> names;
++                        names.reserve(model->devices.size() * 3);
++                        for (const llama_device & dev : model->devices) {
++                            names.push_back(dev.is_meta ? "meta" : "dev");
++                            names.push_back(ggml_backend_dev_name(dev.dev));
++                            ggml_backend_dev_props props = {};
++                            ggml_backend_dev_get_props(dev.dev, &props);
++                            names.push_back(props.device_id != nullptr ? props.device_id : "");
++                        }
++                        return llama_warm_device(cur, ngl, (int32_t) model->split_mode(),
++                                model->tensor_split(), (size_t) llama_max_devices(),
++                                names.data(), names.size());
++                    };
++                    id = place(id, model_tgt);
++                    if (model_dft != nullptr) {
++                        id = place(id, model_dft);
++                    }
++                    std::string dev_label = "cpu";
++                    if (model_tgt->n_gpu_layers() > 0) {
++                        dev_label.clear();
++                        for (const llama_device & dev : model_tgt->devices) {
++                            if (!dev_label.empty()) {
++                                dev_label += "+";
++                            }
++                            dev_label += ggml_backend_dev_name(dev.dev);
++                        }
++                        if (dev_label.empty()) {
++                            dev_label = "gpu";
++                        }
++                    }
+                     std::filesystem::path dir = fs_get_cache_directory() / "warm";
+                     const char * warm_dir = getenv("LLAMA_WARM_DIR");
+                     if (warm_dir && warm_dir[0] != '\0') {
+                         dir = warm_dir;
+                     }
+                     prompt_cache->warm = std::make_unique<llama_warm_disk>(dir, id);
+-                    SRV_INF("prompt disk cache: %s (%zu prompts, %" PRIu64 " MiB, LLAMA_WARM_DISK=0 disables)\n",
+-                            dir.string().c_str(), prompt_cache->warm->count(), prompt_cache->warm->budget() / (1024 * 1024));
++                    SRV_INF("prompt disk cache: %s (%zu prompts, %" PRIu64 " MiB, device %s, LLAMA_WARM_DISK=0 disables)\n",
++                            dir.string().c_str(), prompt_cache->warm->count(), prompt_cache->warm->budget() / (1024 * 1024), dev_label.c_str());
+                 } catch (const std::exception & e) {
+                     SRV_WRN("prompt disk cache disabled: %s\n", e.what());
+                 }
+diff --git a/tools/server/server-warm-disk.h b/tools/server/server-warm-disk.h
+index 9e3e93a..d43ee32 100644
+--- a/tools/server/server-warm-disk.h
++++ b/tools/server/server-warm-disk.h
+@@ -2,10 +2,12 @@
+ 
+ // Disk copy of a prompt-cache entry. The RAM cache is lost when the process
+ // exits; a file written here can restore the same sequence state after a restart.
+-// LLAMA_WARM_DISK=0 disables it. Files that belong to another model or context
+-// are left unread. Version 2 removes version 1 files: those kept tokens written
+-// one at a time, which a GPU resume must not restore. The oldest files go first
+-// once the directory passes its byte budget.
++// LLAMA_WARM_DISK=0 disables it. Files that belong to another model, context,
++// or device are left unread. CPU and GPU runs round differently, so the key
++// includes the offload and the devices that wrote the state. Version 2 removes
++// version 1 files: those kept tokens written one at a time, which a GPU resume
++// must not restore. The oldest files go first once the directory passes its
++// byte budget.
+ 
+ #include "server-warm-cover.h"
+ 
+@@ -61,6 +63,31 @@ inline uint64_t llama_warm_mix_bytes(uint64_t h, const void * data, size_t n) {
+     return h;
+ }
+ 
++// The placement that produced a state. n_gpu_layers is how many layers left
++// the CPU (0 is a CPU run). devices are backend names and ids, in order.
++// tensor_split may be null. The same placement mixes to the same key.
++inline uint64_t llama_warm_device(uint64_t id, uint32_t n_gpu_layers, int32_t split_mode,
++        const float * tensor_split, size_t n_split,
++        const char * const * devices, size_t n_devices) {
++    id = llama_warm_mix(id, n_gpu_layers);
++    id = llama_warm_mix(id, (uint64_t) (int64_t) split_mode);
++    id = llama_warm_mix(id, n_split);
++    if (tensor_split != nullptr) {
++        for (size_t i = 0; i < n_split; i++) {
++            uint32_t bits = 0;
++            memcpy(&bits, &tensor_split[i], sizeof(bits));
++            id = llama_warm_mix(id, bits);
++        }
++    }
++    id = llama_warm_mix(id, n_devices);
++    for (size_t i = 0; i < n_devices; i++) {
++        const char * name = devices != nullptr && devices[i] != nullptr ? devices[i] : "";
++        id = llama_warm_mix_bytes(id, name, strlen(name));
++        id = llama_warm_mix(id, 0x1f);
++    }
++    return id;
++}
++
+ // Oldest files are dropped until the remaining bytes fit. protect is never dropped.
+ inline std::vector<size_t> llama_warm_trim(const std::vector<uint64_t> & bytes, const std::vector<int64_t> & mtime, uint64_t budget, size_t protect) {
+     std::vector<size_t> order(bytes.size());
+@@ -669,6 +696,28 @@ static int warm_fail(const char * msg) {
+ }
+ 
+ int main() {
++    {
++        const uint64_t base = 42;
++        const char * cpu[] = { "cpu" };
++        const char * metal[] = { "Metal", "0" };
++        const uint64_t cpu_id = llama_warm_device(base, 0, 0, nullptr, 0, cpu, 1);
++        if (cpu_id != llama_warm_device(base, 0, 0, nullptr, 0, cpu, 1)) {
++            return warm_fail("device id stable");
++        }
++        const uint64_t metal_id = llama_warm_device(base, 33, 1, nullptr, 0, metal, 2);
++        if (cpu_id == metal_id) {
++            return warm_fail("cpu and metal share a cache");
++        }
++        if (metal_id == llama_warm_device(base, 10, 1, nullptr, 0, metal, 2)) {
++            return warm_fail("layer count is part of the device");
++        }
++        float even = 0.0f;
++        float front = 0.5f;
++        if (llama_warm_device(base, 33, 1, &even, 1, metal, 2) ==
++                llama_warm_device(base, 33, 1, &front, 1, metal, 2)) {
++            return warm_fail("tensor split is part of the device");
++        }
++    }
+     {
+         const std::vector<uint64_t> bytes = { 100, 100, 100 };
+         const std::vector<int64_t>  mtime = { 1, 2, 3 };

@@ -1,0 +1,112 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Sat, 21 Nov 2026 14:18:41 -0800
+Subject: [PATCH] llama: keep a prompt state with the build and the batch that
+ wrote it
+
+A new release, a different physical prompt batch, or a different RoPE setting rounds the state differently. The cache key includes them, so a restart that changes one of those starts a new cache.
+---
+ tools/server/server-context.cpp |  8 ++++++
+ tools/server/server-warm-disk.h | 49 ++++++++++++++++++++++++++++++++-
+ 2 files changed, 56 insertions(+), 1 deletion(-)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index c986674..ce7948e 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2159,6 +2159,11 @@ private:
+                     const std::string path = params_base.model.path;
+                     id = llama_warm_mix_bytes(id, path.data(), path.size());
+                     id = llama_warm_file_id(id, path);
++                    id = llama_warm_forward(id, llama_version(), params_base.n_ubatch,
++                            params_base.rope_freq_base, params_base.rope_freq_scale,
++                            params_base.yarn_ext_factor, params_base.yarn_attn_factor,
++                            params_base.yarn_beta_fast, params_base.yarn_beta_slow,
++                            params_base.yarn_orig_ctx, (int32_t) params_base.rope_scaling_type);
+                     id = llama_warm_mix(id, (uint64_t) llama_model_n_embd(model_tgt));
+                     id = llama_warm_mix(id, (uint64_t) llama_model_n_layer(model_tgt));
+                     id = llama_warm_mix(id, (uint64_t) llama_vocab_n_tokens(llama_model_get_vocab(model_tgt)));
+@@ -2175,6 +2180,9 @@ private:
+                         const std::string dpath = params_base.speculative.draft.mparams.path;
+                         id = llama_warm_mix_bytes(id, dpath.data(), dpath.size());
+                         id = llama_warm_file_id(id, dpath);
++                        const int32_t draft_ubatch = params_base.speculative.draft.n_ubatch > 0
++                                ? params_base.speculative.draft.n_ubatch : params_base.n_ubatch;
++                        id = llama_warm_mix(id, (uint64_t) (int64_t) draft_ubatch);
+                     }
+                     // CPU and GPU runs round differently. The key is the offload
+                     // and the devices that actually hold the model.
+diff --git a/tools/server/server-warm-disk.h b/tools/server/server-warm-disk.h
+index df4d007..4354713 100644
+--- a/tools/server/server-warm-disk.h
++++ b/tools/server/server-warm-disk.h
+@@ -6,7 +6,9 @@
+ // or device are left unread. CPU and GPU runs round differently, so the key
+ // includes the offload and the devices that wrote the state. It also includes
+ // the model file's size, modification time and leading megabyte, so a file
+-// replaced at the same path starts a new cache. Version 2 removes
++// replaced at the same path starts a new cache. It also includes the release,
++// the physical prompt batch and the RoPE overrides, which change the state
++// a later token continues from. Version 2 removes
+ // version 1 files: those kept tokens written one at a time, which a GPU resume
+ // must not restore. The oldest files in the directory go first once it passes
+ // its byte budget, whichever model wrote them. Restoring a file makes it the
+@@ -98,6 +100,36 @@ inline uint64_t llama_warm_device(uint64_t id, uint32_t n_gpu_layers, int32_t sp
+     return id;
+ }
+ 
++inline uint64_t llama_warm_mix_f32(uint64_t id, float v) {
++    static_assert(sizeof(float) == sizeof(uint32_t), "float is 32 bits");
++    uint32_t bits = 0;
++    memcpy(&bits, &v, sizeof(bits));
++    return llama_warm_mix(id, bits);
++}
++
++// The release and the settings that change how a prompt is rounded into a
++// state. version may be null. n_ubatch is the physical prompt batch.
++inline uint64_t llama_warm_forward(uint64_t id, const char * version, int32_t n_ubatch,
++        float rope_freq_base, float rope_freq_scale,
++        float yarn_ext_factor, float yarn_attn_factor,
++        float yarn_beta_fast, float yarn_beta_slow,
++        int32_t yarn_orig_ctx, int32_t rope_scaling_type) {
++    if (version == nullptr) {
++        version = "";
++    }
++    id = llama_warm_mix_bytes(id, version, strlen(version));
++    id = llama_warm_mix(id, (uint64_t) (int64_t) n_ubatch);
++    id = llama_warm_mix_f32(id, rope_freq_base);
++    id = llama_warm_mix_f32(id, rope_freq_scale);
++    id = llama_warm_mix_f32(id, yarn_ext_factor);
++    id = llama_warm_mix_f32(id, yarn_attn_factor);
++    id = llama_warm_mix_f32(id, yarn_beta_fast);
++    id = llama_warm_mix_f32(id, yarn_beta_slow);
++    id = llama_warm_mix(id, (uint64_t) (int64_t) yarn_orig_ctx);
++    id = llama_warm_mix(id, (uint64_t) (int64_t) rope_scaling_type);
++    return id;
++}
++
+ // Identity of the model file, folded into the cache key. A new file at the
+ // same path has a different size, time or leading megabyte and must not
+ // resume a state the previous file left behind. A missing file mixes as 0.
+@@ -897,6 +929,21 @@ int main() {
+         }
+         std::filesystem::remove_all(files);
+     }
++    {
++        const uint64_t same = llama_warm_forward(7, "b12557", 512, 0.0f, 0.0f, -1.0f, -1.0f, -1.0f, -1.0f, 0, 0);
++        if (same != llama_warm_forward(7, "b12557", 512, 0.0f, 0.0f, -1.0f, -1.0f, -1.0f, -1.0f, 0, 0)) {
++            return warm_fail("forward id stable");
++        }
++        if (same == llama_warm_forward(7, "b12558", 512, 0.0f, 0.0f, -1.0f, -1.0f, -1.0f, -1.0f, 0, 0)) {
++            return warm_fail("release shares a cache");
++        }
++        if (same == llama_warm_forward(7, "b12557", 256, 0.0f, 0.0f, -1.0f, -1.0f, -1.0f, -1.0f, 0, 0)) {
++            return warm_fail("prompt batch shares a cache");
++        }
++        if (same == llama_warm_forward(7, "b12557", 512, 0.0f, 0.5f, -1.0f, -1.0f, -1.0f, -1.0f, 0, 0)) {
++            return warm_fail("rope scale shares a cache");
++        }
++    }
+     {
+         const std::vector<uint64_t> bytes = { 100, 100, 100 };
+         const std::vector<int64_t>  mtime = { 1, 2, 3 };

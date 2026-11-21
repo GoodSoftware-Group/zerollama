@@ -1183,7 +1183,7 @@ func (s *Server) GenerateHandler(c *gin.Context) {
 			Logprobs:          req.Logprobs,
 			TopLogprobs:       req.TopLogprobs,
 			PromptCacheKey:    modality.ExtractPromptCacheKey(req.Options),
-			CacheReset:        mlxQoSFromOptions(req.Options).CacheReset,
+			CacheReset:        chatOptionsCacheReset(req.Options),
 			SessionViTOverlay: modality.SessionViTOverlayEnabled(req.Options),
 		}
 		applySpecFlags(&genCompletion, req.Options, req.EnablePLD, req.EnableMTP, req.EnableDrafter)
@@ -2890,6 +2890,7 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/api/blobs/:digest", s.CreateBlobHandler)
 	r.HEAD("/api/blobs/:digest", s.HeadBlobHandler)
 	r.POST("/api/copy", s.CopyHandler)
+	s.registerWeightEditRoutes(r)
 	r.POST("/api/repair", s.RepairHandler)
 	r.POST("/api/experimental/web_search", s.WebSearchExperimentalHandler)
 	r.POST("/api/experimental/web_fetch", s.WebFetchExperimentalHandler)
@@ -2914,6 +2915,8 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.POST("/v1/decisions", s.DecisionsHandler)
 	r.POST("/v1/systemone", s.DecisionsHandler)
 	r.POST("/v1/multidecode", s.MultiDecodeHandler)
+	r.POST("/api/prefill", s.PrefillHandler)
+	r.POST("/v1/prefill", s.PrefillHandler)
 	r.POST("/v1/extract", s.ExtractHandler)
 	r.POST("/v1/gliner", s.GlinerHandler)
 	r.POST("/v1/gliner-decide", s.GlinerDecideHandler)
@@ -4177,7 +4180,7 @@ func (s *Server) ChatHandler(c *gin.Context) {
 				Logprobs:            req.Logprobs,
 				TopLogprobs:         req.TopLogprobs,
 				PromptCacheKey:      modality.ExtractPromptCacheKey(req.Options),
-				CacheReset:          mlxQoSFromOptions(req.Options).CacheReset,
+				CacheReset:          chatOptionsCacheReset(req.Options),
 				SessionViTOverlay:   modality.SessionViTOverlayEnabled(req.Options),
 				Gemma4PaddedMedia:   gemma4PaddedMedia,
 			}

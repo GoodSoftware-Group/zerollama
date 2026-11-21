@@ -12,10 +12,10 @@ Qwen2 ASCII; identity held. See docs/faster-bpe-tokenize.md (M15d / 0118).
  1 file changed, 70 insertions(+), 37 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index a144790..a52f573 100644
+index cb169c9..dca7f4e 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
-@@ -217,36 +217,20 @@ static std::vector<int> unicode_cpt_to_byte_map() {
+@@ -222,36 +222,20 @@ static std::vector<int> unicode_cpt_to_byte_map() {
      return map;
  }
  
@@ -61,7 +61,7 @@ index a144790..a52f573 100644
              e.n = (uint8_t) s.size();
              assert(e.n <= 4);
              for (uint8_t i = 0; i < e.n; ++i) {
-@@ -258,27 +242,49 @@ static std::vector<std::string> unicode_byte_encoding_process(const std::vector<
+@@ -263,27 +247,49 @@ static std::vector<std::string> unicode_byte_encoding_process(const std::vector<
          }
          init = true;
      }
@@ -119,7 +119,7 @@ index a144790..a52f573 100644
              encoded_token.append(e.d, e.n);
          }
          bpe_encoded_words.emplace_back(std::move(encoded_token));
-@@ -606,18 +612,45 @@ static inline void unicode_ascii_consume_digits_bytes(
+@@ -611,18 +617,45 @@ static inline void unicode_ascii_consume_digits_bytes(
      }
  }
  

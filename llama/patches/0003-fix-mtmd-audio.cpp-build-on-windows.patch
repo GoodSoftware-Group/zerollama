@@ -4,18 +4,15 @@ Date: Wed, 6 Aug 2025 12:35:29 -0700
 Subject: [PATCH] fix mtmd-audio.cpp build on windows
 
 ---
- tools/mtmd/mtmd-audio.cpp | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ tools/mtmd/mtmd-audio.cpp | 1 +
+ 1 file changed, 1 insertion(+)
 
 diff --git a/tools/mtmd/mtmd-audio.cpp b/tools/mtmd/mtmd-audio.cpp
-index 74d2655..78fe719 100644
+index 53c2cbb..5e7bb45 100644
 --- a/tools/mtmd/mtmd-audio.cpp
 +++ b/tools/mtmd/mtmd-audio.cpp
-@@ -1,6 +1,6 @@
+@@ -1,3 +1,4 @@
 +#define _USE_MATH_DEFINES // for M_PI
  #include "mtmd-audio.h"
+ #include "mtmd-subcontext.h"
  
--#define _USE_MATH_DEFINES // for M_PI
- #include <cfloat>
- #include <cmath>
- #include <cstdint>

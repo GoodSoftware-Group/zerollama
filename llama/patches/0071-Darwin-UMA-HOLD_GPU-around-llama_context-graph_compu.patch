@@ -12,12 +12,12 @@ Subject: [PATCH] Darwin UMA HOLD_GPU around llama_context::graph_compute
  create mode 100644 src/llama-context.cpp.rej
 
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index a3c2fca..d31856f 100644
+index f5293cc..61eb582 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -76,6 +76,17 @@ target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
- 
- target_link_libraries(llama PUBLIC ggml)
+@@ -77,6 +77,17 @@ target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
+ find_package(Threads REQUIRED)
+ target_link_libraries(llama PUBLIC ggml PRIVATE Threads::Threads)
  
 +# zerollama M22: optional UMA broker client for Darwin Metal admission (libuma_client only).
 +if (ZEROLLAMA_UMA)
@@ -34,7 +34,7 @@ index a3c2fca..d31856f 100644
      set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
      target_compile_definitions(llama PRIVATE LLAMA_BUILD)
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index a246581..0ddb0a0 100644
+index c18ecd3..eb13f65 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -14,7 +14,10 @@
@@ -91,7 +91,7 @@ index 0000000..e169464
 + 
 +     return status;
 diff --git a/src/llama.cpp b/src/llama.cpp
-index e3699ea..e123ab6 100644
+index cee6a7d..2da3d56 100644
 --- a/src/llama.cpp
 +++ b/src/llama.cpp
 @@ -16,6 +16,11 @@

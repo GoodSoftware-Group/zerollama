@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:47:14 -0700
+Subject: [PATCH] fix: restore MultiDecode ubatch fields and milady dflash
+ tensors
+
+Rejected 0126/0127 hunks left llama-batch.cpp referencing parent/node_id
+without data_t members; dflash-draft.cpp needs dflash_fc on llama_model.
+---
+ src/llama-batch.h | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/llama-batch.h b/src/llama-batch.h
+index e6f4be6..a47a829 100644
+--- a/src/llama-batch.h
++++ b/src/llama-batch.h
+@@ -62,6 +62,9 @@ struct llama_ubatch {
+     int8_t       *  type;       // [n_tokens]         | i   | -     (mixed ubatch only, 0 - token, 1 - embd)
+     int32_t      *  decision_order; // [n_tokens], NULL if no entry has one, see llama_batch_ext_set_decision_order()
+     int32_t      *  decision_group; // [n_tokens], NULL if no entry has one, see llama_batch_ext_set_decision_group()
++    int32_t      *  parent;           // [n_tokens] MultiDecode; NULL = off
++    int32_t      *  node_id;          // [n_tokens] MultiDecode MD1; NULL = off/synth
++    int32_t      *  parent_node_id;   // [n_tokens] MultiDecode MD1; NULL = off/synth
+ 
+     struct data_t {
+         std::vector<llama_token>    token;
+@@ -79,6 +82,9 @@ struct llama_ubatch {
+         std::vector<int32_t>        batch_idxs;  // original batch index for each token
+         std::vector<int32_t>        decision_order;
+         std::vector<int32_t>        decision_group;
++        std::vector<int32_t>        parent;      // MultiDecode ancestor KQ mask
++        std::vector<int32_t>        node_id;
++        std::vector<int32_t>        parent_node_id;
+ 
+         std::vector<llama_seq_id> seq_id_data;
+     };

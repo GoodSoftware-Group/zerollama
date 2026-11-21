@@ -125,7 +125,7 @@ ZEROLLAMA_ANE_DRAFT_MATMUL_CHAIN=11 LLAMA_SERVER_BIN=../llama.cpp/build/bin/llam
 ## Operator commands
 
 ```bash
-# Build chain (pin b12119)
+# Build chain (pin b12557)
 ./scripts/ane/ane_probe_build.sh
 ./scripts/build/build_llama_server.sh          # Darwin: auto-runs sync_ane_hook after pin checkout
 # Manual: ./scripts/vendor/sync_ane_hook_to_llama_cpp.sh

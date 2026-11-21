@@ -1,0 +1,418 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 20 Nov 2026 00:22:35 -0800
+Subject: [PATCH] server: prefill a chat draft before the last word
+
+POST /v1/prefill evaluates the chat except the last incomplete word and stops before sampling, so the slot holds a prefix of the finished prompt. A draft gives that slot up when other work is waiting.
+---
+ tools/server/server-context.cpp | 122 +++++++++++++++++++++++++++++-
+ tools/server/server-context.h   |   1 +
+ tools/server/server-prefill.h   | 129 ++++++++++++++++++++++++++++++++
+ tools/server/server-queue.cpp   |   5 ++
+ tools/server/server-queue.h     |   4 +
+ tools/server/server-task.h      |   1 +
+ tools/server/server.cpp         |   3 +
+ 7 files changed, 263 insertions(+), 2 deletions(-)
+ create mode 100644 tools/server/server-prefill.h
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 14aae8d..17a4129 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -6,6 +6,7 @@
+ #include "base64.hpp"
+ #include "server-chat.h"
+ #include "server-common.h"
++#include "server-prefill.h"
+ #include "server-decision.h"
+ #include "server-http.h"
+ #include "server-task.h"
+@@ -2677,6 +2678,11 @@ private:
+         res->n_prompt_tokens       = slot.task->n_tokens();
+         res->n_prompt_tokens_cache = slot.stats.n_prompt_cached;
+         res->n_tokens_cached       = slot.prompt.n_tokens();
++        // A draft that has not entered the prompt loop still holds the previous
++        // request. Those tokens are not this draft.
++        if (slot.task->params.prefill_only && slot.state == SLOT_STATE_STARTED) {
++            res->n_tokens_cached = 0;
++        }
+         res->has_new_line          = slot.has_new_line;
+         res->stopping_word         = slot.stopping_word;
+         res->stop_detail           = slot.stop_detail;
+@@ -3342,6 +3348,20 @@ private:
+         }
+     }
+ 
++    // Stop every draft and leave its evaluated tokens in the slot. The next
++    // task selects that slot by the shared prefix. Safe only between batches:
++    // process_single_task declines work while a decode is in progress.
++    void yield_prefill_slots() {
++        for (auto & slot : slots) {
++            if (!slot.is_processing() || !slot.task || !slot.task->params.prefill_only) {
++                continue;
++            }
++            SLT_INF(slot, "%s", "prefill gives way\n");
++            send_final_response(slot);
++            slot.release();
++        }
++    }
++
+     bool process_single_task(server_task && task, bool is_yielding) {
+         // while yielding, an encode / decode is running and only reading the server state is safe
+         if (is_yielding && task.type != SERVER_TASK_TYPE_METRICS && task.type != SERVER_TASK_TYPE_SLOT_GET) {
+@@ -3373,9 +3393,20 @@ private:
+                     }
+ 
+                     const int id_task = task.id;
++                    const bool draft = task.params.prefill_only;
+                     const bool is_gen_task =
+                         task.type == SERVER_TASK_TYPE_COMPLETION || task.type == SERVER_TASK_TYPE_INFILL;
+ 
++                    // A draft stays behind work that is already waiting for a slot.
++                    if (draft && queue_tasks.has_deferred_task()) {
++                        SRV_DBG("prefill waits behind a deferred task, id_task = %d\n", id_task);
++                        queue_tasks.defer(std::move(task));
++                        break;
++                    }
++                    // Free the draft before selection so this task can reuse its prefix
++                    // instead of landing on an empty slot.
++                    yield_prefill_slots();
++
+                     const auto plan = slot_sched.select(get_slot_infos(), task, get_task_lora(task));
+ 
+                     server_slot * slot = plan.id_slot == -1 ? nullptr : get_slot_by_id(plan.id_slot);
+@@ -3430,13 +3461,13 @@ private:
+                             SRV_ERR("failed to launch slot with parent task, id_task = %d\n", id_task);
+                             break; // drop the task
+                         }
+-                        if (is_gen_task) {
++                        if (is_gen_task && !draft) {
+                             note_prefill_launched();
+                         }
+                     } else if (!launch_slot_with_task(*slot, std::move(task))) {
+                         SRV_ERR("failed to launch slot with task, id_task = %d\n", id_task);
+                         break; // drop the task
+-                    } else if (is_gen_task) {
++                    } else if (is_gen_task && !draft) {
+                         note_prefill_launched();
+                     }
+ 
+@@ -5434,6 +5465,16 @@ private:
+             }
+ 
+             if (slot.state == SLOT_STATE_DONE_PROMPT) {
++                // n_predict == 0 still has a budget while n_gen == 0, so a normal
++                // completion would sample one token and append it to the cache.
++                // A draft must stop on the prompt or the next request's prefix breaks.
++                if (slot.task->params.prefill_only) {
++                    send_final_response(slot);
++                    slot.release();
++                    slot.i_batch = -1;
++                    return;
++                }
++
+                 if (slot.task->type == SERVER_TASK_TYPE_EMBEDDING) {
+                     // prompt evaluated for embedding
+                     send_embedding(slot, batch.view);
+@@ -6016,6 +6057,16 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
+             task.id_slot = json_value(data, "id_slot", -1);
+             sse_ping_interval = task.params.sse_ping_interval;
+ 
++            // Set after the schema so a client cache_prompt/stream/n_predict cannot
++            // turn the draft into a one-token completion.
++            if (json_value(data, "prefill_only", false)) {
++                task.params.prefill_only = true;
++                task.params.n_predict    = 0;
++                task.params.stream       = false;
++                task.params.cache_prompt = true;
++                task.params.n_cmpl       = 1;
++            }
++
+             // OAI-compat
+             task.params.res_type          = res_type;
+             task.params.oaicompat_cmpl_id = completion_id;
+@@ -6697,6 +6748,73 @@ void server_routes::init_routes() {
+             session);
+     };
+ 
++    // POST /prefill and /v1/prefill. Body is a chat request. The last message
++    // is cut before its last word, the template is rendered, and the prompt is
++    // truncated at U+F8FF so the cache is a prefix of the finished request.
++    this->post_prefill = [this](const server_http_req & req) {
++        auto fail = [this](const std::string & message) {
++            auto res = create_response();
++            res->error(format_error_response(message, ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        };
++
++        json body = json::parse(req.body);
++        if (!body.contains("messages") || !body.at("messages").is_array() || body.at("messages").empty()) {
++            return fail("prefill requires a messages array");
++        }
++        json & last = body.at("messages").back();
++        if (!last.is_object() || !last.contains("content") || !last.at("content").is_string()) {
++            return fail("prefill needs text in the last message");
++        }
++        last["content"] = llama_prefill_before_last_word(last.at("content").get<std::string>()) + LLAMA_PREFILL_END;
++
++        std::vector<raw_buffer> files;
++        common_chat_session session;
++        json parsed = oaicompat_chat_params_parse(
++            ctx_server.vocab,
++            body,
++            meta->chat_params,
++            files,
++            session);
++        if (!files.empty()) {
++            return fail("prefill does not cache prompts with media");
++        }
++        std::string prompt = json_value(parsed, "prompt", std::string());
++        const auto end = prompt.rfind(LLAMA_PREFILL_END);
++        if (end == std::string::npos) {
++            return fail("the chat template dropped the draft");
++        }
++        prompt.resize(end);
++        if (prompt.empty()) {
++            auto res = create_response();
++            res->ok(json{{"object", "prefill"}, {"cached_tokens", 0}, {"prompt_tokens", 0}});
++            return res;
++        }
++        parsed["prompt"]        = prompt;
++        parsed["n_predict"]     = 0;
++        parsed["stream"]        = false;
++        parsed["cache_prompt"]  = true;
++        parsed["prefill_only"]  = true;
++
++        auto res = handle_completions_impl(
++            req,
++            SERVER_TASK_TYPE_COMPLETION,
++            parsed,
++            files,
++            TASK_RESPONSE_TYPE_NONE,
++            session);
++        if (res->status != 200 || res->data.empty()) {
++            return res;
++        }
++        const json done = json::parse(res->data);
++        res->ok(json{
++            {"object",         "prefill"},
++            {"cached_tokens",  json_value(done, "tokens_cached", 0)},
++            {"prompt_tokens",  json_value(done, "tokens_evaluated", 0)},
++        });
++        return res;
++    };
++
+     this->post_chat_completions_tok = [this](const server_http_req & req) {
+         return handle_count_tokens(req, TASK_RESPONSE_TYPE_OAI_CHAT);
+     };
+diff --git a/tools/server/server-context.h b/tools/server/server-context.h
+index c1cfedb..e184967 100644
+--- a/tools/server/server-context.h
++++ b/tools/server/server-context.h
+@@ -127,6 +127,7 @@ struct server_routes {
+     server_http_context::handler_t post_completions;
+     server_http_context::handler_t post_completions_oai;
+     server_http_context::handler_t post_chat_completions;
++    server_http_context::handler_t post_prefill;
+     server_http_context::handler_t post_chat_completions_tok;
+     server_http_context::handler_t post_control;
+     server_http_context::handler_t post_responses_oai;
+diff --git a/tools/server/server-prefill.h b/tools/server/server-prefill.h
+new file mode 100644
+index 0000000..c1c007e
+--- /dev/null
++++ b/tools/server/server-prefill.h
+@@ -0,0 +1,129 @@
++#pragma once
++
++// Draft the chat the user is still typing.
++//
++// The cached text has to be a string prefix of the finished prompt, so the
++// slot keeps a real token prefix and the later request only evaluates the
++// tail. The last incomplete word is cut, and U+F8FF is appended inside that
++// message. The rendered template is then truncated at the sentinel, which
++// drops the end-of-turn marker and the assistant header. Those belong to the
++// finished request, not the draft.
++
++#include <cstddef>
++#include <cstdint>
++#include <string>
++
++// U+F8FF in UTF-8. Private use, so a normal chat template emits it unchanged.
++inline constexpr const char * LLAMA_PREFILL_END = "\xEF\xA3\xBF";
++
++inline bool llama_prefill_is_space(uint32_t cp) {
++    switch (cp) {
++        case 0x0009:
++        case 0x000A:
++        case 0x000B:
++        case 0x000C:
++        case 0x000D:
++        case 0x0020:
++        case 0x0085:
++        case 0x00A0:
++        case 0x1680:
++        case 0x2028:
++        case 0x2029:
++        case 0x202F:
++        case 0x205F:
++        case 0x3000:
++            return true;
++        default:
++            return cp >= 0x2000 && cp <= 0x200A;
++    }
++}
++
++// Walk one UTF-8 code point backward. `end` is the index just past the code
++// point. Invalid bytes are consumed one at a time so a bad sequence cannot
++// walk off the start of the string.
++inline bool llama_prefill_prev(const std::string & s, size_t end, size_t & start, uint32_t & cp) {
++    if (end == 0 || end > s.size()) {
++        return false;
++    }
++    size_t i = end - 1;
++    while (i > 0 && (static_cast<unsigned char>(s[i]) & 0xC0) == 0x80) {
++        --i;
++    }
++    const unsigned char b0 = static_cast<unsigned char>(s[i]);
++    const size_t n = end - i;
++    if (b0 < 0x80 && n == 1) {
++        cp = b0;
++    } else if ((b0 & 0xE0) == 0xC0 && n == 2) {
++        cp = (uint32_t(b0 & 0x1F) << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3F);
++    } else if ((b0 & 0xF0) == 0xE0 && n == 3) {
++        cp = (uint32_t(b0 & 0x0F) << 12) |
++             (uint32_t(static_cast<unsigned char>(s[i + 1]) & 0x3F) << 6) |
++             (static_cast<unsigned char>(s[i + 2]) & 0x3F);
++    } else if ((b0 & 0xF8) == 0xF0 && n == 4) {
++        cp = (uint32_t(b0 & 0x07) << 18) |
++             (uint32_t(static_cast<unsigned char>(s[i + 1]) & 0x3F) << 12) |
++             (uint32_t(static_cast<unsigned char>(s[i + 2]) & 0x3F) << 6) |
++             (static_cast<unsigned char>(s[i + 3]) & 0x3F);
++    } else {
++        i = end - 1;
++        cp = static_cast<unsigned char>(s[i]);
++    }
++    start = i;
++    return true;
++}
++
++// "two words  " -> "two". A single unfinished word -> "".
++inline std::string llama_prefill_before_last_word(std::string text) {
++    auto trim_end = [](std::string & s) {
++        size_t end = s.size();
++        size_t start = 0;
++        uint32_t cp = 0;
++        while (llama_prefill_prev(s, end, start, cp) && llama_prefill_is_space(cp)) {
++            end = start;
++        }
++        s.resize(end);
++    };
++    trim_end(text);
++    size_t end = text.size();
++    size_t start = 0;
++    uint32_t cp = 0;
++    bool found = false;
++    while (llama_prefill_prev(text, end, start, cp)) {
++        if (llama_prefill_is_space(cp)) {
++            found = true;
++            break;
++        }
++        end = start;
++    }
++    if (!found) {
++        return "";
++    }
++    text.resize(start);
++    trim_end(text);
++    return text;
++}
++
++#ifdef LLAMA_PREFILL_TEST
++#include <cstdio>
++#include <cstdlib>
++int main() {
++    if (std::string(LLAMA_PREFILL_END) != "\xEF\xA3\xBF") {
++        std::fputs("sentinel is not U+F8FF\n", stderr);
++        return 1;
++    }
++    auto check = [](const char * in, const char * want) {
++        const std::string got = llama_prefill_before_last_word(in);
++        if (got != want) {
++            std::fprintf(stderr, "before_last_word(%s) = [%s], want [%s]\n", in, got.c_str(), want);
++            std::exit(1);
++        }
++    };
++    check("", "");
++    check("Summ", "");
++    check("Summarize this.\n\nWhat is", "Summarize this.\n\nWhat");
++    check("two words  ", "two");
++    check("zażółć gęślą", "zażółć");
++    std::puts("prefill ok");
++    return 0;
++}
++#endif
+diff --git a/tools/server/server-queue.cpp b/tools/server/server-queue.cpp
+index 75daebb..8bfd878 100644
+--- a/tools/server/server-queue.cpp
++++ b/tools/server/server-queue.cpp
+@@ -81,6 +81,11 @@ void server_queue::defer(server_task && task) {
+     condition_tasks.notify_one();
+ }
+ 
++bool server_queue::has_deferred_task() {
++    std::unique_lock<std::mutex> lock(mutex_tasks);
++    return !queue_tasks_deferred.empty();
++}
++
+ int server_queue::get_new_id() {
+     std::unique_lock<std::mutex> lock(mutex_tasks);
+     int new_id = id++;
+diff --git a/tools/server/server-queue.h b/tools/server/server-queue.h
+index f9d66be..59f24ec 100644
+--- a/tools/server/server-queue.h
++++ b/tools/server/server-queue.h
+@@ -59,6 +59,10 @@ public:
+     // Add a new task, but defer until one slot is available
+     void defer(server_task && task);
+ 
++    // True when a task is waiting for a slot. A draft prefill uses this to
++    // stay behind work that was already deferred.
++    bool has_deferred_task();
++
+     // Get the next id for creating a new task
+     int get_new_id();
+ 
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index b723ae8..6402081 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -82,6 +82,7 @@ struct task_params {
+     bool stream          = false;
+     bool include_usage   = false;
+     bool cache_prompt    = true; // remember the prompt to avoid reprocessing all prompt
++    bool prefill_only    = false; // evaluate the prompt and keep it, do not sample
+     bool return_tokens   = false;
+     bool return_progress = false;
+ 
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index 352b1f4..bfc0c71 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -189,6 +189,8 @@ static void server_register_routes(server_http_context & ctx_http, server_routes
+     ctx_http.post("/v1/completions",           ex_wrapper(routes.post_completions_oai));
+     ctx_http.post("/chat/completions",         ex_wrapper(routes.post_chat_completions));
+     ctx_http.post("/v1/chat/completions",      ex_wrapper(routes.post_chat_completions));
++    ctx_http.post("/prefill",                  ex_wrapper(routes.post_prefill));
++    ctx_http.post("/v1/prefill",               ex_wrapper(routes.post_prefill));
+     ctx_http.post("/v1/chat/completions/control", ex_wrapper(routes.post_control));
+     ctx_http.post("/v1/responses",             ex_wrapper(routes.post_responses_oai));
+     ctx_http.post("/responses",                ex_wrapper(routes.post_responses_oai));
+@@ -539,6 +541,7 @@ static int server_run_router(common_params & params, int argc, char ** argv, con
+     routes.post_completions            = models_routes->proxy_post;
+     routes.post_completions_oai        = models_routes->proxy_post;
+     routes.post_chat_completions       = models_routes->proxy_post;
++    routes.post_prefill                = models_routes->proxy_post;
+     routes.post_control                = models_routes->proxy_post;
+     routes.post_responses_oai          = models_routes->proxy_post;
+     routes.post_transcriptions_oai     = models_routes->proxy_post;

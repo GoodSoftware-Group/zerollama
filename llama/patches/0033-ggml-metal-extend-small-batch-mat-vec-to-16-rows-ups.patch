@@ -9,10 +9,10 @@ Subject: [PATCH] ggml-metal: extend small-batch mat-vec to 16 rows (upstream
  1 file changed, 15 insertions(+), 2 deletions(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index cace34b..1e37fa0 100644
+index 1ae7f3d..530d2dc 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -2766,7 +2766,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+@@ -2776,7 +2776,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
             op->src[0]->type == GGML_TYPE_Q8_0 ||
             op->src[0]->type == GGML_TYPE_MXFP4 ||
             op->src[0]->type == GGML_TYPE_IQ4_NL ||
@@ -21,7 +21,7 @@ index cace34b..1e37fa0 100644
           ) ||
           (
            (
-@@ -2775,7 +2775,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+@@ -2785,7 +2785,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
             op->src[0]->type == GGML_TYPE_Q6_K ||
             op->src[0]->type == GGML_TYPE_Q2_K ||
             op->src[0]->type == GGML_TYPE_Q3_K ||
@@ -30,7 +30,7 @@ index cace34b..1e37fa0 100644
           )
          )
         ) {
-@@ -2816,6 +2816,19 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+@@ -2826,6 +2826,19 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
                  r1ptg = 4; break;
              case 5:
                  r1ptg = 5; break;

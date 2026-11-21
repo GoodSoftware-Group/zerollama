@@ -1,0 +1,284 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Thu, 19 Nov 2026 23:40:00 -0800
+Subject: [PATCH] server: mark hybrid prompts on a 256-token grid
+
+Recurrent and hybrid state cannot be rewound, and the prefill loop only
+checkpointed at turn boundaries. --checkpoint-every-n-tokens was registered
+twice, so the flag wrote the min-step and never broke a batch. Hybrid and
+recurrent models now checkpoint every 256 tokens (Kinetic's GRID; the legacy
+8192 profile spacing stays auto), and a full checkpoint list keeps those
+marks spread across the prompt.
+---
+ common/arg.cpp                  |  16 ++--
+ common/common.h                 |   2 +-
+ tools/server/server-context.cpp | 125 +++++++++++++++++++++++++-------
+ 3 files changed, 107 insertions(+), 36 deletions(-)
+
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 5626b36..64de59d 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -1726,7 +1726,12 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+     ).set_env("LLAMA_ARG_CTX_CHECKPOINTS").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+     add_opt(common_arg(
+         {"-cpent", "--checkpoint-every-n-tokens"}, "N",
+-        string_format("create a checkpoint every n tokens during prefill (processing), -1 to disable (default: %d)", params.checkpoint_every_nt),
++        string_format(
++            "checkpoint every N tokens during prefill (default: %d)\n"
++            "0 = auto: a 256-token grid on hybrid and recurrent models, no extra grid otherwise\n"
++            "-1 = disable the grid\n"
++            "8192 on a hybrid or recurrent model is treated as auto (legacy profile spacing)",
++            params.checkpoint_every_nt),
+         [](common_params & params, int value) {
+             params.checkpoint_every_nt = value;
+         }
+@@ -1741,15 +1746,6 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.checkpoint_min_step = value;
+         }
+     ).set_env("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT").set_examples({LLAMA_EXAMPLE_SERVER}));
+-    // Eliza fork L2 profiles emit --checkpoint-every-n-tokens; map onto ggml-org's
+-    // checkpoint_min_step so ZEROLLAMA_LLAMA_FORK=1 argv does not crash at startup.
+-    add_opt(common_arg(
+-        {"-cpent", "--checkpoint-every-n-tokens"}, "N",
+-        string_format("alias for --checkpoint-min-step (eliza L2 profiles; default: %d, -1 disables → 0)", params.checkpoint_min_step),
+-        [](common_params & params, int value) {
+-            params.checkpoint_min_step = value < 0 ? 0 : value;
+-        }
+-    ).set_env("LLAMA_ARG_CHECKPOINT_EVERY_NT").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+     add_opt(common_arg(
+         {"-cram", "--cache-ram"}, "N",
+         string_format("set the maximum cache size in MiB (default: %d, 0 for decision models, -1 - no limit, 0 - disable)"
+diff --git a/common/common.h b/common/common.h
+index aee3558..c41285f 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -700,7 +700,7 @@ struct common_params {
+     int32_t n_ctx_checkpoints   = 32;    // max number of context checkpoints per slot
+     int32_t kv_unified_per_slot = 0;     // max context per parallel slot; 0 = unset
+     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
+-    int32_t checkpoint_every_nt = 8192;  // L2 fork: checkpoint every n tokens during prefill (-1 disable)
++    int32_t checkpoint_every_nt = 0;     // 0 = auto mark grid, -1 = off, >0 = every N prefill tokens
+     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
+     bool    cache_ram_explicit  = false; // set by --cache-ram, decision models disable the cache otherwise
+ 
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 427c4db..841416e 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -29,6 +29,8 @@
+ #include "mtmd-helper.h"
+ #include "base64.hpp"
+ 
++#include <iterator>
++
+ #include <algorithm>
+ #include <cstddef>
+ #include <cinttypes>
+@@ -42,6 +44,25 @@
+ 
+ namespace {
+ 
++// Kinetic warm-start grid (GRID in kinetic-models warm/mod.rs).
++// Attention caches rewind in place. A recurrent or hybrid state does not, so
++// prefill records a checkpoint on this grid and a later prompt resumes from
++// the last shared mark instead of replaying from token 0.
++//
++// 0 is auto. 8192 is the historical spacing GPU profiles still pass as
++// --checkpoint-every-n-tokens; on a model that cannot rewind that value is
++// the 256-token grid. Any other positive value is an explicit grid.
++// Negative disables the grid.
++static int32_t mark_grid_from_every(int32_t every, bool needs_mark) {
++    if (every < 0) {
++        return 0;
++    }
++    if (needs_mark && (every == 0 || every == 8192)) {
++        return 256;
++    }
++    return every > 0 ? every : 0;
++}
++
+ static uint64_t estimate_mmproj_file_bytes(const char * path) {
+     llama_model_params mp = llama_model_default_params();
+     mp.no_alloc  = true;
+@@ -1247,6 +1268,9 @@ private:
+     // n_swa for server_prompt::get_reuse(): 0 with a recurrent state, which holds one position only
+     int32_t n_swa_reuse;
+ 
++    // Prefill checkpoint spacing. 0 means no extra marks beyond turn boundaries.
++    int32_t prompt_mark_grid = 0;
++
+     // slots / clients
+     std::vector<server_slot> slots;
+ 
+@@ -1605,7 +1629,12 @@ private:
+ 
+         // the min position of a hybrid memory is the position of its recurrent state, not the start of the SWA window
+         n_swa_reuse = llama_model_is_recurrent(model_tgt) || llama_model_is_hybrid(model_tgt) ? 0 : n_swa;
+-
++        {
++            const bool needs_mark = llama_model_is_recurrent(model_tgt) || llama_model_is_hybrid(model_tgt);
++            prompt_mark_grid = params_base.n_ctx_checkpoints > 0
++                    ? mark_grid_from_every(params_base.checkpoint_every_nt, needs_mark)
++                    : 0;
++        }
+         // Multi-GPU SWA (gemma4 iswa dual-KV): creating context checkpoints during
+         // prefill dumps PARTIAL_ONLY state via llama_state_seq_get_data_ext and
+         // reliably hits CUDA illegal access on the secondary device. Prefer full
+@@ -1623,6 +1652,7 @@ private:
+                 SRV_WRN("disabling ctx-checkpoints (%d -> 0): multi-GPU SWA checkpoint dump is unsafe\n",
+                         params_base.n_ctx_checkpoints);
+                 params_base.n_ctx_checkpoints = 0;
++                prompt_mark_grid = 0;
+             }
+         }
+ 
+@@ -1823,6 +1853,9 @@ private:
+         if (params_base.n_ctx_checkpoints > 0) {
+             SRV_TRC("context checkpoints enabled, max = %d, min spacing = %d\n",
+                     params_base.n_ctx_checkpoints, params_base.checkpoint_min_step);
++            if (prompt_mark_grid > 0) {
++                SRV_INF("prompt mark grid: every %d tokens\n", prompt_mark_grid);
++            }
+         } else {
+             SRV_TRC("%s", "context checkpoints disabled\n");
+         }
+@@ -2926,34 +2959,59 @@ private:
+     void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max) {
+         const int id_task = slot.task->id;
+ 
+-        // evict checkpoints within min-step of a previous checkpoint, unless they were
+-        // created by the current task
+-        // only when the list is full, otherwise short prompts keep just the oldest checkpoint
+-        int64_t last = -1;
+-        for (auto it = slot.prompt.checkpoints.begin();
+-                slot.prompt.checkpoints.size() + 1 >= (size_t) params_base.n_ctx_checkpoints &&
+-                it != slot.prompt.checkpoints.end(); ) {
+-            const auto & cur = **it;
+-            if (cur.id_task != id_task && last >= 0 && cur.n_tokens <= last + params_base.checkpoint_min_step) {
+-                SLT_TRC(slot, "erasing context checkpoint too close to an earlier one (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+-                        cur.pos_min, cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
++        // A mark grid finer than checkpoint_min_step must not be collapsed by the
++        // "too close" pass, and when the cap fills the marks stay spread across
++        // the prompt instead of keeping only the newest window.
++        const bool spread = prompt_mark_grid > 0 &&
++                (params_base.checkpoint_min_step <= 0 || prompt_mark_grid < params_base.checkpoint_min_step);
++
++        if (!spread) {
++            // evict checkpoints within min-step of a previous checkpoint, unless they were
++            // created by the current task
++            // only when the list is full, otherwise short prompts keep just the oldest checkpoint
++            int64_t last = -1;
++            for (auto it = slot.prompt.checkpoints.begin();
++                    slot.prompt.checkpoints.size() + 1 >= (size_t) params_base.n_ctx_checkpoints &&
++                    it != slot.prompt.checkpoints.end(); ) {
++                const auto & cur = **it;
++                if (cur.id_task != id_task && last >= 0 && cur.n_tokens <= last + params_base.checkpoint_min_step) {
++                    SLT_TRC(slot, "erasing context checkpoint too close to an earlier one (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
++                            cur.pos_min, cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
+ 
+-                it = slot.prompt.checkpoints.erase(it);
+-                continue;
+-            }
++                    it = slot.prompt.checkpoints.erase(it);
++                    continue;
++                }
+ 
+-            last = cur.n_tokens;
+-            ++it;
++                last = cur.n_tokens;
++                ++it;
++            }
+         }
+ 
+         while (slot.prompt.checkpoints.size() >= (size_t) params_base.n_ctx_checkpoints) {
+-            // make room for the new checkpoint, if needed
+-            const auto & cur = *slot.prompt.checkpoints.front();
++            auto victim = slot.prompt.checkpoints.begin();
++            if (spread && slot.prompt.checkpoints.size() >= 2) {
++                // Drop the earlier mark of the closest pair. Equal gaps shed the
++                // oldest pair first, so the newest mark and a spread of anchors remain.
++                int64_t best_gap = -1;
++                for (auto it = slot.prompt.checkpoints.begin(); std::next(it) != slot.prompt.checkpoints.end(); ++it) {
++                    const int64_t gap = (*std::next(it))->n_tokens - (*it)->n_tokens;
++                    if (best_gap < 0 || gap < best_gap) {
++                        best_gap = gap;
++                        victim = it;
++                    }
++                }
++            }
++            const auto & cur = **victim;
+ 
+-            SLT_WRN(slot, "erasing old context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+-                    cur.pos_min, cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
++            if (spread) {
++                SLT_TRC(slot, "erasing context checkpoint to spread the mark grid (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
++                        cur.pos_min, cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
++            } else {
++                SLT_WRN(slot, "erasing old context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
++                        cur.pos_min, cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
++            }
+ 
+-            slot.prompt.checkpoints.erase(slot.prompt.checkpoints.begin());
++            slot.prompt.checkpoints.erase(victim);
+         }
+ 
+         // replace an existing checkpoint at the same n_tokens instead of appending a duplicate
+@@ -4923,6 +4981,8 @@ private:
+ 
+                     const int32_t n_decision_first = slot.task->type == SERVER_TASK_TYPE_DECISION ? slot.task->decision.pos_first() : -1;
+ 
++                    const int32_t n_fill_from = slot.prompt.n_tokens();
++
+                     // add prompt tokens for processing in the current batch
+                     while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_batch) {
+                         // get next token to process
+@@ -4965,6 +5025,17 @@ private:
+                         }
+                         slot.prompt.tokens.push_back(cur_tok);
+ 
++                        // End the batch on a mark. The checkpoint is taken before the
++                        // next decode, so it holds the state after this many tokens.
++                        // Leave the last few tokens to the near-end split below.
++                        if (do_checkpoint && prompt_mark_grid > 0) {
++                            const auto pos = slot.prompt.n_tokens();
++                            const int remain = slot.task->n_tokens() - pos;
++                            if (pos > n_fill_from && pos % prompt_mark_grid == 0 && remain > 4) {
++                                break;
++                            }
++                        }
++
+                         // break at the last user message, or at user messages at least min step past the last checkpoint
+                         if (do_checkpoint && spans.is_user_start(slot.prompt.n_tokens())) {
+                             const auto pos = slot.prompt.n_tokens();
+@@ -5002,6 +5073,9 @@ private:
+ 
+                     const auto n_tokens_start = slot.prompt.n_tokens() - n_tokens_cur;
+ 
++                    const bool on_mark = prompt_mark_grid > 0 && n_tokens_start > 0 &&
++                            (n_tokens_start % prompt_mark_grid) == 0;
++
+                     const bool near_prompt_end = slot.task->n_tokens() < slot.prompt.n_tokens() + n_ubatch;
+ 
+                     const bool is_user_start = spans.is_user_start(n_tokens_start);
+@@ -5027,8 +5101,9 @@ private:
+                         slot.init_sampler();
+                     } else {
+                         // skip ordinary mid-prompt checkpoints, unless the batch starts a user
+-                        // message or we are near the end of the prompt
+-                        if (!is_user_start && !near_prompt_end) {
++                        // message, we are near the end of the prompt, or this batch starts
++                        // on a mark (the previous batch ended on the grid)
++                        if (!is_user_start && !near_prompt_end && !on_mark) {
+                             do_checkpoint = false;
+                         }
+                     }
+@@ -5048,7 +5123,7 @@ private:
+                     // no need to create checkpoints that are too close together, unless it's the last user message
+                     do_checkpoint = do_checkpoint && (
+                             slot.prompt.checkpoints.empty() ||
+-                            is_last_user_message || near_prompt_end ||
++                            is_last_user_message || near_prompt_end || on_mark ||
+                             n_tokens_start > slot.prompt.checkpoints.back()->n_tokens + params_base.checkpoint_min_step);
+                     SLT_DBG(slot, "main/do_checkpoint = %s, pos_min = %d, pos_max = %d\n", do_checkpoint ? "yes" : "no", pos_min, pos_max);
+ 

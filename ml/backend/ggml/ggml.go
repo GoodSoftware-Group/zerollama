@@ -1398,7 +1398,7 @@ func (t *Tensor) Mulmat(ctx ml.Context, t2 ml.Tensor) ml.Tensor {
 
 func (t *Tensor) MulmatFullPrec(ctx ml.Context, t2 ml.Tensor) ml.Tensor {
 	mul := C.ggml_mul_mat(ctx.(*Context).ctx, t.t, t2.(*Tensor).t)
-	C.ggml_mul_mat_set_prec(mul, C.GGML_PREC_F32)
+	C.ggml_prec_set_acc(mul, C.GGML_PREC_F32)
 
 	return &Tensor{
 		b: t.b,
@@ -1886,7 +1886,7 @@ func (t *Tensor) ScaledDotProductAttention(ctx ml.Context, key, value, mask, sin
 		if sinks != nil {
 			C.ggml_flash_attn_ext_add_sinks(kqv, sinks.(*Tensor).t)
 		}
-		C.ggml_flash_attn_ext_set_prec(kqv, C.GGML_PREC_F32)
+		C.ggml_prec_set_acc(kqv, C.GGML_PREC_F32)
 
 		if vmla != nil {
 			var cur ml.Tensor = &Tensor{b: t.b, t: kqv}

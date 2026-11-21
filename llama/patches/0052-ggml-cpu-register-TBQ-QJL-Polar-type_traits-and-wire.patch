@@ -32,7 +32,7 @@ index a91aff1..10c1b2b 100644
          ggml-cpu/qjl/qjl_cpu_features.h
          ggml-cpu/qjl/qjl_dispatch.c
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index 65c5edd..5243a32 100644
+index b2edb09..4400ec6 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -431,6 +431,37 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
@@ -73,7 +73,7 @@ index 65c5edd..5243a32 100644
      [GGML_TYPE_I32] = {
          .from_float               = (ggml_from_float_t) ggml_cpu_fp32_to_i32,
      },
-@@ -2056,6 +2087,27 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
+@@ -2054,6 +2085,27 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
              {
                  ggml_compute_forward_flash_attn_ext(params, tensor);
              } break;
@@ -101,7 +101,7 @@ index 65c5edd..5243a32 100644
          case GGML_OP_FLASH_ATTN_BACK:
              {
                  int32_t t = ggml_get_op_params_i32(tensor, 0);
-@@ -2471,6 +2523,20 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
+@@ -2465,6 +2517,20 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
                  const int64_t n_heads = node->src[1]->ne[1];
                  n_tasks = MIN(n_threads, n_heads);
              } break;
@@ -122,7 +122,7 @@ index 65c5edd..5243a32 100644
          case GGML_OP_WIN_PART:
          case GGML_OP_WIN_UNPART:
          case GGML_OP_GET_REL_POS:
-@@ -3032,6 +3098,13 @@ struct ggml_cplan ggml_graph_plan(
+@@ -3026,6 +3092,13 @@ struct ggml_cplan ggml_graph_plan(
  
                          cur += MAX(prefill, decode);
                      } break;
@@ -137,7 +137,7 @@ index 65c5edd..5243a32 100644
                      {
                          const int64_t    D = node->src[0]->ne[0];
 diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
-index 0071283..32e8e3e 100644
+index cd81347..bbc3d5f 100644
 --- a/ggml/src/ggml-cpu/ops.cpp
 +++ b/ggml/src/ggml-cpu/ops.cpp
 @@ -690,6 +690,10 @@ void ggml_compute_forward_add(
@@ -173,7 +173,7 @@ index 0071283..32e8e3e 100644
          case GGML_TYPE_IQ2_XXS:
          case GGML_TYPE_IQ2_XS:
          case GGML_TYPE_IQ3_XXS:
-@@ -4824,6 +4836,10 @@ void ggml_compute_forward_out_prod(
+@@ -4908,6 +4920,10 @@ void ggml_compute_forward_out_prod(
          case GGML_TYPE_Q6_K:
          case GGML_TYPE_TQ1_0:
          case GGML_TYPE_TQ2_0:
@@ -184,7 +184,7 @@ index 0071283..32e8e3e 100644
          case GGML_TYPE_IQ2_XXS:
          case GGML_TYPE_IQ2_XS:
          case GGML_TYPE_IQ3_XXS:
-@@ -5150,6 +5166,10 @@ void ggml_compute_forward_set(
+@@ -5239,6 +5255,10 @@ void ggml_compute_forward_set(
          case GGML_TYPE_Q6_K:
          case GGML_TYPE_TQ1_0:
          case GGML_TYPE_TQ2_0:
@@ -195,7 +195,7 @@ index 0071283..32e8e3e 100644
          case GGML_TYPE_IQ2_XXS:
          case GGML_TYPE_IQ2_XS:
          case GGML_TYPE_IQ3_XXS:
-@@ -5376,6 +5396,10 @@ void ggml_compute_forward_get_rows(
+@@ -5465,6 +5485,10 @@ void ggml_compute_forward_get_rows(
          case GGML_TYPE_Q6_K:
          case GGML_TYPE_TQ1_0:
          case GGML_TYPE_TQ2_0:
@@ -206,7 +206,7 @@ index 0071283..32e8e3e 100644
          case GGML_TYPE_IQ2_XXS:
          case GGML_TYPE_IQ2_XS:
          case GGML_TYPE_IQ3_XXS:
-@@ -6137,6 +6161,13 @@ void ggml_compute_forward_clamp(
+@@ -6172,6 +6196,13 @@ void ggml_compute_forward_clamp(
          case GGML_TYPE_Q6_K:
          case GGML_TYPE_TQ1_0:
          case GGML_TYPE_TQ2_0:

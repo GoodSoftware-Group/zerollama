@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 24 Oct 2026 20:34:54 -0700
+Subject: [PATCH] ggml-metal: fix null-pipeline crash for F16 src1 mul_mat
+
+---
+ ggml/src/ggml-metal/ggml-metal-ops.cpp     | 14 ++++++++++++++
+ ggml/src/ggml-metal/ggml-metal-ops.cpp.rej |  9 +++++++++
+ 2 files changed, 23 insertions(+)
+ create mode 100644 ggml/src/ggml-metal/ggml-metal-ops.cpp.rej
+
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+index 1e37fa0..70f1715 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -2717,6 +2717,16 @@ static int ggml_metal_op_mul_mat_mv(ggml_metal_op_t ctx, int idx) {
+     return 1;
+ }
+ 
++// defense in depth: a missing Metal kernel should be a clear, actionable abort instead of
++// a null-pipeline dereference deep in the encoder (ggml_metal_library_compile_pipeline
++// already logs the underlying MTLLibraryErrorDomain error before returning a nil pipeline)
++static void ggml_metal_op_mul_mat_check_pipeline(const ggml_metal_pipeline_with_params & pipeline, const ggml_tensor * op) {
++    if (!pipeline.pipeline) {
++        GGML_ABORT("%s: no Metal kernel for op = %s, src0 type = %s, src1 type = %s",
++                __func__, ggml_op_name(op->op), ggml_type_name(op->src[0]->type), ggml_type_name(op->src[1]->type));
++    }
++}
++
+ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+     ggml_tensor * op = ctx->node(idx);
+ 
+@@ -2834,6 +2844,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+         };
+ 
+         auto pipeline = ggml_metal_library_get_pipeline_mul_mv_ext(lib, op, nsg, nxpsg, r1ptg);
++        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
+ 
+         ggml_metal_kargs_mul_mv_ext args = {
+             /*.ne00  =*/ ne00,
+@@ -2876,6 +2887,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+         //}
+ 
+         auto pipeline = ggml_metal_library_get_pipeline_mul_mm(lib, op);
++        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
+ 
+         ggml_metal_kargs_mul_mm args = {
+             /*.ne00 =*/ ne00,
+@@ -3056,6 +3068,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
+ 
+         {
+             auto pipeline = ggml_metal_library_get_pipeline_mul_mm_id(lib, op);
++            ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
+ 
+             ggml_metal_kargs_mul_mm_id args = {
+                 /*.ne00  =*/ ne00,
+@@ -3095,6 +3108,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
+         }
+     } else {
+         auto pipeline = ggml_metal_library_get_pipeline_mul_mv_id(lib, op);
++        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
+ 
+         const int nr0 = pipeline.nr0;
+         const int nr1 = pipeline.nr1;
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp.rej b/ggml/src/ggml-metal/ggml-metal-ops.cpp.rej
+new file mode 100644
+index 0000000..4fa6e63
+--- /dev/null
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp.rej
+@@ -0,0 +1,9 @@
++diff a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp	(rejected hunks)
++@@ -2610,6 +2622,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
++         ggml_metal_encoder_dispatch_threadgroups(enc, ((ne11 + nr1 - 1) / nr1), ((ne01 + nr0 - 1) / nr0), ne12 * ne13, 32, nsg, 1);
++     } else {
++         auto pipeline = ggml_metal_library_get_pipeline_mul_mv(lib, op);
+++        ggml_metal_op_mul_mat_check_pipeline(pipeline, op);
++ 
++         const int nr0 = pipeline.nr0;
++         const int nr1 = pipeline.nr1;

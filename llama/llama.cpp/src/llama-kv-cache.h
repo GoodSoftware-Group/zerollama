@@ -112,7 +112,10 @@ public:
         const  layer_reuse_cb & reuse,
         const  layer_share_cb & share,
         // a model can hold more than one cache, so the tensor names have to stay unique
-                 const char *   name_tag = "");
+                 const char *   name_tag = "",
+        // lightning indexer keys are rotated with the indexer RoPE parameters
+                       bool   is_indexer = false,
+                     uint32_t   kv_size_max = 0);
 
     ~llama_kv_cache() = default;
 
@@ -146,6 +149,8 @@ public:
     llama_pos seq_pos_max(llama_seq_id seq_id) const override;
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
+
+    llama_mark_cost mark_cost() const override;
 
     // state write/load
 
@@ -219,6 +224,9 @@ public:
     ggml_tensor * get_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
     ggml_tensor * get_v(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
 
+    ggml_tensor * get_k_scale(int32_t il) const;
+    ggml_tensor * get_v_scale(int32_t il) const;
+
     // store k_cur and v_cur in the cache based on the provided head location
     ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const;
     ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo) const;
@@ -262,6 +270,7 @@ public:
     // MultiDecode: ancestor-only KQ mask using ubatch->parent + slot cell indices
     void set_input_kq_mask_multidecode(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const;
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+    void set_input_relative_pos(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const;
 
     // true if llama_kv_cell_ext holds information that has to survive a state save/restore
     bool has_cell_ext() const;
@@ -287,6 +296,9 @@ private:
         ggml_tensor * v;
         ggml_tensor * k_idx = nullptr; // MSA indexer (optional; null on vanilla layers)
 
+        ggml_tensor * k_scale;
+        ggml_tensor * v_scale;
+
         std::vector<ggml_tensor *> k_stream;
         std::vector<ggml_tensor *> v_stream;
         std::vector<ggml_tensor *> k_idx_stream;
@@ -302,6 +314,8 @@ private:
 
     // SWA
     const uint32_t n_swa = 0;
+
+    const bool is_indexer = false;
 
     // env: LLAMA_ATTN_ROT_DISABLE
     uint32_t n_rot_k = 0;
@@ -333,6 +347,7 @@ private:
     // note: this is not part of the KV state and it's only used to speed-up the find_slot() method
     std::vector<uint32_t> v_heads;
 
+    // TODO: temporary until we refactor to be able to share the same cells between 2 kv caches [TAG_KV_CACHE_SHARE_CELLS]
     llama_kv_cache * other = nullptr;
 
     // Shared cell metadata (draft/target or multi-owner). COW fork replaces the
@@ -406,12 +421,9 @@ private:
     ggml_tensor * build_rope_shift(
             const llama_cparams & cparams,
                    ggml_context * ctx,
-                    ggml_tensor * cur,
+                    ggml_tensor * k,
                     ggml_tensor * shift,
                     ggml_tensor * rot,
-                    ggml_tensor * factors,
-                          float   freq_base,
-                          float   freq_scale,
                        uint32_t   il) const;
 
     ggml_cgraph * build_graph_shift(
@@ -480,6 +492,9 @@ public:
     ggml_tensor * get_k(ggml_context * ctx, int32_t il) const;
     ggml_tensor * get_v(ggml_context * ctx, int32_t il) const;
 
+    ggml_tensor * get_k_scale(int32_t il) const;
+    ggml_tensor * get_v_scale(int32_t il) const;
+
     // store k_cur and v_cur in the cache based on the provided head location
     // note: the heads in k_cur and v_cur should be laid out contiguously in memory
     //   - k_cur  [n_embd_head_k, n_head_k, n_tokens]
@@ -506,6 +521,7 @@ public:
     // Dual Chunk Attention stage masks (intra / succ / inter). See llama-dca.h.
     void set_input_kq_mask_dca(ggml_tensor * dst, const llama_ubatch * ubatch, int dca_stage) const;
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+    void set_input_relative_pos(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const;
 
     // see llama_kv_cache::get_prev_tokens()
     void get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const;

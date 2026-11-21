@@ -358,6 +358,8 @@ func (s *session) handle(payload []byte) {
 		s.onAppend(ev)
 	case "input_audio_buffer.commit":
 		s.onCommit()
+	case "input_audio_buffer.clear":
+		s.onClear()
 	case "conversation.item.create":
 		s.onItem(ev)
 	case "response.create":
@@ -367,6 +369,33 @@ func (s *session) handle(payload []byte) {
 	default:
 		s.fail(errors.New("unknown realtime event"))
 	}
+}
+
+// onClear drops uncommitted input. A committed turn (s.turn set) keeps going;
+// response.cancel stops a reply. Draft STT for discarded audio is always
+// cancelled. An early reply is cancelled only when no turn is running — once
+// begin has set s.turn, s.early belongs to that turn until takeEarly. Stages
+// stay open for a playing reply (closeStages would drop its status events).
+// When the gate had already announced speech, speech_stopped is sent before
+// cleared so the client does not stay mid-utterance.
+func (s *session) onClear() {
+	s.mu.Lock()
+	heard := s.gate.Heard()
+	s.stopIdleLocked()
+	s.stopSpeculateLocked()
+	s.pcm = nil
+	s.gate.Reset()
+	noTurn := s.turn == nil
+	s.mu.Unlock()
+	s.abortUncommittedGuess(noTurn)
+	if noTurn {
+		s.closeStages()
+	}
+	s.clearSilenceAnnounce()
+	if heard {
+		_ = s.send(map[string]any{"type": "input_audio_buffer.speech_stopped"})
+	}
+	_ = s.send(map[string]any{"type": "input_audio_buffer.cleared"})
 }
 
 func (s *session) onUpdate(ev map[string]any) {
@@ -836,14 +865,21 @@ func (s *session) speculate(pcm []byte) {
 	s.mu.Unlock()
 }
 
-func (s *session) dropGuess() {
+// abortUncommittedGuess cancels draft STT for audio that is no longer on the
+// gate. When dropEarly is true, it also cancels an early reply still tied to
+// that open buffer. When false, s.early is left for the committed turn that
+// owns s.turn (begin has not called takeEarly yet).
+func (s *session) abortUncommittedGuess(dropEarly bool) {
 	s.mu.Lock()
 	cancel := s.guessCancel
 	s.guessCancel = nil
 	s.guessCh = nil
 	s.heldPCM = nil
-	early := s.early
-	s.early = nil
+	var early *earlyReply
+	if dropEarly {
+		early = s.early
+		s.early = nil
+	}
 	s.broadcastLocked()
 	s.mu.Unlock()
 	if cancel != nil {
@@ -852,6 +888,10 @@ func (s *session) dropGuess() {
 	if early != nil {
 		early.cancel()
 	}
+}
+
+func (s *session) dropGuess() {
+	s.abortUncommittedGuess(true)
 	s.closeStages()
 }
 

@@ -62,6 +62,10 @@ Open criteria:
 
 Closed. Core alignment shipped; keep history in [../phase17-llama-server.md](../design/serving/phase17-llama-server.md), [../upstream-ollama-diff.md](../upstream/ollama-diff.md), and [CHANGELOG](../../CHANGELOG.md). Live follow-on work now sits under Phase 16 edge cleanup, L2 fork-profile evaluation, and adjacent llama-server tracks such as Flash-MoE.
 
+### Prompt reuse (0162–0186) — in tree
+
+Shipped as llama.cpp patches plus the Go prefill route. **Why it is not a decode project:** the matmul is unchanged, so `zerollama bench` tok/s is the wrong gate. The open operator step is rebuilding `llama-server` from `vendor/llama-cpp-b12557` and timing a repeated prompt on a lab port. Mac ggml stays the default, so daily M4 chat does not run the `tools/server` pieces until `ZEROLLAMA_LLAMA_SERVER=1`. Detail: [../kinetic-prompt-reuse.md](../design/serving/kinetic-prompt-reuse.md) · [findings](../design/serving/kinetic-prompt-reuse-findings.md).
+
 ### Phase 16 — exit criteria (Partial)
 
 Open criteria:

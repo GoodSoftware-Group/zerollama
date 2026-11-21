@@ -101,6 +101,12 @@ using llama_memory_context_ptr = std::unique_ptr<llama_memory_context_i>;
 
 // general concept of LLM memory
 // the KV cache is a type of LLM memory, but there can be other types
+// One cell of state that cannot be rewound, and one token of the attention cache.
+struct llama_mark_cost {
+    size_t recurrent = 0;
+    size_t per_token = 0;
+};
+
 struct llama_memory_i {
     // this callback is used to filter out layers that should not be included in the cache
     using layer_filter_cb = std::function<bool(int32_t il)>;
@@ -169,6 +175,12 @@ struct llama_memory_i {
 
     virtual void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const = 0;
     virtual void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) = 0;
+
+    // Bytes of one recurrent cell and of one attention token. The default is
+    // a cache that rewinds in place and has neither measured.
+    virtual llama_mark_cost mark_cost() const {
+        return {};
+    }
 };
 
 using llama_memory_ptr = std::unique_ptr<llama_memory_i>;

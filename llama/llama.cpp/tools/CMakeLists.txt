@@ -22,7 +22,8 @@ else()
     add_subdirectory(perplexity)
     add_subdirectory(quantize)
     if (LLAMA_BUILD_SERVER)
-        add_subdirectory(ui)
+        # the chat app lives in ui/apps/chat, outside tools/
+        add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../ui/apps/chat ${CMAKE_BINARY_DIR}/ui/apps/chat)
         add_subdirectory(cli)
         if (LLAMA_BUILD_KOKORO)
             # Kokoro-82M StyleTTS-2 port (Eliza). Build before server so kokoro_lib exists to link.

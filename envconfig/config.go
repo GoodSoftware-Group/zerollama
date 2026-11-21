@@ -1115,7 +1115,7 @@ func OpenJevNoulCalibrated() bool {
 
 // DiffusionBin is an optional path to llama-diffusion-gemma-cli from the
 // sibling vendor tree (scripts/build/build_llama_diffusion.sh).
-// WHY not LLAMA_SERVER_BIN: prod chat/Laya/CLM emb must stay on the b12119 llama-server.
+// WHY not LLAMA_SERVER_BIN: prod chat/Laya/CLM emb must stay on the pinned llama-server.
 func DiffusionBin() string {
 	return strings.TrimSpace(Var("ZEROLLAMA_DIFFUSION_BIN"))
 }

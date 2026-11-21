@@ -14,19 +14,8 @@ void llama_model_gemma4_assistant::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ROPE_FREQ_BASE_SWA,           hparams.rope_freq_base_train_swa, false);
     ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW,     hparams.n_swa);
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,  hparams.f_norm_rms_eps);
-    // Eliza-1 e2b drafters omit the SWA head keys. Dense key_length is 512;
-    // the SWA head matches embedding_length (256). e4b publishes these keys.
-    {
-        uint32_t swa_k = 0;
-        if (!ml.get_key(LLM_KV_ATTENTION_KEY_LENGTH_SWA, swa_k, false)) {
-            hparams.n_embd_head_k_swa = hparams.n_embd;
-            hparams.n_rot_swa         = hparams.n_embd_head_k_swa;
-        }
-        uint32_t swa_v = 0;
-        if (!ml.get_key(LLM_KV_ATTENTION_VALUE_LENGTH_SWA, swa_v, false)) {
-            hparams.n_embd_head_v_swa = hparams.n_embd;
-        }
-    }
+    ml.get_key(LLM_KV_ATTENTION_KEY_LENGTH_SWA,     hparams.n_embd_head_k_swa);
+    ml.get_key(LLM_KV_ATTENTION_VALUE_LENGTH_SWA,   hparams.n_embd_head_v_swa);
 
     // Standalone assistant GGUFs store the draft stack in block_count
     // (blk.0 .. blk.N-1). nextn_predict_layers is the MTP horizon (often 1),
@@ -99,10 +88,10 @@ void llama_model_gemma4_assistant::load_arch_tensors(llama_model_loader &) {
 }
 
 std::unique_ptr<llm_graph_context> llama_model_gemma4_assistant::build_arch_graph(const llm_graph_params & params) const {
-    return std::make_unique<graph>(*this, params);
+    return std::make_unique<graph>(params);
 }
 
-llama_model_gemma4_assistant::graph::graph(const llama_model & model, const llm_graph_params & params) :
+llama_model_gemma4_assistant::graph::graph(const llm_graph_params & params) :
         llm_graph_context(params) {
     const int64_t n_embd_backbone = hparams.n_embd_inp();
 
@@ -124,9 +113,8 @@ llama_model_gemma4_assistant::graph::graph(const llama_model & model, const llm_
         inp_embd = inp->embd;
         res->t_inp_embd = inp->embd;
 
-        inp->h = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_embd_backbone, ubatch.n_tokens);
+        inp->h = build_inp_embd_state(inp.get(), n_embd_backbone);
         cb(inp->h, "inp_h", -1);
-        ggml_set_input(inp->h);
         inp_h = inp->h;
 
         res->add_input(std::move(inp));
@@ -152,14 +140,9 @@ llama_model_gemma4_assistant::graph::graph(const llama_model & model, const llm_
     ggml_tensor * inpL = cur;
 
     for (int il = 0; il < n_layer_nextn; ++il) {
-        const bool is_swa = hparams.is_swa(il);
 
         const int64_t n_embd_head = hparams.n_embd_head_k(il);
         const int64_t n_head      = hparams.n_head(il);
-
-        const float freq_base_l  = model.get_rope_freq_base(cparams, il);
-        const float freq_scale_l = model.get_rope_freq_scale(cparams, il);
-        const int   n_rot_l      = hparams.n_rot(il);
 
         ggml_tensor * cur_norm = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
         cb(cur_norm, "attn_norm", il);
@@ -169,9 +152,7 @@ llama_model_gemma4_assistant::graph::graph(const llama_model & model, const llm_
         Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, nullptr, LLM_NORM_RMS, il);
         cb(Qcur, "Qcur_normed", il);
 
-        ggml_tensor * freq_factors = is_swa ? nullptr : model.layers[il].rope_freqs;
-        Qcur = ggml_rope_ext(ctx0, Qcur, inp_pos, freq_factors, n_rot_l, rope_type, n_ctx_orig,
-                             freq_base_l, freq_scale_l, ext_factor, attn_factor, beta_fast, beta_slow);
+        Qcur = build_rope(Qcur, inp_pos, il);
         cb(Qcur, "Qcur_pos", il);
 
         cur = build_attn(inp_attn, model.layers[il].wo, nullptr, nullptr,

@@ -1,0 +1,133 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Sat, 21 Nov 2026 14:06:42 -0800
+Subject: [PATCH] llama: start a new prompt cache when the model file changes
+
+The cache key already named the path and the devices. A file replaced at that path, with the same shape, was still resumed. The key now includes the file's size, modification time and leading megabyte, for the model and for a draft model.
+---
+ tools/server/server-context.cpp |  2 +
+ tools/server/server-warm-disk.h | 77 ++++++++++++++++++++++++++++++++-
+ 2 files changed, 78 insertions(+), 1 deletion(-)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index cca69ae..c986674 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2158,6 +2158,7 @@ private:
+                     uint64_t id = 14695981039346656037ull;
+                     const std::string path = params_base.model.path;
+                     id = llama_warm_mix_bytes(id, path.data(), path.size());
++                    id = llama_warm_file_id(id, path);
+                     id = llama_warm_mix(id, (uint64_t) llama_model_n_embd(model_tgt));
+                     id = llama_warm_mix(id, (uint64_t) llama_model_n_layer(model_tgt));
+                     id = llama_warm_mix(id, (uint64_t) llama_vocab_n_tokens(llama_model_get_vocab(model_tgt)));
+@@ -2173,6 +2174,7 @@ private:
+                         id = llama_warm_mix(id, (uint64_t) llama_n_ctx_seq(ctx_dft));
+                         const std::string dpath = params_base.speculative.draft.mparams.path;
+                         id = llama_warm_mix_bytes(id, dpath.data(), dpath.size());
++                        id = llama_warm_file_id(id, dpath);
+                     }
+                     // CPU and GPU runs round differently. The key is the offload
+                     // and the devices that actually hold the model.
+diff --git a/tools/server/server-warm-disk.h b/tools/server/server-warm-disk.h
+index 9f96252..df4d007 100644
+--- a/tools/server/server-warm-disk.h
++++ b/tools/server/server-warm-disk.h
+@@ -4,7 +4,9 @@
+ // exits; a file written here can restore the same sequence state after a restart.
+ // LLAMA_WARM_DISK=0 disables it. Files that belong to another model, context,
+ // or device are left unread. CPU and GPU runs round differently, so the key
+-// includes the offload and the devices that wrote the state. Version 2 removes
++// includes the offload and the devices that wrote the state. It also includes
++// the model file's size, modification time and leading megabyte, so a file
++// replaced at the same path starts a new cache. Version 2 removes
+ // version 1 files: those kept tokens written one at a time, which a GPU resume
+ // must not restore. The oldest files in the directory go first once it passes
+ // its byte budget, whichever model wrote them. Restoring a file makes it the
+@@ -96,6 +98,41 @@ inline uint64_t llama_warm_device(uint64_t id, uint32_t n_gpu_layers, int32_t sp
+     return id;
+ }
+ 
++// Identity of the model file, folded into the cache key. A new file at the
++// same path has a different size, time or leading megabyte and must not
++// resume a state the previous file left behind. A missing file mixes as 0.
++inline uint64_t llama_warm_file_id(uint64_t id, const std::filesystem::path & path) {
++    std::error_code ec;
++    if (path.empty()) {
++        return llama_warm_mix(id, 0);
++    }
++    const auto nbytes = std::filesystem::file_size(path, ec);
++    if (ec) {
++        return llama_warm_mix(id, 0);
++    }
++    id = llama_warm_mix(id, (uint64_t) nbytes);
++    const auto stamp = std::filesystem::last_write_time(path, ec);
++    if (ec) {
++        id = llama_warm_mix(id, 0);
++    } else {
++        id = llama_warm_mix(id, (uint64_t) stamp.time_since_epoch().count());
++    }
++    std::ifstream in(path, std::ios::binary);
++    constexpr size_t k_head = 1u << 20;
++    char buf[4096];
++    size_t left = k_head;
++    while (in && left > 0) {
++        in.read(buf, (std::streamsize) std::min(left, sizeof(buf)));
++        const size_t got = (size_t) in.gcount();
++        if (got == 0) {
++            break;
++        }
++        id = llama_warm_mix_bytes(id, buf, got);
++        left -= got;
++    }
++    return id;
++}
++
+ // Oldest files are dropped until the remaining bytes fit. protect is never dropped.
+ inline std::vector<size_t> llama_warm_trim(const std::vector<uint64_t> & bytes, const std::vector<int64_t> & mtime, uint64_t budget, size_t protect) {
+     std::vector<size_t> order(bytes.size());
+@@ -822,6 +859,44 @@ int main() {
+             return warm_fail("tensor split is part of the device");
+         }
+     }
++    {
++        const std::filesystem::path files = "/tmp/llama-warm-file-id";
++        std::filesystem::remove_all(files);
++        std::filesystem::create_directories(files);
++        const std::filesystem::path one = files / "model-a.bin";
++        const std::filesystem::path two = files / "model-b.bin";
++        const std::filesystem::path copy = files / "model-a-copy.bin";
++        {
++            std::ofstream out(one, std::ios::binary);
++            out << "weights-a";
++        }
++        {
++            std::ofstream out(two, std::ios::binary);
++            out << "weights-b";
++        }
++        const auto stamp = std::filesystem::last_write_time(one);
++        std::filesystem::last_write_time(two, stamp);
++        const uint64_t id_a = llama_warm_file_id(7, one);
++        if (id_a != llama_warm_file_id(7, one)) {
++            return warm_fail("file id stable");
++        }
++        if (id_a == llama_warm_file_id(7, two)) {
++            return warm_fail("replaced file shares a cache");
++        }
++        std::filesystem::copy_file(one, copy);
++        std::filesystem::last_write_time(copy, stamp);
++        if (llama_warm_file_id(7, copy) != id_a) {
++            return warm_fail("same file bytes share a cache");
++        }
++        std::filesystem::last_write_time(one, stamp - std::chrono::hours(1));
++        if (llama_warm_file_id(7, one) == id_a) {
++            return warm_fail("file mtime is part of the key");
++        }
++        if (llama_warm_file_id(7, files / "missing.bin") != llama_warm_mix(7, 0)) {
++            return warm_fail("missing file");
++        }
++        std::filesystem::remove_all(files);
++    }
+     {
+         const std::vector<uint64_t> bytes = { 100, 100, 100 };
+         const std::vector<int64_t>  mtime = { 1, 2, 3 };

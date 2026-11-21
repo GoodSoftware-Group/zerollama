@@ -1,0 +1,490 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 20 Nov 2026 10:56:04 -0800
+Subject: [PATCH] server: restore a cached prompt only when it is faster than
+ running it
+
+A prefill records seconds per token and a restore records seconds per byte. A saved state is kept and loaded only when the tokens it skips outweigh the copy. LLAMA_WARM_COST=0 disables the check.
+---
+ common/arg.cpp                     |   3 +-
+ tools/server/server-context.cpp    |  22 ++++
+ tools/server/server-slot-sched.cpp |  67 +++++++++---
+ tools/server/server-slot-sched.h   |   7 ++
+ tools/server/server-warm-cost.h    | 164 +++++++++++++++++++++++++++++
+ tools/server/server-warm-disk.h    |  39 ++++++-
+ 6 files changed, 285 insertions(+), 17 deletions(-)
+ create mode 100644 tools/server/server-warm-cost.h
+
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 965ca81..eb2055e 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -1749,7 +1749,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+     add_opt(common_arg(
+         {"-cram", "--cache-ram"}, "N",
+         string_format("set the maximum cache size in MiB (default: %d, 0 for decision models, -1 - no limit, 0 - disable). "
+-            "Saved prompts are also written under the llama.cpp cache directory and reused after a restart (LLAMA_WARM_DISK=0 turns the copy off) "
++            "Saved prompts are also written under the llama.cpp cache directory and reused after a restart (LLAMA_WARM_DISK=0 turns the copy off). "
++            "A saved prompt is restored only when that is faster than running it again (LLAMA_WARM_COST=0 disables the check) "
+             "[(more info)](https://github.com/ggml-org/llama.cpp/pull/16391)", params.cache_ram_mib),
+         [](common_params & params, int value) {
+             params.cache_ram_mib = value;
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 1d7dc5c..937e8a2 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -457,6 +457,18 @@ struct server_slot {
+         SRV_TRC(" - saving prompt with length %d, total state size = %.3f MiB (draft: %.3f MiB)\n",
+                 (int) prompt.tokens.size(), cur_size / (1024.0 * 1024.0), cur_size_dft / (1024.0 * 1024.0));
+ 
++        {
++            size_t kept = cur_size;
++            for (const auto & ck : prompt.checkpoints) {
++                kept += ck->size();
++            }
++            if (!prompt_cache.cost.worth(prompt.tokens.size(), kept)) {
++                SLT_TRC(*this, "prompt cache skipped, running %d tokens is faster than restoring %.3f MiB\n",
++                        (int) prompt.tokens.size(), kept / (1024.0 * 1024.0));
++                return false;
++            }
++        }
++
+         auto save_disk = [&](server_prompt_cache_state * saved) {
+             if (!prompt_cache.warm || prompt.tokens.has_mtmd || prompt.tokens.empty()) {
+                 return;
+@@ -1936,6 +1948,13 @@ private:
+ 
+             prompt_cache = std::make_unique<server_prompt_cache>(params_base.cache_ram_mib, n_ctx);
+ 
++            const char * cost_off = getenv("LLAMA_WARM_COST");
++            if (cost_off && cost_off[0] == '0') {
++                prompt_cache->cost.on = false;
++            } else {
++                SRV_INF("%s", "prompt cache restores a state only when that is faster than running it (LLAMA_WARM_COST=0 disables the check)\n");
++            }
++
+             const char * warm_off = getenv("LLAMA_WARM_DISK");
+             if (!(warm_off && warm_off[0] == '0')) {
+                 try {
+@@ -5867,6 +5886,9 @@ private:
+         if (n_prompt_queued == 0) {
+             return;
+         }
++        if (prompt_cache) {
++            prompt_cache->cost.note_prefill(n_prompt_queued, ggml_time_us() - t_prompt_start);
++        }
+         metrics.add_prompt(n_prompt_queued, ggml_time_us() - t_prompt_start);
+         n_prompt_queued = 0;
+     }
+diff --git a/tools/server/server-slot-sched.cpp b/tools/server/server-slot-sched.cpp
+index d1d1d42..4a5f213 100644
+--- a/tools/server/server-slot-sched.cpp
++++ b/tools/server/server-slot-sched.cpp
+@@ -161,6 +161,8 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
+         },
+     });
+ 
++    states.back().prefill_s = cost.token_s;
++
+     return &states.back();
+ }
+ 
+@@ -187,7 +189,15 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+ 
+     auto it_best = states.end();
+ 
+-    // find the most similar cached prompt, that would also preserve the most context
++    // keeping the slot costs nothing; a cache entry has to beat that
++    const int slot_lcp = lcp_best;
++    double best_gain = 0.0;
++    if (cost.timed() && !is_empty && slot_lcp > 0) {
++        best_gain = (double) slot_lcp * cost.token_s;
++    }
++
++    // find the most similar cached prompt, that would also preserve the most context.
++    // once a prefill has been timed, take the one that saves the most time instead.
+     for (auto it = states.begin(); it != states.end(); ++it) {
+         if (lora_should_clear_cache(it->prompt.lora, lora_new)) {
+             SRV_TRC("   - prompt with length %7zu, skipping, other lora config\n", it->prompt.tokens.size());
+@@ -206,40 +216,66 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+             continue;
+         }
+ 
+-        if (f_keep_best < f_keep_cur && f_sim_best < f_sim_cur) {
+-            f_keep_best = f_keep_cur;
+-            f_sim_best  = f_sim_cur;
+-            lcp_best    = lcp_cur;
+-
+-            it_best = it;
++        if (cost.timed()) {
++            const double per = it->prefill_s > 0.0 ? it->prefill_s : cost.token_s;
++            const double gain = llama_warm_gain(lcp_cur, per, it->data.size(), cost.restore());
++            if (!(gain > best_gain)) {
++                SRV_TRC("   - prompt with length %7zu, skipping, restore is slower than running %d tokens\n", it->prompt.tokens.size(), lcp_cur);
++                continue;
++            }
++            best_gain = gain;
++        } else if (!(f_keep_best < f_keep_cur && f_sim_best < f_sim_cur)) {
++            continue;
+         }
++
++        f_keep_best = f_keep_cur;
++        f_sim_best  = f_sim_cur;
++        lcp_best    = lcp_cur;
++
++        it_best = it;
+     }
+ 
++    std::optional<llama_warm_pick> disk_pick;
++
+     // a disk entry is used only when it keeps more of the cached prompt than the RAM hit
+     if (warm && !tokens_new.has_mtmd && !tokens_new.empty() && lora_get_enabled_ids(lora_new).empty()) {
+         const auto & query = tokens_new.get_tokens();
+-        if (const auto pick = warm->better(query.data(), query.size(), f_keep_best, f_sim_best)) {
+-            auto entry = warm->read(pick->path);
++        if (cost.timed()) {
++            for (const auto & pick : warm->matches(query.data(), query.size())) {
++                const double gain = llama_warm_gain(pick.lcp, cost.token_s, (size_t) pick.bytes, cost.restore() + cost.load_s);
++                if (gain > best_gain) {
++                    best_gain = gain;
++                    disk_pick = pick;
++                }
++            }
++        } else if (const auto pick = warm->better(query.data(), query.size(), f_keep_best, f_sim_best)) {
++            disk_pick = pick;
++        }
++        if (disk_pick) {
++            const int64_t t_read = ggml_time_us();
++            auto entry = warm->read(disk_pick->path);
++            cost.note_load((size_t) disk_pick->bytes, ggml_time_us() - t_read);
+             if (!entry || entry->main.empty() || (!entry->drft.empty() && ctx_dft == nullptr) || (entry->drft.empty() && ctx_dft != nullptr)) {
+                 if (!entry || entry->main.empty() || (!entry->drft.empty() && ctx_dft == nullptr)) {
+-                    warm->drop(pick->path);
++                    warm->drop(disk_pick->path);
+                 }
+             } else {
+                 const int64_t t_start = ggml_time_us();
+                 const size_t n = llama_state_seq_set_data_ext(ctx_tgt, entry->main.data(), entry->main.size(), id_slot, 0);
+                 if (n != entry->main.size()) {
+                     SRV_WRN("failed to restore disk state with size %zu\n", entry->main.size());
+-                    warm->drop(pick->path);
++                    warm->drop(disk_pick->path);
+                     return false;
+                 }
+                 if (!entry->drft.empty()) {
+                     const size_t nd = llama_state_seq_set_data_ext(ctx_dft, entry->drft.data(), entry->drft.size(), id_slot, 0);
+                     if (nd != entry->drft.size()) {
+                         SRV_WRN("failed to restore disk draft state with size %zu\n", entry->drft.size());
+-                        warm->drop(pick->path);
++                        warm->drop(disk_pick->path);
+                         return false;
+                     }
+                 }
++                cost.note_restore(entry->main.size() + entry->drft.size(), ggml_time_us() - t_start);
+ 
+                 std::list<std::shared_ptr<const common_prompt_checkpoint>> ckpts;
+                 for (const auto & c : entry->ckpts) {
+@@ -262,7 +298,7 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+                 };
+ 
+                 SRV_DBG("slot %d: prompt disk cache restore, %zu tokens, f_keep = %.3f, took %.2f ms\n",
+-                        id_slot, entry->tokens.size(), pick->f_keep, (ggml_time_us() - t_start) / 1000.0);
++                        id_slot, entry->tokens.size(), disk_pick->f_keep, (ggml_time_us() - t_start) / 1000.0);
+                 return true;
+             }
+         }
+@@ -272,11 +308,13 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+         SRV_TRC(" - found better prompt with f_keep = %.3f, f_sim = %.3f\n", f_keep_best, f_sim_best);
+ 
+         const int64_t t_start = ggml_time_us();
++        size_t restored = 0;
+ 
+         {
+             auto & data = it_best->data.main;
+ 
+             const size_t size = data.size();
++            restored += size;
+             const size_t n = llama_state_seq_set_data_ext(ctx_tgt, data.data(), size, id_slot, 0);
+             if (n != size) {
+                 SRV_ERR("failed to restore state with size %zu\n", size);
+@@ -295,6 +333,7 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+                 GGML_ASSERT(ctx_dft);
+ 
+                 const size_t size = data.size();
++                restored += size;
+                 const size_t n = llama_state_seq_set_data_ext(ctx_dft, data.data(), size, id_slot, 0);
+                 if (n != size) {
+                     SRV_WRN("failed to restore state with size %zu\n", size);
+@@ -318,6 +357,8 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+ 
+         states.erase(it_best);
+ 
++        cost.note_restore(restored, ggml_time_us() - t_start);
++
+         SRV_TRC("slot %d: prompt cache restore took %.2f ms\n", id_slot, (ggml_time_us() - t_start) / 1000.0);
+     }
+ 
+diff --git a/tools/server/server-slot-sched.h b/tools/server/server-slot-sched.h
+index 091f8a2..e648af9 100644
+--- a/tools/server/server-slot-sched.h
++++ b/tools/server/server-slot-sched.h
+@@ -3,6 +3,7 @@
+ #include "server-common.h"
+ #include "server-task.h"
+ #include "server-warm-disk.h"
++#include "server-warm-cost.h"
+ 
+ #include <list>
+ #include <memory>
+@@ -67,6 +68,9 @@ struct server_prompt_cache_state {
+     server_prompt prompt;
+     server_prompt_data data;
+ 
++    // seconds per token of the prefill that produced this state, 0 if unknown
++    double prefill_s = 0.0;
++
+     size_t size() const {
+         size_t res = data.size();
+ 
+@@ -89,6 +93,9 @@ struct server_prompt_cache {
+     // sequence states that survive a restart, empty when LLAMA_WARM_DISK=0
+     std::unique_ptr<llama_warm_disk> warm;
+ 
++    // skips a restore that would take longer than running the tokens
++    llama_warm_cost cost;
++
+     // in bytes, 0 = no limit
+     size_t limit_size = 0;
+ 
+diff --git a/tools/server/server-warm-cost.h b/tools/server/server-warm-cost.h
+new file mode 100644
+index 0000000..551680e
+--- /dev/null
++++ b/tools/server/server-warm-cost.h
+@@ -0,0 +1,164 @@
++#pragma once
++
++// Whether a cached prompt is worth restoring. Copying a sequence state is not
++// free: a later prompt should save more time than the copy costs. Until a
++// prefill has been timed, every hit is taken. LLAMA_WARM_COST=0 turns the
++// check off.
++
++#include <cstdint>
++#include <cstddef>
++
++// Seconds saved by skipping `hit` tokens, minus the seconds to copy `bytes`.
++// A non-positive token rate means no prefill has been timed yet.
++inline double llama_warm_gain(size_t hit, double seconds_per_token, size_t bytes, double seconds_per_byte) {
++    return (double) hit * seconds_per_token - (double) bytes * seconds_per_byte;
++}
++
++// True when restoring `hit` tokens is faster than running them, or when no
++// prefill has been timed yet. A hit of zero never pays.
++inline bool llama_warm_pays(size_t hit, double seconds_per_token, size_t bytes, double seconds_per_byte) {
++    if (hit == 0) {
++        return false;
++    }
++    if (seconds_per_token <= 0.0) {
++        return true;
++    }
++    return llama_warm_gain(hit, seconds_per_token, bytes, seconds_per_byte) > 0.0;
++}
++
++// True when a later resume of the first `tokens` tokens is expected to save
++// more than copying the state out and back. Until a prefill is timed, keep it.
++inline bool llama_warm_worth(size_t tokens, double seconds_per_token, size_t bytes, double seconds_per_byte) {
++    if (seconds_per_token <= 0.0) {
++        return true;
++    }
++    if (tokens == 0) {
++        return false;
++    }
++    return (double) tokens * seconds_per_token >= 2.0 * (double) bytes * seconds_per_byte;
++}
++
++// Host copy before any restore has been timed: 8 GB/s. Disk read before any
++// read has been timed: 500 MB/s.
++struct llama_warm_cost {
++    static constexpr double k_restore_s = 1.0 / 8e9;
++    static constexpr double k_load_s    = 1.0 / 5e8;
++
++    bool   on        = true;
++    double token_s   = 0.0;
++    double restore_s = 0.0;
++    double load_s    = k_load_s;
++
++    bool timed() const {
++        return on && token_s > 0.0;
++    }
++
++    double restore() const {
++        return restore_s > 0.0 ? restore_s : k_restore_s;
++    }
++
++    bool worth(size_t tokens, size_t bytes) const {
++        if (!on) {
++            return true;
++        }
++        return llama_warm_worth(tokens, token_s, bytes, restore());
++    }
++
++    bool pays(size_t hit, size_t bytes, double extra_s_per_byte) const {
++        if (!on) {
++            return hit > 0;
++        }
++        return llama_warm_pays(hit, token_s, bytes, restore() + extra_s_per_byte);
++    }
++
++    // Latest prefill, seconds per token that was actually run.
++    void note_prefill(uint64_t n_tokens, int64_t microseconds) {
++        if (!on || n_tokens == 0 || microseconds <= 0) {
++            return;
++        }
++        token_s = ((double) microseconds / 1e6) / (double) n_tokens;
++    }
++
++    // Running mean of seconds per byte, first sample replaces the default.
++    void note_restore(size_t bytes, int64_t microseconds) {
++        if (!on || bytes == 0 || microseconds <= 0) {
++            return;
++        }
++        const double measured = ((double) microseconds / 1e6) / (double) bytes;
++        restore_s = restore_s > 0.0 ? 0.5 * (restore_s + measured) : measured;
++    }
++
++    void note_load(size_t bytes, int64_t microseconds) {
++        if (!on || bytes == 0 || microseconds <= 0) {
++            return;
++        }
++        const double measured = ((double) microseconds / 1e6) / (double) bytes;
++        load_s = 0.5 * (load_s + measured);
++    }
++};
++
++#ifdef LLAMA_WARM_COST_TEST
++#include <iostream>
++
++static int warm_cost_fail(const char * msg) {
++    std::cerr << msg << "\n";
++    return 1;
++}
++
++int main() {
++    if (!llama_warm_pays(10, 0.0, 1000000000, 1e-6)) {
++        return warm_cost_fail("untimed hit");
++    }
++    if (llama_warm_pays(0, 0.0, 1, 1e-9)) {
++        return warm_cost_fail("empty hit");
++    }
++    // 100 tokens at 1 ms each, 1000 bytes at 1 ns each: the copy is noise.
++    if (!llama_warm_pays(100, 0.001, 1000, 1e-9)) {
++        return warm_cost_fail("cheap copy");
++    }
++    // 1 token at 1 ms, 1e9 bytes at 10 ns: ten seconds of copying.
++    if (llama_warm_pays(1, 0.001, 1000000000, 1e-8)) {
++        return warm_cost_fail("expensive copy");
++    }
++    if (llama_warm_gain(100, 0.001, 1000, 1e-9) <= llama_warm_gain(10, 0.001, 1000, 1e-9)) {
++        return warm_cost_fail("longer hit saves more");
++    }
++    if (!llama_warm_worth(1000, 0.0, 100000000, 1e-9)) {
++        return warm_cost_fail("untimed keep");
++    }
++    // 1000 * 1e-4 = 0.1; 2 * 1e6 * 1e-9 = 0.002
++    if (!llama_warm_worth(1000, 1e-4, 1000000, 1e-9)) {
++        return warm_cost_fail("worth keeping");
++    }
++    // 10 * 1e-4 = 0.001; 2 * 1e8 * 1e-9 = 0.2
++    if (llama_warm_worth(10, 1e-4, 100000000, 1e-9)) {
++        return warm_cost_fail("not worth keeping");
++    }
++
++    llama_warm_cost cost;
++    if (cost.timed() || !cost.worth(1, 1)) {
++        return warm_cost_fail("default");
++    }
++    cost.note_prefill(1000, 1000000); // 1 ms/token
++    if (!cost.timed() || cost.token_s < 0.0009 || cost.token_s > 0.0011) {
++        return warm_cost_fail("prefill rate");
++    }
++    cost.note_restore(1000, 1000); // 1 us / 1000 bytes = 1e-6 s/byte
++    cost.note_restore(1000, 3000); // average with 3e-6 → 2e-6
++    if (cost.restore() < 1.9e-6 || cost.restore() > 2.1e-6) {
++        return warm_cost_fail("restore average");
++    }
++    const double load_before = cost.load_s;
++    cost.note_load(1000, 1000); // 1e-6 s/byte, slower than the 500 MB/s default
++    if (!(cost.load_s > load_before && cost.load_s < 1e-6)) {
++        return warm_cost_fail("load average");
++    }
++    cost.on = false;
++    if (cost.timed() || !cost.worth(1, 100000000000ull)) {
++        return warm_cost_fail("disabled");
++    }
++
++    std::cout << "warm cost ok\n";
++    return 0;
++}
++#endif
+diff --git a/tools/server/server-warm-disk.h b/tools/server/server-warm-disk.h
+index 8620c56..2b4a58e 100644
+--- a/tools/server/server-warm-disk.h
++++ b/tools/server/server-warm-disk.h
+@@ -38,9 +38,10 @@ struct llama_warm_entry {
+ 
+ struct llama_warm_pick {
+     std::filesystem::path path;
+-    float f_keep = 0.0f;
+-    float f_sim  = 0.0f;
+-    int   lcp    = 0;
++    float    f_keep = 0.0f;
++    float    f_sim  = 0.0f;
++    int      lcp    = 0;
++    uint64_t bytes  = 0;
+ };
+ 
+ inline uint64_t llama_warm_mix(uint64_t h, uint64_t w) {
+@@ -224,11 +225,43 @@ public:
+             pick.f_keep = f_keep;
+             pick.f_sim  = f_sim;
+             pick.lcp    = (int) lcp;
++            pick.bytes  = f.file_bytes;
+             best = std::move(pick);
+         }
+         return best;
+     }
+ 
++    // Every cached prompt that shares a prefix and keeps at least a quarter of itself.
++    std::vector<llama_warm_pick> matches(const int32_t * query, size_t n) const {
++        std::vector<llama_warm_pick> out;
++        if (query == nullptr || n == 0) {
++            return out;
++        }
++        std::lock_guard<std::mutex> g(mu_);
++        for (const auto & f : files_) {
++            size_t lcp = 0;
++            const size_t lim = std::min(n, f.tokens.size());
++            while (lcp < lim && query[lcp] == f.tokens[lcp]) {
++                lcp++;
++            }
++            if (lcp == 0 || f.tokens.empty()) {
++                continue;
++            }
++            const float f_keep = (float) lcp / (float) f.tokens.size();
++            if (f_keep < 0.25f) {
++                continue;
++            }
++            llama_warm_pick pick;
++            pick.path   = f.path;
++            pick.f_keep = f_keep;
++            pick.f_sim  = (float) lcp / (float) n;
++            pick.lcp    = (int) lcp;
++            pick.bytes  = f.file_bytes;
++            out.push_back(std::move(pick));
++        }
++        return out;
++    }
++
+     std::optional<llama_warm_entry> read(const std::filesystem::path & path) const {
+         try {
+             std::ifstream in(path, std::ios::binary);

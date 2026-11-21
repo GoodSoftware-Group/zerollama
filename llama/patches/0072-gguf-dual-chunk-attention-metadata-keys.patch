@@ -29,10 +29,10 @@ index 0000000..37d191e
 +         class Indexer:
 +             HEAD_COUNT = "{arch}.attention.indexer.head_count"
 diff --git a/gguf-py/gguf/gguf_writer.py b/gguf-py/gguf/gguf_writer.py
-index 0e7aa50..6cbcbd7 100644
+index eb0bd91..0973427 100644
 --- a/gguf-py/gguf/gguf_writer.py
 +++ b/gguf-py/gguf/gguf_writer.py
-@@ -1264,6 +1264,15 @@ class GGUFWriter:
+@@ -1300,6 +1300,15 @@ class GGUFWriter:
      def add_rope_scaling_yarn_beta_slow(self, value: float) -> None:
          self.add_float32(Keys.Rope.SCALING_YARN_BETA_SLOW.format(arch=self.arch), value)
  

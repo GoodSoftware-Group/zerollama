@@ -67,10 +67,10 @@ files; fattn TBQ instances added via explicit glob.
  create mode 100644 ggml/src/ggml-cuda/turboquant.cuh
 
 diff --git a/ggml/src/ggml-cuda/CMakeLists.txt b/ggml/src/ggml-cuda/CMakeLists.txt
-index 297d9ff..c53cc2d 100644
+index dcb3805..a6770b3 100644
 --- a/ggml/src/ggml-cuda/CMakeLists.txt
 +++ b/ggml/src/ggml-cuda/CMakeLists.txt
-@@ -126,6 +126,9 @@ if (CUDAToolkit_FOUND)
+@@ -127,6 +127,9 @@ if (CUDAToolkit_FOUND)
  
      ggml_cuda_fattn_vec_instances(${CMAKE_CURRENT_SOURCE_DIR} SRCS)
      list(APPEND GGML_SOURCES_CUDA ${SRCS})
@@ -80,7 +80,7 @@ index 297d9ff..c53cc2d 100644
  
      ggml_add_backend_library(ggml-cuda
                               ${GGML_HEADERS_CUDA}
-@@ -160,6 +163,25 @@ if (CUDAToolkit_FOUND)
+@@ -163,6 +166,25 @@ if (CUDAToolkit_FOUND)
          target_link_libraries(ggml-cuda PRIVATE CCCL::CCCL)
      endif()
  

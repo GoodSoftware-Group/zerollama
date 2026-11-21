@@ -99,7 +99,7 @@ Implementation: `ggml_metal_buffer_map_iosurface()` in `ggml-metal-device.m` —
 ## Build / sync
 
 ```bash
-./scripts/vendor/sync_ane_hook_to_llama_cpp.sh   # vendor tree @ b12119
+./scripts/vendor/sync_ane_hook_to_llama_cpp.sh   # vendor tree @ b12557
 ./scripts/build/build_llama_server.sh           # copies libane_bridge.dylib
 # Why manual step sometimes needed after build:
 install_name_tool -change libane_bridge.dylib @loader_path/libane_bridge.dylib \

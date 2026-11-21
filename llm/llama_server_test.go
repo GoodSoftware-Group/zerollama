@@ -513,6 +513,93 @@ func TestLlamaServerCompletionForwardsRepeatLastNZero(t *testing.T) {
 	}
 }
 
+func TestLlamaServerCompletionHonorsCacheReset(t *testing.T) {
+	for _, reset := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reset=%v", reset), func(t *testing.T) {
+			var body map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/health":
+					fmt.Fprint(w, `{"status":"ok"}`)
+				case "/completion":
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Errorf("completion body: %v", err)
+						return
+					}
+					w.Header().Set("Content-Type", "text/event-stream")
+					fmt.Fprintln(w, `data: {"content":"","stop":true}`)
+				default:
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+			}))
+			defer srv.Close()
+
+			parts := strings.Split(srv.URL, ":")
+			var portInt int
+			fmt.Sscanf(parts[len(parts)-1], "%d", &portInt)
+			runner := &llamaServerRunner{
+				port:    portInt,
+				cmd:     fakeRunningCmd(),
+				sem:     semaphore.NewWeighted(1),
+				options: api.Options{Runner: api.Runner{NumCtx: 2048}},
+			}
+			opts := api.DefaultOptions()
+			if err := runner.Completion(t.Context(), CompletionRequest{
+				Prompt:     "test prompt",
+				Options:    &opts,
+				CacheReset: reset,
+			}, func(CompletionResponse) {}); err != nil {
+				t.Fatalf("Completion: %v", err)
+			}
+			if body["cache_prompt"] != !reset {
+				t.Fatalf("cache_prompt=%v, reset=%v", body["cache_prompt"], reset)
+			}
+		})
+	}
+}
+
+func TestLlamaServerPrefillPrompt(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			fmt.Fprint(w, `{"status":"ok"}`)
+		case "/completion":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("completion body: %v", err)
+				return
+			}
+			fmt.Fprint(w, `{"tokens_cached":3,"tokens_evaluated":12}`)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	parts := strings.Split(srv.URL, ":")
+	var portInt int
+	fmt.Sscanf(parts[len(parts)-1], "%d", &portInt)
+	runner := &llamaServerRunner{
+		port:    portInt,
+		cmd:     fakeRunningCmd(),
+		sem:     semaphore.NewWeighted(1),
+		options: api.Options{Runner: api.Runner{NumCtx: 2048}},
+	}
+	got, err := runner.PrefillPrompt(t.Context(), "draft prompt", &api.Options{Temperature: 0.8, TopK: 40})
+	if err != nil {
+		t.Fatalf("PrefillPrompt: %v", err)
+	}
+	if got.CachedTokens != 3 || got.PromptTokens != 12 {
+		t.Fatalf("result=%+v", got)
+	}
+	if body["prefill_only"] != true || body["cache_prompt"] != true || body["stream"] != false || body["n_predict"] != float64(0) {
+		t.Fatalf("body=%v", body)
+	}
+	if body["top_k"] != float64(40) {
+		t.Fatalf("top_k=%v", body["top_k"])
+	}
+}
+
 func TestLlamaServerCompletionRejectsPromptOverContext(t *testing.T) {
 	wantError := ContextOverflowMessage(10, 8)
 

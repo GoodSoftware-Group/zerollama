@@ -48,11 +48,17 @@ Audit of the local audio path on 9 Nov 2026 (`/v1/audio/*`, `GET /v1/realtime`, 
 | **A5** | **Done** | Reject bad WAV headers in gemma4 `decodeWAV` / harden `resampleLinear` against zero channels, bit depth &lt; 8, and sample rate &lt; 2. |
 | **A6** | **Done** | Hand-start hardening for `scripts/tts_remote_server.py`: default `TTS_HOST=127.0.0.1`, optional `TTS_API_KEY`, 32 MiB body cap, ref-audio confined to `TTS_REF_AUDIO_DIR` / `TTS_REF_AUDIO` parent, generic 500 bodies, Chatterbox model singleton. |
 | **A7** | **Done** | Music `.wav` artifacts prune with video TTL; job timeout capped to `videoExclusiveWatchLimit` (wan2gp modelfile 10800s). |
-| **A8** | **Later** | Transcription cloud and remote-model branches call `ChatHandler`, which rejects both. The chat fallback stores the clip on `Images`, so the vision check runs and WebM/MP4 demux does not. An unknown `response_format` comes back as JSON. `GET /v1/audio/voices` uses `BackendFor` while speech uses `ResolveSpeechBackend`. Duplex rejects `input_audio_buffer.clear`. Opt-in ear dumps are mode `0644`. `ZEROLLAMA_MUSIC_CLI` is forwarded and never read. |
+| **A8** | **Later** | Transcription cloud and remote-model branches call `ChatHandler`, which rejects both. The chat fallback stores the clip on `Images`, so the vision check runs and WebM/MP4 demux does not. An unknown `response_format` comes back as JSON. `GET /v1/audio/voices` uses `BackendFor` while speech uses `ResolveSpeechBackend`. `ZEROLLAMA_MUSIC_CLI` is forwarded and never read. |
 
 Left in place after the same pass: `/v1/realtime` sits behind the global CORS and allowed-hosts middleware, upload filenames are reduced to a base name, and speech input stays capped at 4096 runes (20000 when instructions or a duration is set).
 
 Also seen while running `go test -race` on the server package, outside the audio handlers: `Scheduler.processOnePending` writes a pending-request field while `schedPendingAttrs` reads it from `GetRunner`, and `discover.bootstrapGgmlDevices` writes from a goroutine that `effectiveGgmlFreeVRAMForSuggest` reads with no lock. The regression workflow does not pass `-race`.
+
+### Native full-duplex (Haru) — later
+
+| ID | Status | Open work |
+|----|--------|-----------|
+| **H1** | **Design** | Haru-4B native full-duplex (7.5 Hz frame clock). Fourth realtime path beside Voxtral / speech / cascade duplex. Design note only; listen gate before any Go bridge. [haru-duplex.md](../design/media/haru-duplex.md). |
 
 ## Image generation — MLX fast path + ComfyUI utility (partial)
 

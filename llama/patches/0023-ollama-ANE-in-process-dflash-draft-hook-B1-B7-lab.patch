@@ -12,8 +12,8 @@ Subject: [PATCH] ollama: ANE in-process dflash draft hook (B1-B7 lab)
  common/ane_iosurface_map.h        |   49 +
  src/llama-context.cpp             |   58 +
  src/llama-context.h               |    6 +
- src/llama-ext.h                   |   21 +
- 9 files changed, 11758 insertions(+)
+ src/llama-ext.h                   |   28 +
+ 9 files changed, 11765 insertions(+)
  create mode 100644 common/ane_draft_hook.cpp
  create mode 100644 common/ane_draft_hook.h
  create mode 100644 common/ane_draft_session.h
@@ -23,7 +23,7 @@ Subject: [PATCH] ollama: ANE in-process dflash draft hook (B1-B7 lab)
 
 diff --git a/common/ane_draft_hook.cpp b/common/ane_draft_hook.cpp
 new file mode 100644
-index 0000000..b57ab1e
+index 0000000..c10d250
 --- /dev/null
 +++ b/common/ane_draft_hook.cpp
 @@ -0,0 +1,7056 @@
@@ -7085,7 +7085,7 @@ index 0000000..b57ab1e
 +}
 diff --git a/common/ane_draft_hook.h b/common/ane_draft_hook.h
 new file mode 100644
-index 0000000..ea7576d
+index 0000000..670c3cd
 --- /dev/null
 +++ b/common/ane_draft_hook.h
 @@ -0,0 +1,64 @@
@@ -11731,7 +11731,7 @@ index 0000000..8c0735b
 +    return IOSurfaceLookup(surfaceID);
 +}
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 85c32c9..0de05ea 100644
+index 6252147..2b25fa7 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -18,6 +18,7 @@
@@ -11742,7 +11742,7 @@ index 85c32c9..0de05ea 100644
  #include <limits>
  #include <stdexcept>
  #include <string>
-@@ -1538,6 +1539,41 @@ void llama_context::set_nextn_layer_offset(int32_t offset) {
+@@ -1695,6 +1696,41 @@ void llama_context::set_nextn_layer_offset(int32_t offset) {
      cparams.nextn_layer_offset = offset;
  }
  
@@ -11784,7 +11784,7 @@ index 85c32c9..0de05ea 100644
  void llama_context::set_causal_attn(bool value) {
      LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
  
-@@ -4567,6 +4603,28 @@ float * llama_get_embeddings_layer_inp(llama_context * ctx, uint32_t lid) {
+@@ -4794,6 +4830,28 @@ float * llama_get_embeddings_layer_inp(llama_context * ctx, uint32_t lid) {
      return ctx->get_embeddings_layer_inp(lid);
  }
  
@@ -11814,12 +11814,12 @@ index 85c32c9..0de05ea 100644
      return ctx->set_sampler(seq_id, smpl);
  }
 diff --git a/src/llama-context.h b/src/llama-context.h
-index 39c5619..487452b 100644
+index 3e3921c..bb5bec5 100644
 --- a/src/llama-context.h
 +++ b/src/llama-context.h
-@@ -127,6 +127,12 @@ struct llama_context {
-     // whether decode accepts entries whose embd is a row of ctx_other's layer input device buffer
-     bool supports_embd_row() const;
+@@ -137,6 +137,12 @@ struct llama_context {
+     bool set_ctx_state_src(llama_context * ctx_src);
+     bool supports_state_row() const;
      void set_nextn_layer_offset(int32_t offset);
 +
 +    // dflash target_hidden window (cross.v_embd staging for ANE B8 lab)
@@ -11828,16 +11828,18 @@ index 39c5619..487452b 100644
 +    void cross_upsert_row(int32_t pos, const float * src, int32_t n_feat);
 +
      void set_causal_attn(bool value);
-     void set_warmup(bool value);
  
+     void set_adapters_lora(llama_adapter_lora ** adapters, size_t n_adapters, float * scales);
 diff --git a/src/llama-ext.h b/src/llama-ext.h
-index 23a7814..d542c91 100644
+index b8b7fba..e296448 100644
 --- a/src/llama-ext.h
 +++ b/src/llama-ext.h
-@@ -185,6 +185,27 @@ LLAMA_API llama_context * llama_get_ctx_other(struct llama_context * ctx);
+@@ -150,6 +150,34 @@ LLAMA_API const char * llama_model_decision_label(const struct llama_model * mod
+ // model/context data extraction
+ //
  
- LLAMA_API int32_t llama_model_dflash_selector_top_k(const struct llama_model * model);
- 
++LLAMA_API int32_t llama_model_dflash_selector_top_k(const struct llama_model * model);
++
 +//
 +// cross-attention encoder cache (dflash target_hidden window; T5 encoder path)
 +//
@@ -11859,6 +11861,11 @@ index 23a7814..d542c91 100644
 +        const float * src,
 +        int32_t n_feat);
 +
- // returns pointer to the target-model layer indices
- LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_model * model);
- // returns the number of extracted layers from target model
++// returns pointer to the target-model layer indices
++LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_model * model);
++// returns the number of extracted layers from target model
++LLAMA_API uint32_t        llama_model_target_layer_ids_n(const struct llama_model * model);
++
+ // retrieves the whole token embedding matrix in F32 format (n_embd * n_vocab)
+ // returns total number of elements or 0 on error
+ // if out is nullptr, returns the number of tokens without writing to out

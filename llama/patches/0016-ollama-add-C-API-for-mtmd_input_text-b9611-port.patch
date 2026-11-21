@@ -9,10 +9,10 @@ Subject: [PATCH] ollama: add C API for mtmd_input_text (b9611 port)
  2 files changed, 13 insertions(+)
 
 diff --git a/tools/mtmd/mtmd.cpp b/tools/mtmd/mtmd.cpp
-index 990ca04..f971128 100644
+index 511e01f..d0b0762 100644
 --- a/tools/mtmd/mtmd.cpp
 +++ b/tools/mtmd/mtmd.cpp
-@@ -541,6 +541,16 @@ const char * mtmd_default_marker() {
+@@ -580,6 +580,16 @@ const char * mtmd_default_marker() {
      return "<__media__>";
  }
  
@@ -26,11 +26,11 @@ index 990ca04..f971128 100644
 +    }
 +}
 +
- static clip_flash_attn_type mtmd_get_clip_flash_attn_type(enum llama_flash_attn_type flash_attn_type) {
+ static mtmd_flash_attn_type mtmd_to_flash_attn_type(enum llama_flash_attn_type flash_attn_type) {
      switch (flash_attn_type) {
-         case LLAMA_FLASH_ATTN_TYPE_AUTO:     return CLIP_FLASH_ATTN_TYPE_AUTO;
+         case LLAMA_FLASH_ATTN_TYPE_AUTO:     return MTMD_FLASH_ATTN_TYPE_AUTO;
 diff --git a/tools/mtmd/mtmd.h b/tools/mtmd/mtmd.h
-index 2776356..275270c 100644
+index 49fc813..5d69d27 100644
 --- a/tools/mtmd/mtmd.h
 +++ b/tools/mtmd/mtmd.h
 @@ -103,6 +103,9 @@ typedef struct mtmd_input_part   mtmd_input_part;

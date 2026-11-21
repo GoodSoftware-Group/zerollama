@@ -1181,6 +1181,70 @@ components:
         destination:
           type: string
           description: New model name to create
+    WeightEditApplyRequest:
+      type: object
+      required: [model, destination, patch]
+      properties:
+        model:
+          type: string
+          description: Linked safetensors source tag (must have source_dir)
+        destination:
+          type: string
+          description: New tag to register after apply/restore
+        patch:
+          type: string
+          format: byte
+          description: Raw patch bytes (geodesic-patch v1), base64 in JSON
+    WeightEditInspectResponse:
+      type: object
+      properties:
+        format:
+          type: string
+        name:
+          type: string
+        id:
+          type: string
+        changed_weights:
+          type: integer
+        tensors:
+          type: array
+          items:
+            $ref: "#/components/schemas/WeightEditTensorSummary"
+    WeightEditTensorSummary:
+      type: object
+      properties:
+        name:
+          type: string
+        dtype:
+          type: string
+        shape:
+          type: array
+          items:
+            type: integer
+        changed:
+          type: integer
+        touched_rows:
+          type: array
+          items:
+            type: integer
+    WeightEditApplyResponse:
+      type: object
+      properties:
+        model:
+          type: string
+        destination:
+          type: string
+        out:
+          type: string
+          description: Absolute path of the new checkpoint directory
+        format:
+          type: string
+        id:
+          type: string
+        changed_weights:
+          type: integer
+        output_fingerprint:
+          type: string
     DeleteRequest:
       type: object
       required: [model]
@@ -5213,6 +5277,120 @@ paths:
       responses:
         "200":
           description: Model successfully copied
+  /api/weights/edits/inspect:
+    post:
+      summary: Inspect a weight-edit patch
+      description: |
+        Decode a weight-edit patch (currently geodesic-patch v1) without binding
+        it to a local checkpoint. Returns format, id, and per-tensor change counts.
+      operationId: weightsEditsInspect
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                patch:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Patch summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WeightEditInspectResponse"
+        "415":
+          description: Unknown patch format
+  /api/weights/edits:
+    post:
+      summary: Apply a weight-edit patch
+      description: |
+        Apply a decoded weight-edit patch to a linked safetensors model
+        (`source_dir` required). Writes a new checkpoint directory beside the
+        source and registers `destination` with a cloned manifest.
+      operationId: weightsEditsApply
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WeightEditApplyRequest"
+          multipart/form-data:
+            schema:
+              type: object
+              required: [model, destination, patch]
+              properties:
+                model:
+                  type: string
+                destination:
+                  type: string
+                patch:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Patch applied and destination registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WeightEditApplyResponse"
+        "400":
+          description: Model missing, remote, or not a linked safetensors directory
+        "409":
+          description: Destination tag or output directory already exists
+        "413":
+          description: Patch body exceeds 32 MiB
+        "415":
+          description: Unknown patch format
+        "422":
+          description: Checkpoint fingerprint or old-byte mismatch
+  /api/weights/edits/restore:
+    post:
+      summary: Restore a weight-edit patch
+      description: |
+        Inverse of apply. `model` is the patched linked tag; the patch is checked
+        against the result fingerprint and a restored directory is registered as
+        `destination`.
+      operationId: weightsEditsRestore
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WeightEditApplyRequest"
+          multipart/form-data:
+            schema:
+              type: object
+              required: [model, destination, patch]
+              properties:
+                model:
+                  type: string
+                destination:
+                  type: string
+                patch:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Restore wrote a new linked tag
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WeightEditApplyResponse"
+        "400":
+          description: Model missing or not linked
+        "409":
+          description: Destination exists
+        "415":
+          description: Unknown patch format
+        "422":
+          description: Result fingerprint mismatch
   /api/pull:
     post:
       summary: Pull a model

@@ -69,6 +69,7 @@ Public docs stay in [index.mdx](index.mdx), [docs.json](docs.json), [api/](api),
 * [ANE dflash in-process (B1–B6)](research/ane-draft-inprocess.md) — **why** same-PID IOSurface handoff on llama-server dflash draft decode; lab port 11435; draft tokens still Metal until B7.
 * [ANE hybrid path (lab)](research/ane-hybrid-path.md) — crossover sweeps, prefill proxy, operator tooling index.
 * [MLX DeepSeek-V4 Flash](research/mlx-deepseek-v4-flash.md) — **why** CSA/HCA not full MHA; **why** `--link` instead of a 90 GiB blob copy. [findings](research/mlx-deepseek-v4-flash-findings.md).
+* [Megakernel decode lab](research/megakernel-cuda-lab.md) — **why** measure copy bandwidth and CUDA-graph on/off on 5080 / 4090 before treating a persistent decode kernel as a project. Donor: [megakernel-borrowings.md](upstream/megakernel-borrowings.md).
 
 ### Handoffs
 

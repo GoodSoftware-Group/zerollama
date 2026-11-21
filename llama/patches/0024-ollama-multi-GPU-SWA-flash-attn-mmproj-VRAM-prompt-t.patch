@@ -4,124 +4,126 @@ Date: Sat, 24 Oct 2026 20:34:45 -0700
 Subject: [PATCH] ollama: multi-GPU SWA flash-attn mmproj VRAM prompt tuning
 
 ---
- common/fit.cpp                      | 121 +++++++++++++++++++---------
+ common/fit.cpp                      | 125 +++++++++++++++++++---------
  src/llama-context.cpp               |   7 ++
  tools/server/server-common.cpp      |  57 +++++++++++++
  tools/server/server-common.h        |   5 ++
- tools/server/server-context.cpp     |  55 +++++++++++++
+ tools/server/server-context.cpp     |  55 ++++++++++++
  tools/server/server-context.cpp.rej |  22 +++++
- 6 files changed, 230 insertions(+), 37 deletions(-)
+ 6 files changed, 232 insertions(+), 39 deletions(-)
  create mode 100644 tools/server/server-context.cpp.rej
 
 diff --git a/common/fit.cpp b/common/fit.cpp
-index 2649082..e1e3025 100644
+index c796e7d..978d2f3 100644
 --- a/common/fit.cpp
 +++ b/common/fit.cpp
-@@ -63,6 +63,7 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
-         uint32_t & hp_ngl,
+@@ -64,6 +64,7 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
+         uint32_t & hp_ngl_skip,
          uint32_t & hp_n_ctx_train,
          uint32_t & hp_n_expert,
 +        uint32_t & hp_n_swa,
          ggml_log_level log_level) {
      common_fit_log_scope log_scope(log_level);
  
-@@ -154,6 +155,7 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
-     }
+@@ -157,6 +158,7 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
+     hp_ngl_skip    = mparams->load_mtp ? 0 : llama_model_n_layer_nextn(model);
      hp_n_ctx_train = llama_model_n_ctx_train(model);
      hp_n_expert    = llama_model_n_expert(model);
 +    hp_n_swa       = llama_model_n_swa(model);
  
      common_memory_breakdown_print(ctx);
  
-@@ -242,9 +244,10 @@ common_device_memory_data_vec common_get_device_memory_data(
-         uint32_t & hp_ngl,
+@@ -246,9 +248,10 @@ common_device_memory_data_vec common_get_device_memory_data(
+         uint32_t & hp_ngl_skip,
          uint32_t & hp_n_ctx_train,
          uint32_t & hp_n_expert,
 +        uint32_t & hp_n_swa,
          ggml_log_level log_level) {
      std::vector<llama_device_memory_data> impl = common_get_device_memory_data_impl(
--            path_model, mparams, cparams, devs, hp_ngl, hp_n_ctx_train, hp_n_expert, log_level);
-+            path_model, mparams, cparams, devs, hp_ngl, hp_n_ctx_train, hp_n_expert, hp_n_swa, log_level);
+-            paths_model, mparams, cparams, devs, hp_ngl, hp_ngl_skip, hp_n_ctx_train, hp_n_expert, log_level);
++            paths_model, mparams, cparams, devs, hp_ngl, hp_ngl_skip, hp_n_ctx_train, hp_n_expert, hp_n_swa, log_level);
  
      common_device_memory_data_vec ret(impl.size());
      for (size_t i = 0; i < impl.size(); i++) {
-@@ -269,9 +272,10 @@ static void common_params_fit_impl(
+@@ -273,10 +276,11 @@ static void common_params_fit_impl(
      const llama_model_params default_mparams = llama_model_default_params();
  
      std::vector<ggml_backend_dev_t> devs;
 -    uint32_t hp_ngl = 0; // hparams.n_gpu_layers
+-    uint32_t hp_nsk = 0; // number of skipped NextN layers, counted by the model loader but not by hp_ngl
 -    uint32_t hp_nct = 0; // hparams.n_ctx_train
 -    uint32_t hp_nex = 0; // hparams.n_expert
 +    uint32_t hp_ngl  = 0; // hparams.n_gpu_layers
++    uint32_t hp_nsk  = 0; // number of skipped NextN layers, counted by the model loader but not by hp_ngl
 +    uint32_t hp_nct  = 0; // hparams.n_ctx_train
 +    uint32_t hp_nex  = 0; // hparams.n_expert
 +    uint32_t hp_nswa = 0; // hparams.n_swa
  
      // with non-unified kv, we need to take into account n_streams
      // for example, if memory can hold more than model's trained context size, we must extend the n_ctx to hold enough n_streams
-@@ -293,6 +297,7 @@ static void common_params_fit_impl(
-             uint32_t ngl_extra = 0;
+@@ -299,6 +303,7 @@ static void common_params_fit_impl(
+             uint32_t nsk_extra = 0;
              uint32_t nct_extra = 0;
              uint32_t nex_extra = 0;
 +            uint32_t nswa_extra = 0;
  
              extra->cparams->n_ctx = cparams->n_ctx;
  
-@@ -302,7 +307,7 @@ static void common_params_fit_impl(
+@@ -308,7 +313,7 @@ static void common_params_fit_impl(
              dmds_t measured;
              try {
                  measured = common_get_device_memory_data_impl(
--                    extra->path_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nct_extra, nex_extra, log_level);
-+                    extra->path_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nct_extra, nex_extra, nswa_extra, log_level);
+-                    extra->paths_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nsk_extra, nct_extra, nex_extra, log_level);
++                    extra->paths_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nsk_extra, nct_extra, nex_extra, nswa_extra, log_level);
              } catch (const std::runtime_error & e) {
                  // the extra model is optional, fit the main model alone rather than giving up
                  LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n", __func__, e.what());
-@@ -342,7 +347,7 @@ static void common_params_fit_impl(
+@@ -348,7 +353,7 @@ static void common_params_fit_impl(
      // step 1: get data for default parameters and check whether any changes are necessary in the first place
  
      LOG_TRC("%s: getting device memory data for initial parameters:\n", __func__);
--    dmds_t dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
-+    dmds_t dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+-    dmds_t dmds_full = common_get_device_memory_data_impl(paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, log_level);
++    dmds_t dmds_full = common_get_device_memory_data_impl(paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, hp_nswa, log_level);
  
      // saturate instead of overflowing, this also preserves the UINT32_MAX sentinel of n_ctx_min:
      const uint32_t n_ctx_max       = (uint32_t) std::min<uint64_t>(uint64_t(hp_nct)    * n_streams, UINT32_MAX);
-@@ -354,7 +359,7 @@ static void common_params_fit_impl(
+@@ -360,7 +365,7 @@ static void common_params_fit_impl(
          if (n_streams > 1) {
              LOG_TRC("%s: context size unset and KV cache not unified -> using %" PRIu32 " for %" PRIu32 " sequences:\n",
                  __func__, n_ctx_max, n_streams);
--            dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
-+            dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+-            dmds_full = common_get_device_memory_data_impl(paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, log_level);
++            dmds_full = common_get_device_memory_data_impl(paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, hp_nswa, log_level);
          }
      }
      add_extra_memory(dmds_full);
-@@ -493,7 +498,7 @@ static void common_params_fit_impl(
+@@ -499,7 +504,7 @@ static void common_params_fit_impl(
  
                      int64_t sum_projected_used_min_ctx = 0;
                      cparams->n_ctx = n_ctx_min_total;
--                    dmds_t dmds_min_ctx = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
-+                    dmds_t dmds_min_ctx = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+-                    dmds_t dmds_min_ctx = common_get_device_memory_data_impl(paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, log_level);
++                    dmds_t dmds_min_ctx = common_get_device_memory_data_impl(paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, hp_nswa, log_level);
                      add_extra_memory(dmds_min_ctx);
                      if (nd == 0) {
                          sum_projected_used_min_ctx = dmds_min_ctx.back().mb.total();
-@@ -675,7 +680,7 @@ static void common_params_fit_impl(
+@@ -695,7 +700,7 @@ static void common_params_fit_impl(
          set_ngl_tensor_split_tbo(ngl_per_device, overflow_bufts, mparams_copy);
  
          dmds_t dmd_nl = common_get_device_memory_data_impl(
--            path_model, &mparams_copy, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
-+            path_model, &mparams_copy, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+-            paths_model, &mparams_copy, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, log_level);
++            paths_model, &mparams_copy, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, hp_nswa, log_level);
          add_extra_memory(dmd_nl);
  
          LOG_TRC("%s: memory for test allocation by device:\n", func_name);
-@@ -704,7 +709,7 @@ static void common_params_fit_impl(
+@@ -724,7 +729,7 @@ static void common_params_fit_impl(
  
          LOG_TRC("%s: getting device memory data with all MoE tensors moved to system memory:\n", __func__);
          dmds_t dmds_cpu_moe = common_get_device_memory_data_impl(
--            path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
-+            path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+-            paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, log_level);
++            paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, hp_nswa, log_level);
          add_extra_memory(dmds_cpu_moe);
  
          for (size_t id = 0; id < nd; id++) {
-@@ -808,16 +813,12 @@ static void common_params_fit_impl(
+@@ -828,16 +833,12 @@ static void common_params_fit_impl(
              "%s:   - %s: %2" PRIu32 " layers, %6" PRId64 " MiB used, %6" PRId64 " MiB free\n",
              __func__, dev_names[id].c_str(), ngl_per_device[id].n_layer, mem[id]/MiB, projected_margin/MiB);
      }
@@ -143,7 +145,7 @@ index 2649082..e1e3025 100644
  
          std::vector<ngl_t> ngl_equal(nd);
          uint32_t rem = hp_ngl + 1;
-@@ -829,12 +830,14 @@ static void common_params_fit_impl(
+@@ -849,12 +850,14 @@ static void common_params_fit_impl(
  
          llama_model_params mparams_test = *mparams;
          set_ngl_tensor_split_tbo(ngl_equal, overflow_bufts, mparams_test);
@@ -162,7 +164,7 @@ index 2649082..e1e3025 100644
  
          bool equal_fits = true;
          for (size_t id = 0; id < nd; ++id) {
-@@ -844,23 +847,66 @@ static void common_params_fit_impl(
+@@ -864,23 +867,66 @@ static void common_params_fit_impl(
              }
          }
  
@@ -239,28 +241,30 @@ index 2649082..e1e3025 100644
      }
  
      // step 4: for a MoE model where all dense tensors fit,
-@@ -1234,11 +1280,12 @@ void common_fit_print(
+@@ -1254,12 +1300,13 @@ void common_fit_print(
          llama_model_params * mparams,
          llama_context_params * cparams) {
      std::vector<ggml_backend_dev_t> devs;
 -    uint32_t hp_ngl = 0; // hparams.n_gpu_layers
+-    uint32_t hp_nsk = 0; // number of skipped NextN layers, counted by the model loader but not by hp_ngl
 -    uint32_t hp_nct = 0; // hparams.n_ctx_train
 -    uint32_t hp_nex = 0; // hparams.n_expert
 +    uint32_t hp_ngl  = 0; // hparams.n_gpu_layers
++    uint32_t hp_nsk  = 0; // number of skipped NextN layers, counted by the model loader but not by hp_ngl
 +    uint32_t hp_nct  = 0; // hparams.n_ctx_train
 +    uint32_t hp_nex  = 0; // hparams.n_expert
 +    uint32_t hp_nswa = 0; // hparams.n_swa
  
--    auto dmd = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, GGML_LOG_LEVEL_ERROR);
-+    auto dmd = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, GGML_LOG_LEVEL_ERROR);
+-    auto dmd = common_get_device_memory_data_impl(paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, GGML_LOG_LEVEL_ERROR);
++    auto dmd = common_get_device_memory_data_impl(paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, hp_nswa, GGML_LOG_LEVEL_ERROR);
      GGML_ASSERT(dmd.size() == devs.size() + 1);
  
      for (size_t id = 0; id < devs.size(); id++) {
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 0de05ea..0a8369e 100644
+index 2b25fa7..07ee04d 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -713,6 +713,13 @@ void llama_context::resolve_fused_ops(const llama_memory_context_i * mctx, uint3
+@@ -717,6 +717,13 @@ void llama_context::resolve_fused_ops(const llama_memory_context_i * mctx, uint3
      if (cparams.auto_fa) {
          resolve(llm_fused_op_flash_attn_probe, cparams.flash_attn);
          cparams.auto_fa = false;
@@ -275,11 +279,11 @@ index 0de05ea..0a8369e 100644
  
      // the fallback attends to the whole unified cache with a dense mask
 diff --git a/tools/server/server-common.cpp b/tools/server/server-common.cpp
-index 311eb4f..28ea41e 100644
+index eb5781e..17fa68d 100644
 --- a/tools/server/server-common.cpp
 +++ b/tools/server/server-common.cpp
-@@ -807,6 +807,63 @@ void server_tokens::keep_first(size_t n) {
-     tokens.resize(n);
+@@ -835,6 +835,63 @@ void server_tokens::keep_first(size_t n) {
+     hashes.resize(std::min(hashes.size(), n / hash_block_size));
  }
  
 +bool server_tokens::truncate_to_limit(size_t limit, size_t n_keep) {
@@ -343,10 +347,10 @@ index 311eb4f..28ea41e 100644
      llama_tokens text_tokens;
      text_tokens.reserve(tokens.size());
 diff --git a/tools/server/server-common.h b/tools/server/server-common.h
-index 01bf12e..8dc9e4f 100644
+index 911bb31..dfa4624 100644
 --- a/tools/server/server-common.h
 +++ b/tools/server/server-common.h
-@@ -251,6 +251,11 @@ public:
+@@ -270,6 +270,11 @@ public:
  
      void keep_first(size_t n);
  
@@ -359,10 +363,10 @@ index 01bf12e..8dc9e4f 100644
  
      size_t get_common_prefix(const server_tokens & b) const;
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 0b0c4c7..0695b0d 100644
+index 7156af7..85c8411 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -34,6 +34,50 @@
+@@ -35,6 +35,50 @@
  #include <utility>
  #include <fstream>
  
@@ -413,7 +417,7 @@ index 0b0c4c7..0695b0d 100644
  // fix problem with std::min and std::max
  #if defined(_WIN32)
  #define WIN32_LEAN_AND_MEAN
-@@ -1368,6 +1412,17 @@ private:
+@@ -1389,6 +1433,17 @@ private:
                  callback_state(SERVER_STATE_LOADING, {{"stage", "mmproj_model"}});
              }
  

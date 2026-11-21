@@ -14,10 +14,10 @@ Subject: [PATCH] =?UTF-8?q?=3D=3FUTF-8=3Fq=3Funicode/vocab:=3D20pretok=3D2?=
  create mode 100644 src/llama-vocab.cpp.rej.rej
 
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index c3ff5cc..c630054 100644
+index 4b62354..cd0b58a 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
-@@ -1129,8 +1129,8 @@ struct llm_tokenizer_bpe_session {
+@@ -1136,8 +1136,8 @@ struct llm_tokenizer_bpe_session {
              int result_n = 0;
              const int nsym_initial = index; // symbols filled above (index == symbols.size())
              bool cacheable = use_id_pairs
@@ -28,7 +28,7 @@ index c3ff5cc..c630054 100644
                  && nsym_initial >= 3;
  
              // add the finished tokens to the final list keeping correct order for next and prev
-@@ -1153,7 +1153,20 @@ struct llm_tokenizer_bpe_session {
+@@ -1160,7 +1160,20 @@ struct llm_tokenizer_bpe_session {
                  }
              }
              if (cacheable && result_n > 0) {
@@ -158,10 +158,10 @@ index 0000000..216749c
 +-     // determine the newline token: LLaMA "<0x0A>" == 10 == '\n', Falcon 193 == '\n'
 ++ int llama_vocab::max_token_len() const {
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index a52f573..8e54f37 100644
+index dca7f4e..4854a21 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
-@@ -612,45 +612,100 @@ static inline void unicode_ascii_consume_digits_bytes(
+@@ -617,45 +617,100 @@ static inline void unicode_ascii_consume_digits_bytes(
      }
  }
  

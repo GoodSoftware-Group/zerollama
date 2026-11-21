@@ -31,20 +31,20 @@ Subject: [PATCH] ggml: add GGML_TYPE_FP8_E4M3 native FP8 weights (type 51)
  create mode 100644 ggml/src/ggml-cpu/arch-fallback.h.rej
 
 diff --git a/conversion/base.py b/conversion/base.py
-index 7028d63..e671055 100644
+index 7cfbff3..d32a4e4 100644
 --- a/conversion/base.py
 +++ b/conversion/base.py
-@@ -133,7 +133,8 @@ class ModelBase:
-                  target_model_dir: Path | None = None,
+@@ -135,7 +135,8 @@ class ModelBase:
                   fuse_gate_up_exps: bool = False,
                   fp8_as_q8: bool = False,
--                 fuse_qkv: bool = False):
-+                 fuse_qkv: bool = False,
+                  fuse_qkv: bool = False,
+-                 ple_only: bool = False, no_ple: bool = False):
++                 ple_only: bool = False, no_ple: bool = False,
 +                 fp8_native: bool = False):
          if type(self) is ModelBase or \
                  type(self) is TextModel or \
                  type(self) is MmprojModel:
-@@ -180,6 +181,12 @@ class ModelBase:
+@@ -189,6 +190,12 @@ class ModelBase:
          self._preserve_fp8 = ftype == gguf.LlamaFileType.GUESSED and not fp8_as_q8
          self._fp8_dequantized: set[str] = set()
          self._fp8_e4m3_preserved: set[str] = set()
@@ -57,7 +57,7 @@ index 7028d63..e671055 100644
  
          # Apply heuristics to figure out typical tensor encoding based on first tensor's dtype
          # NOTE: can't use field "torch_dtype" in config.json, because some finetunes lie.
-@@ -501,10 +508,27 @@ class ModelBase:
+@@ -548,10 +555,27 @@ class ModelBase:
                          weight_name = name.removesuffix("_scale_inv")
                          w = self.model_tensors[weight_name]
                          s = self.model_tensors[name]
@@ -89,7 +89,7 @@ index 7028d63..e671055 100644
                      if name.endswith(".activation_scale"):  # unused
                          tensors_to_remove.append(name)
                      if name.endswith("_activation_scale"):  # Mistral-Small-4-119B-2602, unused
-@@ -1154,6 +1178,23 @@ class ModelBase:
+@@ -1223,6 +1247,23 @@ class ModelBase:
              return gguf.GGMLQuantizationType.Q8_0
          return False
  
@@ -113,7 +113,7 @@ index 7028d63..e671055 100644
      # some models need extra generated tensors (like rope_freqs)
      def generate_extra_tensors(self) -> Iterable[tuple[str, Tensor]]:
          return ()
-@@ -1488,6 +1529,28 @@ class ModelBase:
+@@ -1573,6 +1614,28 @@ class ModelBase:
  
              old_dtype = data_torch.dtype
  
@@ -191,10 +191,10 @@ index 0000000..b273699
 +                         tensors_to_remove.append(name)
 +             elif quant_method is not None:
 diff --git a/convert_hf_to_gguf.py b/convert_hf_to_gguf.py
-index b863bcc..5ec13ab 100755
+index 8cee1f8..557cdb5 100755
 --- a/convert_hf_to_gguf.py
 +++ b/convert_hf_to_gguf.py
-@@ -156,6 +156,11 @@ def parse_args() -> argparse.Namespace:
+@@ -165,6 +165,11 @@ def parse_args() -> argparse.Namespace:
          "--fp8-as-q8", action="store_true",
          help="Store tensors dequantized from FP8 as Q8_0 instead of BF16/F16.",
      )
@@ -206,19 +206,19 @@ index b863bcc..5ec13ab 100755
  
      parser.add_argument(
          "--fuse-qkv", action="store_true",
-@@ -308,6 +313,7 @@ def main() -> None:
-                                      fuse_gate_up_exps=args.fuse_gate_up_exps,
+@@ -322,6 +327,7 @@ def main() -> None:
                                       fp8_as_q8=args.fp8_as_q8,
                                       fuse_qkv=args.fuse_qkv,
+                                      ple_only=args.ple_only, no_ple=args.no_ple,
 +                                     fp8_native=args.fp8_native,
                                       )
  
          if args.vocab_only:
 diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
-index cdbfa77..122b62b 100644
+index 6c969b7..f8834ed 100644
 --- a/ggml/include/ggml.h
 +++ b/ggml/include/ggml.h
-@@ -441,7 +441,8 @@ extern "C" {
+@@ -268,7 +268,8 @@ extern "C" {
          GGML_TYPE_TBQ3_TCQ  = 48, // TurboQuant TCQ-3: 128-element block, fp16 norm + 6-bit init state + 128*3-bit Viterbi-encoded symbol stream (52 B = 3.25 bpw)
          GGML_TYPE_TBQ3_K    = 49, // Upstream-style TurboQuant 3-bit, QK_K block layout
          GGML_TYPE_TBQ4_K    = 50, // Upstream-style TurboQuant 4-bit, QK_K block layout
@@ -228,7 +228,7 @@ index cdbfa77..122b62b 100644
      };
  
      // [TAG_GGML_PREC]
-@@ -498,6 +499,7 @@ extern "C" {
+@@ -324,6 +325,7 @@ extern "C" {
          GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
          GGML_FTYPE_MOSTLY_Q2_0    = 28, // except 1d tensors
          GGML_FTYPE_MOSTLY_F8_E4M3 = 29, // except 1d tensors
@@ -333,7 +333,7 @@ index 0000000..bc98adc
 + #define ggml_quantize_mat_q8_0_4x4_generic ggml_quantize_mat_q8_0_4x4
 + #define ggml_quantize_mat_q8_K_4x4_generic ggml_quantize_mat_q8_K_4x4
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index 5243a32..7a8cce9 100644
+index 4400ec6..fd44869 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -305,6 +305,12 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
@@ -426,7 +426,7 @@ index 5a16cb6..a94ef50 100644
  void ggml_vec_dot_tq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
  void ggml_vec_dot_tq2_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
 diff --git a/ggml/src/ggml-cuda/convert.cu b/ggml/src/ggml-cuda/convert.cu
-index 77fd288..7257dfc 100644
+index a8f5047..172510d 100644
 --- a/ggml/src/ggml-cuda/convert.cu
 +++ b/ggml/src/ggml-cuda/convert.cu
 @@ -509,6 +509,8 @@ to_bf16_cuda_t ggml_get_to_bf16_cuda(ggml_type type) {
@@ -438,7 +438,7 @@ index 77fd288..7257dfc 100644
          case GGML_TYPE_Q2_K:
              return dequantize_row_q2_K_cuda;
          case GGML_TYPE_Q3_K:
-@@ -569,6 +571,8 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
+@@ -571,6 +573,8 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
                  return dequantize_block_q8_0_f16_cuda;
              }
              return dequantize_block_cont_cuda<QK8_0, QR8_0, dequantize_q8_0>;
@@ -447,7 +447,7 @@ index 77fd288..7257dfc 100644
          case GGML_TYPE_Q2_K:
              return dequantize_row_q2_K_cuda;
          case GGML_TYPE_Q3_K:
-@@ -626,6 +630,8 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
+@@ -630,6 +634,8 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
              return dequantize_block_cont_cuda<QK5_1, QR5_1, dequantize_q5_1>;
          case GGML_TYPE_Q8_0:
              return dequantize_block_cont_cuda<QK8_0, QR8_0, dequantize_q8_0>;
@@ -456,28 +456,28 @@ index 77fd288..7257dfc 100644
          case GGML_TYPE_Q2_K:
              return dequantize_row_q2_K_cuda;
          case GGML_TYPE_Q3_K:
-@@ -685,6 +691,8 @@ to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type) {
-             return dequantize_block_cuda<QK5_1, QR5_1, dequantize_q5_1>;
-         case GGML_TYPE_Q8_0:
+@@ -693,6 +699,8 @@ to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type) {
              return dequantize_block_cuda<QK8_0, QR8_0, dequantize_q8_0>;
+         case GGML_TYPE_F8_E4M3:
+             return convert_unary_cuda<ggml_fp8_e4m3_t>;
 +        case GGML_TYPE_FP8_E4M3:
 +            return dequantize_block_cuda<QK_FP8_E4M3, QR_FP8_E4M3, dequantize_fp8_e4m3>;
          case GGML_TYPE_BF16:
              return convert_unary_cuda<nv_bfloat16>;
          default:
-@@ -710,6 +718,8 @@ to_bf16_nc_cuda_t ggml_get_to_bf16_nc_cuda(ggml_type type) {
-             return dequantize_block_cuda<QK5_1, QR5_1, dequantize_q5_1>;
-         case GGML_TYPE_Q8_0:
+@@ -720,6 +728,8 @@ to_bf16_nc_cuda_t ggml_get_to_bf16_nc_cuda(ggml_type type) {
              return dequantize_block_cuda<QK8_0, QR8_0, dequantize_q8_0>;
+         case GGML_TYPE_F8_E4M3:
+             return convert_unary_cuda<ggml_fp8_e4m3_t>;
 +        case GGML_TYPE_FP8_E4M3:
 +            return dequantize_block_cuda<QK_FP8_E4M3, QR_FP8_E4M3, dequantize_fp8_e4m3>;
          case GGML_TYPE_F16:
              return convert_unary_cuda<half, nv_bfloat16>;
          default:
-@@ -735,6 +745,8 @@ to_fp32_nc_cuda_t ggml_get_to_fp32_nc_cuda(ggml_type type) {
-             return dequantize_block_cuda<QK5_1, QR5_1, dequantize_q5_1>;
-         case GGML_TYPE_Q8_0:
+@@ -747,6 +757,8 @@ to_fp32_nc_cuda_t ggml_get_to_fp32_nc_cuda(ggml_type type) {
              return dequantize_block_cuda<QK8_0, QR8_0, dequantize_q8_0>;
+         case GGML_TYPE_F8_E4M3:
+             return convert_unary_cuda<ggml_fp8_e4m3_t>;
 +        case GGML_TYPE_FP8_E4M3:
 +            return dequantize_block_cuda<QK_FP8_E4M3, QR_FP8_E4M3, dequantize_fp8_e4m3>;
          case GGML_TYPE_BF16:
@@ -534,10 +534,10 @@ index 651524b..b5ca25a 100644
  
  // Each call dequantizes one super-block of QK_K values into y using the
 diff --git a/ggml/src/ggml-cuda/getrows.cu b/ggml/src/ggml-cuda/getrows.cu
-index d97e8fd..c3ece15 100644
+index 09b7f02..d455156 100644
 --- a/ggml/src/ggml-cuda/getrows.cu
 +++ b/ggml/src/ggml-cuda/getrows.cu
-@@ -358,6 +358,8 @@ static void ggml_cuda_get_rows_switch_src0_type(
+@@ -362,6 +362,8 @@ static void ggml_cuda_get_rows_switch_src0_type(
              break;
          case GGML_TYPE_Q5_K:
              get_rows_cuda_kq<64, dst_t, dequantize_q5_K<dst_t>>(src0_d, src1_d, dst_d,
@@ -547,18 +547,18 @@ index d97e8fd..c3ece15 100644
              break;
          case GGML_TYPE_Q6_K:
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index c218ab3..babe54f 100644
+index 5384901..ff2ebbe 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -6038,6 +6038,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
-                     case GGML_TYPE_Q8_0:
+@@ -6533,6 +6533,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                      case GGML_TYPE_MXFP4:
                      case GGML_TYPE_NVFP4:
+                     case GGML_TYPE_F8_E4M3:
 +                    case GGML_TYPE_FP8_E4M3:
                      case GGML_TYPE_Q2_K:
                      case GGML_TYPE_Q3_K:
                      case GGML_TYPE_Q4_K:
-@@ -6079,6 +6080,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+@@ -6575,6 +6576,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                      case GGML_TYPE_Q3_K:
                      case GGML_TYPE_Q4_K:
                      case GGML_TYPE_Q5_K:
@@ -567,10 +567,10 @@ index c218ab3..babe54f 100644
                      case GGML_TYPE_IQ2_XXS:
                      case GGML_TYPE_IQ2_XS:
 diff --git a/ggml/src/ggml-impl.h b/ggml/src/ggml-impl.h
-index f63a450..8328dfc 100644
+index 23687f5..320c497 100644
 --- a/ggml/src/ggml-impl.h
 +++ b/ggml/src/ggml-impl.h
-@@ -621,6 +621,68 @@ static inline uint8_t ggml_fp32_to_f8_e4m3(float x) {
+@@ -630,6 +630,68 @@ static inline uint8_t ggml_fp32_to_f8_e4m3(float x) {
      }
      return sign | (uint8_t) (encoded_exp << 3) | (uint8_t) encoded_man;
  }
@@ -640,7 +640,7 @@ index f63a450..8328dfc 100644
  /**
   * Converts brain16 to float32.
 diff --git a/ggml/src/ggml-quants.c b/ggml/src/ggml-quants.c
-index 97702c2..852774f 100644
+index 242ce44..80a2af7 100644
 --- a/ggml/src/ggml-quants.c
 +++ b/ggml/src/ggml-quants.c
 @@ -419,6 +419,25 @@ void quantize_row_f8_e4m3_ref(const float * GGML_RESTRICT x, ggml_fp8_e4m3_t * G
@@ -733,7 +733,7 @@ index ca2006b..0c46c3e 100644
  GGML_API void iq2xs_init_impl(enum ggml_type type);
  GGML_API void iq2xs_free_impl(enum ggml_type type);
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index 04fd16b..d21e202 100644
+index 6bbb071..281f210 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
 @@ -785,6 +785,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
@@ -751,7 +751,7 @@ index 04fd16b..d21e202 100644
      [GGML_TYPE_Q2_K] = {
          .type_name                = "q2_K",
          .blck_size                = QK_K,
-@@ -1528,6 +1536,7 @@ enum ggml_type ggml_ftype_to_ggml_type(enum ggml_ftype ftype) {
+@@ -1520,6 +1528,7 @@ enum ggml_type ggml_ftype_to_ggml_type(enum ggml_ftype ftype) {
          case GGML_FTYPE_MOSTLY_MXFP4:         wtype = GGML_TYPE_MXFP4; break;
          case GGML_FTYPE_MOSTLY_NVFP4:         wtype = GGML_TYPE_NVFP4; break;
          case GGML_FTYPE_MOSTLY_F8_E4M3:       wtype = GGML_TYPE_F8_E4M3; break;
@@ -759,7 +759,7 @@ index 04fd16b..d21e202 100644
          case GGML_FTYPE_MOSTLY_Q2_K:          wtype = GGML_TYPE_Q2_K;  break;
          case GGML_FTYPE_MOSTLY_Q3_K:          wtype = GGML_TYPE_Q3_K;  break;
          case GGML_FTYPE_MOSTLY_Q4_K:          wtype = GGML_TYPE_Q4_K;  break;
-@@ -8480,6 +8489,7 @@ size_t ggml_quantize_chunk(
+@@ -8311,6 +8320,7 @@ size_t ggml_quantize_chunk(
          case GGML_TYPE_MXFP4:   result = quantize_mxfp4  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_NVFP4:   result = quantize_nvfp4  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_F8_E4M3: result = quantize_f8_e4m3(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
@@ -768,10 +768,10 @@ index 04fd16b..d21e202 100644
          case GGML_TYPE_Q3_K:    result = quantize_q3_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_Q4_K:    result = quantize_q4_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
 diff --git a/gguf-py/gguf/constants.py b/gguf-py/gguf/constants.py
-index 930714f..50f4577 100644
+index e07ea2f..0e4e224 100644
 --- a/gguf-py/gguf/constants.py
 +++ b/gguf-py/gguf/constants.py
-@@ -6759,6 +6759,7 @@ class GGMLQuantizationType(IntEnum):
+@@ -7237,6 +7237,7 @@ class GGMLQuantizationType(IntEnum):
      Q1_0    = 41
      Q2_0    = 42
      F8_E4M3 = 43
@@ -779,7 +779,7 @@ index 930714f..50f4577 100644
  
  
  class ExpertGatingFuncType(IntEnum):
-@@ -6813,6 +6814,7 @@ class LlamaFileType(IntEnum):
+@@ -7291,6 +7292,7 @@ class LlamaFileType(IntEnum):
      MOSTLY_TQ2_0         = 37  # except 1d tensors
      MOSTLY_MXFP4_MOE     = 38  # except 1d tensors
      MOSTLY_NVFP4         = 39  # except 1d tensors
@@ -787,7 +787,7 @@ index 930714f..50f4577 100644
      MOSTLY_Q1_0          = 40  # except 1d tensors
      MOSTLY_Q2_0          = 41  # except 1d tensors
      MOSTLY_F8_E4M3       = 42  # except 1d tensors
-@@ -6989,6 +6991,7 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
+@@ -7482,6 +7484,7 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
      GGMLQuantizationType.TQ2_0:   (256, 2 + 64),
      GGMLQuantizationType.MXFP4:   (32, 1 + 16),
      GGMLQuantizationType.NVFP4:   (64, 4 + 32),
@@ -914,7 +914,7 @@ index c7f97e5..7b6527d 100644
  class IQ2_XXS(__Quant, qtype=GGMLQuantizationType.IQ2_XXS):
      ksigns: bytes = (
 diff --git a/include/llama.h b/include/llama.h
-index c115c6e..25a150e 100644
+index 1548a36..60cda7d 100644
 --- a/include/llama.h
 +++ b/include/llama.h
 @@ -159,6 +159,7 @@ extern "C" {
@@ -926,7 +926,7 @@ index c115c6e..25a150e 100644
          LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
      };
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 53bdd8e..48a85cd 100644
+index 710d0b6..2269df3 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -49,6 +49,7 @@ const char * llama_ftype_name(llama_ftype ftype) {
@@ -937,7 +937,7 @@ index 53bdd8e..48a85cd 100644
          case LLAMA_FTYPE_MOSTLY_Q2_K:      name = LLAMA_FTYPE_PREFIX "Q2_K - Medium"; break;
          case LLAMA_FTYPE_MOSTLY_Q2_K_S:    name = LLAMA_FTYPE_PREFIX "Q2_K - Small"; break;
          case LLAMA_FTYPE_MOSTLY_Q3_K_S:    name = LLAMA_FTYPE_PREFIX "Q3_K - Small"; break;
-@@ -793,6 +794,7 @@ llama_model_loader::llama_model_loader(
+@@ -875,6 +876,7 @@ llama_model_loader::llama_model_loader(
              case GGML_TYPE_IQ4_XS:  ftype = LLAMA_FTYPE_MOSTLY_IQ4_XS;  break;
              case GGML_TYPE_IQ3_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ3_S;   break;
              case GGML_TYPE_NVFP4:   ftype = LLAMA_FTYPE_MOSTLY_NVFP4;   break;

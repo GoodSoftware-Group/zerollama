@@ -1,0 +1,548 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 20 Nov 2026 01:25:21 -0800
+Subject: [PATCH] llama: draft repeated text from a session suffix index
+
+A match in an earlier request is checked in one pass, and a draft that misses outright waits longer before the next guess.
+---
+ common/arg.cpp               |   3 +-
+ common/common.h              |   1 +
+ common/llama-session-index.h | 282 +++++++++++++++++++++++++++++++++++
+ common/speculative.cpp       | 143 +++++++++++++++++-
+ 4 files changed, 425 insertions(+), 4 deletions(-)
+ create mode 100644 common/llama-session-index.h
+
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 354cfeb..098be51 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -4561,8 +4561,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_IMATRIX}).set_env("LLAMA_ARG_SPEC_DRAFT_MODEL"));
+     add_opt(common_arg(
+         {"--spec-type"}, common_speculative_all_types_str(),
+-        string_format("comma-separated list of types of speculative decoding to use (default: %s)\n",
+-            common_speculative_type_name_str(params.speculative.types).c_str()),
++        "comma-separated list of speculative decoding types. With none set, a session lookup drafts from earlier text in this server. --spec-type none or LLAMA_RAD1=0 turns that lookup off\n",
+         [](common_params & params, const std::string & value) {
+             const auto types_str = string_split<std::string>(value, ',');
+             auto types = common_speculative_types_from_names(types_str);
+diff --git a/common/common.h b/common/common.h
+index 6e85890..701e77e 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -187,6 +187,7 @@ enum common_speculative_type {
+     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V,  // self-speculative decoding with n-gram keys and 4 m-gram values
+     COMMON_SPECULATIVE_TYPE_NGRAM_MOD,
+     COMMON_SPECULATIVE_TYPE_NGRAM_CACHE,    // self-speculative decoding with 3-level n-gram cache
++    COMMON_SPECULATIVE_TYPE_SESSION,        // suffix index over earlier requests; drafts what followed the longest match
+     COMMON_SPECULATIVE_TYPE_COUNT           // number of types, unknown type
+ };
+ 
+diff --git a/common/llama-session-index.h b/common/llama-session-index.h
+new file mode 100644
+index 0000000..89bcfdf
+--- /dev/null
++++ b/common/llama-session-index.h
+@@ -0,0 +1,282 @@
++#pragma once
++
++// Longest earlier copy of the text so far, across every sequence this
++// server has seen. A match proposes the tokens that followed it. Adding a
++// token is amortized constant time. Past `capacity` tokens the older half
++// is forgotten and the index is rebuilt, which keeps it near a hundred
++// bytes per token held.
++
++#include <cstddef>
++#include <cstdint>
++#include <unordered_map>
++#include <utility>
++#include <vector>
++
++struct llama_session_index {
++    static constexpr uint32_t NONE = UINT32_MAX;
++    // Deeper states stand for short suffixes and keep an older occurrence.
++    static constexpr size_t RECENCY_DEPTH = 64;
++
++    struct node {
++        uint32_t len       = 0;
++        uint32_t link      = NONE;
++        uint32_t first_out = NONE;
++        uint32_t recent    = NONE;
++        uint32_t earlier   = NONE;
++    };
++
++    std::vector<uint32_t> tokens;
++    std::vector<node> nodes;
++    std::unordered_map<uint64_t, uint32_t> edges;
++    // Each state's tokens as a linked list, so a state can be cloned.
++    std::vector<std::pair<uint32_t, uint32_t>> out;
++    uint32_t last = 0;
++    size_t capacity = 1u << 18;
++    // Shortest match, counting the token about to run, worth drafting from.
++    size_t min_match = 3;
++
++    explicit llama_session_index(size_t capacity_in = 1u << 18) : capacity(capacity_in < 2 ? 2 : capacity_in) {
++        clear();
++    }
++
++    size_t len() const { return tokens.size(); }
++
++    void clear() {
++        tokens.clear();
++        nodes.clear();
++        edges.clear();
++        out.clear();
++        nodes.push_back(node{});
++        last = 0;
++    }
++
++    void extend(const uint32_t * data, size_t n) {
++        for (size_t i = 0; i < n; ++i) {
++            if (tokens.size() == capacity) {
++                const size_t mid = capacity / 2;
++                std::vector<uint32_t> keep(tokens.begin() + mid, tokens.end());
++                clear();
++                for (uint32_t t : keep) {
++                    push(t);
++                }
++            }
++            push(data[i]);
++        }
++    }
++
++    // Up to `limit` tokens that followed the latest earlier occurrence of
++    // the longest suffix of the history that continues with `next`.
++    std::vector<uint32_t> draft(uint32_t next, size_t limit) const {
++        uint32_t v = last;
++        while (v != NONE && edges.find(key(v, next)) == edges.end()) {
++            v = nodes[v].link;
++        }
++        if (v == NONE || (size_t) nodes[v].len < (min_match > 0 ? min_match - 1 : 0)) {
++            return {};
++        }
++        const node & found = nodes[edges.at(key(v, next))];
++        const size_t n = tokens.size();
++        const uint32_t ends[2] = { found.recent, found.earlier };
++        for (uint32_t end : ends) {
++            if (end == NONE) {
++                continue;
++            }
++            const size_t start = (size_t) end + 1;
++            if (start >= n) {
++                continue;
++            }
++            const size_t stop = start + limit < n ? start + limit : n;
++            return std::vector<uint32_t>(tokens.begin() + start, tokens.begin() + stop);
++        }
++        return {};
++    }
++
++private:
++    static uint64_t key(uint32_t from, uint32_t token) {
++        return ((uint64_t) from << 32) | token;
++    }
++
++    uint32_t new_node(uint32_t len, uint32_t link, uint32_t recent, uint32_t earlier) {
++        nodes.push_back(node{ len, link, NONE, recent, earlier });
++        return (uint32_t) (nodes.size() - 1);
++    }
++
++    void add_edge(uint32_t from, uint32_t token, uint32_t to) {
++        edges.insert_or_assign(key(from, token), to);
++        out.push_back({ token, nodes[from].first_out });
++        nodes[from].first_out = (uint32_t) (out.size() - 1);
++    }
++
++    void push(uint32_t c) {
++        const uint32_t end = (uint32_t) tokens.size();
++        tokens.push_back(c);
++        const uint32_t cur = new_node(nodes[last].len + 1, NONE, end, NONE);
++        uint32_t p = last;
++        while (p != NONE && edges.find(key(p, c)) == edges.end()) {
++            add_edge(p, c, cur);
++            p = nodes[p].link;
++        }
++        const uint32_t link = p == NONE ? 0 : link_of(p, c);
++        nodes[cur].link = link;
++        last = cur;
++
++        uint32_t s = link;
++        for (size_t i = 0; i < RECENCY_DEPTH; ++i) {
++            if (s == 0) {
++                break;
++            }
++            node & nd = nodes[s];
++            nd.earlier = nd.recent;
++            nd.recent = end;
++            s = nd.link;
++        }
++    }
++
++    // The state for the strings of `q` no longer than len(p) + 1, which now
++    // also end at the new token `c`.
++    uint32_t link_of(uint32_t p, uint32_t c) {
++        const uint32_t q = edges.at(key(p, c));
++        if (nodes[p].len + 1 == nodes[q].len) {
++            return q;
++        }
++        const uint32_t link = nodes[q].link;
++        const uint32_t recent = nodes[q].recent;
++        const uint32_t earlier = nodes[q].earlier;
++        const uint32_t clone = new_node(nodes[p].len + 1, link, recent, earlier);
++        uint32_t e = nodes[q].first_out;
++        while (e != NONE) {
++            const auto edge = out[e];
++            add_edge(clone, edge.first, edges.at(key(q, edge.first)));
++            e = edge.second;
++        }
++        while (p != NONE && edges.find(key(p, c)) != edges.end() && edges.at(key(p, c)) == q) {
++            edges.insert_or_assign(key(p, c), clone);
++            p = nodes[p].link;
++        }
++        nodes[q].link = clone;
++        return clone;
++    }
++};
++
++#ifdef LLAMA_SESSION_INDEX_TEST
++#include <cstdio>
++#include <cstdlib>
++
++static std::vector<uint32_t> session_expected(const std::vector<uint32_t> & history, uint32_t next, size_t limit, size_t min_match) {
++    std::vector<uint32_t> text = history;
++    text.push_back(next);
++    const size_t n = history.size();
++    auto occurs = [&](size_t len) {
++        std::vector<size_t> starts;
++        if (len > n) {
++            return starts;
++        }
++        const uint32_t * suffix = text.data() + (text.size() - len);
++        for (size_t i = n - len + 1; i-- > 0; ) {
++            bool same = true;
++            for (size_t k = 0; k < len; ++k) {
++                if (history[i + k] != suffix[k]) {
++                    same = false;
++                    break;
++                }
++            }
++            if (same) {
++                starts.push_back(i + len);
++            }
++            if (i == 0) {
++                break;
++            }
++        }
++        return starts;
++    };
++    size_t found = 0;
++    bool any = false;
++    for (size_t len = n; len >= 1; --len) {
++        if (!occurs(len).empty()) {
++            found = len;
++            any = true;
++            break;
++        }
++        if (len == 1) {
++            break;
++        }
++    }
++    if (!any || found < min_match) {
++        return {};
++    }
++    for (size_t start : occurs(found)) {
++        if (start < n) {
++            const size_t stop = start + limit < n ? start + limit : n;
++            return std::vector<uint32_t>(history.begin() + start, history.begin() + stop);
++        }
++    }
++    return {};
++}
++
++static bool session_eq(const std::vector<uint32_t> & a, const std::vector<uint32_t> & b) {
++    return a == b;
++}
++
++int main() {
++    {
++        llama_session_index index(64);
++        index.min_match = 2;
++        const uint32_t hist[] = { 1, 2, 3, 4, 9, 9, 2, 3, 5, 7, 1, 2 };
++        index.extend(hist, sizeof(hist) / sizeof(hist[0]));
++        if (!session_eq(index.draft(3, 3), { 4, 9, 9 })) {
++            std::fputs("longest latest match should continue 1,2,3 with 4,9,9\n", stderr);
++            return 1;
++        }
++        const uint32_t more[] = { 3, 8, 8, 2 };
++        index.extend(more, 4);
++        if (!session_eq(index.draft(3, 2), { 8, 8 })) {
++            std::fputs("a newer 2,3 should continue with 8,8\n", stderr);
++            return 1;
++        }
++    }
++    {
++        llama_session_index index(8);
++        index.min_match = 2;
++        const uint32_t hist[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
++        index.extend(hist, 9);
++        if (index.len() != 5) {
++            std::fputs("a full index should keep the newer half\n", stderr);
++            return 1;
++        }
++        if (!index.draft(2, 2).empty()) {
++            std::fputs("the forgotten half should not draft\n", stderr);
++            return 1;
++        }
++        const uint32_t five = 5;
++        index.extend(&five, 1);
++        if (!session_eq(index.draft(6, 2), { 7, 8 })) {
++            std::fputs("the kept half should still draft\n", stderr);
++            return 1;
++        }
++    }
++    {
++        uint64_t rng = 12345;
++        auto random = [&](uint64_t m) {
++            rng = rng * 6364136223846793005ull + 1442695040888963407ull;
++            return (uint32_t) ((rng >> 33) % m);
++        };
++        for (uint64_t alphabet : { 2ull, 3ull, 5ull }) {
++            llama_session_index index(1u << 12);
++            index.min_match = 2;
++            std::vector<uint32_t> history;
++            for (int step = 0; step < 400; ++step) {
++                const uint32_t t = random(alphabet);
++                index.extend(&t, 1);
++                history.push_back(t);
++                const uint32_t next = random(alphabet);
++                if (!session_eq(index.draft(next, 6), session_expected(history, next, 6, 2))) {
++                    std::fprintf(stderr, "draft disagreed with brute force at step %d\n", step);
++                    return 1;
++                }
++            }
++        }
++    }
++    std::puts("session ok");
++    return 0;
++}
++#endif
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index bcb70b9..aefa0f7 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -7,6 +7,7 @@
+ #include "ggml-cpp.h"
+ #include "llama.h"
+ #include "log.h"
++#include "llama-session-index.h"
+ #include "ngram-cache.h"
+ #include "ngram-map.h"
+ #include "ngram-mod.h"
+@@ -15,6 +16,7 @@
+ #include <algorithm>
+ #include <cassert>
+ #include <cmath>
++#include <cstdlib>
+ #include <cstring>
+ #include <fstream>
+ #include <iomanip>
+@@ -84,7 +86,8 @@ const std::map<std::string, common_speculative_type> common_speculative_type_fro
+     {"ngram-map-k",    COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K},
+     {"ngram-map-k4v",  COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V},
+     {"ngram-mod",      COMMON_SPECULATIVE_TYPE_NGRAM_MOD},
+-    {"ngram-cache",    COMMON_SPECULATIVE_TYPE_NGRAM_CACHE}
++    {"ngram-cache",    COMMON_SPECULATIVE_TYPE_NGRAM_CACHE},
++    {"session",        COMMON_SPECULATIVE_TYPE_SESSION}
+ };
+ 
+ static std::string common_speculative_get_devices_str(const std::vector<ggml_backend_dev_t> & devices) {
+@@ -2804,6 +2807,122 @@ struct common_speculative_impl_ngram_cache : public common_speculative_impl {
+     }
+ };
+ 
++// Drafts the tokens that followed the longest earlier copy of the current
++// suffix. The copy can be in this prompt or in an earlier request. A draft
++// that misses outright waits, and the wait doubles each time, so a stretch
++// of new text is not checked on every token.
++struct common_speculative_impl_session : public common_speculative_impl {
++    static constexpr int k_max_draft = 8;
++    static constexpr int k_max_pause = 16;
++
++    llama_session_index index;
++
++    struct seq_info {
++        size_t i_last = 0;
++        int draft_len = k_max_draft;
++        int pause = 0;
++        int paused_for = 0;
++        size_t n_draft_last = 0;
++    };
++
++    std::vector<seq_info> sinfos;
++
++    common_speculative_impl_session(uint32_t n_seq)
++        : common_speculative_impl(COMMON_SPECULATIVE_TYPE_SESSION, n_seq, k_max_draft) {
++        sinfos.resize(n_seq);
++        SPC_INF("%s", "session lookup drafts repeated text from earlier requests (LLAMA_RAD1=0 disables it)\n");
++    }
++
++    void feed(llama_seq_id seq_id, const llama_tokens & prompt) {
++        auto & s = sinfos[seq_id];
++        if (prompt.size() < s.i_last) {
++            s.i_last = 0;
++        }
++        if (prompt.size() <= s.i_last) {
++            return;
++        }
++        std::vector<uint32_t> fresh;
++        fresh.reserve(prompt.size() - s.i_last);
++        for (size_t i = s.i_last; i < prompt.size(); ++i) {
++            if (prompt[i] >= 0) {
++                fresh.push_back((uint32_t) prompt[i]);
++            }
++        }
++        index.extend(fresh.data(), fresh.size());
++        s.i_last = prompt.size();
++    }
++
++    void begin(llama_seq_id seq_id, const llama_tokens & prompt) override {
++        GGML_ASSERT(seq_id < (llama_seq_id) n_seq);
++        sinfos[seq_id].i_last = 0;
++        feed(seq_id, prompt);
++    }
++
++    bool process(const common_batch & /*batch*/) override {
++        return true;
++    }
++
++    void draft_one(llama_seq_id seq_id, common_speculative_draft_params & dp) {
++        auto & s = sinfos[seq_id];
++        auto & result = *dp.result;
++        feed(seq_id, *dp.prompt);
++        s.n_draft_last = 0;
++        if (s.paused_for > 0) {
++            s.paused_for--;
++            return;
++        }
++        if (dp.id_last < 0) {
++            return;
++        }
++        size_t limit = (size_t) s.draft_len;
++        if (dp.n_max > 0 && (size_t) dp.n_max < limit) {
++            limit = (size_t) dp.n_max;
++        }
++        if (limit == 0) {
++            return;
++        }
++        const std::vector<uint32_t> drafted = index.draft((uint32_t) dp.id_last, limit);
++        result.resize(drafted.size());
++        for (size_t i = 0; i < drafted.size(); ++i) {
++            result[i] = (llama_token) drafted[i];
++        }
++        s.n_draft_last = result.size();
++    }
++
++    void draft(common_speculative_draft_params_vec & dparams) override {
++        for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
++            auto & dp = dparams[seq_id];
++            if (!dp.drafting) {
++                continue;
++            }
++            draft_one(seq_id, dp);
++        }
++    }
++
++    void accept(llama_seq_id seq_id, uint16_t n_accepted, bool is_other) override {
++        if (is_other) {
++            return;
++        }
++        GGML_ASSERT(seq_id < (llama_seq_id) n_seq);
++        auto & s = sinfos[seq_id];
++        if (s.n_draft_last == 0) {
++            return;
++        }
++        if (n_accepted >= s.n_draft_last) {
++            s.draft_len = std::min(s.draft_len * 2, k_max_draft);
++        } else {
++            s.draft_len = (int) n_accepted + 1;
++        }
++        if (n_accepted == 0) {
++            s.pause = std::clamp(s.pause * 2, 1, k_max_pause);
++            s.paused_for = s.pause;
++        } else {
++            s.pause = 0;
++        }
++        s.n_draft_last = 0;
++    }
++};
++
+ struct common_speculative {
+     common_speculative_draft_params_vec dparams;
+ 
+@@ -2874,6 +2993,7 @@ std::string common_speculative_type_to_str(common_speculative_type type) {
+         case COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V:  return "ngram-map-k4v";
+         case COMMON_SPECULATIVE_TYPE_NGRAM_MOD:      return "ngram-mod";
+         case COMMON_SPECULATIVE_TYPE_NGRAM_CACHE:    return "ngram-cache";
++        case COMMON_SPECULATIVE_TYPE_SESSION:        return "session";
+         default:                                     return "unknown";
+     }
+ }
+@@ -2977,6 +3097,9 @@ int32_t common_speculative_n_max(const common_params_speculative * spec) {
+             case COMMON_SPECULATIVE_TYPE_NGRAM_CACHE:
+                 n_max = std::max(n_max, (int32_t) 8);
+                 break;
++            case COMMON_SPECULATIVE_TYPE_SESSION:
++                n_max = std::max(n_max, (int32_t) 8);
++                break;
+             case COMMON_SPECULATIVE_TYPE_NONE:
+             case COMMON_SPECULATIVE_TYPE_COUNT:
+                 break;
+@@ -3247,6 +3370,16 @@ common_speculative_output_limits common_speculative_get_output_limits(
+ // initialization of the speculative decoding system
+ //
+ common_speculative * common_speculative_init(common_params_speculative & params, uint32_t n_seq) {
++    // With no drafter chosen, guess from earlier text. An explicit type, including
++    // "none", is left as the caller set it. LLAMA_RAD1=0 is the same as "none".
++    const bool only_none = params.types.size() == 1 && params.types[0] == COMMON_SPECULATIVE_TYPE_NONE;
++    if (only_none) {
++        const char * env = std::getenv("LLAMA_RAD1");
++        if (env == nullptr || env[0] != '0') {
++            params.types.push_back(COMMON_SPECULATIVE_TYPE_SESSION);
++        }
++    }
++
+     // Compute the implementations to use based on the config and their order of preference
+     std::vector<common_speculative_config> configs = {}; // list of speculative configs to try
+     {
+@@ -3267,10 +3400,11 @@ common_speculative * common_speculative_init(common_params_speculative & params,
+         };
+ 
+         // when adding a new type - update here the logic above
+-        static_assert(COMMON_SPECULATIVE_TYPE_COUNT == 13);
++        static_assert(COMMON_SPECULATIVE_TYPE_COUNT == 14);
+ 
+         // this list here defines the priority of the speculators
+         // the one with highest priority are listed first
++        add_config_if_enabled(COMMON_SPECULATIVE_TYPE_SESSION);
+         add_config_if_enabled(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
+         add_config_if_enabled(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
+         add_config_if_enabled(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V);
+@@ -3395,6 +3529,10 @@ common_speculative * common_speculative_init(common_params_speculative & params,
+                 impls.push_back(create_state_ngram_cache(config, n_seq));
+                 break;
+             }
++            case COMMON_SPECULATIVE_TYPE_SESSION: {
++                impls.push_back(std::make_unique<common_speculative_impl_session>(n_seq));
++                break;
++            }
+             default:
+                 break;
+         }
+@@ -3414,6 +3552,7 @@ common_speculative * common_speculative_init(common_params_speculative & params,
+             case COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V:
+             case COMMON_SPECULATIVE_TYPE_NGRAM_MOD:
+             case COMMON_SPECULATIVE_TYPE_NGRAM_CACHE:
++            case COMMON_SPECULATIVE_TYPE_SESSION:
+                 return false;
+             default:
+                 return true;

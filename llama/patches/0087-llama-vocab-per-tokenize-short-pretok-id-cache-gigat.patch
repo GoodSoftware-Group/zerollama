@@ -9,10 +9,10 @@ Subject: [PATCH] llama-vocab: per-tokenize short pretok id cache (gigatoken
  2 files changed, 157 insertions(+), 41 deletions(-)
 
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index 8ba0d8d..df8aea8 100644
+index 3acb18f..fe917bb 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
-@@ -451,6 +451,110 @@ struct llm_bpe_piece4_table {
+@@ -452,6 +452,110 @@ struct llm_bpe_piece4_table {
      }
  };
  
@@ -123,7 +123,7 @@ index 8ba0d8d..df8aea8 100644
  struct llm_bigram_bpe {
      struct comparator {
          bool operator()(const llm_bigram_bpe & l, const llm_bigram_bpe & r) const {
-@@ -977,9 +1081,27 @@ struct llm_tokenizer_bpe_session {
+@@ -984,9 +1088,27 @@ struct llm_tokenizer_bpe_session {
                  }
              }
  
@@ -151,7 +151,7 @@ index 8ba0d8d..df8aea8 100644
                      sym.prev = final_prev_index;
                      sym.next = -1;
                      if (final_prev_index != -1) {
-@@ -989,6 +1111,9 @@ struct llm_tokenizer_bpe_session {
+@@ -996,6 +1118,9 @@ struct llm_tokenizer_bpe_session {
                      final_prev_index = symbols_final.size() - 1;
                  }
              }
@@ -161,7 +161,7 @@ index 8ba0d8d..df8aea8 100644
          }
  
          symbols = symbols_final;
-@@ -1205,6 +1330,7 @@ private:
+@@ -1212,6 +1337,7 @@ private:
      std::vector<llm_symbol> symbols;
      std::vector<llm_symbol> symbols_final;
      llm_bigram_bpe::queue work_queue;

@@ -1,0 +1,450 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 20 Nov 2026 15:45:22 -0800
+Subject: [PATCH] server: resume a GPU prompt from the last full batch
+
+Tokens written one at a time are not a resume point on the GPU. The slot keeps the last full prompt batch and rewrites the reply while idle. LLAMA_SETTLE=0 leaves the whole sequence in place.
+
+Disk copies from the previous format kept those tokens, so they are removed.
+---
+ tools/server/server-context.cpp | 182 +++++++++++++++++++++++++++++++-
+ tools/server/server-queue.cpp   |  15 ++-
+ tools/server/server-queue.h     |   7 ++
+ tools/server/server-settle.h    |  68 ++++++++++++
+ tools/server/server-warm-disk.h |   9 +-
+ 5 files changed, 275 insertions(+), 6 deletions(-)
+ create mode 100644 tools/server/server-settle.h
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 937e8a2..ce0a9b7 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -14,6 +14,7 @@
+ #include "server-realtime.h"
+ #include "server-schema.h"
+ #include "server-slot-sched.h"
++#include "server-settle.h"
+ #include "server-stream.h"
+ #include "server-loop-guard.h"
+ #include "server-adaptive-dm.h"
+@@ -412,6 +413,16 @@ struct server_slot {
+     // used to determine the slot that has been used the longest
+     int64_t t_last_used = -1;
+ 
++    // GPU resume. settle_grid is the prompt batch size. settle_trusted is the
++    // last full batch a later request may reuse (<0 means the whole sequence).
++    // settle_cell is the next batch to rewrite while idle, or <0 when idle
++    // work is finished.
++    int32_t settle_grid    = 0;
++    int32_t settle_trusted = -1;
++    int32_t settle_cell    = -1;
++    int32_t settle_to      = 0;
++    int64_t t_settle_ms    = 0;
++
+     // generation props
+     int32_t n_ctx   = 0;  // context size per slot
+     int32_t n_keep  = 0;
+@@ -442,11 +453,43 @@ struct server_slot {
+ 
+     server_prompt prompt;
+ 
+-    bool prompt_save(server_prompt_cache & prompt_cache) const {
++    bool prompt_save(server_prompt_cache & prompt_cache) {
+         if (prompt.tokens.size() == 0) {
+             return false;
+         }
+ 
++        // Nothing before the first full batch was a resume point. Skip the
++        // copy; the next request runs the sequence again.
++        if (settle_trusted == 0) {
++            return false;
++        }
++
++        // A reply continues past the resume point. Copy the prefix, then put
++        // the tail tokens back so an idle rewrite can run them as a prompt.
++        struct restore_tail {
++            server_tokens & tokens;
++            llama_tokens    tail;
++            bool            on = false;
++            restore_tail(server_tokens & tokens, llama_tokens tail, bool on)
++                : tokens(tokens), tail(std::move(tail)), on(on) {}
++            ~restore_tail() {
++                if (!on) {
++                    return;
++                }
++                for (llama_token tok : tail) {
++                    tokens.push_back(tok);
++                }
++            }
++        } restore(prompt.tokens, {}, false);
++
++        if (settle_trusted > 0 && settle_trusted < prompt.n_tokens()) {
++            const llama_tokens & all = prompt.tokens.get_tokens();
++            restore.tail.assign(all.begin() + settle_trusted, all.end());
++            mem.seq_rm(id, prompt.tokens.pos_next(settle_trusted), -1);
++            prompt.tokens.keep_first((size_t) settle_trusted);
++            restore.on = true;
++        }
++
+         const int64_t t_start = ggml_time_us();
+ 
+         const size_t cur_size_tgt =           llama_state_seq_get_size_ext(ctx_tgt, id, LLAMA_STATE_SEQ_FLAGS_NONE);
+@@ -559,6 +602,35 @@ struct server_slot {
+         mem.seq_rm(id, -1, -1);
+ 
+         prompt.clear();
++        settle_trusted = -1;
++        settle_cell    = -1;
++        settle_to      = 0;
++    }
++
++    // Record the resume point after a reply. Prompt-only sequences stay as
++    // they are: every token was written by a prompt batch.
++    void arm_settle() {
++        settle_cell    = -1;
++        settle_to      = 0;
++        settle_trusted = -1;
++        t_settle_ms    = 0;
++        if (settle_grid < 32 || !task || prompt.tokens.has_mtmd) {
++            return;
++        }
++        const int32_t n_all    = prompt.n_tokens();
++        const int32_t n_prompt = task->n_tokens();
++        if (n_prompt <= 0 || n_all <= n_prompt) {
++            return;
++        }
++        const int32_t mark = llama_settle_mark(n_prompt, settle_grid);
++        const int32_t end  = llama_settle_end(mark, n_all, settle_grid);
++        settle_trusted = mark;
++        if (end > mark) {
++            settle_cell = mark;
++            settle_to   = end;
++            t_settle_ms = ggml_time_ms();
++        }
++        SLT_TRC(*this, "GPU resume at token %d through %d\n", settle_trusted, end);
+     }
+ 
+     std::vector<common_adapter_lora_info> lora;
+@@ -895,6 +967,8 @@ struct server_slot {
+                 prompt_clear();
+             }
+ 
++            arm_settle();
++
+             callback_on_reset(*this);
+ 
+             reset();
+@@ -1364,6 +1438,9 @@ private:
+     // Prefill checkpoint spacing. 0 means no extra marks beyond turn boundaries.
+     int32_t prompt_mark_grid = 0;
+ 
++    // GPU prompt batch used as a resume grid. 0 keeps the whole sequence.
++    int32_t settle_grid = 0;
++
+     // slots / clients
+     std::vector<server_slot> slots;
+ 
+@@ -1830,6 +1907,29 @@ private:
+             return false;
+         }
+ 
++        settle_grid = 0;
++        {
++            bool has_gpu = false;
++            for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
++                const enum ggml_backend_dev_type type = ggml_backend_dev_type(ggml_backend_dev_get(i));
++                if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
++                    has_gpu = true;
++                    break;
++                }
++            }
++            const char * settle_off = getenv("LLAMA_SETTLE");
++            const bool off = settle_off && settle_off[0] == '0';
++            // A draft context has its own cache; leave both sequences alone.
++            if (!off && has_gpu && params_base.n_gpu_layers != 0 && ctx_dft == nullptr &&
++                    ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_PART && ctx_tgt != nullptr) {
++                const int32_t grid = (int32_t) llama_n_ubatch(ctx_tgt);
++                if (grid >= 32) {
++                    settle_grid = grid;
++                    SRV_INF("GPU prompt resumes on a %d-token grid; the reply is rewritten while idle (LLAMA_SETTLE=0 disables)\n", settle_grid);
++                }
++            }
++        }
++
+         for (int i = 0; i < params_base.n_parallel; i++) {
+             server_slot & slot = slots[i];
+ 
+@@ -1839,6 +1939,7 @@ private:
+             slot.mem.init(ctx_tgt, ctx_dft);
+             slot.spec    = spec.get();
+             slot.n_ctx   = n_ctx_slot();
++            slot.settle_grid = settle_grid;
+ 
+             slot.mctx                   = mctx;
+             slot.prompt.tokens.has_mtmd = mctx != nullptr;
+@@ -2046,6 +2147,11 @@ private:
+         queue_tasks.on_update_slots([this]() {
+             update_slots();
+         });
++        if (settle_grid > 0) {
++            queue_tasks.on_idle([this]() {
++                return settle_idle();
++            });
++        }
+         queue_tasks.on_sleeping_state([this](bool sleeping) {
+             handle_sleeping_state(sleeping);
+         });
+@@ -2199,6 +2305,12 @@ private:
+     void update_prompt_cache(server_slot & slot, const server_task & task) {
+         SRV_TRC("%s", "updating prompt cache\n");
+ 
++        // The live sequence is the resume point. A saved copy would replace it
++        // with an older prefix and drop the reply the idle rewrite is building.
++        if (slot.settle_trusted >= 0 && slot.prompt.tokens.get_common_prefix(task.tokens) > 0) {
++            return;
++        }
++
+         const int64_t t_start = ggml_time_us();
+ 
+         slot.prompt_save(*prompt_cache);
+@@ -4238,6 +4350,65 @@ private:
+         return false;
+     }
+ 
++    // Rewrite one full prompt batch of a finished reply. Returns false when
++    // there is nothing to do yet, so the caller keeps waiting.
++    bool settle_idle() {
++        if (settle_grid < 32) {
++            return false;
++        }
++        for (auto & slot : slots) {
++            if (slot.is_processing()) {
++                return false;
++            }
++        }
++        server_slot * cur = nullptr;
++        for (auto & slot : slots) {
++            if (slot.settle_cell >= 0 && slot.settle_cell < slot.settle_to) {
++                cur = &slot;
++                break;
++            }
++        }
++        if (cur == nullptr || ggml_time_ms() - cur->t_settle_ms < LLAMA_SETTLE_IDLE_MS) {
++            return false;
++        }
++        const int32_t from = cur->settle_cell;
++        const int32_t n    = settle_grid;
++        if (n > batch.n_tokens_alloc || from + n > cur->settle_to || from + n > cur->prompt.n_tokens()) {
++            cur->settle_cell = -1;
++            return false;
++        }
++
++        batch.clear();
++        cur->mem.seq_rm(cur->id, cur->prompt.tokens.pos_next(from), -1);
++        for (int32_t i = 0; i < n; i++) {
++            const llama_token tok = cur->prompt.tokens[(size_t) (from + i)];
++            const llama_pos   pos = cur->prompt.tokens.pos_next(from + i);
++            if (!batch.add(cur->id, tok, pos, /* output */ false, /* is_prompt */ true)) {
++                batch.clear();
++                cur->settle_cell = -1;
++                SLT_WRN(*cur, "settle could not queue the batch at token %d\n", from);
++                return false;
++            }
++        }
++        llama_set_embeddings(ctx_tgt, false);
++        batch.render(0, n);
++        const int32_t ret = llama_process(ctx_tgt, LLAMA_PROCESS_TYPE_DECODE, batch.view.get());
++        batch.clear();
++        if (ret != 0) {
++            SLT_WRN(*cur, "settle could not rewrite the reply from token %d\n", from);
++            cur->settle_cell = -1;
++            return false;
++        }
++        llama_synchronize(ctx_tgt);
++        cur->settle_cell    = from + n;
++        cur->settle_trusted = cur->settle_cell;
++        SLT_TRC(*cur, "rewrote tokens [%d, %d) as a prompt batch\n", from, from + n);
++        if (cur->settle_cell >= cur->settle_to) {
++            cur->settle_cell = -1;
++        }
++        return true;
++    }
++
+     void update_slots() {
+ #ifdef DEBUG_TIMINGS
+         static int64_t t_prev = 0;
+@@ -4904,6 +5075,15 @@ private:
+                                 n_past = 0;
+                             }
+ 
++                            // Tokens past the last full prompt batch were written one
++                            // at a time. Run them again with the prompt.
++                            if (slot.settle_trusted >= 0) {
++                                n_past = std::min(n_past, (int) slot.settle_trusted);
++                            }
++                            slot.settle_trusted = -1;
++                            slot.settle_cell    = -1;
++                            slot.settle_to      = 0;
++
+                             llama_pos pos_next = slot.prompt.tokens.pos_next(n_past);
+ 
+                             // number of cached tokens shared with the new prompt, before any checkpoint is restored
+diff --git a/tools/server/server-queue.cpp b/tools/server/server-queue.cpp
+index 8bfd878..c47e084 100644
+--- a/tools/server/server-queue.cpp
++++ b/tools/server/server-queue.cpp
+@@ -1,5 +1,6 @@
+ #include "server-task.h"
+ #include "server-queue.h"
++#include "server-settle.h"
+ 
+ #include "log.h"
+ 
+@@ -360,8 +361,20 @@ void server_queue::start_loop(int64_t idle_sleep_ms) {
+                 condition_tasks.notify_all(); // notify wait_until_no_sleep()
+                 break; // process new tasks
+             } else {
++                if (callback_idle) {
++                    lock.unlock();
++                    const bool worked = callback_idle();
++                    lock.lock();
++                    if (!running || !queue_tasks.empty()) {
++                        break;
++                    }
++                    if (worked) {
++                        continue;
++                    }
++                }
+                 // wait for new tasks or timeout for checking sleeping condition
+-                bool res = condition_tasks.wait_for(lock, max_wait_time, [&]{
++                const auto wait_time = callback_idle ? std::chrono::milliseconds(LLAMA_SETTLE_IDLE_MS) : max_wait_time;
++                bool res = condition_tasks.wait_for(lock, wait_time, [&]{
+                     return (!queue_tasks.empty() || !running);
+                 });
+                 if (res) {
+diff --git a/tools/server/server-queue.h b/tools/server/server-queue.h
+index 59f24ec..9a7c2d4 100644
+--- a/tools/server/server-queue.h
++++ b/tools/server/server-queue.h
+@@ -45,6 +45,7 @@ private:
+     // callback functions
+     std::function<bool(server_task &&, bool)> callback_new_task;
+     std::function<void(void)>                 callback_update_slots;
++    std::function<bool(void)>                 callback_idle;
+     std::vector<std::function<void(bool)>>    callback_sleeping_state;
+ 
+ public:
+@@ -136,6 +137,12 @@ public:
+         callback_update_slots = std::move(callback);
+     }
+ 
++    // Called while the queue is empty. Return true if a piece of work ran,
++    // so the loop looks for a new task before running another piece.
++    void on_idle(std::function<bool(void)> callback) {
++        callback_idle = std::move(callback);
++    }
++
+     // Register callback for sleeping state change; multiple callbacks are allowed
+     // for example: register order cb0, cb1, cb2
+     // entering sleep: queue.sleeping = true --> cb0(true) --> cb1(true) --> cb2(true)
+diff --git a/tools/server/server-settle.h b/tools/server/server-settle.h
+new file mode 100644
+index 0000000..1a5d6f0
+--- /dev/null
++++ b/tools/server/server-settle.h
+@@ -0,0 +1,68 @@
++#pragma once
++
++// Where a GPU sequence may be resumed.
++//
++// A prompt batch and a decode step do not round the same way. The resume
++// point is the last full batch at or before the end of the prompt. Tokens
++// after that, including the reply, are run again as prompt batches. The CPU
++// keeps the whole sequence. LLAMA_SETTLE=0 leaves that behavior in place.
++
++#include <cstdint>
++
++// Wait this long after a reply before rewriting it, so a request that is
++// already on its way is not held behind the rewrite.
++inline constexpr int32_t LLAMA_SETTLE_IDLE_MS = 250;
++
++// Largest multiple of grid that is <= n_prompt. 0 when the prompt has not
++// filled a batch yet.
++inline int32_t llama_settle_mark(int32_t n_prompt, int32_t grid) {
++    if (grid <= 1 || n_prompt <= 0) {
++        return 0;
++    }
++    return (n_prompt / grid) * grid;
++}
++
++// Largest multiple of grid that is <= n_tokens, and not before mark.
++inline int32_t llama_settle_end(int32_t mark, int32_t n_tokens, int32_t grid) {
++    if (mark < 0) {
++        mark = 0;
++    }
++    if (grid <= 1 || n_tokens <= mark) {
++        return mark;
++    }
++    const int32_t end = (n_tokens / grid) * grid;
++    return end < mark ? mark : end;
++}
++
++#ifdef LLAMA_SETTLE_TEST
++#include <cstdio>
++#include <cstdlib>
++int main() {
++    if (llama_settle_mark(0, 512) != 0 || llama_settle_mark(100, 512) != 0) {
++        std::fputs("a short prompt has no full batch to resume from\n", stderr);
++        return 1;
++    }
++    if (llama_settle_mark(512, 512) != 512 || llama_settle_mark(600, 512) != 512) {
++        std::fputs("the resume point is the last full batch inside the prompt\n", stderr);
++        return 1;
++    }
++    if (llama_settle_end(512, 600, 512) != 512) {
++        std::fputs("a short reply does not finish a batch\n", stderr);
++        return 1;
++    }
++    if (llama_settle_end(512, 2000, 512) != 1536) {
++        std::fputs("the rewrite stops on the last full batch of the sequence\n", stderr);
++        return 1;
++    }
++    if (llama_settle_end(0, 100, 512) != 0 || llama_settle_end(0, 512, 512) != 512) {
++        std::fputs("the first batch ends on the grid\n", stderr);
++        return 1;
++    }
++    if (LLAMA_SETTLE_IDLE_MS != 250) {
++        std::fputs("idle wait is not 250 ms\n", stderr);
++        return 1;
++    }
++    std::puts("settle ok");
++    return 0;
++}
++#endif
+diff --git a/tools/server/server-warm-disk.h b/tools/server/server-warm-disk.h
+index 2b4a58e..6c5c9fd 100644
+--- a/tools/server/server-warm-disk.h
++++ b/tools/server/server-warm-disk.h
+@@ -2,9 +2,10 @@
+ 
+ // Disk copy of a prompt-cache entry. The RAM cache is lost when the process
+ // exits; a file written here can restore the same sequence state after a restart.
+-// LLAMA_WARM_DISK=0 disables it. Files that belong to another model, context, or
+-// format version are left unread. The oldest files go first once the directory
+-// passes its byte budget.
++// LLAMA_WARM_DISK=0 disables it. Files that belong to another model or context
++// are left unread. Version 2 removes version 1 files: those kept tokens written
++// one at a time, which a GPU resume must not restore. The oldest files go first
++// once the directory passes its byte budget.
+ 
+ #include <algorithm>
+ #include <cstdint>
+@@ -94,7 +95,7 @@ class llama_warm_disk {
+ public:
+     static constexpr uint64_t k_budget = 2ull << 30;
+     static constexpr char     k_magic[8] = { 'Z', 'R', 'W', 'A', 'R', 'M', 0, 0 };
+-    static constexpr uint64_t k_version = 1;
++    static constexpr uint64_t k_version = 2;
+     static constexpr uint32_t k_max_tokens = 1u << 20;
+     static constexpr uint32_t k_max_ckpts  = 4096;
+ 

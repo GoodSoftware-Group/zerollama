@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Sat, 21 Nov 2026 14:01:47 -0800
+Subject: [PATCH] llama: keep a resumed prompt in the cache for the next slot
+
+A slot used to take the only copy, so a second slot running at the same time prefilled that prefix again. The cache keeps the copy, treats the resume as the newest use, and the memory budget drops a prompt that has not been resumed.
+---
+ tools/server/server-slot-sched.cpp | 25 ++++++++++++-------------
+ 1 file changed, 12 insertions(+), 13 deletions(-)
+
+diff --git a/tools/server/server-slot-sched.cpp b/tools/server/server-slot-sched.cpp
+index bd4d952..3baddf7 100644
+--- a/tools/server/server-slot-sched.cpp
++++ b/tools/server/server-slot-sched.cpp
+@@ -87,7 +87,10 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
+         const int cur_lcp_len = it->prompt.tokens.get_common_prefix(prompt.tokens);
+ 
+         if (cur_lcp_len == (int) prompt.tokens.size() && are_lora_equal(it->prompt.lora, prompt.lora)) {
+-            SRV_TRC("%s", " - prompt is already in the cache, skipping\n");
++            // Saving it again is a use. The budget drops a prompt that has
++            // been sitting unused, not this one.
++            SRV_TRC("%s", " - prompt is already in the cache, keeping it as the newest\n");
++            states.splice(states.end(), states, it);
+             return nullptr;
+         }
+     }
+@@ -139,7 +142,7 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
+     if (limit_size > 0) {
+         // make room before allocating the new vectors to avoid breaching the limit
+         while (!states.empty() && size() + state_size_new > limit_size) {
+-            SRV_WRN(" - making room for prompt cache entry, removing oldest entry (size = %.3f MiB)\n",
++            SRV_WRN(" - making room for prompt cache entry, removing the least recently used entry (size = %.3f MiB)\n",
+                     states.front().size() / (1024.0 * 1024.0));
+ 
+             states.pop_front();
+@@ -346,9 +349,6 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+ 
+                 return false;
+             }
+-
+-            data.clear();
+-            data.shrink_to_fit();
+         }
+ 
+         {
+@@ -365,9 +365,6 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+ 
+                     return false;
+                 }
+-
+-                data.clear();
+-                data.shrink_to_fit();
+             }
+         }
+ 
+@@ -378,9 +375,11 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+             SRV_DBG("%s", "__TEST_TAG_PROMPT_CACHE_FULL_RESTORE__\n");
+         }
+ 
+-        prompt = std::move(it_best->prompt);
+-
+-        states.erase(it_best);
++        // Another slot may resume this prefix while this one is still
++        // generating. The copy stays, and a later trim drops a prompt that
++        // was not resumed.
++        prompt = it_best->prompt.clone();
++        states.splice(states.end(), states, it_best);
+ 
+         cost.note_restore(restored, ggml_time_us() - t_start);
+ 
+@@ -393,7 +392,7 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+ void server_prompt_cache::update() {
+     if (limit_size > 0) {
+         while (!states.empty() && size() > limit_size) {
+-            SRV_WRN(" - cache size limit reached, removing oldest entry (size = %.3f MiB)\n", states.front().size() / (1024.0 * 1024.0));
++            SRV_WRN(" - cache size limit reached, removing the least recently used entry (size = %.3f MiB)\n", states.front().size() / (1024.0 * 1024.0));
+ 
+             states.pop_front();
+         }
+@@ -407,7 +406,7 @@ void server_prompt_cache::update() {
+ 
+     if (limit_tokens > 0) {
+         while (!states.empty() && n_tokens() > limit_tokens_cur) {
+-            SRV_WRN(" - cache token limit (%zu, est: %zu) reached, removing oldest entry (size = %.3f MiB)\n",
++            SRV_WRN(" - cache token limit (%zu, est: %zu) reached, removing the least recently used entry (size = %.3f MiB)\n",
+                     limit_tokens, limit_tokens_cur, states.front().size() / (1024.0 * 1024.0));
+ 
+             states.pop_front();

@@ -435,6 +435,27 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_memory_recurrent::memory_brea
     return ctxs_bufs.memory_breakdown();
 }
 
+llama_mark_cost llama_memory_recurrent::mark_cost() const {
+    llama_mark_cost cost;
+    auto add = [&](const ggml_tensor * t) {
+        if (!t || t->ne[1] <= 0) {
+            return;
+        }
+        // ne[1] is every sequence's cells, including rollback planes. One row is one cell.
+        cost.recurrent += ggml_nbytes(t) / (size_t) t->ne[1];
+    };
+    for (const ggml_tensor * t : r_l) {
+        add(t);
+    }
+    for (const ggml_tensor * t : s_l) {
+        add(t);
+    }
+    for (const ggml_tensor * t : p_l) {
+        add(t);
+    }
+    return cost;
+}
+
 llama_memory_context_ptr llama_memory_recurrent::init_batch(llama_batch_allocr & balloc, uint32_t n_ubatch, bool embd_all) {
     do {
         balloc.split_reset();
@@ -666,7 +687,7 @@ bool llama_memory_recurrent::find_slot(const llama_ubatch & ubatch) {
         const int32_t cell_id = s + min;
         auto & cell = cells[cell_id];
 
-        if (cell.pos >= 0 && last_pos != cell.pos + (llama_pos) n_seq_tokens) {
+        if (ubatch.n_pos == 1 && cell.pos >= 0 && last_pos != cell.pos + (llama_pos) n_seq_tokens) {
             // What should happen when the pos backtracks or skips a value?
             // Clearing the state mid-batch would require special-casing which isn't done.
             LLAMA_LOG_WARN("%s: non-consecutive token position %d after %d for sequence %d with %u new tokens\n",

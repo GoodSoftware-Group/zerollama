@@ -41,7 +41,7 @@ index 545880b..efb5f63 100644
  
      struct ggml_backend_device {
 diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
-index 9d1274c..7ac5a0d 100644
+index c92096b..082e34a 100644
 --- a/ggml/src/ggml-backend.cpp
 +++ b/ggml/src/ggml-backend.cpp
 @@ -1009,6 +1009,14 @@ ggml_backend_t ggml_backend_dev_init(ggml_backend_dev_t device, const char * par
@@ -72,10 +72,10 @@ index 6feb370..321d83e 100644
  
  // backend reg interface
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
-index 81ff5d7..0c9a08e 100644
+index 2978340..7fe1fa1 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.cpp
 +++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
-@@ -507,6 +507,7 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
+@@ -508,6 +508,7 @@ static const struct ggml_backend_device_i ggml_backend_cpu_device_i = {
      /* .event_new            = */ NULL,
      /* .event_free           = */ NULL,
      /* .event_synchronize    = */ NULL,
@@ -84,10 +84,10 @@ index 81ff5d7..0c9a08e 100644
  
  // CPU backend - backend (reg)
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index 802fc4d..262e4e6 100644
+index 0d550c3..ccb0cce 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -6398,6 +6398,7 @@ static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
+@@ -6915,6 +6915,7 @@ static const ggml_backend_device_i ggml_backend_cuda_device_interface = {
      /* .event_new               = */ ggml_backend_cuda_device_event_new,
      /* .event_free              = */ ggml_backend_cuda_device_event_free,
      /* .event_synchronize       = */ ggml_backend_cuda_device_event_synchronize,
@@ -96,10 +96,10 @@ index 802fc4d..262e4e6 100644
  
  // backend reg
 diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
-index 9bed642..263e430 100644
+index 9a1bd2c..eebdd5f 100644
 --- a/ggml/src/ggml-metal/ggml-metal.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal.cpp
-@@ -903,6 +903,7 @@ static ggml_backend_device_i ggml_backend_metal_device_i = {
+@@ -907,6 +907,7 @@ static ggml_backend_device_i ggml_backend_metal_device_i = {
      /* .event_new            = */ ggml_backend_metal_device_event_new,
      /* .event_free           = */ ggml_backend_metal_device_event_free,
      /* .event_synchronize    = */ ggml_backend_metal_device_event_synchronize,
@@ -108,10 +108,10 @@ index 9bed642..263e430 100644
  
  // backend registry
 diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-index 89f0470..800a793 100644
+index ecd46d8..c4173e8 100644
 --- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -16325,6 +16325,7 @@ static const struct ggml_backend_device_i ggml_backend_vk_device_i = {
+@@ -17205,6 +17205,7 @@ static const struct ggml_backend_device_i ggml_backend_vk_device_i = {
      /* .event_new            = */ ggml_backend_vk_device_event_new,
      /* .event_free           = */ ggml_backend_vk_device_event_free,
      /* .event_synchronize    = */ ggml_backend_vk_device_event_synchronize,

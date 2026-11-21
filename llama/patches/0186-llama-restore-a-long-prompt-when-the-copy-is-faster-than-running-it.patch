@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Sat, 21 Nov 2026 14:40:12 -0800
+Subject: [PATCH] llama: restore a long prompt when the copy is faster than
+ running it
+
+Until a prefill has been timed, a small overlap still does not copy a large state. After that, the restore is taken when it saves time, including a prefix shorter than a quarter of the cached prompt.
+---
+ tools/server/server-slot-sched.cpp | 17 ++++++++++-------
+ tools/server/server-warm-disk.h    | 24 ++++++++++++++++++++----
+ 2 files changed, 30 insertions(+), 11 deletions(-)
+
+diff --git a/tools/server/server-slot-sched.cpp b/tools/server/server-slot-sched.cpp
+index 3c82922..8da919b 100644
+--- a/tools/server/server-slot-sched.cpp
++++ b/tools/server/server-slot-sched.cpp
+@@ -234,12 +234,9 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+ 
+         SRV_TRC("   - prompt with length %7zu, lcp = %7d, f_keep = %.3f, f_sim = %.3f\n", it->prompt.tokens.size(), lcp_cur, f_keep_cur, f_sim_cur);
+ 
+-        // don't trash large prompts
+-        if (f_keep_cur < 0.25f) {
+-            continue;
+-        }
+-
+         if (cost.timed()) {
++            // The copy cost is in the gain. A long state that shares a short
++            // prefix still wins when restoring it is faster than running those tokens.
+             const double per = it->prefill_s > 0.0 ? it->prefill_s : cost.token_s;
+             const double gain = llama_warm_gain(lcp_cur, per, it->data.size(), cost.restore());
+             if (!(gain > best_gain)) {
+@@ -247,8 +244,14 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+                 continue;
+             }
+             best_gain = gain;
+-        } else if (!(f_keep_best < f_keep_cur && f_sim_best < f_sim_cur)) {
+-            continue;
++        } else {
++            // No timing yet, so a small overlap must not copy a large state.
++            if (f_keep_cur < 0.25f) {
++                continue;
++            }
++            if (!(f_keep_best < f_keep_cur && f_sim_best < f_sim_cur)) {
++                continue;
++            }
+         }
+ 
+         f_keep_best = f_keep_cur;
+diff --git a/tools/server/server-warm-disk.h b/tools/server/server-warm-disk.h
+index b79c0fa..26c6160 100644
+--- a/tools/server/server-warm-disk.h
++++ b/tools/server/server-warm-disk.h
+@@ -371,7 +371,8 @@ public:
+         return best;
+     }
+ 
+-    // Every cached prompt that shares a prefix and keeps at least a quarter of itself.
++    // Every cached prompt that shares a prefix. The caller drops a restore
++    // that costs more than running the shared tokens.
+     std::vector<llama_warm_pick> matches(const int32_t * query, size_t n) const {
+         std::vector<llama_warm_pick> out;
+         if (query == nullptr || n == 0) {
+@@ -388,9 +389,6 @@ public:
+                 continue;
+             }
+             const float f_keep = (float) lcp / (float) f.tokens.size();
+-            if (f_keep < 0.25f) {
+-                continue;
+-            }
+             llama_warm_pick pick;
+             pick.path   = f.path;
+             pick.f_keep = f_keep;
+@@ -1191,6 +1189,24 @@ int main() {
+         }
+     }
+ 
++    {
++        std::filesystem::remove_all(dir);
++        llama_warm_disk disk(dir, 42, 100000);
++        llama_warm_entry long_row;
++        long_row.tokens = { 1, 2, 3, 4, 5, 6, 7, 8 };
++        long_row.main   = { 1, 2, 3, 4 };
++        disk.store(long_row);
++        disk.flush();
++        const int32_t one[] = { 1, 9 };
++        const auto few = disk.matches(one, 2);
++        if (few.size() != 1 || few[0].lcp != 1 || !(few[0].f_keep < 0.25f)) {
++            return warm_fail("short prefix is a candidate");
++        }
++        if (disk.better(one, 2, 0.0f, 0.0f)) {
++            return warm_fail("untimed short prefix");
++        }
++    }
++
+     uint64_t one = 0;
+     {
+         std::filesystem::remove_all(dir);

@@ -13,10 +13,10 @@ held. See docs/faster-bpe-tokenize.md (M15d / 0113).
  1 file changed, 92 insertions(+), 36 deletions(-)
 
 diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
-index c15717c..c3ff5cc 100644
+index 24fac3b..4b62354 100644
 --- a/src/llama-vocab.cpp
 +++ b/src/llama-vocab.cpp
-@@ -66,6 +66,47 @@ struct naive_trie {
+@@ -67,6 +67,47 @@ struct naive_trie {
      llama_token value;
  };
  
@@ -64,7 +64,7 @@ index c15717c..c3ff5cc 100644
  //
  // tokenizers
  //
-@@ -2621,9 +2662,14 @@ struct llama_vocab::impl {
+@@ -2627,9 +2668,14 @@ struct llama_vocab::impl {
      std::vector<token_data>                      id_to_token;
  
      std::vector<llama_token> cache_special_tokens;
@@ -82,7 +82,7 @@ index c15717c..c3ff5cc 100644
      std::vector<std::string> cache_token_to_piece; // llama_token_to_piece(special = true);
      struct pair_hash {
          size_t operator()(const std::pair<std::string, std::string> & p) const {
-@@ -3910,15 +3956,39 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
+@@ -3909,15 +3955,39 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
              }
          );
  
@@ -125,7 +125,7 @@ index c15717c..c3ff5cc 100644
      }
  
      // build token to piece cache
-@@ -4129,34 +4199,18 @@ void llama_vocab::impl::init_tokenizer(enum llama_vocab_type type) {
+@@ -4128,34 +4198,18 @@ void llama_vocab::impl::init_tokenizer(enum llama_vocab_type type) {
  // #define PRETOKENIZERDEBUG
  
  void llama_vocab::impl::tokenizer_st_partition(std::forward_list<fragment_buffer_variant> & buffer, bool parse_special) const {
@@ -167,7 +167,7 @@ index c15717c..c3ff5cc 100644
      }
  
      std::forward_list<fragment_buffer_variant> out;
-@@ -4198,21 +4252,23 @@ void llama_vocab::impl::tokenizer_st_partition(std::forward_list<fragment_buffer
+@@ -4197,21 +4251,23 @@ void llama_vocab::impl::tokenizer_st_partition(std::forward_list<fragment_buffer
                  continue;
              }
  

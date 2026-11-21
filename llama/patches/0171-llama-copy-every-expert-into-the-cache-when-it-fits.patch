@@ -1,0 +1,146 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 20 Nov 2026 17:31:14 -0800
+Subject: [PATCH] llama: copy every expert into the cache when it fits
+
+A cache with a slot for every expert is filled at load, so the first tokens do not upload them one miss at a time.
+---
+ src/llama-moe-cache.cpp  | 59 ++++++++++++++++++++++++++++++++++++++++
+ src/llama-moe-resident.h | 45 ++++++++++++++++++++++++++++++
+ 2 files changed, 104 insertions(+)
+ create mode 100644 src/llama-moe-resident.h
+
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+index ba963cc..6d177b3 100644
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -1,5 +1,6 @@
+ #include "llama-moe-cache.h"
+ #include "llama-flywheel.h"
++#include "llama-moe-resident.h"
+ 
+ #include "llama-graph.h"
+ #include "llama-impl.h"
+@@ -662,6 +663,9 @@ struct llama_moe_cache::impl {
+         if (flywheel && !no_alloc) {
+             measure_flywheel();
+         }
++        if (!no_alloc) {
++            admit_resident();
++        }
+ 
+         for (size_t id = 0; id < devices.size(); ++id) {
+             const device & d = devices[id];
+@@ -684,6 +688,61 @@ struct llama_moe_cache::impl {
+         }
+     }
+ 
++    // When the banks have a slot for every expert, copy them in now. Later
++    // tokens find the slot already filled instead of uploading on a miss.
++    void admit_resident() {
++        for (group & g : groups) {
++            const int32_t n_expert = g.lru.n_expert;
++            const int32_t n_layer  = (int32_t) g.layers.size();
++            if (!llama_moe_holds_all(g.n_slots, n_layer, n_expert) || g.banks.empty()) {
++                continue;
++            }
++            ggml_backend_t backend = devices[g.id].backend;
++            if (backend == nullptr) {
++                continue;
++            }
++            bool ready = true;
++            for (int32_t il : g.layers) {
++                const layer & l = layers[il];
++                if (l.experts.empty() || g.lru.slot_map[il] == nullptr) {
++                    ready = false;
++                    break;
++                }
++                for (const ggml_tensor * w : l.experts) {
++                    const size_t nbytes = (size_t) n_expert * (size_t) w->nb[2];
++                    if (w->data == nullptr || ggml_nbytes(w) < nbytes) {
++                        ready = false;
++                        break;
++                    }
++                }
++                if (!ready) {
++                    break;
++                }
++            }
++            if (!ready) {
++                continue;
++            }
++            int32_t slot = 0;
++            for (int32_t li = 0; li < n_layer; ++li) {
++                const int32_t il = g.layers[li];
++                layer & l = layers[il];
++                int32_t * slots = g.lru.slot_map[il];
++                for (int32_t e = 0; e < n_expert; ++e, ++slot) {
++                    slots[e] = llama_moe_resident_slot(li, e, n_expert);
++                    g.lru.key_of[slot] = g.lru.make_key(il, e);
++                }
++                for (size_t ip = 0; ip < l.experts.size(); ++ip) {
++                    const ggml_tensor * w = l.experts[ip];
++                    const size_t nbytes = (size_t) n_expert * (size_t) w->nb[2];
++                    ggml_backend_tensor_set_async(backend, g.banks[ip], w->data, (size_t) li * nbytes, nbytes);
++                }
++            }
++            g.lru.n_filled = slot;
++            ggml_backend_synchronize(backend);
++            LLAMA_LOG_INFO("%s: copied every expert of %d layers into the cache\n", __func__, n_layer);
++        }
++    }
++
+     // Time one expert of the first cached layer on the CPU, and the copy of
+     // that expert onto the device. The best of three rounds, as other programs
+     // may be busy. A failed measurement leaves every miss to be uploaded.
+diff --git a/src/llama-moe-resident.h b/src/llama-moe-resident.h
+new file mode 100644
+index 0000000..c6697b5
+--- /dev/null
++++ b/src/llama-moe-resident.h
+@@ -0,0 +1,45 @@
++#pragma once
++
++// A cache that has a slot for every expert can be filled at load. The first
++// tokens then find the expert already on the device.
++
++#include <cstdint>
++
++// True when n_slots can hold every expert of every layer in the group.
++inline bool llama_moe_holds_all(int32_t n_slots, int32_t n_layers, int32_t n_expert) {
++    if (n_slots <= 0 || n_layers <= 0 || n_expert <= 0) {
++        return false;
++    }
++    const int64_t need = (int64_t) n_layers * (int64_t) n_expert;
++    return (int64_t) n_slots >= need;
++}
++
++// Slot of one expert when the group is packed layer by layer.
++inline int32_t llama_moe_resident_slot(int32_t layer_in_group, int32_t expert, int32_t n_expert) {
++    return layer_in_group * n_expert + expert;
++}
++
++#ifdef LLAMA_MOE_RESIDENT_TEST
++#include <cstdio>
++#include <cstdlib>
++int main() {
++    if (llama_moe_holds_all(0, 2, 4) || llama_moe_holds_all(8, 0, 4) || llama_moe_holds_all(8, 2, 0)) {
++        std::fputs("an empty group does not hold every expert\n", stderr);
++        return 1;
++    }
++    if (llama_moe_holds_all(7, 2, 4)) {
++        std::fputs("seven slots cannot hold two layers of four experts\n", stderr);
++        return 1;
++    }
++    if (!llama_moe_holds_all(8, 2, 4) || !llama_moe_holds_all(9, 2, 4)) {
++        std::fputs("eight slots hold two layers of four experts\n", stderr);
++        return 1;
++    }
++    if (llama_moe_resident_slot(0, 0, 4) != 0 || llama_moe_resident_slot(1, 3, 4) != 7) {
++        std::fputs("experts are packed layer by layer\n", stderr);
++        return 1;
++    }
++    std::puts("resident ok");
++    return 0;
++}
++#endif

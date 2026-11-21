@@ -8,7 +8,7 @@ Subject: [PATCH] fix: drop duplicate GGML_TYPE_TQ2_0 Metal pipeline cases
  1 file changed, 10 deletions(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
-index e759bbb..129b7d0 100644
+index bc34106..96fff2f 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
 @@ -1244,11 +1244,6 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta

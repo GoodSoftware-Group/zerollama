@@ -6,11 +6,11 @@ Subject: [PATCH] fix: sync llama_kv_cache.h with shared-cells constructor
 Align the public constructor and storage accessors with the in-tree
 implementation used by Phase 15 / hybrid memory.
 ---
- src/llama-kv-cache.h | 13 ++++++++++---
- 1 file changed, 10 insertions(+), 3 deletions(-)
+ src/llama-kv-cache.h | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
 
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index fe426a8..a545d1b 100644
+index c7dcc01..6faf388 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
 @@ -5,6 +5,7 @@
@@ -21,22 +21,7 @@ index fe426a8..a545d1b 100644
  #include <unordered_map>
  #include <vector>
  
-@@ -106,12 +107,12 @@ public:
-                      uint32_t   n_seq_max,
-                      uint32_t   n_swa,
-                llama_swa_type   swa_type,
-+               llama_memory_t   mem_other,
-         const layer_filter_cb & filter,
-         const  layer_reuse_cb & reuse,
-         const  layer_share_cb & share,
-         // a model can hold more than one cache, so the tensor names have to stay unique
--                 const char *   name_tag = "",
--                     uint32_t   kv_size_max = 0);
-+                 const char *   name_tag = "");
- 
-     ~llama_kv_cache() = default;
- 
-@@ -162,6 +163,9 @@ public:
+@@ -165,6 +166,9 @@ public:
      ggml_type type_k() const;
      ggml_type type_v() const;
  
@@ -46,15 +31,15 @@ index fe426a8..a545d1b 100644
      // zerollama Phase 15 v20: external PA page bind helpers (llama-kv-ext.h)
      int32_t  cell_index_for(llama_seq_id seq_id, llama_pos pos, uint32_t * out_stream = nullptr) const;
      uint32_t n_kv_layers() const;
-@@ -320,7 +324,10 @@ private:
-     // note: this is not part of the KV state and it's only used to speed-up the find_slot() method
+@@ -333,10 +337,9 @@ private:
      std::vector<uint32_t> v_heads;
  
--    std::vector<llama_kv_cells> v_cells;
+     // TODO: temporary until we refactor to be able to share the same cells between 2 kv caches [TAG_KV_CACHE_SHARE_CELLS]
+-    llama_kv_cache * other;
 +    llama_kv_cache * other = nullptr;
-+
-+    std::shared_ptr<llama_kv_cells_vec> v_cells_impl;
-+    llama_kv_cells_vec & v_cells;
+ 
+     std::shared_ptr<llama_kv_cells_vec> v_cells_impl;
+-
+     llama_kv_cells_vec & v_cells;
  
      // maps from a sequence id to a stream id
-     std::vector<uint32_t> seq_to_stream;

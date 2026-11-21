@@ -1,0 +1,445 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 20 Nov 2026 18:28:26 -0800
+Subject: [PATCH] llama: space prompt marks by the cost of one recurrent cell
+
+A mark is copied every 256 tokens, or further apart up to 8192, when that cell costs more than the attention cache between marks. An explicit grid is left as it was.
+---
+ include/llama.h                  |  4 +++
+ src/llama-context.cpp            | 16 +++++++++
+ src/llama-kv-cache-iswa.cpp      |  8 +++++
+ src/llama-kv-cache-iswa.h        |  2 ++
+ src/llama-kv-cache.cpp           | 21 +++++++++++
+ src/llama-kv-cache.h             |  2 ++
+ src/llama-mark-grid.h            | 62 ++++++++++++++++++++++++++++++++
+ src/llama-memory-hybrid-idx.cpp  | 10 ++++++
+ src/llama-memory-hybrid-idx.h    |  2 ++
+ src/llama-memory-hybrid-iswa.cpp |  8 +++++
+ src/llama-memory-hybrid-iswa.h   |  2 ++
+ src/llama-memory-hybrid.cpp      |  8 +++++
+ src/llama-memory-hybrid.h        |  2 ++
+ src/llama-memory-recurrent.cpp   | 21 +++++++++++
+ src/llama-memory-recurrent.h     |  2 ++
+ src/llama-memory.h               | 12 +++++++
+ tools/server/server-context.cpp  | 22 ++++++++----
+ 17 files changed, 197 insertions(+), 7 deletions(-)
+ create mode 100644 src/llama-mark-grid.h
+
+diff --git a/include/llama.h b/include/llama.h
+index e5744ef..703c0eb 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -597,6 +597,10 @@ extern "C" {
+ 
+     LLAMA_API const struct llama_model * llama_get_model   (const struct llama_context * ctx);
+     LLAMA_API           llama_memory_t   llama_get_memory  (const struct llama_context * ctx);
++
++    // One recurrent cell and one attention token, in bytes. Either is 0 when
++    // this context has no such cache. Null pointers are skipped.
++    LLAMA_API void llama_get_mark_cost(const struct llama_context * ctx, size_t * recurrent, size_t * per_token);
+     LLAMA_API  enum llama_pooling_type   llama_pooling_type(const struct llama_context * ctx); // TODO: rename to llama_get_pooling_type
+ 
+     LLAMA_API const struct llama_vocab * llama_model_get_vocab(const struct llama_model * model);
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 583933c..6b0a7be 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -5102,6 +5102,22 @@ llama_memory_t llama_get_memory(const struct llama_context * ctx) {
+     return ctx->get_memory();
+ }
+ 
++void llama_get_mark_cost(const struct llama_context * ctx, size_t * recurrent, size_t * per_token) {
++    size_t rec = 0;
++    size_t tok = 0;
++    if (ctx && ctx->get_memory()) {
++        const llama_mark_cost cost = ctx->get_memory()->mark_cost();
++        rec = cost.recurrent;
++        tok = cost.per_token;
++    }
++    if (recurrent) {
++        *recurrent = rec;
++    }
++    if (per_token) {
++        *per_token = tok;
++    }
++}
++
+ float * llama_get_embeddings_nextn(llama_context * ctx) {
+     ctx->synchronize();
+ 
+diff --git a/src/llama-kv-cache-iswa.cpp b/src/llama-kv-cache-iswa.cpp
+index 8ce8e01..663879a 100644
+--- a/src/llama-kv-cache-iswa.cpp
++++ b/src/llama-kv-cache-iswa.cpp
+@@ -156,6 +156,14 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_kv_cache_iswa::memory_breakdo
+     return mb;
+ }
+ 
++llama_mark_cost llama_kv_cache_iswa::mark_cost() const {
++    llama_mark_cost cost = kv_base->mark_cost();
++    const llama_mark_cost swa = kv_swa->mark_cost();
++    cost.recurrent += swa.recurrent;
++    cost.per_token += swa.per_token;
++    return cost;
++}
++
+ llama_memory_context_ptr llama_kv_cache_iswa::init_batch(llama_batch_allocr & balloc, uint32_t n_ubatch, bool embd_all) {
+     // first try simple split
+     do {
+diff --git a/src/llama-kv-cache-iswa.h b/src/llama-kv-cache-iswa.h
+index 65aba2a..d622ade 100644
+--- a/src/llama-kv-cache-iswa.h
++++ b/src/llama-kv-cache-iswa.h
+@@ -78,6 +78,8 @@ public:
+ 
+     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
+ 
++    llama_mark_cost mark_cost() const override;
++
+     // state write/load
+ 
+     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index cf01d3d..5147cba 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -1298,6 +1298,27 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_kv_cache::memory_breakdown()
+     return ret;
+ }
+ 
++llama_mark_cost llama_kv_cache::mark_cost() const {
++    llama_mark_cost cost;
++    // A layer reused by another model layer points at the same tensors.
++    std::unordered_set<const ggml_tensor *> seen;
++    for (const auto & layer : layers) {
++        if (!layer.k || layer.k->ne[1] <= 0) {
++            continue;
++        }
++        const int64_t npos = layer.k->ne[1];
++        const int64_t nstr = layer.k->ne[2] > 0 ? layer.k->ne[2] : 1;
++        const ggml_tensor * ts[] = { layer.k, layer.v, layer.k_idx, layer.k_scale, layer.v_scale };
++        for (const ggml_tensor * t : ts) {
++            if (!t || !seen.insert(t).second) {
++                continue;
++            }
++            cost.per_token += ggml_nbytes(t) / (size_t) (npos * nstr);
++        }
++    }
++    return cost;
++}
++
+ llama_memory_context_ptr llama_kv_cache::init_batch(
+             llama_batch_allocr & balloc,
+             uint32_t n_ubatch,
+diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
+index 691cb72..9a02428 100644
+--- a/src/llama-kv-cache.h
++++ b/src/llama-kv-cache.h
+@@ -150,6 +150,8 @@ public:
+ 
+     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
+ 
++    llama_mark_cost mark_cost() const override;
++
+     // state write/load
+ 
+     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+diff --git a/src/llama-mark-grid.h b/src/llama-mark-grid.h
+new file mode 100644
+index 0000000..fe6aa20
+--- /dev/null
++++ b/src/llama-mark-grid.h
+@@ -0,0 +1,62 @@
++#pragma once
++
++#include <cstdint>
++
++// Spacing of prompt marks on a model that cannot rewind.
++// `mark` is one recurrent cell. `per_token` is one token of the attention
++// cache. The gap is wide enough that a mark costs about as much memory as
++// the attention cache between two marks, and it stays a multiple of 256
++// between 256 and 8192. An unknown mark keeps the 256-token minimum.
++// A recurrent model with no attention cache uses one byte per token, so the
++// gap widens to the cap.
++
++inline int32_t llama_mark_spacing(uint64_t mark, uint64_t per_token) {
++    if (mark == 0) {
++        return 256;
++    }
++    if (per_token == 0) {
++        per_token = 1;
++    }
++    uint64_t n = mark / per_token;
++    if (n >= 8192) {
++        return 8192;
++    }
++    n = ((n + 255) / 256) * 256;
++    if (n < 256) {
++        n = 256;
++    }
++    return (int32_t) n;
++}
++
++#if defined(LLAMA_MARK_GRID_TEST)
++#include <cstdio>
++
++int main() {
++    if (llama_mark_spacing(0, 1000) != 256) {
++        return 1;
++    }
++    if (llama_mark_spacing(100, 1000) != 256) {
++        return 1;
++    }
++    if (llama_mark_spacing(256ull * 1000, 1000) != 256) {
++        return 1;
++    }
++    if (llama_mark_spacing(257ull * 1000, 1000) != 512) {
++        return 1;
++    }
++    if (llama_mark_spacing(512ull * 1000, 1000) != 512) {
++        return 1;
++    }
++    if (llama_mark_spacing(100000ull * 1000, 1000) != 8192) {
++        return 1;
++    }
++    if (llama_mark_spacing(8192, 1) != 8192) {
++        return 1;
++    }
++    if (llama_mark_spacing(5000, 0) != 5120) {
++        return 1;
++    }
++    std::printf("mark grid ok\n");
++    return 0;
++}
++#endif
+diff --git a/src/llama-memory-hybrid-idx.cpp b/src/llama-memory-hybrid-idx.cpp
+index 2e19576..57c72ee 100644
+--- a/src/llama-memory-hybrid-idx.cpp
++++ b/src/llama-memory-hybrid-idx.cpp
+@@ -238,6 +238,16 @@ void llama_memory_hybrid_idx::seq_div(llama_seq_id seq_id, llama_pos p0, llama_p
+     }
+ }
+ 
++llama_mark_cost llama_memory_hybrid_idx::mark_cost() const {
++    llama_mark_cost cost = llama_memory_hybrid::mark_cost();
++    if (mem_idx) {
++        const llama_mark_cost idx = mem_idx->mark_cost();
++        cost.recurrent += idx.recurrent;
++        cost.per_token += idx.per_token;
++    }
++    return cost;
++}
++
+ std::map<ggml_backend_buffer_type_t, size_t> llama_memory_hybrid_idx::memory_breakdown() const {
+     std::map<ggml_backend_buffer_type_t, size_t> mb = llama_memory_hybrid::memory_breakdown();
+ 
+diff --git a/src/llama-memory-hybrid-idx.h b/src/llama-memory-hybrid-idx.h
+index 85a2a91..84ae257 100644
+--- a/src/llama-memory-hybrid-idx.h
++++ b/src/llama-memory-hybrid-idx.h
+@@ -67,6 +67,8 @@ public:
+ 
+     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
+ 
++    llama_mark_cost mark_cost() const override;
++
+     // state write/load
+ 
+     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+diff --git a/src/llama-memory-hybrid-iswa.cpp b/src/llama-memory-hybrid-iswa.cpp
+index 6d843c7..633ff56 100644
+--- a/src/llama-memory-hybrid-iswa.cpp
++++ b/src/llama-memory-hybrid-iswa.cpp
+@@ -193,6 +193,14 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_memory_hybrid_iswa::memory_br
+     return mb;
+ }
+ 
++llama_mark_cost llama_memory_hybrid_iswa::mark_cost() const {
++    llama_mark_cost cost = mem_attn->mark_cost();
++    const llama_mark_cost recr = mem_recr->mark_cost();
++    cost.recurrent += recr.recurrent;
++    cost.per_token += recr.per_token;
++    return cost;
++}
++
+ void llama_memory_hybrid_iswa::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
+     mem_attn->state_write(io, seq_id, flags);
+     mem_recr->state_write(io, seq_id, flags);
+diff --git a/src/llama-memory-hybrid-iswa.h b/src/llama-memory-hybrid-iswa.h
+index 52c885a..83e50a8 100644
+--- a/src/llama-memory-hybrid-iswa.h
++++ b/src/llama-memory-hybrid-iswa.h
+@@ -71,6 +71,8 @@ public:
+ 
+     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
+ 
++    llama_mark_cost mark_cost() const override;
++
+     // state write/load
+ 
+     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+diff --git a/src/llama-memory-hybrid.cpp b/src/llama-memory-hybrid.cpp
+index 7d3b279..0101760 100644
+--- a/src/llama-memory-hybrid.cpp
++++ b/src/llama-memory-hybrid.cpp
+@@ -188,6 +188,14 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_memory_hybrid::memory_breakdo
+     return mb;
+ }
+ 
++llama_mark_cost llama_memory_hybrid::mark_cost() const {
++    llama_mark_cost cost = mem_attn->mark_cost();
++    const llama_mark_cost recr = mem_recr->mark_cost();
++    cost.recurrent += recr.recurrent;
++    cost.per_token += recr.per_token;
++    return cost;
++}
++
+ void llama_memory_hybrid::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
+     mem_attn->state_write(io, seq_id, flags);
+     mem_recr->state_write(io, seq_id, flags);
+diff --git a/src/llama-memory-hybrid.h b/src/llama-memory-hybrid.h
+index 2b4d126..6d94310 100644
+--- a/src/llama-memory-hybrid.h
++++ b/src/llama-memory-hybrid.h
+@@ -71,6 +71,8 @@ public:
+ 
+     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
+ 
++    llama_mark_cost mark_cost() const override;
++
+     // state write/load
+ 
+     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
+index 2bb8ef1..a976012 100644
+--- a/src/llama-memory-recurrent.cpp
++++ b/src/llama-memory-recurrent.cpp
+@@ -435,6 +435,27 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_memory_recurrent::memory_brea
+     return ctxs_bufs.memory_breakdown();
+ }
+ 
++llama_mark_cost llama_memory_recurrent::mark_cost() const {
++    llama_mark_cost cost;
++    auto add = [&](const ggml_tensor * t) {
++        if (!t || t->ne[1] <= 0) {
++            return;
++        }
++        // ne[1] is every sequence's cells, including rollback planes. One row is one cell.
++        cost.recurrent += ggml_nbytes(t) / (size_t) t->ne[1];
++    };
++    for (const ggml_tensor * t : r_l) {
++        add(t);
++    }
++    for (const ggml_tensor * t : s_l) {
++        add(t);
++    }
++    for (const ggml_tensor * t : p_l) {
++        add(t);
++    }
++    return cost;
++}
++
+ llama_memory_context_ptr llama_memory_recurrent::init_batch(llama_batch_allocr & balloc, uint32_t n_ubatch, bool embd_all) {
+     do {
+         balloc.split_reset();
+diff --git a/src/llama-memory-recurrent.h b/src/llama-memory-recurrent.h
+index 6442fc1..e55e631 100644
+--- a/src/llama-memory-recurrent.h
++++ b/src/llama-memory-recurrent.h
+@@ -55,6 +55,8 @@ public:
+ 
+     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
+ 
++    llama_mark_cost mark_cost() const override;
++
+     bool prepare(const std::vector<llama_ubatch> & ubatches);
+ 
+     // find a contiguous slot of memory cells and emplace the ubatch there
+diff --git a/src/llama-memory.h b/src/llama-memory.h
+index 5b27f5f..db5b515 100644
+--- a/src/llama-memory.h
++++ b/src/llama-memory.h
+@@ -101,6 +101,12 @@ using llama_memory_context_ptr = std::unique_ptr<llama_memory_context_i>;
+ 
+ // general concept of LLM memory
+ // the KV cache is a type of LLM memory, but there can be other types
++// One cell of state that cannot be rewound, and one token of the attention cache.
++struct llama_mark_cost {
++    size_t recurrent = 0;
++    size_t per_token = 0;
++};
++
+ struct llama_memory_i {
+     // this callback is used to filter out layers that should not be included in the cache
+     using layer_filter_cb = std::function<bool(int32_t il)>;
+@@ -169,6 +175,12 @@ struct llama_memory_i {
+ 
+     virtual void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const = 0;
+     virtual void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) = 0;
++
++    // Bytes of one recurrent cell and of one attention token. The default is
++    // a cache that rewinds in place and has neither measured.
++    virtual llama_mark_cost mark_cost() const {
++        return {};
++    }
+ };
+ 
+ using llama_memory_ptr = std::unique_ptr<llama_memory_i>;
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 151f7fc..5b316da 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -25,6 +25,7 @@
+ #include "common.h"
+ #include "fit.h"
+ #include "llama.h"
++#include "llama-mark-grid.h"
+ #include "llama-shortlist-top.h"
+ #include "log.h"
+ #include "sampling.h"
+@@ -48,21 +49,22 @@
+ 
+ namespace {
+ 
+-// Kinetic warm-start grid (GRID in kinetic-models warm/mod.rs).
++// Kinetic warm-start grid (grid() in kinetic-models warm/mod.rs).
+ // Attention caches rewind in place. A recurrent or hybrid state does not, so
+ // prefill records a checkpoint on this grid and a later prompt resumes from
+ // the last shared mark instead of replaying from token 0.
+ //
+ // 0 is auto. 8192 is the historical spacing GPU profiles still pass as
+-// --checkpoint-every-n-tokens; on a model that cannot rewind that value is
+-// the 256-token grid. Any other positive value is an explicit grid.
+-// Negative disables the grid.
+-static int32_t mark_grid_from_every(int32_t every, bool needs_mark) {
++// --checkpoint-every-n-tokens. On a model that cannot rewind, both mean the
++// measured grid: wide enough that one mark costs about as much as the
++// attention cache between two marks, always a multiple of 256 from 256 to
++// 8192. Any other positive value is an explicit grid. Negative disables it.
++static int32_t mark_grid_from_every(int32_t every, bool needs_mark, size_t recurrent, size_t per_token) {
+     if (every < 0) {
+         return 0;
+     }
+     if (needs_mark && (every == 0 || every == 8192)) {
+-        return 256;
++        return llama_mark_spacing(recurrent, per_token);
+     }
+     return every > 0 ? every : 0;
+ }
+@@ -1856,9 +1858,15 @@ private:
+         n_swa_reuse = llama_model_is_recurrent(model_tgt) || llama_model_is_hybrid(model_tgt) ? 0 : n_swa;
+         {
+             const bool needs_mark = llama_model_is_recurrent(model_tgt) || llama_model_is_hybrid(model_tgt);
++            size_t mark_bytes = 0;
++            size_t token_bytes = 0;
++            llama_get_mark_cost(ctx_tgt, &mark_bytes, &token_bytes);
+             prompt_mark_grid = params_base.n_ctx_checkpoints > 0
+-                    ? mark_grid_from_every(params_base.checkpoint_every_nt, needs_mark)
++                    ? mark_grid_from_every(params_base.checkpoint_every_nt, needs_mark, mark_bytes, token_bytes)
+                     : 0;
++            if (needs_mark && prompt_mark_grid > 0) {
++                SRV_DBG("mark grid from %zu recurrent bytes and %zu bytes per token\n", mark_bytes, token_bytes);
++            }
+         }
+         // Multi-GPU SWA (gemma4 iswa dual-KV): creating context checkpoints during
+         // prefill dumps PARTIAL_ONLY state via llama_state_seq_get_data_ext and

@@ -56,11 +56,12 @@ private:
 };
 
 static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
-        const char * path_model,
+        const std::vector<std::string> & paths_model,
         const llama_model_params * mparams,
         const llama_context_params * cparams,
         std::vector<ggml_backend_dev_t> & devs,
         uint32_t & hp_ngl,
+        uint32_t & hp_ngl_skip,
         uint32_t & hp_n_ctx_train,
         uint32_t & hp_n_expert,
         uint32_t & hp_n_swa,
@@ -71,7 +72,7 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
     mparams_copy.no_alloc  = true;
     mparams_copy.load_mode = LLAMA_LOAD_MODE_NONE;
 
-    llama_model * model = llama_model_load_from_file(path_model, mparams_copy);
+    llama_model * model = common_model_load(paths_model, mparams_copy);
     if (model == nullptr) {
         throw std::runtime_error("failed to load model");
     }
@@ -153,6 +154,8 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
     if (mparams->load_mtp) {
         hp_ngl    += llama_model_n_layer_nextn(model);
     }
+    // without MTP the NextN layers hold no weights but the model loader still counts them for n_gpu_layers
+    hp_ngl_skip    = mparams->load_mtp ? 0 : llama_model_n_layer_nextn(model);
     hp_n_ctx_train = llama_model_n_ctx_train(model);
     hp_n_expert    = llama_model_n_expert(model);
     hp_n_swa       = llama_model_n_swa(model);
@@ -166,7 +169,7 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
 }
 
 std::vector<common_memory_breakdown_row> common_fit_measure(
-        const char * path_model,
+        const std::vector<std::string> & paths_model,
         const llama_model_params * mparams,
         const llama_context_params * cparams,
         uint32_t * n_ctx_train,
@@ -178,7 +181,7 @@ std::vector<common_memory_breakdown_row> common_fit_measure(
     mparams_copy.no_alloc  = true;
     mparams_copy.load_mode = LLAMA_LOAD_MODE_NONE;
 
-    llama_model_ptr model(llama_model_load_from_file(path_model, mparams_copy));
+    llama_model_ptr model(common_model_load(paths_model, mparams_copy));
     if (!model) {
         throw std::runtime_error("failed to load model");
     }
@@ -200,7 +203,7 @@ std::vector<common_memory_breakdown_row> common_fit_measure(
 
 common_memory_reports common_measure_memory(common_params & params) {
     const ggml_log_level log_level = params.verbosity >= LOG_LEVEL_DEBUG ? GGML_LOG_LEVEL_DEBUG : GGML_LOG_LEVEL_ERROR;
-    const char * path_model = params.model.path.c_str();
+    const std::vector<std::string> paths_model = params.model.get_paths();
 
     common_memory_reports res;
 
@@ -212,7 +215,7 @@ common_memory_reports common_measure_memory(common_params & params) {
         auto mparams_fit = mparams;
         auto cparams_fit = cparams;
         common_fit_apply(params, mparams_fit, cparams_fit);
-        res.info_max = common_fit_measure(path_model, &mparams_fit, &cparams_fit, &res.n_ctx_train, &res.n_ctx_max, log_level);
+        res.info_max = common_fit_measure(paths_model, &mparams_fit, &cparams_fit, &res.n_ctx_train, &res.n_ctx_max, log_level);
     }
 
     // min: the smallest context --fit may pick (--fit only changes n_ctx when it is 0)
@@ -230,24 +233,25 @@ common_memory_reports common_measure_memory(common_params & params) {
         res.info_min  = res.info_max;
     } else {
         cparams.n_ctx = n_ctx_min;
-        res.info_min  = common_fit_measure(path_model, &mparams, &cparams, nullptr, &res.n_ctx_min, log_level);
+        res.info_min  = common_fit_measure(paths_model, &mparams, &cparams, nullptr, &res.n_ctx_min, log_level);
     }
 
     return res;
 }
 
 common_device_memory_data_vec common_get_device_memory_data(
-        const char * path_model,
+        const std::vector<std::string> & paths_model,
         const llama_model_params * mparams,
         const llama_context_params * cparams,
         std::vector<ggml_backend_dev_t> & devs,
         uint32_t & hp_ngl,
+        uint32_t & hp_ngl_skip,
         uint32_t & hp_n_ctx_train,
         uint32_t & hp_n_expert,
         uint32_t & hp_n_swa,
         ggml_log_level log_level) {
     std::vector<llama_device_memory_data> impl = common_get_device_memory_data_impl(
-            path_model, mparams, cparams, devs, hp_ngl, hp_n_ctx_train, hp_n_expert, hp_n_swa, log_level);
+            paths_model, mparams, cparams, devs, hp_ngl, hp_ngl_skip, hp_n_ctx_train, hp_n_expert, hp_n_swa, log_level);
 
     common_device_memory_data_vec ret(impl.size());
     for (size_t i = 0; i < impl.size(); i++) {
@@ -261,7 +265,7 @@ common_device_memory_data_vec common_get_device_memory_data(
 }
 
 static void common_params_fit_impl(
-        const char * path_model, struct llama_model_params * mparams, struct llama_context_params * cparams,
+        const std::vector<std::string> & paths_model, struct llama_model_params * mparams, struct llama_context_params * cparams,
         float * tensor_split, struct llama_model_tensor_buft_override * tensor_buft_overrides,
         size_t * margins_s, uint32_t n_ctx_min, const common_fit_extra_model * extra, enum ggml_log_level log_level) {
     if (mparams->split_mode == LLAMA_SPLIT_MODE_TENSOR) {
@@ -273,6 +277,7 @@ static void common_params_fit_impl(
 
     std::vector<ggml_backend_dev_t> devs;
     uint32_t hp_ngl  = 0; // hparams.n_gpu_layers
+    uint32_t hp_nsk  = 0; // number of skipped NextN layers, counted by the model loader but not by hp_ngl
     uint32_t hp_nct  = 0; // hparams.n_ctx_train
     uint32_t hp_nex  = 0; // hparams.n_expert
     uint32_t hp_nswa = 0; // hparams.n_swa
@@ -295,6 +300,7 @@ static void common_params_fit_impl(
         if (dmds_extra.empty() || n_ctx_extra != cparams->n_ctx) {
             std::vector<ggml_backend_dev_t> devs_extra;
             uint32_t ngl_extra = 0;
+            uint32_t nsk_extra = 0;
             uint32_t nct_extra = 0;
             uint32_t nex_extra = 0;
             uint32_t nswa_extra = 0;
@@ -307,7 +313,7 @@ static void common_params_fit_impl(
             dmds_t measured;
             try {
                 measured = common_get_device_memory_data_impl(
-                    extra->path_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nct_extra, nex_extra, nswa_extra, log_level);
+                    extra->paths_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nsk_extra, nct_extra, nex_extra, nswa_extra, log_level);
             } catch (const std::runtime_error & e) {
                 // the extra model is optional, fit the main model alone rather than giving up
                 LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n", __func__, e.what());
@@ -347,7 +353,7 @@ static void common_params_fit_impl(
     // step 1: get data for default parameters and check whether any changes are necessary in the first place
 
     LOG_TRC("%s: getting device memory data for initial parameters:\n", __func__);
-    dmds_t dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+    dmds_t dmds_full = common_get_device_memory_data_impl(paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, hp_nswa, log_level);
 
     // saturate instead of overflowing, this also preserves the UINT32_MAX sentinel of n_ctx_min:
     const uint32_t n_ctx_max       = (uint32_t) std::min<uint64_t>(uint64_t(hp_nct)    * n_streams, UINT32_MAX);
@@ -359,7 +365,7 @@ static void common_params_fit_impl(
         if (n_streams > 1) {
             LOG_TRC("%s: context size unset and KV cache not unified -> using %" PRIu32 " for %" PRIu32 " sequences:\n",
                 __func__, n_ctx_max, n_streams);
-            dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+            dmds_full = common_get_device_memory_data_impl(paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, hp_nswa, log_level);
         }
     }
     add_extra_memory(dmds_full);
@@ -498,7 +504,7 @@ static void common_params_fit_impl(
 
                     int64_t sum_projected_used_min_ctx = 0;
                     cparams->n_ctx = n_ctx_min_total;
-                    dmds_t dmds_min_ctx = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+                    dmds_t dmds_min_ctx = common_get_device_memory_data_impl(paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, hp_nswa, log_level);
                     add_extra_memory(dmds_min_ctx);
                     if (nd == 0) {
                         sum_projected_used_min_ctx = dmds_min_ctx.back().mb.total();
@@ -645,6 +651,20 @@ static void common_params_fit_impl(
         assert(uint32_t(mparams.n_gpu_layers) <= hp_ngl + 1);
         uint32_t il0 = hp_ngl + 1 - mparams.n_gpu_layers; // start index for tensor buft overrides
 
+        // the skipped NextN layers come right before the output layer, put them on the same device as the output layer
+        // so that the layers assigned by the model loader match the layers above
+        if (hp_nsk > 0 && mparams.n_gpu_layers > 0) {
+            mparams.n_gpu_layers += hp_nsk;
+            if (nd > 1) {
+                // the last devices have no layers if not even the output layer fits
+                size_t id_last = nd - 1;
+                while (ngl_per_device[id_last].n_layer == 0) {
+                    id_last--;
+                }
+                tensor_split[id_last] += hp_nsk;
+            }
+        }
+
         mparams.tensor_split = tensor_split;
 
         size_t itbo = 0;
@@ -680,7 +700,7 @@ static void common_params_fit_impl(
         set_ngl_tensor_split_tbo(ngl_per_device, overflow_bufts, mparams_copy);
 
         dmds_t dmd_nl = common_get_device_memory_data_impl(
-            path_model, &mparams_copy, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+            paths_model, &mparams_copy, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, hp_nswa, log_level);
         add_extra_memory(dmd_nl);
 
         LOG_TRC("%s: memory for test allocation by device:\n", func_name);
@@ -709,7 +729,7 @@ static void common_params_fit_impl(
 
         LOG_TRC("%s: getting device memory data with all MoE tensors moved to system memory:\n", __func__);
         dmds_t dmds_cpu_moe = common_get_device_memory_data_impl(
-            path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+            paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, hp_nswa, log_level);
         add_extra_memory(dmds_cpu_moe);
 
         for (size_t id = 0; id < nd; id++) {
@@ -837,7 +857,7 @@ static void common_params_fit_impl(
         }
 
         const dmds_t dmds_equal = common_get_device_memory_data_impl(
-            path_model, &mparams_test, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
+            paths_model, &mparams_test, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, hp_nswa, log_level);
 
         bool equal_fits = true;
         for (size_t id = 0; id < nd; ++id) {
@@ -1054,7 +1074,7 @@ static void common_params_fit_impl(
 }
 
 enum common_params_fit_status common_fit_params(
-        const char * path_model,
+        const std::vector<std::string> & paths_model,
         llama_model_params * mparams,
         llama_context_params * cparams,
         float * tensor_split,
@@ -1066,7 +1086,7 @@ enum common_params_fit_status common_fit_params(
     const int64_t t0_us = llama_time_us();
     common_params_fit_status status = COMMON_PARAMS_FIT_STATUS_SUCCESS;
     try {
-        common_params_fit_impl(path_model, mparams, cparams, tensor_split, tensor_buft_overrides, margins, n_ctx_min, extra, log_level);
+        common_params_fit_impl(paths_model, mparams, cparams, tensor_split, tensor_buft_overrides, margins, n_ctx_min, extra, log_level);
         LOG_TRC("%s: successfully fit params to free device memory\n", __func__);
     } catch (const common_params_fit_exception & e) {
         LOG_WRN("%s: failed to fit params to free device memory: %s\n", __func__, e.what());
@@ -1276,16 +1296,17 @@ void common_memory_breakdown_print(const struct llama_context * ctx) {
 }
 
 void common_fit_print(
-        const char * path_model,
+        const std::vector<std::string> & paths_model,
         llama_model_params * mparams,
         llama_context_params * cparams) {
     std::vector<ggml_backend_dev_t> devs;
     uint32_t hp_ngl  = 0; // hparams.n_gpu_layers
+    uint32_t hp_nsk  = 0; // number of skipped NextN layers, counted by the model loader but not by hp_ngl
     uint32_t hp_nct  = 0; // hparams.n_ctx_train
     uint32_t hp_nex  = 0; // hparams.n_expert
     uint32_t hp_nswa = 0; // hparams.n_swa
 
-    auto dmd = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, GGML_LOG_LEVEL_ERROR);
+    auto dmd = common_get_device_memory_data_impl(paths_model, mparams, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, hp_nswa, GGML_LOG_LEVEL_ERROR);
     GGML_ASSERT(dmd.size() == devs.size() + 1);
 
     for (size_t id = 0; id < devs.size(); id++) {

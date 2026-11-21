@@ -8,10 +8,10 @@ Subject: [PATCH] fix: drop duplicate N_R0_TQ2_0 Metal macros
  1 file changed, 3 deletions(-)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
-index 2d0d7de..c7df600 100644
+index 474a0d9..f06af99 100644
 --- a/ggml/src/ggml-metal/ggml-metal-impl.h
 +++ b/ggml/src/ggml-metal/ggml-metal-impl.h
-@@ -97,9 +97,6 @@
+@@ -99,9 +99,6 @@
  #define N_R0_IQ4_XS 2
  #define N_SG_IQ4_XS 2
  

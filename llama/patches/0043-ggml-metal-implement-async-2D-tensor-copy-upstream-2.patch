@@ -24,7 +24,7 @@ index b538b1a..1ad4fe1 100644
  
  enum ggml_status ggml_metal_graph_compute (ggml_metal_t ctx, struct ggml_cgraph * gf);
 diff --git a/ggml/src/ggml-metal/ggml-metal-context.m b/ggml/src/ggml-metal/ggml-metal-context.m
-index 597c126..58e54b7 100644
+index e12c55a..2354eca 100644
 --- a/ggml/src/ggml-metal/ggml-metal-context.m
 +++ b/ggml/src/ggml-metal/ggml-metal-context.m
 @@ -415,6 +415,90 @@ void ggml_metal_get_tensor_async(ggml_metal_t ctx, const struct ggml_tensor * te
@@ -119,10 +119,10 @@ index 597c126..58e54b7 100644
      @autoreleasepool {
          struct ggml_metal_buffer_id bid_src = ggml_metal_get_buffer_id(src);
 diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
-index 4f925ed..d750e60 100644
+index 3493d79..03e3cdf 100644
 --- a/ggml/src/ggml-metal/ggml-metal.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal.cpp
-@@ -596,6 +596,20 @@ static void ggml_backend_metal_get_tensor_async(ggml_backend_t backend, const gg
+@@ -600,6 +600,20 @@ static void ggml_backend_metal_get_tensor_async(ggml_backend_t backend, const gg
      ggml_metal_get_tensor_async(ctx, tensor, data, offset, size);
  }
  
@@ -143,7 +143,7 @@ index 4f925ed..d750e60 100644
  static bool ggml_backend_metal_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, ggml_tensor * dst) {
      if (!ggml_backend_is_metal(backend_src) || !ggml_backend_is_metal(backend_dst)) {
          return false;
-@@ -662,8 +676,8 @@ static ggml_backend_i ggml_backend_metal_i = {
+@@ -666,8 +680,8 @@ static ggml_backend_i ggml_backend_metal_i = {
      /* .free                    = */ ggml_backend_metal_free,
      /* .set_tensor_async        = */ ggml_backend_metal_set_tensor_async,
      /* .get_tensor_async        = */ ggml_backend_metal_get_tensor_async,

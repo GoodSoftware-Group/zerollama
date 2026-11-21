@@ -1,0 +1,461 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 20 Nov 2026 18:18:16 -0800
+Subject: [PATCH] llama: sample a repeated prompt from its saved logits
+
+The last token of an identical prompt is not run again; its logit row was kept. A top-k row is reused only when the new sampler stays inside that set. Sliding-window and recurrent models still recompute the token. LLAMA_PROMPT_LOGITS=0 restores the rewind.
+---
+ common/sampling.cpp                 |  65 +++++++++++
+ common/sampling.h                   |   3 +
+ tools/server/server-context.cpp     | 174 +++++++++++++++++++++++++++-
+ tools/server/server-prompt-logits.h |  89 ++++++++++++++
+ 4 files changed, 330 insertions(+), 1 deletion(-)
+ create mode 100644 tools/server/server-prompt-logits.h
+
+diff --git a/common/sampling.cpp b/common/sampling.cpp
+index 99ae65d..5c8348b 100644
+--- a/common/sampling.cpp
++++ b/common/sampling.cpp
+@@ -165,6 +165,16 @@ struct common_sampler {
+         cur_p = { cur.data(), cur.size(), -1, false };
+     }
+ 
++    void set_logits_row(const float * logits, int32_t n_vocab) {
++        GGML_ASSERT(logits != nullptr);
++        GGML_ASSERT(n_vocab > 0);
++        cur.resize(n_vocab);
++        for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
++            cur[token_id] = llama_token_data{token_id, logits[token_id], 0.0f};
++        }
++        cur_p = { cur.data(), cur.size(), -1, false };
++    }
++
+     common_time_meas tm() {
+         return common_time_meas(t_total_us, params.no_perf);
+     }
+@@ -695,6 +705,61 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
+     return id;
+ }
+ 
++llama_token common_sampler_sample_logits(struct common_sampler * gsmpl, const float * logits, int32_t n_vocab, bool grammar_first) {
++    const auto tm = gsmpl->tm();
++
++    llama_token id = LLAMA_TOKEN_NULL;
++
++    auto & grmr    = gsmpl->grmr;
++    auto & rbudget = gsmpl->rbudget;
++    auto & chain   = gsmpl->chain;
++    auto & cur_p   = gsmpl->cur_p;
++
++    gsmpl->set_logits_row(logits, n_vocab);
++
++    llama_sampler_apply(rbudget, &cur_p);
++
++    if (grammar_first && grammar_should_apply(gsmpl)) {
++        llama_sampler_apply(grmr, &cur_p);
++    }
++
++    llama_sampler_apply(chain, &cur_p);
++
++    id = cur_p.data[cur_p.selected].id;
++
++    if (grammar_first || !grammar_should_apply(gsmpl)) {
++        return id;
++    }
++
++    {
++        llama_token_data       single_token_data       = { id, 1.0f, 0.0f };
++        llama_token_data_array single_token_data_array = { &single_token_data, 1, -1, false };
++
++        llama_sampler_apply(grmr, &single_token_data_array);
++
++        const bool is_valid = single_token_data_array.data[0].logit != -INFINITY;
++        if (is_valid) {
++            return id;
++        }
++    }
++
++    gsmpl->set_logits_row(logits, n_vocab);
++
++    llama_sampler_apply(rbudget, &cur_p);
++
++    if (grammar_should_apply(gsmpl)) {
++        llama_sampler_apply(grmr, &cur_p);
++    }
++
++    llama_sampler_apply(chain, &cur_p);
++
++    GGML_ASSERT(cur_p.selected != -1 && "no selected token during sampling - check your sampling configuration");
++
++    id = cur_p.data[cur_p.selected].id;
++
++    return id;
++}
++
+ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, bool grammar_first) {
+     GGML_ASSERT(idxs.size() == draft.size() + 1 && "idxs.size() must be draft.size() + 1");
+ 
+diff --git a/common/sampling.h b/common/sampling.h
+index 917b31a..9f7d2c7 100644
+--- a/common/sampling.h
++++ b/common/sampling.h
+@@ -68,6 +68,9 @@ struct llama_sampler * common_sampler_get(const struct common_sampler * gsmpl);
+ //
+ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_context * ctx, int idx, bool grammar_first = false);
+ 
++// sample from a logit row kept with the prompt, rather than a context batch index
++llama_token common_sampler_sample_logits(struct common_sampler * gsmpl, const float * logits, int32_t n_vocab, bool grammar_first = false);
++
+ // generalized version of common_sampler_sample
+ //
+ // will cross-reference the sampled tokens with a batch of draft tokens and accept those that match
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 29c49d2..151f7fc 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -15,6 +15,7 @@
+ #include "server-schema.h"
+ #include "server-slot-sched.h"
+ #include "server-settle.h"
++#include "server-prompt-logits.h"
+ #include "server-stream.h"
+ #include "server-loop-guard.h"
+ #include "server-adaptive-dm.h"
+@@ -118,6 +119,14 @@ static int32_t shortlist_k_for(const common_params_sampling & s) {
+     return llama_shortlist_sample_k(sample, steps.data(), (int32_t) steps.size());
+ }
+ 
++static uint64_t prompt_logits_hash_tokens(const server_tokens & tokens, int32_t n) {
++    uint64_t h = llama_prompt_logits_fnv_init();
++    for (int32_t i = 0; i < n; ++i) {
++        h = llama_prompt_logits_mix(h, tokens[i]);
++    }
++    return llama_prompt_logits_fnv_finish(h);
++}
++
+ static uint64_t estimate_mmproj_file_bytes(const char * path) {
+     llama_model_params mp = llama_model_default_params();
+     mp.no_alloc  = true;
+@@ -453,6 +462,21 @@ struct server_slot {
+     int32_t settle_to      = 0;
+     int64_t t_settle_ms    = 0;
+ 
++    // Logits after prompt_logits_n tokens. prompt_logits_k < 0 is the whole
++    // vocabulary; a positive k is a row that contains that top-k and is -inf
++    // elsewhere. The hash is those tokens, so a different prompt cannot reuse it.
++    std::vector<float> prompt_logits;
++    int32_t  prompt_logits_n    = 0;
++    int32_t  prompt_logits_k    = 0;
++    uint64_t prompt_logits_hash = 0;
++
++    void clear_prompt_logits() {
++        prompt_logits.clear();
++        prompt_logits_n    = 0;
++        prompt_logits_k    = 0;
++        prompt_logits_hash = 0;
++    }
++
+     // generation props
+     int32_t n_ctx   = 0;  // context size per slot
+     int32_t n_keep  = 0;
+@@ -632,6 +656,7 @@ struct server_slot {
+         mem.seq_rm(id, -1, -1);
+ 
+         prompt.clear();
++        clear_prompt_logits();
+         settle_trusted = -1;
+         settle_cell    = -1;
+         settle_to      = 0;
+@@ -2409,6 +2434,8 @@ private:
+ 
+         // the state can come from the prompt cache, so it is compared with its own lora config, not with the one of the last task
+         if (!are_lora_equal(task_loras, slot.prompt.lora)) {
++            // the saved row was scored with the previous adapter
++            slot.clear_prompt_logits();
+             // if lora has changed, check to see if the cache should be cleared
+             if (lora_should_clear_cache(slot.prompt.lora, task_loras)) {
+                 SLT_TRC(slot, "clearing cache for lora change. %zu loras -> %zu loras\n", slot.prompt.lora.size(), task_loras.size());
+@@ -3983,6 +4010,7 @@ private:
+                         }
+ 
+                         slot->prompt.clear();
++                        slot->clear_prompt_logits();
+                         slot->prompt.tokens = std::move(restored);
+                     } catch (const std::exception & err) {
+                         slot->prompt_clear();
+@@ -4664,6 +4692,104 @@ private:
+         });
+     }
+ 
++    // Full attention can drop the tail and still be at the end of the prompt.
++    // A sliding window or a recurrent state cannot.
++    bool prompt_logits_attention() const {
++        return n_swa == 0
++                && model_tgt
++                && !llama_model_is_recurrent(model_tgt)
++                && !llama_model_is_hybrid(model_tgt);
++    }
++
++    void save_prompt_logits(server_slot & slot, int32_t tok_idx) {
++        // a draft context has to see every prompt token, so this row would never be used
++        if (ctx_dft || !llama_prompt_logits_on() || !prompt_logits_attention()) {
++            return;
++        }
++        if (!slot.task || slot.prompt.tokens.has_mtmd || lora_all_alora(slot.lora)) {
++            return;
++        }
++        if (slot.task->type != SERVER_TASK_TYPE_COMPLETION && slot.task->type != SERVER_TASK_TYPE_INFILL) {
++            return;
++        }
++        if (slot.task->params.sampling.backend_sampling) {
++            return;
++        }
++        if (slot.prompt.n_tokens() <= 0 || slot.prompt.n_tokens() != slot.task->n_tokens() || tok_idx < 0) {
++            return;
++        }
++        const int32_t n_vocab = llama_vocab_n_tokens(vocab);
++        if (n_vocab <= 0) {
++            return;
++        }
++        const float * row = llama_get_logits_ith(ctx_tgt, tok_idx);
++        if (!row) {
++            return;
++        }
++        const int32_t n = slot.prompt.n_tokens();
++        const int32_t k = shortlist_k_for(slot.task->params.sampling);
++        slot.prompt_logits.assign(row, row + n_vocab);
++        slot.prompt_logits_n    = n;
++        slot.prompt_logits_k    = k == 0 ? -1 : k;
++        slot.prompt_logits_hash = prompt_logits_hash_tokens(slot.prompt.tokens, n);
++        SLT_DBG(slot, "saved the logits after %d prompt tokens\n", n);
++    }
++
++    // The prompt is already in the cache. Sample its saved row and let the
++    // next batch run the chosen token.
++    void reuse_prompt_logits(server_slot & slot) {
++        slot.i_batch = -1;
++        const llama_pos p0 = slot.prompt.tokens.pos_next();
++        SLT_TRC(slot, "cached n_tokens = %d, memory_seq_rm [%d, end)\n", slot.prompt.n_tokens(), p0);
++        slot.mem.seq_rm(slot.id, p0, -1);
++        SLT_INF(slot, "repeated prompt of %d tokens keeps its logits\n", slot.prompt.n_tokens());
++
++        if (slot.task->params.prefill_only) {
++            slot.state = SLOT_STATE_DONE_PROMPT;
++            send_final_response(slot);
++            slot.release();
++            return;
++        }
++
++        slot.init_sampler();
++        slot.state = SLOT_STATE_GENERATING;
++        if (slot.can_speculate()) {
++            common_speculative_begin(spec.get(), slot.id, slot.prompt.tokens.get_text_tokens());
++        }
++
++        llama_token id;
++        {
++            scoped_timer timer(t_sampl, n_sampl);
++            id = common_sampler_sample_logits(slot.smpl.get(), slot.prompt_logits.data(), (int32_t) slot.prompt_logits.size());
++        }
++        common_sampler_accept(slot.smpl.get(), id, true);
++
++        const int64_t t_now = ggml_time_us();
++        slot.stats.n_gen += 1;
++        if (slot.stats.n_gen == 1) {
++            slot.stats.update_prompt_last();
++            slot.t_print_last = t_now;
++            slot.n_gen_last   = 0;
++        }
++        slot.stats.update_gen_last();
++
++        const bool special = params_base.special ||
++                slot.task->params.sampling.preserved_tokens.find(id) != slot.task->params.sampling.preserved_tokens.end();
++
++        completion_token_output result;
++        result.tok          = id;
++        result.text_to_send = common_token_to_piece(slot.ctx_tgt, id, special);
++        result.prob         = 1.0f;
++
++        if (!process_token(result, slot)) {
++            slot.print_timings();
++            send_final_response(slot);
++            slot.release();
++            return;
++        }
++        slot.print_timings_tg();
++    }
++
+     void pre_decode() {
+         // apply context-shift if needed
+         // TODO: simplify and improve
+@@ -4726,6 +4852,7 @@ private:
+                     new_tokens.resize(slot.prompt.tokens.size() - n_discard);
+ 
+                     slot.prompt.clear();
++                    slot.clear_prompt_logits();
+                     slot.prompt.tokens.insert(new_tokens);
+                 }
+ 
+@@ -5218,7 +5345,45 @@ private:
+                         }
+ 
+                         // [TAG_PROMPT_LOGITS]
+-                        if (n_past == slot.task->n_tokens() && n_past > 0) {
++                        // The sampler reads a context row, so a full cache hit used to
++                        // rewind one token just to produce it. The saved row is that
++                        // token. A masked row is only enough when this sampler's top-k
++                        // fits inside it.
++                        const int32_t n_prompt = slot.task->n_tokens();
++                        const bool lengths = llama_prompt_logits_match(n_past, n_prompt, slot.prompt_logits_n);
++                        uint64_t hashed = 0;
++                        if (lengths && (int32_t) input_tokens.size() >= n_prompt) {
++                            hashed = prompt_logits_hash_tokens(input_tokens, n_prompt);
++                        }
++                        const int32_t need_k = shortlist_k_for(slot.task->params.sampling);
++                        const bool text =
++                                slot.task->type == SERVER_TASK_TYPE_COMPLETION ||
++                                slot.task->type == SERVER_TASK_TYPE_INFILL;
++                        const bool logits_hit = llama_prompt_logits_on()
++                                && prompt_logits_attention()
++                                && text
++                                && ctx_dft == nullptr
++                                && !slot.task->is_child()
++                                && slot.task->n_tokens_shared == 0
++                                && slot.task->params.sampling.n_probs <= 0
++                                && !slot.task->params.sampling.backend_sampling
++                                && !slot.prompt.tokens.has_mtmd
++                                && !lora_all_alora(slot.lora)
++                                && slot.smpl
++                                && lengths
++                                && hashed == slot.prompt_logits_hash
++                                && llama_prompt_logits_cover(slot.prompt_logits_k, need_k)
++                                && (int32_t) slot.prompt_logits.size() == llama_vocab_n_tokens(vocab);
++
++                        if (slot.prompt_logits_n > 0 && !logits_hit) {
++                            const bool diverged  = n_past < slot.prompt_logits_n;
++                            const bool different = lengths && hashed != slot.prompt_logits_hash;
++                            if (diverged || different) {
++                                slot.clear_prompt_logits();
++                            }
++                        }
++
++                        if (n_past == n_prompt && n_past > 0 && !logits_hit) {
+                             SLT_WRN(slot, "need to evaluate at least 1 token for each active slot (n_past = %d, task.n_tokens() = %d)\n", n_past, slot.task->n_tokens());
+                             n_past--;
+                             SLT_WRN(slot, "n_past was set to %d\n", n_past);
+@@ -5241,6 +5406,11 @@ private:
+                                 send_partial_response(slot, {}, false, true);
+                             }
+                         }
++
++                        if (logits_hit) {
++                            reuse_prompt_logits(slot);
++                            return;
++                        }
+                     } // end of SLOT_STATE_STARTED
+ 
+                     if (!slot.can_split()) {
+@@ -5802,6 +5972,8 @@ private:
+             }
+ 
+             if (slot.state == SLOT_STATE_DONE_PROMPT) {
++                save_prompt_logits(slot, slot.i_batch - off);
++
+                 // n_predict == 0 still has a budget while n_gen == 0, so a normal
+                 // completion would sample one token and append it to the cache.
+                 // A draft must stop on the prompt or the next request's prefix breaks.
+diff --git a/tools/server/server-prompt-logits.h b/tools/server/server-prompt-logits.h
+new file mode 100644
+index 0000000..41bbe53
+--- /dev/null
++++ b/tools/server/server-prompt-logits.h
+@@ -0,0 +1,89 @@
++#pragma once
++
++#include <cstdint>
++#include <cstdlib>
++
++// Logits after the last token of a prompt. An identical later prompt samples
++// from this row instead of running that token again. A masked row (saved_k > 0)
++// only covers a sampler that needs no more than those rows. saved_k < 0 is the
++// whole vocabulary. LLAMA_PROMPT_LOGITS=0 keeps the one-token rewind.
++
++inline bool llama_prompt_logits_on_env(const char * env) {
++    return !(env && env[0] == '0');
++}
++
++inline bool llama_prompt_logits_on() {
++    return llama_prompt_logits_on_env(std::getenv("LLAMA_PROMPT_LOGITS"));
++}
++
++// n_past is how much of this prompt is already in the cache.
++inline bool llama_prompt_logits_match(int32_t n_past, int32_t n_prompt, int32_t n_saved) {
++    return n_past > 0 && n_saved > 0 && n_past == n_prompt && n_saved == n_prompt;
++}
++
++// need_k == 0 means the sampler reads the whole row (penalties, grammar, bias).
++inline bool llama_prompt_logits_cover(int32_t saved_k, int32_t need_k) {
++    if (saved_k < 0) {
++        return true;
++    }
++    return need_k > 0 && saved_k >= need_k;
++}
++
++inline uint64_t llama_prompt_logits_fnv_init() {
++    return 14695981039346656037ull;
++}
++
++inline uint64_t llama_prompt_logits_mix(uint64_t h, int32_t token) {
++    h ^= (uint32_t) token;
++    h *= 1099511628211ull;
++    return h;
++}
++
++inline uint64_t llama_prompt_logits_fnv_finish(uint64_t h) {
++    return h == 0 ? 1 : h;
++}
++
++inline uint64_t llama_prompt_logits_fnv(const int32_t * tokens, int32_t n) {
++    uint64_t h = llama_prompt_logits_fnv_init();
++    for (int32_t i = 0; i < n; ++i) {
++        h = llama_prompt_logits_mix(h, tokens[i]);
++    }
++    return llama_prompt_logits_fnv_finish(h);
++}
++
++#if defined(LLAMA_PROMPT_LOGITS_TEST)
++#include <cstdio>
++
++int main() {
++    if (!llama_prompt_logits_match(4, 4, 4)) {
++        return 1;
++    }
++    if (llama_prompt_logits_match(3, 4, 4) || llama_prompt_logits_match(4, 4, 0) || llama_prompt_logits_match(0, 0, 0)) {
++        return 1;
++    }
++    if (!llama_prompt_logits_cover(-1, 0) || !llama_prompt_logits_cover(-1, 40)) {
++        return 1;
++    }
++    if (!llama_prompt_logits_cover(40, 40) || !llama_prompt_logits_cover(40, 1)) {
++        return 1;
++    }
++    if (llama_prompt_logits_cover(40, 41) || llama_prompt_logits_cover(40, 0) || llama_prompt_logits_cover(0, 40)) {
++        return 1;
++    }
++    if (!llama_prompt_logits_on_env(nullptr) || !llama_prompt_logits_on_env("") || !llama_prompt_logits_on_env("1")) {
++        return 1;
++    }
++    if (llama_prompt_logits_on_env("0") || llama_prompt_logits_on_env("0ff")) {
++        return 1;
++    }
++    const int32_t a[] = { 1, 2, 3 };
++    const int32_t b[] = { 1, 2, 4 };
++    const int32_t c[] = { 3, 2, 1 };
++    const uint64_t ha = llama_prompt_logits_fnv(a, 3);
++    if (ha == 0 || ha != llama_prompt_logits_fnv(a, 3) || ha == llama_prompt_logits_fnv(b, 3) || ha == llama_prompt_logits_fnv(c, 3)) {
++        return 1;
++    }
++    std::printf("prompt logits ok\n");
++    return 0;
++}
++#endif

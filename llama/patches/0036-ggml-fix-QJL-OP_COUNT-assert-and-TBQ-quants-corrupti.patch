@@ -29,7 +29,7 @@ index 0000000..32b89f1
 + 
 + #define GGML_RPC_MAX_SERVERS       16
 diff --git a/ggml/src/ggml-quants.c b/ggml/src/ggml-quants.c
-index c0ea57c..97702c2 100644
+index 0ef3963..242ce44 100644
 --- a/ggml/src/ggml-quants.c
 +++ b/ggml/src/ggml-quants.c
 @@ -2779,6 +2779,10 @@ static inline void tbq_decode_rotated_4(const block_tbq4_0 * x, float * y) {
@@ -130,10 +130,10 @@ index c0ea57c..97702c2 100644
  
  void dequantize_row_iq2_xxs(const block_iq2_xxs * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index f71a48c..04fd16b 100644
+index 26c0173..6bbb071 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
-@@ -1265,6 +1265,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+@@ -1261,6 +1261,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
  
      "flash_attn_ext(x)",
      "flash_attn_back(x)",

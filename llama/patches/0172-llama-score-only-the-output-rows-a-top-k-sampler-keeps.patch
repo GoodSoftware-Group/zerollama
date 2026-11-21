@@ -1,0 +1,520 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 20 Nov 2026 17:45:05 -0800
+Subject: [PATCH] llama: score only the output rows a top-k sampler keeps
+
+The usual sampler cuts to those rows before anything else reads the tail, so the rest of the head stays unread.
+---
+ include/llama.h                 |   7 +-
+ src/llama-context.h             |   2 +-
+ src/llama-shortlist-top.h       | 188 ++++++++++++++++++++++++++++++++
+ src/llama-shortlist.cpp         |  92 ++++++++++++----
+ src/llama-shortlist.h           |   2 +-
+ tools/server/server-context.cpp |  85 +++++++++++----
+ 6 files changed, 326 insertions(+), 50 deletions(-)
+ create mode 100644 src/llama-shortlist-top.h
+
+diff --git a/include/llama.h b/include/llama.h
+index 226bcc0..e5744ef 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -1170,10 +1170,9 @@ extern "C" {
+     // and is not necessary to call it explicitly in most cases
+     LLAMA_API void llama_synchronize(struct llama_context * ctx);
+ 
+-    // Output-head shortlist. k = 1 masks every logit that cannot be the greedy
+-    // winner; k = 0 writes the full head. LLAMA_SHORTLIST=0 leaves the head as mul_mat.
+-    // The mask is exact only for a pure argmax, so callers pass 0 when the sampler
+-    // needs the logit tail (penalties, grammar, logprobs, temperature).
++    // Output-head shortlist. k > 0 masks every logit that cannot be among the k
++    // highest; k = 0 writes the full head. LLAMA_SHORTLIST=0 leaves the head as mul_mat.
++    // Callers pass 0 when the sampler needs the logit tail (penalties, grammar, logprobs).
+     LLAMA_API void llama_set_shortlist_k(struct llama_context * ctx, int32_t k);
+ 
+     // Token logits obtained from the last call to llama_decode()
+diff --git a/src/llama-context.h b/src/llama-context.h
+index 6d042c0..f31c305 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -296,7 +296,7 @@ public:
+ 
+     bool set_sampler(llama_seq_id seq_id, llama_sampler * sampler);
+ 
+-    // k = 1 masks the CPU output head to the greedy winner. See llama_set_shortlist_k.
++    // k > 0 masks the CPU output head to a set containing the k highest logits.
+     void set_shortlist_k(int32_t k);
+ 
+ private:
+diff --git a/src/llama-shortlist-top.h b/src/llama-shortlist-top.h
+new file mode 100644
+index 0000000..ad45794
+--- /dev/null
++++ b/src/llama-shortlist-top.h
+@@ -0,0 +1,188 @@
++#pragma once
++
++// How many output-head rows decide a sample. Zero means the whole row.
++//
++// A top-k that runs before every sampler that looks at the tail is enough:
++// top-p, min-p, typical and XTC then only see those rows. Penalties, DRY,
++// a grammar, a bias, or a filter that runs first need every logit.
++
++#include <cstdint>
++
++enum llama_shortlist_step : int32_t {
++    LLAMA_SHORTLIST_STEP_PENALTIES   = 1,
++    LLAMA_SHORTLIST_STEP_DRY         = 2,
++    LLAMA_SHORTLIST_STEP_TOP_N_SIGMA = 3,
++    LLAMA_SHORTLIST_STEP_TOP_K       = 4,
++    LLAMA_SHORTLIST_STEP_TYPICAL     = 5,
++    LLAMA_SHORTLIST_STEP_TOP_P       = 6,
++    LLAMA_SHORTLIST_STEP_MIN_P       = 7,
++    LLAMA_SHORTLIST_STEP_XTC         = 8,
++    LLAMA_SHORTLIST_STEP_TEMPERATURE = 9,
++    LLAMA_SHORTLIST_STEP_OTHER       = 10,
++};
++
++struct llama_shortlist_sample {
++    float   temp              = 0.0f;
++    int32_t top_k             = 0;
++    float   top_p             = 1.0f;
++    float   min_p             = 0.0f;
++    float   typ_p             = 1.0f;
++    float   xtc_probability   = 0.0f;
++    float   top_n_sigma       = -1.0f;
++    float   dynatemp_range    = 0.0f;
++    int32_t penalty_last_n    = 0;
++    float   penalty_repeat    = 1.0f;
++    float   penalty_freq      = 0.0f;
++    float   penalty_present   = 0.0f;
++    float   dry_multiplier    = 0.0f;
++    float   dry_base          = 1.75f;
++    int32_t dry_penalty_last_n = 0;
++    int32_t mirostat          = 0;
++    int32_t n_probs           = 0;
++    int32_t reasoning_budget  = -1;
++    float   adaptive_target   = -1.0f;
++    bool    grammar           = false;
++    bool    logit_bias        = false;
++    bool    preserved         = false;
++    bool    backend_sampling  = false;
++    bool    ignore_eos        = false;
++};
++
++inline bool llama_shortlist_penalties_off(const llama_shortlist_sample & s) {
++    return s.penalty_last_n == 0 ||
++        (s.penalty_repeat == 1.0f && s.penalty_freq == 0.0f && s.penalty_present == 0.0f);
++}
++
++inline bool llama_shortlist_dry_off(const llama_shortlist_sample & s) {
++    return s.dry_multiplier == 0.0f || s.dry_base < 1.0f || s.dry_penalty_last_n == 0;
++}
++
++// Steps are the sampler chain, in order. An empty chain is greedy when
++// temperature is not positive, and the whole row otherwise.
++inline int32_t llama_shortlist_sample_k(const llama_shortlist_sample & s, const int32_t * steps, int32_t n_steps) {
++    if (s.n_probs != 0 || s.mirostat != 0 || s.reasoning_budget >= 0 || s.adaptive_target >= 0.0f) {
++        return 0;
++    }
++    if (s.grammar || s.logit_bias || s.preserved || s.backend_sampling || s.ignore_eos) {
++        return 0;
++    }
++    bool saw_top_k = false;
++    bool top_k_on  = false;
++    for (int32_t i = 0; i < n_steps; ++i) {
++        switch (steps[i]) {
++            case LLAMA_SHORTLIST_STEP_PENALTIES:
++                if (!llama_shortlist_penalties_off(s)) {
++                    return 0;
++                }
++                break;
++            case LLAMA_SHORTLIST_STEP_DRY:
++                if (!llama_shortlist_dry_off(s)) {
++                    return 0;
++                }
++                break;
++            case LLAMA_SHORTLIST_STEP_TOP_N_SIGMA:
++                if (s.top_n_sigma > 0.0f) {
++                    return 0;
++                }
++                break;
++            case LLAMA_SHORTLIST_STEP_TOP_K:
++                saw_top_k = true;
++                top_k_on  = s.top_k > 0;
++                break;
++            case LLAMA_SHORTLIST_STEP_TOP_P:
++                if (!saw_top_k && s.top_p < 1.0f) {
++                    return 0;
++                }
++                break;
++            case LLAMA_SHORTLIST_STEP_MIN_P:
++                if (!saw_top_k && s.min_p > 0.0f) {
++                    return 0;
++                }
++                break;
++            case LLAMA_SHORTLIST_STEP_TYPICAL:
++                if (!saw_top_k && s.typ_p < 1.0f) {
++                    return 0;
++                }
++                break;
++            case LLAMA_SHORTLIST_STEP_XTC:
++                if (!saw_top_k && s.xtc_probability > 0.0f) {
++                    return 0;
++                }
++                break;
++            case LLAMA_SHORTLIST_STEP_TEMPERATURE:
++                if (!saw_top_k && s.dynatemp_range != 0.0f) {
++                    return 0;
++                }
++                break;
++            default:
++                return 0;
++        }
++    }
++    if (s.temp <= 0.0f) {
++        return 1;
++    }
++    if (top_k_on) {
++        return s.top_k;
++    }
++    return 0;
++}
++
++#ifdef LLAMA_SHORTLIST_TOP_TEST
++#include <cstdio>
++int main() {
++    const int32_t chain[] = {
++        LLAMA_SHORTLIST_STEP_PENALTIES,
++        LLAMA_SHORTLIST_STEP_DRY,
++        LLAMA_SHORTLIST_STEP_TOP_N_SIGMA,
++        LLAMA_SHORTLIST_STEP_TOP_K,
++        LLAMA_SHORTLIST_STEP_TYPICAL,
++        LLAMA_SHORTLIST_STEP_TOP_P,
++        LLAMA_SHORTLIST_STEP_MIN_P,
++        LLAMA_SHORTLIST_STEP_XTC,
++        LLAMA_SHORTLIST_STEP_TEMPERATURE,
++    };
++    llama_shortlist_sample s;
++    s.temp = 0.8f;
++    s.top_k = 40;
++    s.top_p = 0.95f;
++    s.min_p = 0.05f;
++    s.penalty_last_n = 64;
++    s.dry_base = 1.75f;
++    s.dry_penalty_last_n = 64;
++    if (llama_shortlist_sample_k(s, chain, 9) != 40) {
++        std::fputs("default sampling is the top 40 rows\n", stderr);
++        return 1;
++    }
++    s.temp = 0.0f;
++    if (llama_shortlist_sample_k(s, chain, 9) != 1) {
++        std::fputs("temperature zero is the one best row\n", stderr);
++        return 1;
++    }
++    s.temp = 0.8f;
++    s.dry_multiplier = 0.8f;
++    if (llama_shortlist_sample_k(s, chain, 9) != 0) {
++        std::fputs("a penalty needs the whole row\n", stderr);
++        return 1;
++    }
++    s.dry_multiplier = 0.0f;
++    s.top_k = 0;
++    if (llama_shortlist_sample_k(s, chain, 9) != 0) {
++        std::fputs("top-p over the whole vocabulary needs every row\n", stderr);
++        return 1;
++    }
++    s.top_k = 40;
++    const int32_t early_p[] = { LLAMA_SHORTLIST_STEP_TOP_P, LLAMA_SHORTLIST_STEP_TOP_K };
++    if (llama_shortlist_sample_k(s, early_p, 2) != 0) {
++        std::fputs("top-p before top-k needs the whole row\n", stderr);
++        return 1;
++    }
++    s.grammar = true;
++    const int32_t just_k[] = { LLAMA_SHORTLIST_STEP_TOP_K };
++    if (llama_shortlist_sample_k(s, just_k, 1) != 0) {
++        std::fputs("a grammar needs the whole row\n", stderr);
++        return 1;
++    }
++    std::puts("shortlist top ok");
++    return 0;
++}
++#endif
+diff --git a/src/llama-shortlist.cpp b/src/llama-shortlist.cpp
+index 703f454..33c546d 100644
+--- a/src/llama-shortlist.cpp
++++ b/src/llama-shortlist.cpp
+@@ -4,10 +4,11 @@
+ // come from ggml's own vec_dot, so a logit that is computed matches the CPU
+ // GEMV bit for bit. Rows that cannot reach the current best are -inf.
+ //
+-// That mask is only valid for a pure argmax. llama-server samples on the host
+-// after decode, and penalties, grammar, and logprobs need the real tail, so
+-// the server leaves k at 0 unless the sampler is a clean greedy pick. k == 0
+-// still writes every logit through the same vec_dot.
++// k == 1 keeps a set that contains the greedy winner. k > 1 keeps a set that
++// contains the k highest logits, which is enough when the sampler cuts to
++// those rows before anything else reads the tail. Penalties, a grammar, and
++// logprobs still pass k == 0, and that writes every logit through the same
++// vec_dot.
+ //
+ // The custom op is installed only for a single token whose weight buffer is
+ // host memory. A GPU head, or a multi-token GEMM, stays ggml_mul_mat.
+@@ -30,12 +31,11 @@
+ #include <cstring>
+ #include <mutex>
+ #include <new>
++#include <queue>
+ #include <vector>
+ 
+ namespace {
+ 
+-constexpr int32_t kShortlistTop = 1;
+-
+ static bool shortlist_enabled() {
+     static const bool on = []() {
+         const char * e = std::getenv("LLAMA_SHORTLIST");
+@@ -323,7 +323,8 @@ void llama_shortlist::logits_one(
+         act_gap = norm_up(gap2);
+         act_c   = slack * norm_up(xc2);
+         const bool finite = std::isfinite(act_h) && std::isfinite(act_gap) && std::isfinite(act_c);
+-        mode = (top == kShortlistTop && finite) ? 1 : 0;
++        // The first k rows already cost as much as the cutoff allows.
++        mode = (top >= 1 && (int64_t) top * 4 <= n_vocab && finite) ? 1 : 0;
+     }
+     bar.wait(nth);
+ 
+@@ -349,22 +350,57 @@ void llama_shortlist::logits_one(
+     bar.wait(nth);
+ 
+     if (ith == 0) {
+-        int64_t best = 0;
+-        float best_a = approx[0];
+-        for (int64_t i = 1; i < n_vocab; ++i) {
+-            if (approx[(size_t) i] > best_a) {
+-                best_a = approx[(size_t) i];
+-                best = i;
++        // Highest approximate rows, equal scores keeping the lower index.
++        // The worst of them sits at the front of the queue.
++        struct cand {
++            float   score;
++            int32_t index;
++        };
++        struct worst_on_top {
++            bool operator()(const cand & a, const cand & b) const {
++                if (a.score != b.score) {
++                    return a.score > b.score;
++                }
++                return a.index < b.index;
++            }
++        };
++        std::priority_queue<cand, std::vector<cand>, worst_on_top> best;
++        for (int64_t i = 0; i < n_vocab; ++i) {
++            const cand c{ approx[(size_t) i], (int32_t) i };
++            if (!std::isfinite(c.score)) {
++                continue;
++            }
++            if ((int32_t) best.size() < top) {
++                best.push(c);
++                continue;
++            }
++            const cand worst = best.top();
++            const bool better = c.score > worst.score || (c.score == worst.score && c.index < worst.index);
++            if (better) {
++                best.pop();
++                best.push(c);
+             }
+         }
+-        const float score = dot_head(wdata + (size_t) best * stride, act);
+         std::memset(scored.data(), 0, scored.size());
+-        if (!std::isfinite(score)) {
++        bool finite_exact = !best.empty();
++        bool have_floor = false;
++        while (!best.empty()) {
++            const cand c = best.top();
++            best.pop();
++            const float score = dot_head(wdata + (size_t) c.index * stride, act);
++            if (!std::isfinite(score)) {
++                finite_exact = false;
++                break;
++            }
++            exact[(size_t) c.index] = score;
++            scored[(size_t) c.index] = 1;
++            if (!have_floor || (double) score < floor_logit) {
++                floor_logit = (double) score;
++                have_floor = true;
++            }
++        }
++        if (!finite_exact) {
+             mode = 0;
+-        } else {
+-            exact[(size_t) best] = score;
+-            scored[(size_t) best] = 1;
+-            floor_logit = (double) score;
+         }
+     }
+     bar.wait(nth);
+@@ -453,6 +489,22 @@ bool llama_shortlist::self_check(const uint8_t * data, size_t stride) {
+         if (!std::isfinite(got[(size_t) arg]) || !bits_equal(got[(size_t) arg], winner)) {
+             return false;
+         }
++        if (n_vocab < 4) {
++            continue;
++        }
++        logits_one(data, stride, x.data(), 4, got.data(), 0, 1);
++        std::vector<float> order(full.begin(), full.end());
++        std::nth_element(order.begin(), order.begin() + 3, order.end(), std::greater<float>());
++        const float kth = order[3];
++        for (int64_t i = 0; i < n_vocab; ++i) {
++            if (std::isfinite(got[(size_t) i])) {
++                if (!bits_equal(got[(size_t) i], full[(size_t) i])) {
++                    return false;
++                }
++            } else if (!(full[(size_t) i] < kth)) {
++                return false;
++            }
++        }
+     }
+     return true;
+ }
+@@ -486,7 +538,7 @@ void llama_shortlist_set_k(llama_shortlist * s, int32_t k) {
+     if (s == nullptr || !s->ok) {
+         return;
+     }
+-    s->k.store(k == kShortlistTop ? kShortlistTop : 0, std::memory_order_release);
++    s->k.store(k > 0 ? k : 0, std::memory_order_release);
+ }
+ 
+ struct ggml_tensor * llama_shortlist_mul(
+diff --git a/src/llama-shortlist.h b/src/llama-shortlist.h
+index 201e8d8..36fc5db 100644
+--- a/src/llama-shortlist.h
++++ b/src/llama-shortlist.h
+@@ -9,7 +9,7 @@ struct llama_shortlist;
+ 
+ void llama_shortlist_free(llama_shortlist * s);
+ 
+-// k = 1 keeps only the greedy winner. Any other value writes the full head.
++// k > 0 keeps a set that contains the k highest logits. k <= 0 writes the full head.
+ void llama_shortlist_set_k(llama_shortlist * s, int32_t k);
+ 
+ // Output-head matmul for a host Q6_K / Q8_0 weight, or nullptr when this
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index ce0a9b7..29c49d2 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -24,6 +24,7 @@
+ #include "common.h"
+ #include "fit.h"
+ #include "llama.h"
++#include "llama-shortlist-top.h"
+ #include "log.h"
+ #include "sampling.h"
+ #include "speculative.h"
+@@ -67,25 +68,54 @@ static int32_t mark_grid_from_every(int32_t every, bool needs_mark) {
+ 
+ // -inf outside the greedy winner is exact only when nothing downstream
+ // looks at the tail. Repeat penalty, grammar, logit bias, and logprobs do.
+-static bool shortlist_is_argmax(const common_params_sampling & s) {
+-    return s.temp <= 0.0f
+-        && s.n_probs == 0
+-        && s.min_keep <= 1
+-        && s.penalty_repeat == 1.0f
+-        && s.penalty_freq == 0.0f
+-        && s.penalty_present == 0.0f
+-        && s.dry_multiplier == 0.0f
+-        && s.mirostat == 0
+-        && s.dynatemp_range == 0.0f
+-        && s.xtc_probability == 0.0f
+-        && s.top_n_sigma < 0.0f
+-        && s.adaptive_target < 0.0f
+-        && s.reasoning_budget_tokens < 0
+-        && !s.ignore_eos
+-        && !s.backend_sampling
+-        && s.grammar.empty()
+-        && s.logit_bias.empty()
+-        && s.preserved_tokens.empty();
++static int32_t shortlist_step(enum common_sampler_type t) {
++    switch (t) {
++        case COMMON_SAMPLER_TYPE_PENALTIES:   return LLAMA_SHORTLIST_STEP_PENALTIES;
++        case COMMON_SAMPLER_TYPE_DRY:         return LLAMA_SHORTLIST_STEP_DRY;
++        case COMMON_SAMPLER_TYPE_TOP_N_SIGMA: return LLAMA_SHORTLIST_STEP_TOP_N_SIGMA;
++        case COMMON_SAMPLER_TYPE_TOP_K:       return LLAMA_SHORTLIST_STEP_TOP_K;
++        case COMMON_SAMPLER_TYPE_TYPICAL_P:   return LLAMA_SHORTLIST_STEP_TYPICAL;
++        case COMMON_SAMPLER_TYPE_TOP_P:       return LLAMA_SHORTLIST_STEP_TOP_P;
++        case COMMON_SAMPLER_TYPE_MIN_P:       return LLAMA_SHORTLIST_STEP_MIN_P;
++        case COMMON_SAMPLER_TYPE_XTC:         return LLAMA_SHORTLIST_STEP_XTC;
++        case COMMON_SAMPLER_TYPE_TEMPERATURE: return LLAMA_SHORTLIST_STEP_TEMPERATURE;
++        default:                              return LLAMA_SHORTLIST_STEP_OTHER;
++    }
++}
++
++// Rows whose exact logits decide this sample. Zero keeps the whole head.
++static int32_t shortlist_k_for(const common_params_sampling & s) {
++    llama_shortlist_sample sample;
++    sample.temp               = s.temp;
++    sample.top_k              = s.top_k;
++    sample.top_p              = s.top_p;
++    sample.min_p              = s.min_p;
++    sample.typ_p              = s.typ_p;
++    sample.xtc_probability    = s.xtc_probability;
++    sample.top_n_sigma        = s.top_n_sigma;
++    sample.dynatemp_range     = s.dynatemp_range;
++    sample.penalty_last_n     = s.penalty_last_n;
++    sample.penalty_repeat     = s.penalty_repeat;
++    sample.penalty_freq       = s.penalty_freq;
++    sample.penalty_present    = s.penalty_present;
++    sample.dry_multiplier     = s.dry_multiplier;
++    sample.dry_base           = s.dry_base;
++    sample.dry_penalty_last_n = s.dry_penalty_last_n;
++    sample.mirostat           = s.mirostat;
++    sample.n_probs            = s.n_probs;
++    sample.reasoning_budget   = s.reasoning_budget_tokens;
++    sample.adaptive_target    = s.adaptive_target;
++    sample.grammar            = !s.grammar.empty();
++    sample.logit_bias         = !s.logit_bias.empty();
++    sample.preserved          = !s.preserved_tokens.empty();
++    sample.backend_sampling   = s.backend_sampling;
++    sample.ignore_eos         = s.ignore_eos;
++    std::vector<int32_t> steps;
++    steps.reserve(s.samplers.size());
++    for (enum common_sampler_type t : s.samplers) {
++        steps.push_back(shortlist_step(t));
++    }
++    return llama_shortlist_sample_k(sample, steps.data(), (int32_t) steps.size());
+ }
+ 
+ static uint64_t estimate_mmproj_file_bytes(const char * path) {
+@@ -5594,7 +5624,8 @@ private:
+         int32_t shortlist_k = 0;
+         {
+             bool any_output = false;
+-            bool argmax = true;
++            bool full = false;
++            int32_t need = 0;
+             for (int i = off; i < off + batch.view.size(); ++i) {
+                 if (!batch.tokens[i].output) {
+                     continue;
+@@ -5607,13 +5638,19 @@ private:
+                         break;
+                     }
+                 }
+-                if (out_slot == nullptr || !out_slot->task || !shortlist_is_argmax(out_slot->task->params.sampling)) {
+-                    argmax = false;
++                if (out_slot == nullptr || !out_slot->task) {
++                    full = true;
++                    break;
++                }
++                const int32_t k = shortlist_k_for(out_slot->task->params.sampling);
++                if (k <= 0) {
++                    full = true;
+                     break;
+                 }
++                need = std::max(need, k);
+             }
+-            if (any_output && argmax) {
+-                shortlist_k = 1;
++            if (any_output && !full) {
++                shortlist_k = need;
+             }
+         }
+ 

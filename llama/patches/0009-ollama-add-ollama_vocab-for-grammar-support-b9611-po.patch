@@ -6,16 +6,16 @@ Subject: [PATCH] ollama: add ollama_vocab for grammar support (b9611 port)
 Go passes token pieces from the Go-side vocab into C++ grammar without a
 full llama_model. Clone clears o_vocab to avoid double-free.
 ---
- src/llama-grammar.cpp | 50 +++++++++++++++++++++++++++++++++++--------
- src/llama-grammar.h   | 13 +++++++++++
- src/llama-sampler.cpp |  6 +++---
- 3 files changed, 57 insertions(+), 12 deletions(-)
+ src/llama-grammar.cpp | 55 +++++++++++++++++++++++++++++++++++--------
+ src/llama-grammar.h   | 13 ++++++++++
+ src/llama-sampler.cpp |  4 ++--
+ 3 files changed, 60 insertions(+), 12 deletions(-)
 
 diff --git a/src/llama-grammar.cpp b/src/llama-grammar.cpp
-index 4e096a3..d6c2b73 100644
+index bb853b1..21a7f80 100644
 --- a/src/llama-grammar.cpp
 +++ b/src/llama-grammar.cpp
-@@ -1195,6 +1195,7 @@ llama_grammar_candidates llama_grammar_reject_candidates_for_stack(
+@@ -1351,6 +1351,7 @@ llama_grammar_candidates llama_grammar_reject_candidates_for_stack(
  
  struct llama_grammar * llama_grammar_init_impl(
          const struct llama_vocab * vocab,
@@ -23,15 +23,15 @@ index 4e096a3..d6c2b73 100644
          const llama_grammar_element ** rules,
          size_t n_rules,
          size_t start_rule_index) {
-@@ -1267,6 +1268,7 @@ struct llama_grammar * llama_grammar_init_impl(
+@@ -1427,6 +1428,7 @@ struct llama_grammar * llama_grammar_init_impl(
      // then the pointers would be invalidated when the local vec_rules goes out of scope.
      return new llama_grammar {
          vocab,
 +        ollama_vocab,
-         std::move(vec_rules),
+         std::make_shared<const llama_grammar_rules>(std::move(vec_rules)),
          std::move(stacks),
          /* .partial_utf8 = */             {},
-@@ -1281,6 +1283,7 @@ struct llama_grammar * llama_grammar_init_impl(
+@@ -1441,6 +1443,7 @@ struct llama_grammar * llama_grammar_init_impl(
  
  struct llama_grammar * llama_grammar_init_impl(
          const struct llama_vocab * vocab,
@@ -39,23 +39,24 @@ index 4e096a3..d6c2b73 100644
                        const char * grammar_str,
                        const char * grammar_root,
                                bool lazy,
-@@ -1378,6 +1381,7 @@ struct llama_grammar * llama_grammar_init_impl(
+@@ -1542,6 +1545,7 @@ struct llama_grammar * llama_grammar_init_impl(
      // then the pointers would be invalidated when the local vec_rules goes out of scope.
      return new llama_grammar {
          vocab,
 +        ollama_vocab,
-         std::move(vec_rules),
+         std::make_shared<const llama_grammar_rules>(std::move(vec_rules)),
          std::move(stacks),
          /* .partial_utf8 = */             {},
-@@ -1401,6 +1405,7 @@ void llama_grammar_free_impl(struct llama_grammar * grammar) {
+@@ -1563,12 +1567,14 @@ void llama_grammar_free_impl(struct llama_grammar * grammar) {
+ }
+ 
  struct llama_grammar * llama_grammar_clone_impl(const struct llama_grammar & grammar) {
-     auto * result = new llama_grammar {
-         grammar.vocab,
-+        nullptr,
-         grammar.rules,
-         grammar.stacks,
-         grammar.partial_utf8,
-@@ -1429,8 +1434,6 @@ struct llama_grammar * llama_grammar_clone_impl(const struct llama_grammar & gra
+-    return new llama_grammar(grammar);
++    // rules is a shared_ptr, so the copy shares the element storage the stacks point at.
++    // o_vocab is not owned here; the clone does not alias it.
++    auto * result = new llama_grammar(grammar);
++    result->o_vocab = nullptr;
++    return result;
  }
  
  void llama_grammar_apply_impl(const struct llama_grammar & grammar, llama_token_data_array * cur_p) {
@@ -64,7 +65,7 @@ index 4e096a3..d6c2b73 100644
      if (grammar.awaiting_trigger) {
          return;
      }
-@@ -1451,9 +1454,13 @@ void llama_grammar_apply_impl(const struct llama_grammar & grammar, llama_token_
+@@ -1589,9 +1595,13 @@ void llama_grammar_apply_impl(const struct llama_grammar & grammar, llama_token_
  
      for (size_t i = 0; i < cur_p->size; ++i) {
          const llama_token id      = cur_p->data[i].id;
@@ -80,7 +81,7 @@ index 4e096a3..d6c2b73 100644
              if (!allow_eog) {
                  cur_p->data[i].logit = -INFINITY;
              }
-@@ -1472,9 +1479,9 @@ void llama_grammar_apply_impl(const struct llama_grammar & grammar, llama_token_
+@@ -1610,9 +1620,9 @@ void llama_grammar_apply_impl(const struct llama_grammar & grammar, llama_token_
  }
  
  void llama_grammar_accept_impl(struct llama_grammar & grammar, llama_token token) {
@@ -93,7 +94,7 @@ index 4e096a3..d6c2b73 100644
  
      if (grammar.awaiting_trigger) {
          if (std::find(grammar.trigger_tokens.begin(), grammar.trigger_tokens.end(), token) != grammar.trigger_tokens.end()) {
-@@ -1518,13 +1525,14 @@ void llama_grammar_accept_impl(struct llama_grammar & grammar, llama_token token
+@@ -1656,13 +1666,14 @@ void llama_grammar_accept_impl(struct llama_grammar & grammar, llama_token token
          }
      }
  
@@ -110,7 +111,7 @@ index 4e096a3..d6c2b73 100644
      }
  
      llama_grammar_accept_token(grammar, token, piece);
-@@ -1600,3 +1608,27 @@ void llama_grammar_accept_token(struct llama_grammar & grammar, llama_token toke
+@@ -1738,3 +1749,27 @@ void llama_grammar_accept_token(struct llama_grammar & grammar, llama_token toke
      }
  }
  
@@ -139,12 +140,12 @@ index 4e096a3..d6c2b73 100644
 +}
 +
 diff --git a/src/llama-grammar.h b/src/llama-grammar.h
-index 2885f77..f6c90f0 100644
+index 5829d8e..80012b7 100644
 --- a/src/llama-grammar.h
 +++ b/src/llama-grammar.h
-@@ -4,10 +4,20 @@
- 
+@@ -5,10 +5,20 @@
  #include <map>
+ #include <memory>
  #include <regex>
 +#include <set>
  #include <string>
@@ -163,15 +164,15 @@ index 2885f77..f6c90f0 100644
  
  // grammar element type
  enum llama_gretype {
-@@ -131,6 +141,7 @@ struct llama_grammar {
+@@ -132,6 +142,7 @@ struct llama_grammar {
  
      // note: allow null vocab for testing (not great)
      const llama_vocab * vocab;
 +    const ollama_vocab * o_vocab;
  
-     const llama_grammar_rules  rules;  // TODO: shared ptr
-           llama_grammar_stacks stacks;
-@@ -159,12 +170,14 @@ struct llama_grammar {
+     const std::shared_ptr<const llama_grammar_rules> rules;
+     llama_grammar_stacks stacks;
+@@ -160,12 +171,14 @@ struct llama_grammar {
  // note: needed for tests (not great)
  struct llama_grammar * llama_grammar_init_impl(
          const struct llama_vocab * vocab,
@@ -187,10 +188,10 @@ index 2885f77..f6c90f0 100644
                        const char * grammar_root,
                                bool lazy,
 diff --git a/src/llama-sampler.cpp b/src/llama-sampler.cpp
-index 9004efa..bd97cd8 100644
+index d8cd441..5668a3e 100644
 --- a/src/llama-sampler.cpp
 +++ b/src/llama-sampler.cpp
-@@ -2716,7 +2716,7 @@ static void llama_sampler_grammar_reset(struct llama_sampler * smpl) {
+@@ -2714,7 +2714,7 @@ static void llama_sampler_grammar_reset(struct llama_sampler * smpl) {
          trigger_patterns_c.push_back(trigger_pattern.pattern.c_str());
      }
  
@@ -199,15 +200,12 @@ index 9004efa..bd97cd8 100644
                                                   ctx->grammar->lazy, trigger_patterns_c.data(), trigger_patterns_c.size(),
                                                   ctx->grammar->trigger_tokens.data(), ctx->grammar->trigger_tokens.size());
  
-@@ -2800,9 +2800,9 @@ static struct llama_sampler * llama_sampler_init_grammar_impl(
-             trigger_pattern += ")[\\s\\S]*";
+@@ -2780,7 +2780,7 @@ static struct llama_sampler * llama_sampler_init_grammar_impl(
+     auto * ctx = new llama_sampler_grammar;
  
-             std::array<const char *, 1> tmp_trigger_patterns = { trigger_pattern.c_str() };
--            grammar = llama_grammar_init_impl(vocab, grammar_str, grammar_root, lazy, tmp_trigger_patterns.data(), tmp_trigger_patterns.size(), trigger_tokens, num_trigger_tokens);
-+            grammar = llama_grammar_init_impl(vocab, nullptr, grammar_str, grammar_root, lazy, tmp_trigger_patterns.data(), tmp_trigger_patterns.size(), trigger_tokens, num_trigger_tokens);
-         } else {
--            grammar = llama_grammar_init_impl(vocab, grammar_str, grammar_root, lazy, trigger_patterns, num_trigger_patterns, trigger_tokens, num_trigger_tokens);
-+            grammar = llama_grammar_init_impl(vocab, nullptr, grammar_str, grammar_root, lazy, trigger_patterns, num_trigger_patterns, trigger_tokens, num_trigger_tokens);
-         }
+     if (grammar_str != nullptr && grammar_str[0] != '\0') {
+-        llama_grammar * grammar = llama_grammar_init_impl(vocab, grammar_str, grammar_root, lazy, trigger_patterns, num_trigger_patterns, trigger_tokens, num_trigger_tokens);
++        llama_grammar * grammar = llama_grammar_init_impl(vocab, nullptr, grammar_str, grammar_root, lazy, trigger_patterns, num_trigger_patterns, trigger_tokens, num_trigger_tokens);
          *ctx = {
              /* .vocab        = */ vocab,
+             /* .grammar_str  = */ grammar_str,

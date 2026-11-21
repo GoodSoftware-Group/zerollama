@@ -1119,6 +1119,26 @@ type MultiDecodeResponse struct {
 	NodeIDs []int32                 `json:"node_ids"`
 }
 
+// PrefillRequest is POST /api/prefill and POST /v1/prefill.
+// The last message is cached up to its last complete word so the finished
+// request only evaluates the tail.
+type PrefillRequest struct {
+	Model     string         `json:"model"`
+	Messages  []Message      `json:"messages"`
+	Tools     Tools          `json:"tools,omitempty"`
+	Think     *ThinkValue    `json:"think,omitempty"`
+	Options   map[string]any `json:"options,omitempty"`
+	KeepAlive *Duration      `json:"keep_alive,omitempty"`
+}
+
+// PrefillResponse is the cached draft. PromptTokens is how much of the draft
+// was evaluated. CachedTokens is how much of that was already in the slot.
+type PrefillResponse struct {
+	Object       string `json:"object"`
+	CachedTokens int    `json:"cached_tokens"`
+	PromptTokens int    `json:"prompt_tokens"`
+}
+
 // DecisionsRequest is POST /v1/decisions (Jev/Laya typed System-1 decisions).
 // WHY not ChatRequest: calibrated choice/score/noul + act head; see docs/design/surfaces/laya-llama-cpp.md.
 type DecisionsRequest struct {

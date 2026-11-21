@@ -5,11 +5,11 @@ Subject: [PATCH] ollama: compat loader hook call sites (b9611)
 
 ---
  src/llama-model-loader.cpp | 12 ++++++++++++
- tools/mtmd/clip.cpp        | 17 +++++++++++++++++
+ tools/mtmd/mtmd-model.cpp  | 17 +++++++++++++++++
  2 files changed, 29 insertions(+)
 
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 485483b..53bdd8e 100644
+index 808fb44..710d0b6 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -5,6 +5,7 @@
@@ -38,17 +38,17 @@ index 485483b..53bdd8e 100644
              // make sure there is no duplicated tensor names
              if (weights_map.find(tensor_name) != weights_map.end()) {
                  throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
-@@ -655,6 +660,9 @@ llama_model_loader::llama_model_loader(
-                 // Save tensors data offset info of the shard.
-                 for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
-                     std::string tensor_name = std::string(cur->name);
-+                    if (llama_ollama_compat::should_skip_tensor(this, tensor_name.c_str())) {
-+                        continue;
-+                    }
-                     // make sure there is no duplicated tensor names
-                     if (weights_map.find(tensor_name) != weights_map.end()) {
-                         throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
-@@ -706,6 +714,9 @@ llama_model_loader::llama_model_loader(
+@@ -721,6 +726,9 @@ llama_model_loader::llama_model_loader(
+             const uint16_t file_idx = files.size() - 1;
+             for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
+                 const std::string tensor_name = cur->name;
++                if (llama_ollama_compat::should_skip_tensor(this, tensor_name.c_str())) {
++                    continue;
++                }
+                 auto it = weights_map.find(tensor_name);
+                 if (it != weights_map.end()) {
+                     // only override tensors of the model, not of another extra shard
+@@ -788,6 +796,9 @@ llama_model_loader::llama_model_loader(
          // Save tensors data offset info of the main file.
          for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
              std::string tensor_name = std::string(cur->name);
@@ -58,7 +58,7 @@ index 485483b..53bdd8e 100644
              // make sure there is no duplicated tensor names
              if (weights_map.find(tensor_name) != weights_map.end()) {
                  throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
-@@ -1709,6 +1720,7 @@ bool llama_model_loader::load_all_data(
+@@ -1792,6 +1803,7 @@ bool llama_model_loader::load_all_data(
          }
  
          size_t n_size = ggml_nbytes(cur);
@@ -66,52 +66,52 @@ index 485483b..53bdd8e 100644
  
          const bool from_mapping = use_mmap || lazy.has(cur);
  
-diff --git a/tools/mtmd/clip.cpp b/tools/mtmd/clip.cpp
-index a5ab432..137402b 100644
---- a/tools/mtmd/clip.cpp
-+++ b/tools/mtmd/clip.cpp
-@@ -11,6 +11,8 @@
+diff --git a/tools/mtmd/mtmd-model.cpp b/tools/mtmd/mtmd-model.cpp
+index e26824d..fbc34e9 100644
+--- a/tools/mtmd/mtmd-model.cpp
++++ b/tools/mtmd/mtmd-model.cpp
+@@ -7,6 +7,7 @@
+ #include "ggml-alloc.h"
  #include "ggml-backend.h"
  #include "gguf.h"
- 
 +#include "llama-ollama-compat.h"
-+
+ 
  #include <algorithm>
  #include <cassert>
- #include <cmath>
-@@ -1331,6 +1333,11 @@ struct clip_model_loader {
+@@ -65,6 +66,10 @@ struct mtmd_model_loader {
  
          ctx_meta.reset(meta);
  
-+        // If this is an Ollama-format monolithic GGUF (text + embedded
-+        // vision), translate its metadata and tensor names into the
-+        // upstream mmproj shape so the rest of this loader runs unchanged.
++        // Ollama monolithic GGUF (text + embedded vision): rewrite metadata and
++        // tensor names into the upstream mmproj shape before the loader runs.
 +        llama_ollama_compat::translate_clip_metadata(ctx_gguf.get(), meta);
 +
          const int n_tensors = gguf_get_n_tensors(ctx_gguf.get());
  
          // print gguf info
-@@ -4751,6 +4758,7 @@ struct clip_model_loader {
+@@ -4361,6 +4366,9 @@ struct mtmd_model_loader {
                      auto it_off = tensor_offset.find(t->name);
                      GGML_ASSERT(it_off != tensor_offset.end() && "no offset for tensor");
                      const size_t offset = it_off->second;
-+                    if (llama_ollama_compat::maybe_load_tensor(cur, fname.c_str(), offset, buft)) continue;
++                    if (llama_ollama_compat::maybe_load_tensor(cur, fname.c_str(), offset, buft)) {
++                        continue;
++                    }
                      fin.seekg(offset, std::ios::beg);
                      if (!fin) {
-                         throw std::runtime_error(string_format("%s: failed to seek for tensor %s\n", __func__, t->name));
-@@ -7931,6 +7939,15 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
+                         throw std::runtime_error(mtmd_format("%s: failed to seek for tensor %s\n", __func__, t->name));
+@@ -5074,6 +5082,15 @@ size_t mtmd_model::cbx_read_tensor(const char * name, float * out, size_t n_max)
  }
  
- int clip_n_mmproj_embd(const struct clip_ctx * ctx) {
-+    const auto projector_type = PROJECTOR_TYPE_NAMES.find(ctx->model.proj_type);
+ int mtmd_model::n_mmproj_embd() const {
++    const auto projector_type = PROJECTOR_TYPE_NAMES.find(proj_type);
 +    if (projector_type != PROJECTOR_TYPE_NAMES.end()) {
 +        if (int n = llama_ollama_compat::maybe_clip_mmproj_embd(
 +                projector_type->second.c_str(),
-+                ctx->model.hparams.projection_dim); n > 0) {
++                hparams.projection_dim); n > 0) {
 +            return n;
 +        }
 +    }
 +
-     switch (ctx->model.proj_type) {
+     switch (proj_type) {
          case PROJECTOR_TYPE_LDP:
-             return ctx->model.mm_model_block_1_block_2_1_b->ne[0];
+             return mm_model_block_1_block_2_1_b->ne[0];

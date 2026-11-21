@@ -9,7 +9,7 @@ Subject: [PATCH] unicode: all-ASCII Qwen2 byte pretok skips cpt decode (0114)
  2 files changed, 176 insertions(+), 43 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index b9c250d..1f1c681 100644
+index 0150d99..6f37ef0 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
 @@ -6,6 +6,7 @@
@@ -20,7 +20,7 @@ index b9c250d..1f1c681 100644
  #include <map>
  #include <regex>
  #include <stdexcept>
-@@ -403,6 +404,14 @@ static void unicode_regex_split_qwen2_ascii_seg(
+@@ -408,6 +409,14 @@ static void unicode_regex_split_qwen2_ascii_seg(
              const bool next_letter = (pos + 1 < end) && (cls[cpts[pos + 1]] & 2);
              if ((c & 2) || next_letter) {
                  ++pos;
@@ -35,7 +35,7 @@ index b9c250d..1f1c681 100644
                  while (pos < end && (cls[cpts[pos]] & 2)) {
                      ++pos;
                  }
-@@ -467,6 +476,162 @@ static void unicode_regex_split_qwen2_ascii_seg(
+@@ -472,6 +481,162 @@ static void unicode_regex_split_qwen2_ascii_seg(
      }
  }
  

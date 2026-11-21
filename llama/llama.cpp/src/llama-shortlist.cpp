@@ -1,0 +1,730 @@
+// CPU output-head shortlist, from Kinetic's head/compact.rs.
+//
+// A Q4_K copy of a Q6_K or Q8_0 output matrix bounds every logit. Exact scores
+// come from ggml's own vec_dot, so a logit that is computed matches the CPU
+// GEMV bit for bit. Rows that cannot reach the current best are -inf.
+//
+// k == 1 keeps a set that contains the greedy winner. k > 1 keeps a set that
+// contains the k highest logits, which is enough when the sampler cuts to
+// those rows before anything else reads the tail. Penalties, a grammar, and
+// logprobs still pass k == 0, and that writes every logit through the same
+// vec_dot.
+//
+// The custom op is installed only for a single token whose weight buffer is
+// host memory. A GPU head, or a multi-token GEMM, stays ggml_mul_mat.
+
+#include "llama-shortlist.h"
+
+#include "llama-context.h"
+#include "llama-impl.h"
+#include "llama-model.h"
+
+#include "ggml-quants.h"
+#include "ggml-cpu/quants.h"
+#include "ggml-backend.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <new>
+#include <queue>
+#include <vector>
+
+namespace {
+
+static bool shortlist_enabled() {
+    static const bool on = []() {
+        const char * e = std::getenv("LLAMA_SHORTLIST");
+        return e == nullptr || e[0] == '\0' || e[0] == '1';
+    }();
+    return on;
+}
+
+static float round_up(double v) {
+    const float f = (float) v;
+    if ((double) f < v) {
+        return std::nextafter(f, INFINITY);
+    }
+    return f;
+}
+
+static uint8_t round_bits(float v, int hi) {
+    int q = (int) std::round(v);
+    if (q < 0) {
+        q = 0;
+    }
+    if (q > hi) {
+        q = hi;
+    }
+    return (uint8_t) q;
+}
+
+// Kinetic quantize_block. One Q4_K super-block, min/max per 32 values.
+// Returns the sum of (d*sc*q + dmin*m)^2, the magnitudes the copy kernel rounds.
+static double quantize_q4_block(const float * src, block_q4_K * y) {
+    float scale[8];
+    float mn[8];
+    for (int s = 0; s < 8; ++s) {
+        const float * g = src + 32 * s;
+        float lo = g[0];
+        float hi = g[0];
+        for (int i = 1; i < 32; ++i) {
+            lo = std::min(lo, g[i]);
+            hi = std::max(hi, g[i]);
+        }
+        scale[s] = (hi - lo) / 15.f;
+        mn[s]    = -lo;
+    }
+    float max_s = scale[0];
+    float max_m = mn[0];
+    for (int s = 1; s < 8; ++s) {
+        max_s = std::max(max_s, scale[s]);
+        max_m = std::max(max_m, mn[s]);
+    }
+    const float d    = ggml_fp16_to_fp32(ggml_fp32_to_fp16(max_s / 63.f));
+    const float dmin = ggml_fp16_to_fp32(ggml_fp32_to_fp16(max_m / 63.f));
+
+    uint8_t sc[8];
+    uint8_t m[8];
+    for (int s = 0; s < 8; ++s) {
+        sc[s] = d    > 0.f ? round_bits(scale[s] / d,    63) : 0;
+        m[s]  = dmin > 0.f ? round_bits(mn[s]    / dmin, 63) : 0;
+    }
+
+    std::memset(y, 0, sizeof(*y));
+    y->d    = ggml_fp32_to_fp16(d);
+    y->dmin = ggml_fp32_to_fp16(dmin);
+    for (int j = 0; j < 4; ++j) {
+        y->scales[j]     = (uint8_t) (sc[j] | ((sc[j + 4] >> 4) << 6));
+        y->scales[j + 4] = (uint8_t) (m[j]  | ((m[j + 4]  >> 4) << 6));
+        y->scales[j + 8] = (uint8_t) ((sc[j + 4] & 0xF) | ((m[j + 4] & 0xF) << 4));
+    }
+
+    double spread = 0.0;
+    for (int j = 0; j < 4; ++j) {
+        for (int l = 0; l < 32; ++l) {
+            const auto qn = [&](int s, float v) -> uint8_t {
+                const float step   = d * (float) sc[s];
+                const float offset = dmin * (float) m[s];
+                uint8_t q = 0;
+                if (step > 0.f) {
+                    q = round_bits((v + offset) / step, 15);
+                }
+                const double mag = (double) step * (double) q + (double) offset;
+                spread += mag * mag;
+                return q;
+            };
+            const uint8_t lo = qn(2 * j,     src[64 * j + l]);
+            const uint8_t hi = qn(2 * j + 1, src[64 * j + 32 + l]);
+            y->qs[32 * j + l] = (uint8_t) (lo | (hi << 4));
+        }
+    }
+    return spread;
+}
+
+static bool bits_equal(float a, float b) {
+    uint32_t xa, xb;
+    std::memcpy(&xa, &a, sizeof(xa));
+    std::memcpy(&xb, &b, sizeof(xb));
+    return xa == xb;
+}
+
+struct spin_barrier {
+    std::atomic<uint64_t> count{0};
+
+    void wait(int nth) {
+        if (nth <= 1) {
+            return;
+        }
+        const uint64_t n = (uint64_t) nth;
+        const uint64_t ticket = count.fetch_add(1, std::memory_order_acq_rel);
+        const uint64_t target = (ticket / n + 1) * n;
+        while (count.load(std::memory_order_acquire) < target) {
+        }
+    }
+};
+
+} // namespace
+
+struct llama_shortlist {
+    ggml_type type = GGML_TYPE_COUNT;
+    int64_t n_embd  = 0;
+    int64_t n_vocab = 0;
+    int64_t n_blocks = 0;
+    double slack = 0.0;
+    bool ok = false;
+
+    std::atomic<int32_t> k{0};
+
+    std::vector<block_q4_K> copy;
+    struct radii {
+        float head;
+        float copy;
+        float spread;
+    };
+    std::vector<radii> rad;
+
+    std::vector<uint8_t> q8k;
+    std::vector<uint8_t> q80;
+    std::vector<float>   approx;
+    std::vector<float>   exact;
+    std::vector<uint8_t> scored;
+
+    spin_barrier bar;
+    int    mode = 0;
+    double act_h = 0;
+    double act_gap = 0;
+    double act_c = 0;
+    double floor_logit = 0;
+
+    bool build_from(ggml_type wtype, const uint8_t * data, size_t stride, int64_t vocab, int64_t embd);
+    void logits_one(const uint8_t * wdata, size_t stride, const float * x, int32_t top, float * dst, int ith, int nth);
+    bool self_check(const uint8_t * data, size_t stride);
+
+    float dot_head(const uint8_t * wrow, const uint8_t * act) const {
+        float s = 0.f;
+        const int n = (int) n_embd;
+        if (type == GGML_TYPE_Q6_K) {
+            ggml_vec_dot_q6_K_q8_K(n, &s, 0, wrow, 0, act, 0, 1);
+        } else {
+            ggml_vec_dot_q8_0_q8_0(n, &s, 0, wrow, 0, act, 0, 1);
+        }
+        return s;
+    }
+
+    float dot_copy(const block_q4_K * row, const uint8_t * act) const {
+        float s = 0.f;
+        ggml_vec_dot_q4_K_q8_K((int) n_embd, &s, 0, row, 0, act, 0, 1);
+        return s;
+    }
+};
+
+static double q8k_at(const block_q8_K * b, int64_t i) {
+    const block_q8_K & blk = b[i / QK_K];
+    return (double) blk.d * (double) blk.qs[i % QK_K];
+}
+
+static double q80_at(const block_q8_0 * b, int64_t i) {
+    const block_q8_0 & blk = b[i / QK8_0];
+    return (double) ggml_fp16_to_fp32(blk.d) * (double) blk.qs[i % QK8_0];
+}
+
+static double norm_up(double sumsq) {
+    return std::sqrt(sumsq) * (1.0 + 1e-9);
+}
+
+bool llama_shortlist::build_from(ggml_type wtype, const uint8_t * data, size_t stride, int64_t vocab, int64_t embd) {
+    if (data == nullptr || vocab <= 0 || embd <= 0 || embd > INT32_MAX) {
+        return false;
+    }
+    if ((wtype != GGML_TYPE_Q6_K && wtype != GGML_TYPE_Q8_0) || (embd % QK_K) != 0) {
+        return false;
+    }
+    static_assert(sizeof(block_q4_K) == 144, "Q4_K block is 144 bytes");
+
+    type     = wtype;
+    n_vocab  = vocab;
+    n_embd   = embd;
+    n_blocks = embd / QK_K;
+    slack    = (double) (embd + 8) * std::ldexp(1.0, -23);
+
+    copy.resize((size_t) (n_vocab * n_blocks));
+    rad.resize((size_t) n_vocab);
+    q8k.resize((size_t) n_blocks * sizeof(block_q8_K));
+    if (type == GGML_TYPE_Q8_0) {
+        q80.resize((size_t) (n_embd / QK8_0) * sizeof(block_q8_0));
+    }
+    approx.resize((size_t) n_vocab);
+    exact.resize((size_t) n_vocab);
+    scored.resize((size_t) n_vocab);
+
+    std::vector<float> dense((size_t) n_embd);
+    std::vector<float> copied((size_t) n_embd);
+    for (int64_t r = 0; r < n_vocab; ++r) {
+        const uint8_t * row = data + (size_t) r * stride;
+        if (type == GGML_TYPE_Q6_K) {
+            dequantize_row_q6_K((const block_q6_K *) row, dense.data(), n_embd);
+        } else {
+            dequantize_row_q8_0((const block_q8_0 *) row, dense.data(), n_embd);
+        }
+        double spread = 0.0;
+        for (int64_t b = 0; b < n_blocks; ++b) {
+            spread += quantize_q4_block(dense.data() + b * QK_K, &copy[(size_t) (r * n_blocks + b)]);
+        }
+        dequantize_row_q4_K(&copy[(size_t) (r * n_blocks)], copied.data(), n_embd);
+
+        double err2 = 0.0;
+        double w2 = 0.0;
+        double c2 = 0.0;
+        for (int64_t i = 0; i < n_embd; ++i) {
+            const double dw = (double) dense[(size_t) i] - (double) copied[(size_t) i];
+            err2 += dw * dw;
+            w2   += (double) dense[(size_t) i] * (double) dense[(size_t) i];
+            c2   += (double) copied[(size_t) i] * (double) copied[(size_t) i];
+        }
+        rad[(size_t) r].head   = round_up(std::sqrt(err2) + slack * std::sqrt(w2));
+        rad[(size_t) r].copy   = round_up(std::sqrt(c2));
+        rad[(size_t) r].spread = round_up(std::sqrt(spread));
+    }
+
+    if (!self_check(data, stride)) {
+        copy.clear();
+        rad.clear();
+        q8k.clear();
+        q80.clear();
+        approx.clear();
+        exact.clear();
+        scored.clear();
+        LLAMA_LOG_WARN("%s: self-check failed; output head stays a full matmul\n", __func__);
+        return false;
+    }
+
+    ok = true;
+    const double mib = (double) copy.size() * sizeof(block_q4_K) / (1024.0 * 1024.0);
+    LLAMA_LOG_INFO("%s: CPU output shortlist %s, %lld x %lld, copy %.1f MiB\n",
+            __func__, ggml_type_name(type), (long long) n_vocab, (long long) n_embd, mib);
+    return true;
+}
+
+void llama_shortlist::logits_one(
+        const uint8_t * wdata, size_t stride, const float * x, int32_t top,
+        float * dst, int ith, int nth) {
+    if (nth < 1) {
+        nth = 1;
+    }
+    if (ith == 0) {
+        quantize_row_q8_K(x, q8k.data(), n_embd);
+        const block_q8_K * xk = (const block_q8_K *) q8k.data();
+        double xh2 = 0.0;
+        double xc2 = 0.0;
+        double gap2 = 0.0;
+        if (type == GGML_TYPE_Q6_K) {
+            for (int64_t i = 0; i < n_embd; ++i) {
+                const double v = q8k_at(xk, i);
+                xh2 += v * v;
+            }
+            xc2 = xh2;
+        } else {
+            quantize_row_q8_0(x, q80.data(), n_embd);
+            const block_q8_0 * x0 = (const block_q8_0 *) q80.data();
+            for (int64_t i = 0; i < n_embd; ++i) {
+                const double h = q80_at(x0, i);
+                const double c = q8k_at(xk, i);
+                xh2  += h * h;
+                xc2  += c * c;
+                gap2 += (h - c) * (h - c);
+            }
+        }
+        act_h   = norm_up(xh2);
+        act_gap = norm_up(gap2);
+        act_c   = slack * norm_up(xc2);
+        const bool finite = std::isfinite(act_h) && std::isfinite(act_gap) && std::isfinite(act_c);
+        // The first k rows already cost as much as the cutoff allows.
+        mode = (top >= 1 && (int64_t) top * 4 <= n_vocab && finite) ? 1 : 0;
+    }
+    bar.wait(nth);
+
+    const uint8_t * act = type == GGML_TYPE_Q6_K ? q8k.data() : q80.data();
+    const int64_t i0 = n_vocab * ith / nth;
+    const int64_t i1 = n_vocab * (ith + 1) / nth;
+
+    auto write_full = [&]() {
+        for (int64_t i = i0; i < i1; ++i) {
+            dst[i] = dot_head(wdata + (size_t) i * stride, act);
+        }
+    };
+
+    if (mode == 0) {
+        write_full();
+        bar.wait(nth);
+        return;
+    }
+
+    for (int64_t i = i0; i < i1; ++i) {
+        approx[(size_t) i] = dot_copy(&copy[(size_t) (i * n_blocks)], q8k.data());
+    }
+    bar.wait(nth);
+
+    if (ith == 0) {
+        // Highest approximate rows, equal scores keeping the lower index.
+        // The worst of them sits at the front of the queue.
+        struct cand {
+            float   score;
+            int32_t index;
+        };
+        struct worst_on_top {
+            bool operator()(const cand & a, const cand & b) const {
+                if (a.score != b.score) {
+                    return a.score > b.score;
+                }
+                return a.index < b.index;
+            }
+        };
+        std::priority_queue<cand, std::vector<cand>, worst_on_top> best;
+        for (int64_t i = 0; i < n_vocab; ++i) {
+            const cand c{ approx[(size_t) i], (int32_t) i };
+            if (!std::isfinite(c.score)) {
+                continue;
+            }
+            if ((int32_t) best.size() < top) {
+                best.push(c);
+                continue;
+            }
+            const cand worst = best.top();
+            const bool better = c.score > worst.score || (c.score == worst.score && c.index < worst.index);
+            if (better) {
+                best.pop();
+                best.push(c);
+            }
+        }
+        std::memset(scored.data(), 0, scored.size());
+        bool finite_exact = !best.empty();
+        bool have_floor = false;
+        while (!best.empty()) {
+            const cand c = best.top();
+            best.pop();
+            const float score = dot_head(wdata + (size_t) c.index * stride, act);
+            if (!std::isfinite(score)) {
+                finite_exact = false;
+                break;
+            }
+            exact[(size_t) c.index] = score;
+            scored[(size_t) c.index] = 1;
+            if (!have_floor || (double) score < floor_logit) {
+                floor_logit = (double) score;
+                have_floor = true;
+            }
+        }
+        if (!finite_exact) {
+            mode = 0;
+        }
+    }
+    bar.wait(nth);
+
+    if (mode == 0) {
+        write_full();
+        bar.wait(nth);
+        return;
+    }
+
+    for (int64_t i = i0; i < i1; ++i) {
+        if (scored[(size_t) i]) {
+            continue;
+        }
+        const radii & rad_i = rad[(size_t) i];
+        const double bound = (double) approx[(size_t) i]
+            + (double) rad_i.head * act_h
+            + (double) rad_i.copy * act_gap
+            + (double) rad_i.spread * act_c;
+        // A NaN bound keeps the row. Kinetic rejects only a bound strictly below the floor.
+        if (!(bound < floor_logit)) {
+            exact[(size_t) i] = dot_head(wdata + (size_t) i * stride, act);
+            scored[(size_t) i] = 1;
+        }
+    }
+    bar.wait(nth);
+
+    if (ith == 0) {
+        int64_t n_kept = 0;
+        for (int64_t i = 0; i < n_vocab; ++i) {
+            n_kept += scored[(size_t) i] ? 1 : 0;
+        }
+        if (n_kept * 4 > n_vocab) {
+            mode = 0;
+        }
+    }
+    bar.wait(nth);
+
+    if (mode == 0) {
+        write_full();
+        bar.wait(nth);
+        return;
+    }
+
+    for (int64_t i = i0; i < i1; ++i) {
+        dst[i] = scored[(size_t) i] ? exact[(size_t) i] : -INFINITY;
+    }
+    bar.wait(nth);
+}
+
+bool llama_shortlist::self_check(const uint8_t * data, size_t stride) {
+    std::vector<float> x((size_t) n_embd);
+    std::vector<float> full((size_t) n_vocab);
+    std::vector<float> got((size_t) n_vocab);
+    const int nvec = 3;
+    for (int v = 0; v < nvec; ++v) {
+        for (int64_t i = 0; i < n_embd; ++i) {
+            if (v == 0) {
+                x[(size_t) i] = 0.1f;
+            } else if (v == 1) {
+                const int pattern = (int) ((i * 17 + 3) % 64);
+                x[(size_t) i] = 0.02f * (float) pattern - 0.5f;
+            } else {
+                x[(size_t) i] = 0.02f * (float) ((i * 37) % 101) - 1.f;
+            }
+        }
+        logits_one(data, stride, x.data(), 0, full.data(), 0, 1);
+        logits_one(data, stride, x.data(), 1, got.data(), 0, 1);
+
+        int64_t arg = 0;
+        for (int64_t i = 1; i < n_vocab; ++i) {
+            if (full[(size_t) i] > full[(size_t) arg]) {
+                arg = i;
+            }
+        }
+        const float winner = full[(size_t) arg];
+        for (int64_t i = 0; i < n_vocab; ++i) {
+            if (std::isfinite(got[(size_t) i])) {
+                if (!bits_equal(got[(size_t) i], full[(size_t) i])) {
+                    return false;
+                }
+            } else if (!(full[(size_t) i] < winner)) {
+                return false;
+            }
+        }
+        if (!std::isfinite(got[(size_t) arg]) || !bits_equal(got[(size_t) arg], winner)) {
+            return false;
+        }
+        if (n_vocab < 4) {
+            continue;
+        }
+        logits_one(data, stride, x.data(), 4, got.data(), 0, 1);
+        std::vector<float> order(full.begin(), full.end());
+        std::nth_element(order.begin(), order.begin() + 3, order.end(), std::greater<float>());
+        const float kth = order[3];
+        for (int64_t i = 0; i < n_vocab; ++i) {
+            if (std::isfinite(got[(size_t) i])) {
+                if (!bits_equal(got[(size_t) i], full[(size_t) i])) {
+                    return false;
+                }
+            } else if (!(full[(size_t) i] < kth)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static void shortlist_op(struct ggml_tensor * dst, int ith, int nth, void * userdata) {
+    auto * s = (llama_shortlist *) userdata;
+    const struct ggml_tensor * w = dst->src[0];
+    const struct ggml_tensor * x = dst->src[1];
+    if (s == nullptr || w == nullptr || x == nullptr || w->data == nullptr || x->data == nullptr) {
+        return;
+    }
+    if (dst->ne[0] != s->n_vocab || x->ne[0] != s->n_embd) {
+        return;
+    }
+    const int32_t top = s->k.load(std::memory_order_acquire);
+    const int64_t n_tokens = x->ne[1] * x->ne[2] * x->ne[3];
+    for (int64_t t = 0; t < n_tokens; ++t) {
+        const float * row = (const float *) ((const char *) x->data + t * x->nb[1]);
+        float * y = (float *) ((char *) dst->data + t * dst->nb[1]);
+        s->logits_one((const uint8_t *) w->data, w->nb[1], row, top, y, ith, nth);
+    }
+}
+
+static std::mutex g_shortlist_mu;
+
+void llama_shortlist_free(llama_shortlist * s) {
+    delete s;
+}
+
+void llama_shortlist_set_k(llama_shortlist * s, int32_t k) {
+    if (s == nullptr || !s->ok) {
+        return;
+    }
+    s->k.store(k > 0 ? k : 0, std::memory_order_release);
+}
+
+struct ggml_tensor * llama_shortlist_mul(
+        struct ggml_context * ctx,
+        const struct llama_model & model,
+        struct ggml_tensor * w,
+        struct ggml_tensor * cur) {
+    if (!shortlist_enabled() || w == nullptr || cur == nullptr || w != model.output) {
+        return nullptr;
+    }
+    if (model.output_b != nullptr || model.output_s != nullptr) {
+        return nullptr;
+    }
+    if (w->type != GGML_TYPE_Q6_K && w->type != GGML_TYPE_Q8_0) {
+        return nullptr;
+    }
+    if (w->ne[2] != 1 || w->ne[3] != 1 || cur->type != GGML_TYPE_F32) {
+        return nullptr;
+    }
+    if (cur->ne[0] != w->ne[0] || cur->ne[1] * cur->ne[2] * cur->ne[3] != 1) {
+        return nullptr;
+    }
+    if ((w->ne[0] % QK_K) != 0 || w->data == nullptr || w->buffer == nullptr) {
+        return nullptr;
+    }
+    if (!ggml_backend_buffer_is_host(w->buffer)) {
+        return nullptr;
+    }
+    if (w->nb[0] != ggml_type_size(w->type) || w->nb[1] < (size_t) ggml_row_size(w->type, w->ne[0])) {
+        return nullptr;
+    }
+    if (cur->nb[0] != sizeof(float)) {
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(g_shortlist_mu);
+    if (model.output_shortlist == nullptr) {
+        llama_shortlist * built = nullptr;
+        try {
+            built = new llama_shortlist();
+            built->build_from(w->type, (const uint8_t *) w->data, w->nb[1], w->ne[1], w->ne[0]);
+        } catch (const std::bad_alloc &) {
+            delete built;
+            built = new llama_shortlist();
+            LLAMA_LOG_WARN("%s: shortlist allocation failed; output head stays a full matmul\n", __func__);
+        }
+        model.output_shortlist = built;
+    }
+    llama_shortlist * s = model.output_shortlist;
+    if (s == nullptr || !s->ok) {
+        return nullptr;
+    }
+
+    struct ggml_tensor * args[2] = { w, cur };
+    return ggml_custom_4d(
+            ctx, GGML_TYPE_F32, w->ne[1], cur->ne[1], cur->ne[2], cur->ne[3],
+            args, 2, shortlist_op, GGML_N_TASKS_MAX, s);
+}
+
+// Not part of the library. Rebuild this file with -DLLAMA_SHORTLIST_TEST and link ggml-cpu, ggml, and ggml-base.
+#ifdef LLAMA_SHORTLIST_TEST
+#include <cstdio>
+#include <cstdarg>
+#include <random>
+#include <thread>
+
+void llama_log_internal(ggml_log_level level, const char * format, ...) {
+    (void) level;
+    va_list ap;
+    va_start(ap, format);
+    std::vfprintf(stderr, format, ap);
+    va_end(ap);
+}
+
+static int run_case(ggml_type type, uint32_t seed) {
+    const int64_t n_vocab = 128;
+    const int64_t n_embd = 512;
+    const size_t row_bytes = ggml_row_size(type, n_embd);
+    std::vector<uint8_t> packed((size_t) n_vocab * row_bytes);
+    std::vector<float> dense((size_t) n_embd);
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> dist(-0.8f, 0.8f);
+    for (int64_t r = 0; r < n_vocab; ++r) {
+        for (int64_t i = 0; i < n_embd; ++i) {
+            dense[(size_t) i] = dist(rng);
+        }
+        if (type == GGML_TYPE_Q6_K) {
+            quantize_row_q6_K(dense.data(), packed.data() + (size_t) r * row_bytes, n_embd);
+        } else {
+            quantize_row_q8_0(dense.data(), packed.data() + (size_t) r * row_bytes, n_embd);
+        }
+    }
+
+    llama_shortlist s;
+    if (!s.build_from(type, packed.data(), row_bytes, n_vocab, n_embd)) {
+        std::fprintf(stderr, "build failed for %s\n", ggml_type_name(type));
+        return 1;
+    }
+
+    std::vector<float> x((size_t) n_embd);
+    std::vector<float> full((size_t) n_vocab);
+    std::vector<float> got((size_t) n_vocab);
+    for (int trial = 0; trial < 16; ++trial) {
+        for (int64_t i = 0; i < n_embd; ++i) {
+            x[(size_t) i] = dist(rng);
+        }
+        s.logits_one(packed.data(), row_bytes, x.data(), 0, full.data(), 0, 1);
+        std::vector<uint8_t> q8((size_t) (n_embd / QK_K) * sizeof(block_q8_K));
+        std::vector<uint8_t> q0;
+        quantize_row_q8_K(x.data(), q8.data(), n_embd);
+        if (type == GGML_TYPE_Q8_0) {
+            q0.resize((size_t) (n_embd / QK8_0) * sizeof(block_q8_0));
+            quantize_row_q8_0(x.data(), q0.data(), n_embd);
+        }
+        for (int64_t r = 0; r < n_vocab; ++r) {
+            float sr = 0.f;
+            if (type == GGML_TYPE_Q6_K) {
+                ggml_vec_dot_q6_K_q8_K((int) n_embd, &sr, 0, packed.data() + (size_t) r * row_bytes, 0, q8.data(), 0, 1);
+            } else {
+                ggml_vec_dot_q8_0_q8_0((int) n_embd, &sr, 0, packed.data() + (size_t) r * row_bytes, 0, q0.data(), 0, 1);
+            }
+            if (!bits_equal(sr, full[(size_t) r])) {
+                std::fprintf(stderr, "%s trial %d row %lld full dot mismatch\n",
+                        ggml_type_name(type), trial, (long long) r);
+                return 1;
+            }
+        }
+        s.logits_one(packed.data(), row_bytes, x.data(), 1, got.data(), 0, 1);
+        int64_t arg = 0;
+        int kept = 0;
+        for (int64_t i = 1; i < n_vocab; ++i) {
+            if (full[(size_t) i] > full[(size_t) arg]) {
+                arg = i;
+            }
+        }
+        const float winner = full[(size_t) arg];
+        for (int64_t i = 0; i < n_vocab; ++i) {
+            if (std::isfinite(got[(size_t) i])) {
+                ++kept;
+                if (!bits_equal(got[(size_t) i], full[(size_t) i])) {
+                    std::fprintf(stderr, "%s trial %d row %lld bit mismatch\n",
+                            ggml_type_name(type), trial, (long long) i);
+                    return 1;
+                }
+            } else if (!(full[(size_t) i] < winner)) {
+                std::fprintf(stderr, "%s trial %d dropped row %lld (full %.8g winner %.8g)\n",
+                        ggml_type_name(type), trial, (long long) i, full[(size_t) i], winner);
+                return 1;
+            }
+        }
+        if (!bits_equal(got[(size_t) arg], winner)) {
+            std::fprintf(stderr, "%s trial %d argmax mismatch\n", ggml_type_name(type), trial);
+            return 1;
+        }
+        std::fprintf(stderr, "%s trial %d kept %d/%lld\n",
+                ggml_type_name(type), trial, kept, (long long) n_vocab);
+    }
+
+    std::vector<float> par((size_t) n_vocab);
+    const int nth = 4;
+    std::vector<std::thread> threads;
+    threads.reserve(nth);
+    for (int ith = 0; ith < nth; ++ith) {
+        threads.emplace_back([&, ith]() {
+            s.logits_one(packed.data(), row_bytes, x.data(), 1, par.data(), ith, nth);
+        });
+    }
+    for (auto & th : threads) {
+        th.join();
+    }
+    for (int64_t i = 0; i < n_vocab; ++i) {
+        if (!bits_equal(par[(size_t) i], got[(size_t) i])) {
+            std::fprintf(stderr, "%s parallel mismatch at %lld\n", ggml_type_name(type), (long long) i);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int main() {
+    int rc = 0;
+    rc |= run_case(GGML_TYPE_Q6_K, 1);
+    rc |= run_case(GGML_TYPE_Q8_0, 2);
+    if (rc == 0) {
+        std::fprintf(stderr, "shortlist ok\n");
+    }
+    return rc;
+}
+#endif

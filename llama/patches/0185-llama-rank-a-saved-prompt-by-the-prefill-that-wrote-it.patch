@@ -1,0 +1,266 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Sat, 21 Nov 2026 14:30:46 -0800
+Subject: [PATCH] llama: rank a saved prompt by the prefill that wrote it
+
+The disk cache ranked every file by the latest prefill, so a slow prompt saved earlier looked cheap to recompute after a fast one. The file keeps that prefill's seconds per token, and a file without one still uses the latest measurement.
+---
+ tools/server/server-context.cpp    |   1 +
+ tools/server/server-slot-sched.cpp |   3 +-
+ tools/server/server-warm-disk.h    | 135 ++++++++++++++++++++++-------
+ 3 files changed, 107 insertions(+), 32 deletions(-)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index ce7948e..42e2ce9 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -626,6 +626,7 @@ struct server_slot {
+                 ent.logits_n    = prompt.logits_n;
+                 ent.logits_k    = prompt.logits_k;
+                 ent.logits_hash = prompt.logits_hash;
++                ent.prefill_s   = saved != nullptr ? saved->prefill_s : prompt_cache.cost.token_s;
+                 prompt_cache.warm->store(std::move(ent));
+             } catch (const std::bad_alloc &) {
+                 SLT_WRN(*this, "%s", "prompt disk cache skipped, out of memory\n");
+diff --git a/tools/server/server-slot-sched.cpp b/tools/server/server-slot-sched.cpp
+index 3baddf7..3c82922 100644
+--- a/tools/server/server-slot-sched.cpp
++++ b/tools/server/server-slot-sched.cpp
+@@ -265,7 +265,8 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+         const auto & query = tokens_new.get_tokens();
+         if (cost.timed()) {
+             for (const auto & pick : warm->matches(query.data(), query.size())) {
+-                const double gain = llama_warm_gain(pick.lcp, cost.token_s, (size_t) pick.bytes, cost.restore() + cost.load_s);
++                const double per = pick.prefill_s > 0.0 ? pick.prefill_s : cost.token_s;
++                const double gain = llama_warm_gain(pick.lcp, per, (size_t) pick.bytes, cost.restore() + cost.load_s);
+                 if (gain > best_gain) {
+                     best_gain = gain;
+                     disk_pick = pick;
+diff --git a/tools/server/server-warm-disk.h b/tools/server/server-warm-disk.h
+index 4354713..b79c0fa 100644
+--- a/tools/server/server-warm-disk.h
++++ b/tools/server/server-warm-disk.h
+@@ -8,7 +8,8 @@
+ // the model file's size, modification time and leading megabyte, so a file
+ // replaced at the same path starts a new cache. It also includes the release,
+ // the physical prompt batch and the RoPE overrides, which change the state
+-// a later token continues from. Version 2 removes
++// a later token continues from. A file also keeps the seconds per token of
++// the prefill that wrote it, so a later ranking uses that speed. Version 2 removes
+ // version 1 files: those kept tokens written one at a time, which a GPU resume
+ // must not restore. The oldest files in the directory go first once it passes
+ // its byte budget, whichever model wrote them. Restoring a file makes it the
+@@ -51,6 +52,10 @@ struct llama_warm_entry {
+     int32_t  logits_n    = 0;
+     int32_t  logits_k    = 0;
+     uint64_t logits_hash = 0;
++
++    // Seconds per token of the prefill that wrote this state. 0 when that
++    // prefill was not timed, and the ranking then uses the latest one.
++    double prefill_s = 0;
+ };
+ 
+ struct llama_warm_pick {
+@@ -59,6 +64,7 @@ struct llama_warm_pick {
+     float    f_sim  = 0.0f;
+     int      lcp    = 0;
+     uint64_t bytes  = 0;
++    double   prefill_s = 0;
+ };
+ 
+ inline uint64_t llama_warm_mix(uint64_t h, uint64_t w) {
+@@ -357,8 +363,9 @@ public:
+             pick.path   = f.path;
+             pick.f_keep = f_keep;
+             pick.f_sim  = f_sim;
+-            pick.lcp    = (int) lcp;
+-            pick.bytes  = f.file_bytes;
++            pick.lcp       = (int) lcp;
++            pick.bytes     = f.file_bytes;
++            pick.prefill_s = f.prefill_s;
+             best = std::move(pick);
+         }
+         return best;
+@@ -388,8 +395,9 @@ public:
+             pick.path   = f.path;
+             pick.f_keep = f_keep;
+             pick.f_sim  = (float) lcp / (float) n;
+-            pick.lcp    = (int) lcp;
+-            pick.bytes  = f.file_bytes;
++            pick.lcp       = (int) lcp;
++            pick.bytes     = f.file_bytes;
++            pick.prefill_s = f.prefill_s;
+             out.push_back(std::move(pick));
+         }
+         return out;
+@@ -424,32 +432,12 @@ public:
+                     return std::nullopt;
+                 }
+             }
+-            // A file written without the row ends here. The trailer is the
+-            // logits after the last token, so a restart can sample them.
+-            if (in.peek() == std::char_traits<char>::eof()) {
+-                return entry;
+-            }
+-            char tag[4];
+-            if (!read_raw(in, tag, 4) || std::memcmp(tag, "ZLOG", 4) != 0) {
+-                return std::nullopt;
+-            }
+-            int32_t n_row = 0;
+-            int32_t k_row = 0;
+-            uint64_t hash = 0;
+-            uint32_t n_f = 0;
+-            if (!read_i32(in, n_row) || !read_i32(in, k_row) || !read_u64(in, hash) || !read_u32(in, n_f)) {
+-                return std::nullopt;
+-            }
+-            if (n_row != (int32_t) entry.tokens.size() || hash == 0 || n_f == 0 || n_f > k_max_logits) {
+-                return std::nullopt;
+-            }
+-            entry.logits.resize(n_f);
+-            if (!read_raw(in, entry.logits.data(), (size_t) n_f * sizeof(float))) {
++            // A file written without a trailer ends here. ZLOG is the logits
++            // after the last token. ZRAT is the seconds per token of the
++            // prefill that wrote the state. Either may be absent.
++            if (!read_trailer(in, &entry, nullptr)) {
+                 return std::nullopt;
+             }
+-            entry.logits_n    = n_row;
+-            entry.logits_k    = k_row;
+-            entry.logits_hash = hash;
+             return entry;
+         } catch (const std::exception &) {
+             return std::nullopt;
+@@ -479,9 +467,79 @@ private:
+         uint64_t drft_size = 0;
+         uint64_t file_bytes = 0;
+         int64_t  mtime = 0;
++        double   prefill_s = 0;
+         std::filesystem::path path;
+     };
+ 
++    // Positioned at the optional trailer. A missing trailer is success.
++    // An unknown tag is left unread by the caller only when this returns
++    // true without consuming a rate: the state is still usable.
++    static bool read_trailer(std::istream & in, llama_warm_entry * entry, double * rate_out) {
++        if (entry != nullptr) {
++            entry->prefill_s = 0;
++        }
++        if (rate_out != nullptr) {
++            *rate_out = 0;
++        }
++        if (in.peek() == std::char_traits<char>::eof()) {
++            return true;
++        }
++        char tag[4];
++        if (!read_raw(in, tag, 4)) {
++            return false;
++        }
++        if (std::memcmp(tag, "ZLOG", 4) == 0) {
++            int32_t n_row = 0;
++            int32_t k_row = 0;
++            uint64_t hash = 0;
++            uint32_t n_f = 0;
++            if (!read_i32(in, n_row) || !read_i32(in, k_row) || !read_u64(in, hash) || !read_u32(in, n_f)) {
++                return false;
++            }
++            if (hash == 0 || n_f == 0 || n_f > k_max_logits) {
++                return false;
++            }
++            if (entry != nullptr && n_row != (int32_t) entry->tokens.size()) {
++                return false;
++            }
++            if (entry != nullptr) {
++                entry->logits.resize(n_f);
++                if (!read_raw(in, entry->logits.data(), (size_t) n_f * sizeof(float))) {
++                    return false;
++                }
++                entry->logits_n    = n_row;
++                entry->logits_k    = k_row;
++                entry->logits_hash = hash;
++            } else if (!in.seekg((std::streamoff) ((size_t) n_f * sizeof(float)), std::ios::cur) || !in) {
++                return false;
++            }
++            if (in.peek() == std::char_traits<char>::eof()) {
++                return true;
++            }
++            if (!read_raw(in, tag, 4)) {
++                return false;
++            }
++        }
++        if (std::memcmp(tag, "ZRAT", 4) == 0) {
++            uint64_t bits = 0;
++            if (!read_u64(in, bits)) {
++                return false;
++            }
++            double rate = 0;
++            memcpy(&rate, &bits, sizeof(rate));
++            if (rate > 0.0 && rate == rate && rate < 1.0e6) {
++                if (entry != nullptr) {
++                    entry->prefill_s = rate;
++                }
++                if (rate_out != nullptr) {
++                    *rate_out = rate;
++                }
++            }
++            return true;
++        }
++        return true;
++    }
++
+     static void write_u64(std::ostream & out, uint64_t v) {
+         unsigned char b[8];
+         for (int i = 0; i < 8; i++) {
+@@ -665,6 +723,11 @@ private:
+         if (!read_marks(in, meta)) {
+             return meta_status::bad;
+         }
++        double rate = 0;
++        if (!read_trailer(in, nullptr, &rate)) {
++            return meta_status::bad;
++        }
++        meta.prefill_s = rate;
+         std::error_code ec;
+         meta.file_bytes = (uint64_t) std::filesystem::file_size(path, ec);
+         if (ec) {
+@@ -730,6 +793,12 @@ private:
+                 write_u32(out, (uint32_t) entry.logits.size());
+                 out.write((const char *) entry.logits.data(), (std::streamsize) (entry.logits.size() * sizeof(float)));
+             }
++            if (entry.prefill_s > 0.0 && entry.prefill_s == entry.prefill_s && entry.prefill_s < 1.0e6) {
++                out.write("ZRAT", 4);
++                uint64_t bits = 0;
++                memcpy(&bits, &entry.prefill_s, sizeof(bits));
++                write_u64(out, bits);
++            }
+             if (!out) {
+                 std::error_code ec;
+                 std::filesystem::remove(tmp, ec);
+@@ -1002,7 +1071,7 @@ int main() {
+         if (got->ckpts.size() != 1 || got->ckpts[0].n_tokens != 4 || got->ckpts[0].id_task != 3 || got->ckpts[0].tgt != ck.tgt || got->ckpts[0].spec != ck.spec) {
+             return warm_fail("checkpoint");
+         }
+-        if (!got->logits.empty() || got->logits_hash != 0) {
++        if (!got->logits.empty() || got->logits_hash != 0 || got->prefill_s != 0.0) {
+             return warm_fail("logits absent");
+         }
+         const int32_t shortq[] = { 1 };
+@@ -1108,14 +1177,18 @@ int main() {
+         row.logits_n = 4;
+         row.logits_k = -1;
+         row.logits_hash = 0x1234;
++        row.prefill_s = 0.012;
+         disk.store(row);
+         disk.flush();
+         const int32_t q[] = { 1, 2, 3, 4 };
+         const auto pick = disk.better(q, 4, -1.0f, -1.0f);
+         const auto got = pick ? disk.read(pick->path) : std::nullopt;
+-        if (!got || got->main != row.main || got->logits != row.logits || got->logits_n != 4 || got->logits_k != -1 || got->logits_hash != 0x1234) {
++        if (!got || got->main != row.main || got->logits != row.logits || got->logits_n != 4 || got->logits_k != -1 || got->logits_hash != 0x1234 || got->prefill_s != 0.012) {
+             return warm_fail("logits trailer");
+         }
++        if (!pick || pick->prefill_s != 0.012) {
++            return warm_fail("prefill rate indexed");
++        }
+     }
+ 
+     uint64_t one = 0;

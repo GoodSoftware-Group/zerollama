@@ -136,7 +136,7 @@ Mark **v0 Done** when 1–3 pass and criterion 4 smoke passes on ship hardware (
 
 ## Relationship to Phase 17
 
-Phase 17 ports upstream integration (`llm/llama_server.go`, discovery, LeadingBOS, pin **`b12119`**). Phase 16 **uses** that path as the default local inference shape when `--edge` is set (or on Linux via `auto`).
+Phase 17 ports upstream integration (`llm/llama_server.go`, discovery, LeadingBOS, pin **`b12557`**). Phase 16 **uses** that path as the default local inference shape when `--edge` is set (or on Linux via `auto`).
 
 | Mode | GGUF path | Python runtime chat |
 |------|-----------|---------------------|

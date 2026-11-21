@@ -4480,7 +4480,7 @@ index 0000000..051f9f4
 +    *s = (float)acc;
 +}
 diff --git a/ggml/src/ggml-quants.c b/ggml/src/ggml-quants.c
-index 3586f67..c0ea57c 100644
+index 40ffe1e..0ef3963 100644
 --- a/ggml/src/ggml-quants.c
 +++ b/ggml/src/ggml-quants.c
 @@ -2441,6 +2441,960 @@ size_t quantize_tq2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
@@ -5626,7 +5626,7 @@ index 0000000..a270ea5
 +    1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f,
 +};
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index c6406f0..f71a48c 100644
+index 24ca1d3..26c0173 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
 @@ -968,42 +968,56 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
@@ -5686,7 +5686,7 @@ index c6406f0..f71a48c 100644
      },
  };
  
-@@ -8469,6 +8483,13 @@ size_t ggml_quantize_chunk(
+@@ -8300,6 +8314,13 @@ size_t ggml_quantize_chunk(
          case GGML_TYPE_Q6_K:    result = quantize_q6_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_TQ1_0:   result = quantize_tq1_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
          case GGML_TYPE_TQ2_0:   result = quantize_tq2_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;

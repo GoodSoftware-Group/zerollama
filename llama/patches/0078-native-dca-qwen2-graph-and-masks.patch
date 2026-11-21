@@ -9,15 +9,15 @@ Subject: [PATCH] native dca qwen2 graph and masks
  src/llama-graph.h       |  65 +++++++++++
  src/llama-kv-cache.cpp  |  72 ++++++++++++
  src/llama-kv-cache.h    |   4 +
- src/models/qwen2.cpp    |  87 ++++++++++----
- 6 files changed, 462 insertions(+), 23 deletions(-)
+ src/models/qwen2.cpp    |  69 ++++++++---
+ 6 files changed, 453 insertions(+), 14 deletions(-)
  create mode 100644 src/llama-graph.cpp.rej
 
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index 0a4ceed..7992270 100644
+index 01d5a6b..96608f5 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
-@@ -669,6 +669,69 @@ bool llm_graph_input_attn_kv::can_reuse(const llm_graph_params & params) {
+@@ -707,6 +707,69 @@ bool llm_graph_input_attn_kv::can_reuse(const llm_graph_params & params) {
      return res;
  }
  
@@ -87,8 +87,8 @@ index 0a4ceed..7992270 100644
  void llm_graph_input_attn_k::set_input(const llama_ubatch * ubatch) {
      mctx->set_input_k_idxs(self_k_idxs, ubatch);
  
-@@ -3294,6 +3357,191 @@ llm_graph_input_attn_kv * llm_graph_context::build_attn_inp_kv() const {
-     return (llm_graph_input_attn_kv *) res->add_input(std::move(inp));
+@@ -3512,6 +3575,191 @@ static ggml_tensor * build_attn_scale_kv_output(
+     return cur;
  }
  
 +llm_graph_input_attn_kv_dca * llm_graph_context::build_attn_inp_kv_dca() const {
@@ -226,7 +226,7 @@ index 0a4ceed..7992270 100644
 +        ggml_tensor * cur = ggml_flash_attn_ext(ctx0, q, k_fa, v_fa, mask, kq_scale, hparams.f_max_alibi_bias, softcap);
 +        res->add_fused_node({LLM_FUSED_OP_FLASH_ATTN, cur, il});
 +        ggml_flash_attn_ext_add_sinks(cur, sinks);
-+        ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);
++        ggml_prec_set_acc(cur, GGML_PREC_F32);
 +        int64_t lse_ne[4] = { 1, cur->ne[2], cur->ne[1], cur->ne[3] }; // [1, n_tokens, n_head, n_stream]
 +        // Materialize a GPU buffer (repeat of 0 from Q) — bare leaves may not get device memory.
 +        ggml_tensor * lse_shape = ggml_new_tensor(ctx0, GGML_TYPE_F32, 4, lse_ne);
@@ -295,10 +295,10 @@ index 0000000..bdcbb25
 + 
 + #include "llama-kv-cache.h"
 diff --git a/src/llama-graph.h b/src/llama-graph.h
-index e1804fb..528ced2 100644
+index b5956ea..661fd59 100644
 --- a/src/llama-graph.h
 +++ b/src/llama-graph.h
-@@ -400,6 +400,53 @@ public:
+@@ -412,6 +412,53 @@ public:
      const llama_kv_cache_context * mctx;
  };
  
@@ -352,7 +352,7 @@ index e1804fb..528ced2 100644
  // V-less input for the KV cache
  // ref: https://github.com/ggml-org/llama.cpp/pull/19067
  class llm_graph_input_attn_k : public llm_graph_input_i {
-@@ -1296,6 +1343,8 @@ struct llm_graph_context {
+@@ -1363,6 +1410,8 @@ struct llm_graph_context {
  
      llm_graph_input_attn_kv * build_attn_inp_kv() const;
  
@@ -361,7 +361,7 @@ index e1804fb..528ced2 100644
      ggml_tensor * build_attn(
              llm_graph_input_attn_kv * inp,
              ggml_tensor * wo,
-@@ -1310,6 +1359,22 @@ struct llm_graph_context {
+@@ -1377,6 +1426,22 @@ struct llm_graph_context {
                    float   kq_scale,
                      int   il) const;
  
@@ -385,7 +385,7 @@ index e1804fb..528ced2 100644
  
      ggml_tensor * build_attn(
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 10da38c..f544ca7 100644
+index e5adeca..bdcfd00 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -1,5 +1,6 @@
@@ -403,7 +403,7 @@ index 10da38c..f544ca7 100644
  #include <unordered_map>
  #include <vector>
  
-@@ -2424,6 +2426,72 @@ void llama_kv_cache::set_input_attn_mask(const llm_attn_mask & attn_mask, const
+@@ -2439,6 +2441,72 @@ void llama_kv_cache::set_input_attn_mask(const llm_attn_mask & attn_mask, const
      }
  }
  
@@ -476,7 +476,7 @@ index 10da38c..f544ca7 100644
  void llama_kv_cache::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {
      const int64_t n_tokens = ubatch->n_tokens;
  
-@@ -3548,6 +3616,10 @@ void llama_kv_cache_context::set_input_attn_mask(const llm_attn_mask & attn_mask
+@@ -3582,6 +3650,10 @@ void llama_kv_cache_context::set_input_attn_mask(const llm_attn_mask & attn_mask
      kv->set_input_attn_mask(attn_mask, ubatch, causal_attn);
  }
  
@@ -488,32 +488,32 @@ index 10da38c..f544ca7 100644
      kv->set_input_pos_bucket(dst, ubatch);
  }
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 6bb5e64..7bcc9c7 100644
+index d748fad..9839944 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
-@@ -254,6 +254,8 @@ public:
+@@ -260,6 +260,8 @@ public:
      void set_input_k_shift(ggml_tensor * dst) const;
  
      void set_input_attn_mask (const llm_attn_mask & attn_mask, const llama_ubatch * ubatch, bool causal_attn) const;
 +    // Dual Chunk Attention stage mask: dca_stage 0=intra, 1=succ, 2=inter
 +    void set_input_kq_mask_dca(ggml_tensor * dst, const llama_ubatch * ubatch, int dca_stage) const;
      void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+     void set_input_relative_pos(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const;
  
-     // true if llama_kv_cell_ext holds information that has to survive a state save/restore
-@@ -492,6 +494,8 @@ public:
+@@ -505,6 +507,8 @@ public:
  
      void set_input_k_shift   (ggml_tensor * dst) const;
      void set_input_attn_mask (const llm_attn_mask & attn_mask, const llama_ubatch * ubatch, bool causal_attn) const;
 +    // Dual Chunk Attention stage masks (intra / succ / inter). See llama-dca.h.
 +    void set_input_kq_mask_dca(ggml_tensor * dst, const llama_ubatch * ubatch, int dca_stage) const;
      void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+     void set_input_relative_pos(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const;
  
-     // see llama_kv_cache::get_prev_tokens()
 diff --git a/src/models/qwen2.cpp b/src/models/qwen2.cpp
-index d2cd8e2..f8674f5 100644
+index bb93ca9..23c9c48 100644
 --- a/src/models/qwen2.cpp
 +++ b/src/models/qwen2.cpp
-@@ -56,15 +56,23 @@ llama_model_qwen2::graph::graph(const llama_model & model, const llm_graph_param
+@@ -56,15 +56,23 @@ llama_model_qwen2::graph::graph(const llm_graph_params & params) : llm_graph_con
      GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
      GGML_ASSERT(n_embd_head == n_rot);
  
@@ -540,7 +540,7 @@ index d2cd8e2..f8674f5 100644
  
      ggml_tensor * inp_out_ids = build_inp_out_ids();
  
-@@ -79,29 +87,62 @@ llama_model_qwen2::graph::graph(const llama_model & model, const llm_graph_param
+@@ -79,20 +87,53 @@ llama_model_qwen2::graph::graph(const llm_graph_params & params) : llm_graph_con
  
          // self-attention
          {
@@ -548,17 +548,8 @@ index d2cd8e2..f8674f5 100644
              auto [Qcur, Kcur, Vcur] = build_qkv(model.layers[il], cur,
                      n_embd_head, n_head, n_head_kv, il);
  
--            Qcur = ggml_rope_ext(
--                    ctx0, Qcur, inp_pos, nullptr,
--                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
--                    ext_factor, attn_factor, beta_fast, beta_slow
--                    );
--
--            Kcur = ggml_rope_ext(
--                    ctx0, Kcur, inp_pos, nullptr,
--                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
--                    ext_factor, attn_factor, beta_fast, beta_slow
--                    );
+-            Qcur = build_rope(Qcur, inp_pos, il);
+-            Kcur = build_rope(Kcur, inp_pos, il);
 -
 -            cb(Qcur, "Qcur", il);
 -            cb(Kcur, "Kcur", il);
@@ -600,17 +591,8 @@ index d2cd8e2..f8674f5 100644
 +                        Q_intra, Q_succ, Q_inter, Kcur, Vcur, nullptr, nullptr,
 +                        1.0f/sqrtf(float(n_embd_head)), il);
 +            } else {
-+                Qcur = ggml_rope_ext(
-+                        ctx0, Qcur, inp_pos, nullptr,
-+                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-+                        ext_factor, attn_factor, beta_fast, beta_slow
-+                        );
-+
-+                Kcur = ggml_rope_ext(
-+                        ctx0, Kcur, inp_pos, nullptr,
-+                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-+                        ext_factor, attn_factor, beta_fast, beta_slow
-+                        );
++                Qcur = build_rope(Qcur, inp_pos, il);
++                Kcur = build_rope(Kcur, inp_pos, il);
 +
 +                cb(Qcur, "Qcur", il);
 +                cb(Kcur, "Kcur", il);

@@ -18,14 +18,25 @@ func TestDumpEarWAVWritesClipAndTranscript(t *testing.T) {
 	if path == "" || !strings.Contains(filepath.Base(path), "-guess-") {
 		t.Fatalf("path %q", path)
 	}
+	if st, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if st.Mode().Perm() != 0o600 {
+		t.Fatalf("wav mode %o", st.Mode().Perm())
+	}
 	NoteEar(path, "Hello.", "qwen3-asr", true, nil)
-	note, err := os.ReadFile(strings.TrimSuffix(path, ".wav") + ".txt")
+	notePath := strings.TrimSuffix(path, ".wav") + ".txt"
+	note, err := os.ReadFile(notePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(note)
 	if !strings.Contains(text, "transcript: Hello.") || !strings.Contains(text, "transcribed: true") || !strings.Contains(text, "backend: qwen3-asr") {
 		t.Fatalf("note %q", text)
+	}
+	if st, err := os.Stat(notePath); err != nil {
+		t.Fatal(err)
+	} else if st.Mode().Perm() != 0o600 {
+		t.Fatalf("note mode %o", st.Mode().Perm())
 	}
 }
 

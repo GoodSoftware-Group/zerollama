@@ -12,7 +12,7 @@ Co-authored-by: Cursor <cursoragent@cursor.com>
  1 file changed, 125 insertions(+)
 
 diff --git a/ggml/src/ggml-cuda/fattn-common.cuh b/ggml/src/ggml-cuda/fattn-common.cuh
-index beb8779..8d54669 100644
+index fc0cc74..38e709f 100644
 --- a/ggml/src/ggml-cuda/fattn-common.cuh
 +++ b/ggml/src/ggml-cuda/fattn-common.cuh
 @@ -2,6 +2,7 @@
@@ -23,7 +23,7 @@ index beb8779..8d54669 100644
  #include "vecdotq.cuh"
  
  #include <cstdint>
-@@ -329,6 +330,77 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q8_0(
+@@ -357,6 +358,77 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q8_0(
      return sum;
  }
  
@@ -101,7 +101,7 @@ index beb8779..8d54669 100644
  template <typename Tds, int ni>
  static __device__ __forceinline__ void quantize_q8_1_to_shared(
      const float * __restrict__ x, const float scale, int * __restrict__ yq32, void * __restrict__ yds) {
-@@ -623,6 +695,51 @@ static __device__ __forceinline__ void dequantize_V_q8_0(const void * __restrict
+@@ -669,6 +741,51 @@ static __device__ __forceinline__ void dequantize_V_q8_0(const void * __restrict
      }
  }
  
@@ -153,10 +153,10 @@ index beb8779..8d54669 100644
  template <ggml_type type_K, int D, int nthreads>
  constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
      if constexpr (type_K == GGML_TYPE_F16) {
-@@ -639,6 +756,10 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
-         return vec_dot_fattn_vec_KQ_q8_0<D, nthreads>;
-     } else if constexpr (type_K == GGML_TYPE_BF16) {
+@@ -687,6 +804,10 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
          return vec_dot_fattn_vec_KQ_bf16<D, nthreads>;
+     } else if constexpr (type_K == GGML_TYPE_F8_E4M3) {
+         return vec_dot_fattn_vec_KQ_f8_e4m3<D, nthreads>;
 +    } else if constexpr (type_K == GGML_TYPE_TBQ3_0) {
 +        return vec_dot_fattn_vec_KQ_tbq3_0<D, nthreads>;
 +    } else if constexpr (type_K == GGML_TYPE_TBQ4_0) {
@@ -164,10 +164,10 @@ index beb8779..8d54669 100644
      } else {
          static_assert(type_K == -1, "bad type");
          return nullptr;
-@@ -661,6 +782,10 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
-         return dequantize_V_q8_0<T, ne>;
-     } else if constexpr (type_V == GGML_TYPE_BF16) {
+@@ -711,6 +832,10 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
          return dequantize_V_bf16<float, ne>;
+     } else if constexpr (type_V == GGML_TYPE_F8_E4M3) {
+         return dequantize_V_f8_e4m3<T, ne>;
 +    } else if constexpr (type_V == GGML_TYPE_TBQ3_0) {
 +        return dequantize_V_tbq3_0<T, ne>;
 +    } else if constexpr (type_V == GGML_TYPE_TBQ4_0) {

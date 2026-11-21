@@ -1,0 +1,730 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 20 Nov 2026 01:01:33 -0800
+Subject: [PATCH] llama: size the MoE cache from free memory and keep a miss on
+ the host when the copy is slower
+
+The cache stayed off unless a size was set, and every miss was uploaded. Leave 384 MiB on the device and run a cold expert on the host when that finishes first.
+---
+ common/arg.cpp          |   6 +-
+ common/common.cpp       |   7 ++
+ common/common.h         |   4 +-
+ common/speculative.cpp  |   2 +
+ include/llama.h         |   6 +-
+ src/llama-context.cpp   |  80 +++++++++++++-
+ src/llama-cparams.h     |   2 +
+ src/llama-flywheel.h    |  94 ++++++++++++++++
+ src/llama-moe-cache.cpp | 230 +++++++++++++++++++++++++++++++++++++---
+ src/llama-moe-cache.h   |   3 +-
+ 10 files changed, 409 insertions(+), 25 deletions(-)
+ create mode 100644 src/llama-flywheel.h
+
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 64de59d..354cfeb 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -2801,23 +2801,25 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+     ).set_env("LLAMA_ARG_N_CPU_MOE"));
+     add_opt(common_arg(
+         {"--moe-cache-mib"}, "N",
+-        "GPU cache size in MiB for the MoE experts kept in the CPU. with multiple GPUs, it is split among them like the layers (--tensor-split) (default: 0, disabled)",
++        "GPU cache size in MiB for the MoE experts kept in the CPU. With multiple GPUs, it is split among them like the layers (--tensor-split). Default: the memory left on the device after a 384 MiB reserve. 0 disables the cache",
+         [](common_params & params, int value) {
+             if (value < 0) {
+                 throw std::invalid_argument("invalid value");
+             }
++            params.moe_cache_auto = false;
+             params.moe_cache_size = (size_t) value*1024*1024;
+         }
+     ).set_env("LLAMA_ARG_MOE_CACHE_MIB"));
+     add_opt(common_arg(
+         {"--moe-cache-cpu-share"}, "F",
+-        string_format("share of the MoE cache misses that the CPU computes from the host experts instead of uploading them to the GPU once the cache is full, from 0 to 1 (default: %.2f)", (double) params.moe_cache_cpu_share),
++        "share of the MoE cache misses that the CPU computes from the host experts instead of uploading them to the GPU once the cache is full, from 0 to 1. Default: each miss runs on the host or is copied, whichever was faster when measured",
+         [](common_params & params, const std::string & value) {
+             const float share = std::stof(value);
+             if (share < 0.0f || share > 1.0f) {
+                 throw std::invalid_argument("invalid value");
+             }
+             params.moe_cache_cpu_share = share;
++            params.moe_cache_cpu_share_set = true;
+         }
+     ).set_env("LLAMA_ARG_MOE_CACHE_CPU_SHARE"));
+     add_opt(common_arg(
+diff --git a/common/common.cpp b/common/common.cpp
+index c317b40..fbe1bd9 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -20,6 +20,7 @@
+ #include <cmath>
+ #include <chrono>
+ #include <cstdarg>
++#include <cstdlib>
+ #include <cstring>
+ #include <ctime>
+ #include <filesystem>
+@@ -1791,6 +1792,12 @@ struct llama_context_params common_context_params_to_llama(const common_params &
+ 
+     cparams.moe_cache_size      = params.moe_cache_size;
+     cparams.moe_cache_cpu_share = params.moe_cache_cpu_share;
++    cparams.moe_cache_auto      = params.moe_cache_auto;
++    if (const char * env = getenv("LLAMA_MOE_CACHE"); env != nullptr && env[0] == '0') {
++        cparams.moe_cache_auto = false;
++    }
++    // A fixed share replaces the host-versus-copy choice. An explicit size still uses that choice.
++    cparams.moe_cache_flywheel = !params.moe_cache_cpu_share_set && (cparams.moe_cache_auto || params.moe_cache_size > 0);
+ 
+     return cparams;
+ }
+diff --git a/common/common.h b/common/common.h
+index c41285f..6e85890 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -653,8 +653,10 @@ struct common_params {
+     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
+     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
+ 
+-    size_t moe_cache_size      = 0;    // GPU cache size in bytes for the MoE experts kept in the CPU, split among the GPUs like the layers
++    size_t moe_cache_size      = 0;    // GPU cache size in bytes for the MoE experts kept in the CPU, split among the GPUs like the layers. 0 with moe_cache_auto sizes it from free device memory
+     float  moe_cache_cpu_share = 0.0f; // share of the MoE cache misses computed on the CPU instead of uploaded
++    bool   moe_cache_auto      = true; // size the cache from the device memory left after a 384 MiB reserve
++    bool   moe_cache_cpu_share_set = false; // the user chose a fixed share; otherwise each miss is host or copy, whichever is faster
+ 
+     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
+ 
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index bd1cc93..bcb70b9 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -3124,6 +3124,8 @@ common_params common_base_params_to_speculative(const common_params & params) {
+ 
+     // the MoE cache is only used by the target context
+     result.moe_cache_size = 0;
++    result.moe_cache_auto = false;
++    result.moe_cache_cpu_share_set = true;
+ 
+     // dflash/dspark decode the whole noise block in a single pass and sample every block position on the backend
+     // TODO: refactor such properties to be announced by the speculative types
+diff --git a/include/llama.h b/include/llama.h
+index ed09201..226bcc0 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -419,8 +419,8 @@ extern "C" {
+         enum ggml_type type_k; // data type for K cache [EXPERIMENTAL]
+         enum ggml_type type_v; // data type for V cache [EXPERIMENTAL]
+ 
+-        size_t moe_cache_size;      // device cache in bytes for the experts kept in host memory, split among the devices like the layers, 0 = disabled [EXPERIMENTAL]
+-        float  moe_cache_cpu_share; // share of the MoE cache misses computed on the CPU instead of uploaded, 0 = all uploaded [EXPERIMENTAL]
++        size_t moe_cache_size;      // device cache in bytes for the experts kept in host memory, split among the devices like the layers, 0 = disabled unless moe_cache_auto [EXPERIMENTAL]
++        float  moe_cache_cpu_share; // share of the MoE cache misses computed on the CPU instead of uploaded, 0 = all uploaded. Ignored when moe_cache_flywheel is set [EXPERIMENTAL]
+ 
+         // Abort callback
+         // if it returns true, execution of llama_decode() will be aborted
+@@ -439,6 +439,8 @@ extern "C" {
+         bool kv_unified;  // use a unified buffer across the input sequences when computing the attention
+                           // try to disable when n_seq_max > 1 for improved performance when the sequences do not share a large prefix
+                           // ref: https://github.com/ggml-org/llama.cpp/pull/14363
++        bool moe_cache_auto;     // size the MoE cache from the device memory left after a 384 MiB reserve [EXPERIMENTAL]
++        bool moe_cache_flywheel; // run each cache miss on the host or copy it, whichever was faster when measured [EXPERIMENTAL]
+ 
+         // [EXPERIMENTAL]
+         // backend sampler chain configuration (make sure the caller keeps the sampler chains alive)
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index e5d315b..583933c 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -11,6 +11,7 @@
+ #include "llama-model.h"
+ #include "llama-shortlist.h"
+ #include "llama-moe-cache.h"
++#include "llama-flywheel.h"
+ #include "llama-ext.h"
+ #include "llama-sampler.h"
+ #include "llama.h"
+@@ -172,6 +173,58 @@ static const llm_fused_op_probe llm_fused_op_top_k_mask_probe = {
+     /*.n_tokens_per_seq =*/ 1,
+ };
+ 
++static bool llama_tensor_is_host_weight(const ggml_tensor * t) {
++    return t != nullptr && t->buffer != nullptr &&
++        ggml_backend_buffer_get_usage(t->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
++        ggml_backend_buffer_is_host(t->buffer);
++}
++
++// True when a layer keeps every routed expert in host memory, which is the
++// case Flywheel can cache on the device.
++static bool llama_model_has_host_moe(const llama_model & model) {
++    if (model.hparams.n_expert == 0) {
++        return false;
++    }
++    for (const llama_layer & layer : model.layers) {
++        const ggml_tensor * experts[] = { layer.ffn_gate_up_exps, layer.ffn_gate_exps, layer.ffn_up_exps, layer.ffn_down_exps };
++        bool any = false;
++        bool all_host = true;
++        for (const ggml_tensor * t : experts) {
++            if (t == nullptr) {
++                continue;
++            }
++            any = true;
++            if (!llama_tensor_is_host_weight(t)) {
++                all_host = false;
++            }
++        }
++        if (any && all_host) {
++            return true;
++        }
++    }
++    return false;
++}
++
++// Memory left on the GPUs after the weights, the KV cache and the compute
++// buffers, minus the reserve the driver and a later graph still need.
++static size_t llama_flywheel_budget(const std::vector<ggml_backend_ptr> & backends) {
++    size_t budget = 0;
++    for (const auto & backend : backends) {
++        ggml_backend_dev_t dev = ggml_backend_get_device(backend.get());
++        const auto dev_type = ggml_backend_dev_type(dev);
++        if (dev_type != GGML_BACKEND_DEVICE_TYPE_GPU && dev_type != GGML_BACKEND_DEVICE_TYPE_IGPU) {
++            continue;
++        }
++        size_t free = 0;
++        size_t total = 0;
++        ggml_backend_dev_memory(dev, &free, &total);
++        if (free > LLAMA_FLYWHEEL_RESERVE) {
++            budget += free - LLAMA_FLYWHEEL_RESERVE;
++        }
++    }
++    return budget;
++}
++
+ llama_context::llama_context(
+         const llama_model & model,
+               llama_context_params params) :
+@@ -391,6 +444,8 @@ llama_context::llama_context(
+     cparams.kv_unified     = params.kv_unified;
+     cparams.moe_cache_size      = params.moe_cache_size;
+     cparams.moe_cache_cpu_share = params.moe_cache_cpu_share;
++    cparams.moe_cache_auto      = params.moe_cache_auto;
++    cparams.moe_cache_flywheel  = params.moe_cache_flywheel;
+ 
+     // resolved after flash attention, see resolve_fused_ops()
+     {
+@@ -600,7 +655,9 @@ llama_context::llama_context(
+             model.split_mode() == LLAMA_SPLIT_MODE_LAYER &&
+             cparams.offload_kqv &&
+             !model.has_tensor_overrides() &&
+-            cparams.moe_cache_size == 0; // not supported by the MoE cache
++            // the MoE cache does not support pipeline parallelism
++            cparams.moe_cache_size == 0 &&
++            !(cparams.moe_cache_auto && llama_model_has_host_moe(model));
+ 
+         // pipeline parallelism requires support for async compute and events in all devices
+         if (pipeline_parallel) {
+@@ -629,11 +686,28 @@ llama_context::llama_context(
+         }
+ 
+         if (cparams.moe_cache_size > 0) {
+-            moe_cache = std::make_unique<llama_moe_cache>(model, model.no_alloc(), backend_ptrs, backend_buft, cparams.moe_cache_size, cparams.moe_cache_cpu_share);
++            moe_cache = std::make_unique<llama_moe_cache>(model, model.no_alloc(), backend_ptrs, backend_buft, cparams.moe_cache_size, cparams.moe_cache_cpu_share, cparams.moe_cache_flywheel);
+         }
+ 
+         sched_reserve();
+ 
++        // Flywheel: the compute buffers are reserved, so the memory still free
++        // is what a cache of experts can take. A model with no host experts,
++        // or a device with nothing left, keeps the cache off.
++        if (!moe_cache && cparams.moe_cache_auto && llama_model_has_host_moe(model)) {
++            const size_t budget = llama_flywheel_budget(backends);
++            if (budget > 0) {
++                try {
++                    cparams.moe_cache_size = budget;
++                    moe_cache = std::make_unique<llama_moe_cache>(model, model.no_alloc(), backend_ptrs, backend_buft, budget, cparams.moe_cache_cpu_share, cparams.moe_cache_flywheel);
++                } catch (const std::exception & e) {
++                    LLAMA_LOG_WARN("%s: flywheel disabled: %s\n", __func__, e.what());
++                    cparams.moe_cache_size = 0;
++                    moe_cache.reset();
++                }
++            }
++        }
++
+         if (!cparams.flash_attn) {
+             if (ggml_is_quantized(params.type_v)) {
+                 throw std::runtime_error("quantized V cache was requested, but this requires Flash Attention");
+@@ -4629,6 +4703,8 @@ llama_context_params llama_context_default_params() {
+         /*.op_offload                  =*/ true,
+         /*.swa_full                    =*/ true,
+         /*.kv_unified                  =*/ false,
++        /*.moe_cache_auto              =*/ false,
++        /*.moe_cache_flywheel          =*/ false,
+         /*.sampler                     =*/ nullptr,
+         /*.n_sampler                   =*/ 0,
+         /*.ctx_other                   =*/ nullptr,
+diff --git a/src/llama-cparams.h b/src/llama-cparams.h
+index 1f890d6..8cf71e8 100644
+--- a/src/llama-cparams.h
++++ b/src/llama-cparams.h
+@@ -58,6 +58,8 @@ struct llama_cparams {
+ 
+     size_t moe_cache_size;
+     float  moe_cache_cpu_share;
++    bool   moe_cache_auto     = false;
++    bool   moe_cache_flywheel = false;
+ 
+     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
+     bool embeddings_layer_inp_dev; // write enabled layer inputs to a device buffer instead of host
+diff --git a/src/llama-flywheel.h b/src/llama-flywheel.h
+new file mode 100644
+index 0000000..d14032f
+--- /dev/null
++++ b/src/llama-flywheel.h
+@@ -0,0 +1,94 @@
++#pragma once
++
++// Which cold experts of one batch run on the host.
++//
++// The experts are ordered with the most tokens first. Each one is copied to
++// the device, or computed on the host, whichever keeps the two running totals
++// from falling behind. A long prompt pays for the copy once. A single token
++// stays on the host when the copy would take longer.
++
++#include <algorithm>
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++
++// Device memory left unused so the driver and later buffers still fit.
++inline constexpr size_t LLAMA_FLYWHEEL_RESERVE = 384ull << 20;
++
++// Seconds per byte. host is the first token, host_per_token each token after it.
++struct llama_flywheel_rates {
++    double host           = 0.0;
++    double host_per_token = 0.0;
++    double copy           = 0.0;
++    double slowdown       = 1.0;
++};
++
++struct llama_flywheel_miss {
++    int32_t expert = 0;
++    int32_t tokens = 1;
++};
++
++inline void llama_flywheel_place(const llama_flywheel_rates & rates, size_t bytes,
++        const std::vector<llama_flywheel_miss> & misses,
++        std::vector<int32_t> & host, std::vector<int32_t> & device) {
++    host.clear();
++    device.clear();
++    const double slow = rates.slowdown > 0.0 ? rates.slowdown : 1.0;
++    double host_time = 0.0;
++    double copy_time = 0.0;
++    for (const llama_flywheel_miss & m : misses) {
++        const int32_t tokens = std::max(m.tokens, 1);
++        const double host_s = slow * (double) bytes * (rates.host + (double) (tokens - 1) * rates.host_per_token);
++        const double copy_s = (double) bytes * rates.copy;
++        if (copy_time + copy_s >= host_time + host_s) {
++            host.push_back(m.expert);
++            host_time += host_s;
++        } else {
++            device.push_back(m.expert);
++            copy_time += copy_s;
++        }
++    }
++}
++
++#ifdef LLAMA_FLYWHEEL_TEST
++#include <cstdio>
++#include <cstdlib>
++int main() {
++    const llama_flywheel_rates slow_copy { 1e-9, 1e-10, 1e-8, 1.0 };
++    const size_t bytes = 1000;
++    std::vector<int32_t> host, device;
++
++    llama_flywheel_place(slow_copy, bytes, { { 3, 1 } }, host, device);
++    if (host.size() != 1 || host[0] != 3 || !device.empty()) {
++        std::fputs("one token should stay on the host when the copy is slower\n", stderr);
++        return 1;
++    }
++
++    llama_flywheel_place(slow_copy, bytes, { { 7, 100 } }, host, device);
++    if (device.size() != 1 || device[0] != 7 || !host.empty()) {
++        std::fputs("a long prompt should pay for the copy\n", stderr);
++        return 1;
++    }
++
++    // Most tokens first, as the caller sorts them.
++    llama_flywheel_place(slow_copy, bytes, { { 7, 100 }, { 3, 1 } }, host, device);
++    if (device.size() != 1 || device[0] != 7 || host.size() != 1 || host[0] != 3) {
++        std::fputs("the long expert is copied and the single token stays on the host\n", stderr);
++        return 1;
++    }
++
++    const llama_flywheel_rates fast_copy { 1e-8, 1e-9, 1e-12, 1.0 };
++    llama_flywheel_place(fast_copy, bytes, { { 1, 1 }, { 2, 1 } }, host, device);
++    if (!host.empty() || device.size() != 2) {
++        std::fputs("a fast copy takes every expert\n", stderr);
++        return 1;
++    }
++
++    if (LLAMA_FLYWHEEL_RESERVE != (384ull << 20)) {
++        std::fputs("reserve is not 384 MiB\n", stderr);
++        return 1;
++    }
++    std::puts("flywheel ok");
++    return 0;
++}
++#endif
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+index ba35af0..ba963cc 100644
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -1,13 +1,16 @@
+ #include "llama-moe-cache.h"
++#include "llama-flywheel.h"
+ 
+ #include "llama-graph.h"
+ #include "llama-impl.h"
+ #include "llama-memory.h"
+ #include "llama-model.h"
+ 
++#include "ggml-alloc.h"
+ #include "ggml-cpp.h"
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <cmath>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -184,9 +187,12 @@ struct moe_cache_lru {
+     // n_cpu(n) of the n misses are left to the CPU and read a zero slot on the device, they are not cached
+     // a zero slot is used at most once per token, a miss that does not get one is cached instead
+     // returns false if the ids select more distinct experts than there are slots
++    // rates != nullptr: misses run on the host or are copied, whichever finishes sooner.
++    // batch_clock counts this ubatch as one use, so a long prompt does not outweigh the tokens after it.
+     template <typename F>
+     bool plan(int32_t il, const int32_t * ids, size_t n_ids, int64_t n_tokens, int32_t n_used, int32_t n_zero, F && n_cpu,
+-            std::vector<fill> & fills, std::vector<fill> & cpu, size_t & n_hit) {
++            std::vector<fill> & fills, std::vector<fill> & cpu, size_t & n_hit,
++            const llama_flywheel_rates * rates, size_t slot_bytes, bool batch_clock) {
+         fills.clear();
+         cpu.clear();
+         n_hit = 0;
+@@ -222,15 +228,42 @@ struct moe_cache_lru {
+             }
+         }
+ 
++        // Flywheel: the experts used by the most tokens are considered first, and each
++        // miss stays on the host when the copy would finish later. The static share
++        // instead leaves the lowest-CRF misses on the CPU once the cache is full.
++        std::vector<int32_t> device_misses;
++        bool cost = false;
++        if (rates != nullptr && rates->host > 0.0 && rates->copy > 0.0 && slot_bytes > 0 && !misses.empty()) {
++            std::vector<int32_t> ntok(n_expert, 0);
++            for (size_t i = 0; i < n_ids; ++i) {
++                const int32_t e = ids[i];
++                if (e >= 0 && e < n_expert) {
++                    ntok[e]++;
++                }
++            }
++            std::vector<llama_flywheel_miss> ordered;
++            ordered.reserve(misses.size());
++            for (int32_t e : misses) {
++                ordered.push_back({ e, std::max(ntok[e], 1) });
++            }
++            std::sort(ordered.begin(), ordered.end(), [](const llama_flywheel_miss & a, const llama_flywheel_miss & b) {
++                return a.tokens != b.tokens ? a.tokens > b.tokens : a.expert < b.expert;
++            });
++            llama_flywheel_place(*rates, slot_bytes, ordered, misses, device_misses);
++            cost = true;
++        }
++
+         // the misses with the lowest CRF are left to the CPU, a miss that keeps being used gains CRF and enters the cache
+         // all misses are used at the same clock, so their CRF compare without decay
+-        const size_t n_c = std::min(n_cpu(misses.size()), misses.size());
++        const size_t n_c = cost ? misses.size() : std::min(n_cpu(misses.size()), misses.size());
+         if (n_c > 0) {
+-            std::sort(misses.begin(), misses.end(), [&](int32_t a, int32_t b) {
+-                const float crf_a = crf[make_key(il, a)];
+-                const float crf_b = crf[make_key(il, b)];
+-                return crf_a != crf_b ? crf_a < crf_b : a < b;
+-            });
++            if (!cost) {
++                std::sort(misses.begin(), misses.end(), [&](int32_t a, int32_t b) {
++                    const float crf_a = crf[make_key(il, a)];
++                    const float crf_b = crf[make_key(il, b)];
++                    return crf_a != crf_b ? crf_a < crf_b : a < b;
++                });
++            }
+             GGML_ASSERT((size_t) n_tokens*n_used == n_ids);
+             token_zero.assign(n_tokens, 0);
+             size_t n_keep = n_c;
+@@ -266,6 +299,10 @@ struct moe_cache_lru {
+             misses.erase(misses.begin(), misses.begin() + n_keep);
+         }
+ 
++        if (cost) {
++            misses.insert(misses.end(), device_misses.begin(), device_misses.end());
++        }
++
+         // fill the misses in expert order: victim() takes unused slots, and slots filled by one plan(), in list order,
+         // so consecutive experts often get consecutive slots and one upload
+         std::sort(misses.begin(), misses.end());
+@@ -282,7 +319,8 @@ struct moe_cache_lru {
+             move(s, class_of(key));
+             fills.push_back({ e, s });
+         }
+-        clock[il] += n_tokens;
++        // one ubatch is one use, so a prefill does not decay the experts a later token still needs
++        clock[il] += batch_clock ? 1 : n_tokens;
+         return true;
+     }
+ };
+@@ -386,6 +424,8 @@ struct llama_moe_cache::impl {
+ 
+     float    cpu_share = 0.0f;
+     uint32_t cpu_share_q = 0; // cpu_share in 1/65536, integer so that a simulator can reproduce the rounding
++    bool     flywheel = false;
++    llama_flywheel_rates rates;
+     int32_t  n_zero    = 0; // zero slots per group
+ 
+     // LLAMA_MOE_CACHE_TRACE: the selected experts of each slot lookup, for a simulator of the cache
+@@ -399,8 +439,8 @@ struct llama_moe_cache::impl {
+     // views used by copy_experts
+     ggml_context_ptr ctx_views;
+ 
+-    impl(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share) :
+-            n_expert_used(model.hparams.n_expert_used_max()), layers(model.layers.size()), cpu_share(std::clamp(cpu_share, 0.0f, 1.0f)) {
++    impl(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share, bool flywheel) :
++            n_expert_used(model.hparams.n_expert_used_max()), layers(model.layers.size()), cpu_share(std::clamp(cpu_share, 0.0f, 1.0f)), flywheel(flywheel) {
+         for (size_t i = 0; i < backends.size(); ++i) {
+             const auto dev_type = ggml_backend_dev_type(ggml_backend_get_device(backends[i]));
+             if (dev_type == GGML_BACKEND_DEVICE_TYPE_GPU || dev_type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+@@ -450,7 +490,7 @@ struct llama_moe_cache::impl {
+ 
+         // with misses on the CPU, the n_zero slots after the cached ones stay zero: the device computes these misses as zero
+         // one extra slot at the end, CUDA MMQ can read past the last expert
+-        n_zero = cpu_share > 0.0f ? std::min<int32_t>(n_expert_used, 64) : 0;
++        n_zero = (cpu_share > 0.0f || flywheel) ? std::min<int32_t>(n_expert_used, 64) : 0;
+         auto alloc_size = [&](const group & g, int32_t n_slots) {
+             const size_t alignment = ggml_backend_buft_get_alignment(devices[g.id].buft);
+             size_t res = 0;
+@@ -619,13 +659,21 @@ struct llama_moe_cache::impl {
+         }
+         ggml_backend_buffer_set_usage(buf_host.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+ 
++        if (flywheel && !no_alloc) {
++            measure_flywheel();
++        }
++
+         for (size_t id = 0; id < devices.size(); ++id) {
+             const device & d = devices[id];
+             if (d.host_bytes == 0) {
+                 continue;
+             }
+-            LLAMA_LOG_INFO("%s: %10s MoE cache size = %8.2f MiB for %.2f MiB of host experts, %.0f%% of the misses on the CPU\n", __func__,
+-                ggml_backend_buft_name(d.buft), d.buf_size/1024.0/1024.0, d.host_bytes/1024.0/1024.0, 100.0*cpu_share);
++            LLAMA_LOG_INFO("%s: %10s MoE cache size = %8.2f MiB for %.2f MiB of host experts%s\n", __func__,
++                ggml_backend_buft_name(d.buft), d.buf_size/1024.0/1024.0, d.host_bytes/1024.0/1024.0,
++                flywheel ? ", host or copy, whichever is faster" : "");
++            if (!flywheel) {
++                LLAMA_LOG_INFO("%s: %.0f%% of the misses on the CPU once the cache is full\n", __func__, 100.0*cpu_share);
++            }
+             for (const group & g : groups) {
+                 if (g.id == (int32_t) id) {
+                     LLAMA_LOG_INFO("%s: %2zu layers, %s: %5d slots (%.1f%%, %.1f tokens worth)\n", __func__,
+@@ -636,6 +684,148 @@ struct llama_moe_cache::impl {
+         }
+     }
+ 
++    // Time one expert of the first cached layer on the CPU, and the copy of
++    // that expert onto the device. The best of three rounds, as other programs
++    // may be busy. A failed measurement leaves every miss to be uploaded.
++    void measure_flywheel() {
++        const group * g = nullptr;
++        for (const group & cur : groups) {
++            if (cur.n_slots > 0 && !cur.ref.empty() && cur.ref[0]->data != nullptr) {
++                g = &cur;
++                break;
++            }
++        }
++        if (g == nullptr) {
++            flywheel = false;
++            return;
++        }
++        ggml_backend_dev_t cpu_dev = nullptr;
++        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
++            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
++            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
++                cpu_dev = dev;
++                break;
++            }
++        }
++        ggml_backend_t cpu = cpu_dev != nullptr ? ggml_backend_dev_init(cpu_dev, nullptr) : nullptr;
++        if (cpu == nullptr) {
++            LLAMA_LOG_WARN("%s: flywheel could not time the host, misses are uploaded\n", __func__);
++            flywheel = false;
++            return;
++        }
++
++        auto time_expert = [&](const ggml_tensor * t, int32_t n_tokens) -> double {
++            const size_t nbytes = t->nb[2];
++            struct ggml_init_params ip = {
++                /*.mem_size   =*/ 16*ggml_tensor_overhead() + ggml_graph_overhead(),
++                /*.mem_buffer =*/ nullptr,
++                /*.no_alloc   =*/ true,
++            };
++            ggml_context * ctx = ggml_init(ip);
++            if (ctx == nullptr) {
++                return -1.0;
++            }
++            ggml_tensor * w = ggml_new_tensor_2d(ctx, t->type, t->ne[0], t->ne[1]);
++            ggml_tensor * x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, t->ne[0], n_tokens);
++            ggml_tensor * y = ggml_mul_mat(ctx, w, x);
++            ggml_cgraph * gf = ggml_new_graph(ctx);
++            ggml_build_forward_expand(gf, y);
++            if (ggml_nbytes(w) > nbytes) {
++                ggml_free(ctx);
++                return -1.0;
++            }
++            ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, cpu);
++            if (buf == nullptr) {
++                ggml_free(ctx);
++                return -1.0;
++            }
++            ggml_backend_tensor_set(w, t->data, 0, ggml_nbytes(w));
++            std::vector<float> act((size_t) t->ne[0]*n_tokens, 0.01f);
++            ggml_backend_tensor_set(x, act.data(), 0, act.size()*sizeof(float));
++            if (ggml_backend_graph_compute(cpu, gf) != GGML_STATUS_SUCCESS) {
++                ggml_backend_buffer_free(buf);
++                ggml_free(ctx);
++                return -1.0;
++            }
++            ggml_backend_synchronize(cpu);
++            double best = 1e300;
++            for (int i = 0; i < 3; ++i) {
++                const auto t0 = std::chrono::steady_clock::now();
++                if (ggml_backend_graph_compute(cpu, gf) != GGML_STATUS_SUCCESS) {
++                    best = -1.0;
++                    break;
++                }
++                ggml_backend_synchronize(cpu);
++                const double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
++                best = std::min(best, dt);
++            }
++            ggml_backend_buffer_free(buf);
++            ggml_free(ctx);
++            return best;
++        };
++
++        double host_1 = 0.0;
++        double host_n = 0.0;
++        size_t bytes = 0;
++        for (const ggml_tensor * t : g->ref) {
++            if (t->data == nullptr) {
++                continue;
++            }
++            const double t1 = time_expert(t, 1);
++            const double tn = time_expert(t, 8);
++            if (t1 <= 0.0 || tn <= 0.0) {
++                ggml_backend_free(cpu);
++                LLAMA_LOG_WARN("%s: flywheel could not time a host expert, misses are uploaded\n", __func__);
++                flywheel = false;
++                return;
++            }
++            host_1 += t1;
++            host_n += tn;
++            bytes  += t->nb[2];
++        }
++        ggml_backend_free(cpu);
++        if (bytes == 0) {
++            flywheel = false;
++            return;
++        }
++
++        ggml_backend_t dev = devices[g->id].backend;
++        auto time_copy = [&]() -> double {
++            const auto t0 = std::chrono::steady_clock::now();
++            for (size_t ip = 0; ip < g->ref.size() && ip < g->banks.size(); ++ip) {
++                const ggml_tensor * t = g->ref[ip];
++                ggml_tensor * bank = g->banks[ip];
++                if (t->data == nullptr) {
++                    return -1.0;
++                }
++                ggml_backend_tensor_set(bank, t->data, 0, t->nb[2]);
++            }
++            ggml_backend_synchronize(dev);
++            return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
++        };
++        double copy = 1e300;
++        for (int i = 0; i < 3; ++i) {
++            const double dt = time_copy();
++            if (dt <= 0.0) {
++                copy = -1.0;
++                break;
++            }
++            copy = std::min(copy, dt);
++        }
++        if (copy <= 0.0) {
++            LLAMA_LOG_WARN("%s: flywheel could not time the copy, misses are uploaded\n", __func__);
++            flywheel = false;
++            return;
++        }
++
++        rates.host           = host_1 / (double) bytes;
++        rates.host_per_token = std::max(0.0, (host_n / (double) bytes - rates.host) / 7.0);
++        rates.copy           = copy / (double) bytes;
++        rates.slowdown       = 1.0;
++        LLAMA_LOG_INFO("%s: flywheel host %.1f GB/s, copy %.1f GB/s\n", __func__,
++                1e-9/rates.host, 1e-9/rates.copy);
++    }
++
+     // the device that caches layer il
+     ggml_backend_t backend(int32_t il) const {
+         return devices[groups[layers[il].ig].id].backend;
+@@ -809,15 +999,21 @@ struct llama_moe_cache::impl {
+             write_trace(il, n_used);
+         }
+ 
+-        // part of the misses is computed on the CPU once the cache is full, the carry keeps the share right on average
++        // part of the misses is computed on the CPU once the cache is full, the carry keeps the share right on average.
++        // Flywheel decides per miss from the measured host and copy rates, including before the cache is full.
+         const uint32_t share_q = has_cpu && g.lru.n_filled == g.lru.n_slots ? cpu_share_q : 0;
+         auto n_cpu = [&](size_t n_miss) {
+             const uint64_t acc = (uint64_t) n_miss*share_q + l.cpu_acc;
+             l.cpu_acc = acc & 0xffff;
+             return (size_t) (acc >> 16);
+         };
++        size_t slot_bytes = 0;
++        for (const ggml_tensor * w : l.experts) {
++            slot_bytes += w->nb[2];
++        }
++        const llama_flywheel_rates * place = has_cpu && flywheel ? &rates : nullptr;
+         size_t n_hit = 0;
+-        if (!g.lru.plan(il, ids.data(), ids.size(), sel->src[0]->ne[1], n_used, n_zero, n_cpu, fills, cpu, n_hit)) {
++        if (!g.lru.plan(il, ids.data(), ids.size(), sel->src[0]->ne[1], n_used, n_zero, n_cpu, fills, cpu, n_hit, place, slot_bytes, flywheel)) {
+             GGML_ABORT("the MoE cache is too small for the experts selected in layer %d", il);
+         }
+         if (has_cpu) {
+@@ -878,8 +1074,8 @@ struct llama_moe_cache::impl {
+     }
+ };
+ 
+-llama_moe_cache::llama_moe_cache(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share) :
+-    pimpl(new impl(model, no_alloc, backends, bufts, size, cpu_share)) {
++llama_moe_cache::llama_moe_cache(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share, bool flywheel) :
++    pimpl(new impl(model, no_alloc, backends, bufts, size, cpu_share, flywheel)) {
+ }
+ 
+ llama_moe_cache::~llama_moe_cache() = default;
+diff --git a/src/llama-moe-cache.h b/src/llama-moe-cache.h
+index 833eac3..0f2c84a 100644
+--- a/src/llama-moe-cache.h
++++ b/src/llama-moe-cache.h
+@@ -36,7 +36,8 @@ class llama_moe_cache {
+ public:
+     // backends are all the backends of the context, each GPU gets its own cache of the given size for the layers assigned to it
+     // cpu_share is the share of the misses computed on the CPU instead of uploaded
+-    llama_moe_cache(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share);
++    // flywheel times one host expert against the copy and, for each miss, runs whichever finishes sooner
++    llama_moe_cache(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share, bool flywheel = false);
+     ~llama_moe_cache();
+ 
+     // the experts of w in the cache, nullptr if w is not cached

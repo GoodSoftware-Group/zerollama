@@ -5,6 +5,7 @@
 | Project | Link | Zerollama surface |
 |---------|------|-------------------|
 | Gigatoken | https://github.com/chynggi/gigatoken-llama.cpp | Faster BPE patches 0106–0126 |
+| Kinetic | https://github.com/Veloresearch/kinetic | Prompt reuse, patches 0162–0186. Ideas only — [kinetic-prompt-reuse.md](../design/serving/kinetic-prompt-reuse.md) |
 | vLLM | https://github.com/vllm-project/vllm | L3 / graph invalidate — [vllm-borrowings.md](vllm-borrowings.md) |
 | SGLang | https://github.com/sgl-project/sglang | Multimodal agent path — [sglang-multimodal-borrowings.md](sglang-multimodal-borrowings.md) |
 | LocalAI | https://github.com/mudler/LocalAI | Control plane — [localai-borrowings.md](localai-borrowings.md) |

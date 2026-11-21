@@ -4,18 +4,18 @@ Date: Sat, 24 Oct 2026 20:35:02 -0700
 Subject: [PATCH] unicode: pretok blob + ASCII bulk cpt decode for mixed (0121)
 
 ---
- src/unicode.cpp | 2492 -----------------------------------------------
+ src/unicode.cpp | 2497 -----------------------------------------------
  src/unicode.h   |  132 ---
- 2 files changed, 2624 deletions(-)
+ 2 files changed, 2629 deletions(-)
  delete mode 100644 src/unicode.cpp
  delete mode 100644 src/unicode.h
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
 deleted file mode 100644
-index 8e54f37..0000000
+index 4854a21..0000000
 --- a/src/unicode.cpp
 +++ /dev/null
-@@ -1,2492 +0,0 @@
+@@ -1,2497 +0,0 @@
 -#include "unicode.h"
 -#include "unicode-data.h"
 -
@@ -57,8 +57,13 @@ index 8e54f37..0000000
 -    if (!(utf8[offset + 0] & 0x40)) {
 -        throw std::invalid_argument("invalid character");
 -    }
+-
+-    auto is_not_cont = [&](size_t pos) {
+-        return (utf8[offset + pos] & 0xc0) != 0x80;
+-    };
+-
 -    if (!(utf8[offset + 0] & 0x20)) {
--        if (offset + 1 >= utf8.size() || ! ((utf8[offset + 1] & 0xc0) == 0x80)) {
+-        if (offset + 1 >= utf8.size() || is_not_cont(1)) {
 -            throw std::invalid_argument("invalid character");
 -        }
 -        auto result = ((utf8[offset + 0] & 0x1f) << 6) | (utf8[offset + 1] & 0x3f);
@@ -69,7 +74,7 @@ index 8e54f37..0000000
 -        return result;
 -    }
 -    if (!(utf8[offset + 0] & 0x10)) {
--        if (offset + 2 >= utf8.size() || ! ((utf8[offset + 1] & 0xc0) == 0x80) || ! ((utf8[offset + 2] & 0xc0) == 0x80)) {
+-        if (offset + 2 >= utf8.size() || is_not_cont(1) || is_not_cont(2)) {
 -            throw std::invalid_argument("invalid character");
 -        }
 -        auto result = ((utf8[offset + 0] & 0x0f) << 12) | ((utf8[offset + 1] & 0x3f) << 6) | (utf8[offset + 2] & 0x3f);
@@ -80,7 +85,7 @@ index 8e54f37..0000000
 -        return result;
 -    }
 -    if (!(utf8[offset + 0] & 0x08)) {
--        if (offset + 3 >= utf8.size() || ! ((utf8[offset + 1] & 0xc0) == 0x80) || ! ((utf8[offset + 2] & 0xc0) == 0x80) || !((utf8[offset + 3] & 0xc0) == 0x80)) {
+-        if (offset + 3 >= utf8.size() || is_not_cont(1) || is_not_cont(2) || is_not_cont(3)) {
 -            throw std::invalid_argument("invalid character");
 -        }
 -        auto result = ((utf8[offset + 0] & 0x07) << 18) | ((utf8[offset + 1] & 0x3f) << 12) | ((utf8[offset + 2] & 0x3f) << 6) | (utf8[offset + 3] & 0x3f);

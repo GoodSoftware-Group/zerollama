@@ -4,20 +4,50 @@ Date: Sat, 24 Oct 2026 20:34:48 -0700
 Subject: [PATCH] ollama: wire fused QJL-K attention + CUDA SET_ROWS for
 
 ---
+ common/fit.cpp                      |  8 ++---
  ggml/src/ggml-cuda/ggml-cuda.cu     |  1 +
  ggml/src/ggml-cuda/ggml-cuda.cu.rej | 52 ++++++++++++++---------------
  ggml/src/ggml-cuda/set-rows.cu      | 33 ++++++++++++++++++
  src/llama-graph.cpp                 | 38 +++++++++++++++++++++
- 4 files changed, 97 insertions(+), 27 deletions(-)
+ 5 files changed, 101 insertions(+), 31 deletions(-)
 
+diff --git a/common/fit.cpp b/common/fit.cpp
+index 978d2f3..3ca4186 100644
+--- a/common/fit.cpp
++++ b/common/fit.cpp
+@@ -856,12 +856,12 @@ static void common_params_fit_impl(
+             mparams_test.tensor_buft_overrides = tensor_buft_overrides;
+         }
+ 
+-        const dmds_t dmds_equal = common_get_device_memory_data(
+-            path_model, &mparams_test, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_nswa, log_level);
++        const dmds_t dmds_equal = common_get_device_memory_data_impl(
++            paths_model, &mparams_test, cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, hp_nswa, log_level);
+ 
+         bool equal_fits = true;
+         for (size_t id = 0; id < nd; ++id) {
+-            if (projected_device_used(dmds_equal, id) > targets[id]) {
++            if (dmds_equal[id].mb.total() > targets[id]) {
+                 equal_fits = false;
+                 break;
+             }
+@@ -877,7 +877,7 @@ static void common_params_fit_impl(
+ 
+         LOG_INF("%s: %s\n", __func__, reason);
+         for (size_t id = 0; id < nd; ++id) {
+-            const int64_t used = projected_device_used(dmds_equal, id);
++            const int64_t used = dmds_equal[id].mb.total();
+             LOG_TRC("%s:   - %s: %2" PRIu32 " layers, %6" PRId64 " MiB used, %6" PRId64 " MiB free\n",
+                 __func__, dev_names[id].c_str(), ngl_equal[id].n_layer, used/MiB,
+                 (dmds_equal[id].free - used)/MiB);
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index ebf0ec8..6ce3a4d 100644
+index 6776e90..65493b5 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -27,6 +27,7 @@
- #include "ggml-cuda/diagmask.cuh"
+@@ -28,6 +28,7 @@
  #include "ggml-cuda/diag.cuh"
  #include "ggml-cuda/fattn.cuh"
+ #include "ggml-cuda/fp8.cuh"
 +#include "ggml-cuda/fused-attn.cuh"
  #include "ggml-cuda/fwht.cuh"
  #include "ggml-cuda/getrows.cuh"
@@ -83,7 +113,7 @@ index 5ac6bc1..1194076 100644
 +         default:
 +             return false;
 diff --git a/ggml/src/ggml-cuda/set-rows.cu b/ggml/src/ggml-cuda/set-rows.cu
-index 4659970..ba708a2 100644
+index e4fb516..9fd729d 100644
 --- a/ggml/src/ggml-cuda/set-rows.cu
 +++ b/ggml/src/ggml-cuda/set-rows.cu
 @@ -1,6 +1,15 @@
@@ -102,7 +132,7 @@ index 4659970..ba708a2 100644
  typedef void (*set_rows_kernel_t)(const char * src, char * dst);
  
  // Generic quantized set_rows kernel template
-@@ -317,6 +326,30 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
+@@ -337,6 +346,30 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
              nb1, nb2, nb3,
              stream
          );
@@ -134,10 +164,10 @@ index 4659970..ba708a2 100644
          GGML_ABORT("unsupported type %s", ggml_type_name(dst->type));
      }
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index edf1ca7..0be65b3 100644
+index 269b920..0cb8a8d 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
-@@ -3024,6 +3024,43 @@ ggml_tensor * llm_graph_context::build_attn_mha(
+@@ -3207,6 +3207,43 @@ ggml_tensor * llm_graph_context::build_attn_mha(
              v = ggml_transpose(ctx0, v);
          }
  
@@ -181,7 +211,7 @@ index edf1ca7..0be65b3 100644
          // this can happen when KV cache is not used (e.g. an embedding model with non-causal attn)
          if (k->type == GGML_TYPE_F32) {
              k = ggml_cast(ctx0, k, GGML_TYPE_F16);
-@@ -3065,6 +3102,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
+@@ -3248,6 +3285,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
          }
  
          cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);

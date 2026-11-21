@@ -56,6 +56,16 @@ Open work only:
 
 ---
 
+## Weight edits (stored element patches)
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Decode → bind → apply + geodesic-patch v1 | **Shipped** | Linked `source_dir` only; [`weight-patch.md`](../design/serving/weight-patch.md) |
+| Blob-manifest / GGUF stores | **Later** | New `Store` implementations; codecs unchanged |
+| Hidden-state export for external edit labs | **Later** | Separate API; resulting patches still arrive as `Edit` |
+
+---
+
 ## LM Studio integration
 
 Open follow-ups only:

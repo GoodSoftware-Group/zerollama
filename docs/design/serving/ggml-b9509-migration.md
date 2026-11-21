@@ -1,8 +1,8 @@
 # ggml @ llama.cpp — vendor migration guide
 
-> **Current pin:** **`b12119`** (`LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `Makefile.sync` `FETCH_HEAD`). **ggml-org/llama.cpp** @ `6f1e6543704bc5b080c7a98e7b6f707b31f6ed51` (tag **b12119**). Rollback is **`b11870`** in `LLAMA_CPP_*.prev`.
+> **Current pin:** **`b12557`** (`LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `Makefile.sync` `FETCH_HEAD`). **ggml-org/llama.cpp** @ `b94959a64d011915d77a5381c7d4846dcda99530` (tag **b12557**, 2026-11-19). Rollback is **`b12119`** in `LLAMA_CPP_*.prev`.
 
-Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus Ollama/zerollama patches. The June–November 2026 migration rebased from an old fork snapshot onto **`b9509`** → … → **`b12119`**. The live series is `llama/patches/` **0001–0163**. Canonical pin table: [runtime/LLAMA_CPP_PIN.md](../../../runtime/LLAMA_CPP_PIN.md).
+Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus Ollama/zerollama patches. The June–November 2026 migration rebased from an old fork snapshot onto **`b9509`** → … → **`b12119`** → **`b12557`**. The live series is **186** format-patches in `llama/patches/` (`0001`–`0186`). The b12119 quilt **0001–0163** is in `llama/patches.obsolete-b12119/`. Canonical pin table: [runtime/LLAMA_CPP_PIN.md](../../../runtime/LLAMA_CPP_PIN.md).
 
 This document explains **what changed**, **why**, and **how to maintain** the vendored ggml/llama.cpp trees without drifting back to a stale fork snapshot.
 
@@ -44,27 +44,27 @@ zerollama serve
 
 | File | Purpose |
 |------|---------|
-| `LLAMA_CPP_VERSION` | Human pin (`b12119`) — scripts grep this without Make |
-| `LLAMA_CPP_COMMIT` | Full git ref (`6f1e6543704bc5b080c7a98e7b6f707b31f6ed51`) |
-| `LLAMA_CPP_VENDOR_HEAD` | Expected vendor HEAD after full patch apply (`933b71ff…`) |
-| `LLAMA_CPP_*.prev` | Rollback pin **b11870** |
-| `Makefile.sync` | `FETCH_HEAD=b12119`, `WORKDIR=vendor/llama-cpp-b12119`, `UPSTREAM=ggml-org` |
-| `vendor/llama-cpp-b12119/` | Clone + patch commits (gitignored). Keep `vendor/llama-cpp-b11870` on a machine that rolls back |
-| `llama/patches/` | format-patches **0001–0163** on **b12119**. Upstream-absorbed ports stay in `llama/patches.obsolete-merged-86d86ed4/` and `llama/patches.absorbed-b10199/` (committed archives; not applied) |
+| `LLAMA_CPP_VERSION` | Human pin (`b12557`) — scripts grep this without Make |
+| `LLAMA_CPP_COMMIT` | Full git ref (`b94959a64d011915d77a5381c7d4846dcda99530`) |
+| `LLAMA_CPP_VENDOR_HEAD` | Stamp file is still `6e18bf0` (the commit before patch **0162**). The checkout that contains **0162–0186** is `a520b5b`. **Why the file was not moved:** a stamp that matches an old checkout is how `apply-patches` knows the new files still need applying. See [kinetic-prompt-reuse-findings.md](kinetic-prompt-reuse-findings.md) |
+| `LLAMA_CPP_*.prev` | Rollback pin **b12119** |
+| `Makefile.sync` | `FETCH_HEAD=b12557`, `WORKDIR=vendor/llama-cpp-b12557`, `UPSTREAM=ggml-org` |
+| `vendor/llama-cpp-b12557/` | Clone + patch commit (gitignored). Keep `vendor/llama-cpp-b12119` on a machine that rolls back |
+| `llama/patches/` | **186** format-patches on **b12557** (`0001`–`0186`). The b12119 quilt is `llama/patches.obsolete-b12119/`. Older absorbed ports stay in `llama/patches.obsolete-merged-86d86ed4/` and `llama/patches.absorbed-b10199/` (committed archives; not applied) |
 
 **Patch drift:** `./scripts/vendor/llama_patch_doctor.sh` · `./scripts/runtime/runtime_env_doctor.sh` (`llama_patches`) · `/health.llama_patches`
 
 **Why vendor is gitignored:** it is a **materialization workspace** for `git am` / `format-patch`, not a second source of truth. Truth is: **patches + synced in-tree trees**.
 
-**Why pin bumps rebase patches, not chase llama.cpp HEAD daily:** keep a reviewed tip so Phase 17 diffs and zerollama-only routes (`POST /kv/seq-copy`) stay reviewable. The pin stays on a ggml-org **release tag** (**b12119**). Master may sit one CI commit ahead; that delta is not the pin.
+**Why pin bumps rebase patches, not chase llama.cpp HEAD daily:** keep a reviewed tip so Phase 17 diffs and zerollama-only routes (`POST /kv/seq-copy`) stay reviewable. The pin stays on a ggml-org **release tag** (**b12557**). On 2026-11-19 that tag is also master HEAD.
 
-**Pin ladder:** [llama-cpp-pin-ladder.md](llama-cpp-pin-ladder.md). Live pin **b12119**. Clef `score_fields` floor stays **b11232+**.
+**Pin ladder:** [llama-cpp-pin-ladder.md](llama-cpp-pin-ladder.md). Live pin **b12557**. Clef `score_fields` floor stays **b11232+**.
 
 ---
 
 ## Historical series snapshot (`8f114a9b`, Jul 2026)
 
-The live series is **0001–0163** on **b12119**. The tables below record an earlier apply (25 commits on `8f114a9b`, then the b9781 conflict notes). They are not the current quilt.
+The live series is one patch on **b12557**. The tables below record an earlier apply (25 commits on `8f114a9b`, then the b9781 conflict notes). They are not the current quilt.
 
 ### Applied on `8f114a9b` (25 commits)
 
@@ -168,8 +168,8 @@ These exist because **Go/CGO contracts** or **build layout** differ from upstrea
 # 1. Ensure vendor exists (once per pin bump)
 ./scripts/vendor/rebase_vendor_unified.sh --apply --sync
 # or manually:
-# git clone https://github.com/ggml-org/llama.cpp.git vendor/llama-cpp-b12119
-# cd vendor/llama-cpp-b12119 && git checkout b12119
+# git clone https://github.com/ggml-org/llama.cpp.git vendor/llama-cpp-b12557
+# cd vendor/llama-cpp-b12557 && git checkout b12557
 # make -f Makefile.sync clean apply-patches
 
 # 2. Rsync into in-tree vendored trees (preserves zerollama-only files)
@@ -204,7 +204,7 @@ eval "$(./scripts/runtime/mac_cgo_env.sh --export)"
 ## Regenerating patches (after editing vendor)
 
 ```bash
-# Edit commits in vendor/llama-cpp-b12119 (on top of b12119)
+# Edit commits in vendor/llama-cpp-b12557 (on top of b12557)
 make -f Makefile.sync format-patches   # writes llama/patches/*.patch
 ./scripts/vendor/sync_vendor_llama.sh
 # build + smoke
@@ -218,7 +218,7 @@ make -f Makefile.sync format-patches   # writes llama/patches/*.patch
 
 | Check | Why |
 |-------|-----|
-| `git -C vendor/llama-cpp-b12119 rev-list --count b12119..HEAD` > 0 | Patches materialized before sync. Live series is `llama/patches/` **0001–0163** |
+| `git -C vendor/llama-cpp-b12557 rev-list --count b12557..HEAD` > 0 | Patches materialized before sync. Live series is the one patch in `llama/patches/` |
 | `go build` succeeds | CGO + new common/jinja/httplib compile |
 | `zerollama doctor` | Metal ggml loads; sidecar optional |
 | `ZEROLLAMA_LEGACY_RUNNER=1 ./zerollama serve` + small model | **ggml runner** path (not runtime) |

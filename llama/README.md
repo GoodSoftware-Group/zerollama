@@ -7,7 +7,7 @@
 | **In-process ggml** (`llamarunner`) | `ml/backend/ggml/ggml/` + `llama/llama.cpp/` | `llama/patches/` + **`llama/compat/` (CGO)** | elizaOS kernels (QJL, dflash) + Ollama deltas |
 | **llama-server** (Phase 17 / Python runtime) | Sibling `../llama.cpp` | same commit; `llama/compat/` at CMake fetch | Same binary as vendor sync source |
 
-Both pins align on **`LLAMA_CPP_COMMIT`** (**`b12119`** / `6f1e6543` — ggml-org/llama.cpp). Vendor materialization: `vendor/llama-cpp-b12119/` + `./scripts/vendor/sync_vendor_llama.sh`. See [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) and [docs/design/serving/llama-cpp-unification.md](../docs/design/serving/llama-cpp-unification.md).
+Both pins align on **`LLAMA_CPP_COMMIT`** (**`b12557`** / `b94959a6` — ggml-org/llama.cpp). Vendor materialization: `vendor/llama-cpp-b12557/` + `./scripts/vendor/sync_vendor_llama.sh`. See [runtime/LLAMA_CPP_PIN.md](../runtime/LLAMA_CPP_PIN.md) and [docs/design/serving/llama-cpp-unification.md](../docs/design/serving/llama-cpp-unification.md).
 
 **Why pin file can lead vendor tree:** bumping `LLAMA_CPP_VERSION` documents upstream intent immediately; `./scripts/vendor/sync_vendor_llama.sh` and Metal sign-off run on a separate cadence so daily Mac dev is not blocked on every upstream tag.
 
@@ -86,7 +86,7 @@ For build prerequisites, platform notes, and backend selection, see the
 
 ### Compatibility patches
 
-**In-tree ggml (b9781):** patches live in `llama/patches/` (**16** format-patches). Materialize with `make -f Makefile.sync clean apply-patches`, then `./scripts/vendor/sync_vendor_llama.sh`. **Why two steps:** `apply-patches` commits Ollama deltas into gitignored vendor; sync rsyncs into CGO trees without resetting vendor checkout. Do **not** edit synced trees directly — regenerate patches from vendor.
+**In-tree ggml (b12557):** patches live in `llama/patches/` (**186** format-patches, `0001`–`0186`; **0162–0186** are prompt reuse). Materialize with `make -f Makefile.sync clean apply-patches`, then `./scripts/vendor/sync_vendor_llama.sh`. **Why two steps:** `apply-patches` commits Ollama deltas into gitignored vendor; sync rsyncs into CGO trees without resetting vendor checkout. Do **not** edit synced trees directly — regenerate patches from vendor. **Why the C++ WHYs live in the design doc:** a comment edited only in `llama/llama.cpp` is wiped by that sync. See [kinetic-prompt-reuse.md](../docs/design/serving/kinetic-prompt-reuse.md).
 
 **llama-server (compat):** patches under `llama/compat/` are applied during CMake configure. If a patch
 insertion point moved, regenerate the patch against a fresh checkout of the new

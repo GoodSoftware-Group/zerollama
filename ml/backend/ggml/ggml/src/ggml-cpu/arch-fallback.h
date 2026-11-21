@@ -231,6 +231,8 @@
 #elif defined(__riscv)
 // quants.c
 #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
+#define ggml_vec_dot_fp8_e4m3_q8_0_generic ggml_vec_dot_fp8_e4m3_q8_0
+#define ggml_vec_dot_fp8_e5m2_q8_0_generic ggml_vec_dot_fp8_e5m2_q8_0
 #define ggml_vec_dot_q2_0_q8_0_generic ggml_vec_dot_q2_0_q8_0
 // repack.cpp
 #define ggml_quantize_mat_q8_0_4x1_generic ggml_quantize_mat_q8_0_4x1

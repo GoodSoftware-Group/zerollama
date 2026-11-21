@@ -9,10 +9,10 @@ Subject: [PATCH] ggml-cuda: hoist UMA locals past goto share_split
  2 files changed, 21 insertions(+), 26 deletions(-)
 
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index b086324..7e97552 100644
+index a494b30..d6a525a 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
-@@ -5815,6 +5815,13 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
+@@ -6300,6 +6300,13 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
      std::lock_guard<std::mutex> lock(ctx->device_mutex);
  #endif
  

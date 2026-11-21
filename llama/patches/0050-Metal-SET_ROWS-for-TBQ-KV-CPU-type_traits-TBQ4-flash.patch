@@ -72,7 +72,7 @@ index d3adbb7..7fd81b6 100644
 + else()
 +     target_sources(${TARGET} PRIVATE
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index c2826fc..65c5edd 100644
+index 4d9760b..b2edb09 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -419,6 +419,18 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
@@ -441,10 +441,10 @@ index 0000000..1a3bf12
 +template [[host_name("kernel_set_rows_f32_i64_tbq4_0")]] kernel set_rows_tbq4_t kernel_set_rows_tbq<long, block_tbq4_0, quantize_tbq4_0>;
 +template [[host_name("kernel_set_rows_f32_i32_tbq4_0")]] kernel set_rows_tbq4_t kernel_set_rows_tbq<int,  block_tbq4_0, quantize_tbq4_0>;
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 26e8d90..942cc1e 100644
+index b736eec..bd6d9b1 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -2076,6 +2076,9 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -2099,6 +2099,9 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                      case GGML_TYPE_Q5_0:
                      case GGML_TYPE_Q5_1:
                      case GGML_TYPE_IQ4_NL:
@@ -455,10 +455,10 @@ index 26e8d90..942cc1e 100644
                          return true;
                      default:
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index 0be65b3..0a4ceed 100644
+index 0cb8a8d..01d5a6b 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
-@@ -3050,13 +3050,16 @@ ggml_tensor * llm_graph_context::build_attn_mha(
+@@ -3233,13 +3233,16 @@ ggml_tensor * llm_graph_context::build_attn_mha(
              cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
          } else {
          // Fallback: dequantize exotic K-cache types for flash-attn

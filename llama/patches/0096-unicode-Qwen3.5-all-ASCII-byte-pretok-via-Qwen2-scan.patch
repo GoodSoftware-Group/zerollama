@@ -9,10 +9,10 @@ Subject: [PATCH] unicode: Qwen3.5 all-ASCII byte pretok via Qwen2 scanner
  2 files changed, 30 insertions(+), 20 deletions(-)
 
 diff --git a/src/unicode.cpp b/src/unicode.cpp
-index a136427..ddd88d9 100644
+index d0853ec..35f8363 100644
 --- a/src/unicode.cpp
 +++ b/src/unicode.cpp
-@@ -505,6 +505,13 @@ static inline bool unicode_is_qwen2_regex_expr(const std::string & regex_expr) {
+@@ -510,6 +510,13 @@ static inline bool unicode_is_qwen2_regex_expr(const std::string & regex_expr) {
             "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
  }
  
@@ -26,7 +26,7 @@ index a136427..ddd88d9 100644
  static inline bool unicode_is_gpt2_regex_expr(const std::string & regex_expr) {
      return regex_expr ==
             "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)";
-@@ -1411,7 +1418,10 @@ static std::vector<size_t> unicode_regex_split_custom_qwen2(const std::vector<ui
+@@ -1416,7 +1423,10 @@ static std::vector<size_t> unicode_regex_split_custom_qwen2(const std::vector<ui
  // Compared to Qwen2, letter-runs also consume Unicode combining marks (\p{M}): [\p{L}\p{M}]+ instead of \p{L}+
  static std::vector<size_t> unicode_regex_split_custom_qwen35(const std::vector<uint32_t> & cpts, const std::vector<size_t> & offsets) {
      std::vector<size_t> bpe_offsets; // store the offset of each word
@@ -38,7 +38,7 @@ index a136427..ddd88d9 100644
  
      size_t start = 0;
      for (auto offset : offsets) {
-@@ -1420,13 +1430,18 @@ static std::vector<size_t> unicode_regex_split_custom_qwen35(const std::vector<u
+@@ -1425,13 +1435,18 @@ static std::vector<size_t> unicode_regex_split_custom_qwen35(const std::vector<u
          assert(offset_end <= cpts.size());
          start = offset_end;
  

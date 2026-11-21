@@ -87,6 +87,8 @@ Every agent message starts with the same pile of tools and rules, then a short n
 | Different chat, same tools | Turn on the setting below. The second chat reuses what the first one already read, instead of reading the tools again. |
 | You restarted the server | For about an hour that read can be saved to disk, under `~/.cache/zerollama/llama-cache/`. A different model file does not reuse the wrong save. On a Mac this save is off until you turn it on. |
 | The chat pastes bigger tool results | New tool text is trimmed from the end, so the instructions at the start stay the same and the skip still works. |
+| Draft the next message before it is finished | `POST /api/prefill` with the same messages as the chat. The server reads everything except the last word. The finished `/api/chat` continues from there. |
+| The same prompt comes back after llama-server restarts | That process keeps its own copy under `llama.cpp/warm`. It restores the copy only when that is faster than reading the prompt again. A brand-new prompt is the same speed. |
 
 ```bash
 ZEROLLAMA_L3_PROFILE=agent ./zerollama serve
@@ -94,7 +96,9 @@ ZEROLLAMA_L3_PROFILE=agent ./zerollama serve
 
 That line is the “different chats share the instructions” setting.
 
-→ [gpu-profiles-l3.md](docs/design/serving/gpu-profiles-l3.md) · [radix-prefix-share.md](docs/design/serving/radix-prefix-share.md)
+The two disk saves are different. The hour-long one above is the L3 slot bridge, and on a Mac it stays off until the setting. The `llama.cpp/warm` copy belongs to llama-server. The Mac default runner is ggml, so that copy is used when the model is on llama-server (`ZEROLLAMA_LLAMA_SERVER=1`, or Linux serve). **Why a new prompt is unchanged:** these patches restore a prefix. They do not replace the matmul.
+
+→ [gpu-profiles-l3.md](docs/design/serving/gpu-profiles-l3.md) · [radix-prefix-share.md](docs/design/serving/radix-prefix-share.md) · [kinetic-prompt-reuse.md](docs/design/serving/kinetic-prompt-reuse.md)
 
 ### Draw it, clip it — same place as chat
 
@@ -242,7 +246,7 @@ print(chat(model='gemma3', messages=[{'role': 'user', 'content': 'Why is the sky
 ZEROLLAMA_GPU_JOBS=false OLLAMA_NOPRUNE=1 ./zerollama serve
 ```
 
-Vendor pin: **`6f1e6543` / b12119** — [runtime/LLAMA_CPP_PIN.md](runtime/LLAMA_CPP_PIN.md). After patch edits: `make -f Makefile.sync clean apply-patches && ./scripts/vendor/sync_vendor_llama.sh`.
+Vendor pin: **`b94959a6` / b12557** — [runtime/LLAMA_CPP_PIN.md](runtime/LLAMA_CPP_PIN.md). After patch edits: `make -f Makefile.sync clean apply-patches && ./scripts/vendor/sync_vendor_llama.sh`.
 
 ## Documentation
 
@@ -253,14 +257,14 @@ Vendor pin: **`6f1e6543` / b12119** — [runtime/LLAMA_CPP_PIN.md](runtime/LLAMA
 | Harness / Hermes | [agent-qos-and-project-tracking.md](docs/design/serving/agent-qos-and-project-tracking.md) · [hermes-zerollama-gap.md](docs/design/surfaces/hermes-zerollama-gap.md) |
 | MultiDecode | [multidecode-llama-cpp.md](docs/design/surfaces/multidecode-llama-cpp.md) |
 | Decide / extract / see / route | [laya-llama-cpp.md](docs/design/surfaces/laya-llama-cpp.md) · [clm.md](docs/design/surfaces/clm.md) · [diffusion-gemma-llama-cpp.md](docs/design/surfaces/diffusion-gemma-llama-cpp.md) · [gliner-cpp.md](docs/design/surfaces/gliner-cpp.md) · [gliner-decide.md](docs/design/surfaces/gliner-decide.md) · [detect.md](docs/detect.md) |
-| Speed | [faster-bpe-tokenize.md](docs/upstream/faster-bpe-tokenize.md) · [gpu-profiles-l3.md](docs/design/serving/gpu-profiles-l3.md) |
+| Speed | [faster-bpe-tokenize.md](docs/upstream/faster-bpe-tokenize.md) · [gpu-profiles-l3.md](docs/design/serving/gpu-profiles-l3.md) · [kinetic-prompt-reuse.md](docs/design/serving/kinetic-prompt-reuse.md) |
 | Voice / music | [quick-voice.md](docs/design/media/quick-voice.md) · [multimodal-backends.md](docs/design/media/multimodal-backends.md) · [music-c.md](docs/design/media/music-c.md) |
 | Video / image | [wan-t2v.md](docs/design/media/wan-t2v.md) · [ltx-t2v.md](docs/design/media/ltx-t2v.md) · [h3-cuda-port.md](docs/design/media/h3-cuda-port.md) |
 | Train / idle queue | [gpu-training.md](docs/design/training/gpu-training.md) · [t6-unified-queue.md](docs/design/training/t6-unified-queue.md) · [t10-grpo.md](docs/design/training/t10-grpo.md) · [t11-recipes.md](docs/design/training/t11-recipes.md) |
 | Serving ideas (not vendor) | [deepinfer-borrowings.md](docs/upstream/deepinfer-borrowings.md) · [deepinfer-ladder.md](docs/upstream/deepinfer-ladder.md) · [deepgemm-borrowings.md](docs/upstream/deepgemm-borrowings.md) · [vllm-borrowings.md](docs/upstream/vllm-borrowings.md) |
 | Doctor | [model-serving-minefield.md](docs/runbooks/model-serving-minefield.md) · [doctor-model-repair.md](docs/runbooks/doctor-model-repair.md) |
 | Storage / fleet | [remote-model-storage.md](docs/design/surfaces/remote-model-storage.md) · [fleet-management.md](docs/design/training/fleet-management.md) |
-| Pin / gallery stamp | [runtime/LLAMA_CPP_PIN.md](runtime/LLAMA_CPP_PIN.md) (**b12119**) · `version.OllamaCompat` |
+| Pin / gallery stamp | [runtime/LLAMA_CPP_PIN.md](runtime/LLAMA_CPP_PIN.md) (**b12557**) · `version.OllamaCompat` |
 
 ## Agent skills
 
@@ -284,10 +288,11 @@ We reimplement **ideas** in our Go + llama.cpp + runtime shape — we do **not**
 | **[DeepInfer](https://github.com/deepseek-ai/DeepInfer)** | Schedule / SWA / speculation **ideas** only (SM100 engine not vendored) — [deepinfer-ladder.md](docs/upstream/deepinfer-ladder.md) |
 | **[LocalAI](https://github.com/mudler/LocalAI)** | Control-plane habits (rerank, repair, bench) |
 | **[WestCoastML/multidecode](https://github.com/WestCoastML/multidecode)** | Forest decode — patches **0127–0129** |
+| **[Kinetic](https://github.com/Veloresearch/kinetic)** | Prompt reuse — patches **0162–0186**. Ideas only; the Rust GEMM kernels stay upstream |
 | **[GLiNER.cpp](https://github.com/Knowledgator/GLiNER.cpp)** / **[GLiNER2.5-Decide](https://huggingface.co/fastino/GLiNER2.5-Decide)** | Extract + encoder triage |
 | **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** | Harness that needs a real control plane |
 | **[model-serving-minefield](https://github.com/Blackwellboy/model-serving-minefield)** | Doctor trap map |
-| **[ollama/ollama](https://github.com/ollama/ollama)** / **[llama.cpp](https://github.com/ggml-org/llama.cpp)** | Wire shape + engine (pin **b12119**) |
+| **[ollama/ollama](https://github.com/ollama/ollama)** / **[llama.cpp](https://github.com/ggml-org/llama.cpp)** | Wire shape + engine (pin **b12557**) |
 
 More: [open-source-shoutouts.md](docs/upstream/open-source-shoutouts.md) · [@spaceodili](https://x.com/spaceodili)
 

@@ -78,10 +78,10 @@ index 7cffd27..2a1bab2 100644
  
  if (GGML_METAL_NDEBUG)
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
-index e096d61..db9aaca 100644
+index c0466d6..2c1606e 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.h
 +++ b/ggml/src/ggml-metal/ggml-metal-device.h
-@@ -337,6 +337,12 @@ void ggml_metal_device_rsets_rm (ggml_metal_device_t dev, ggml_metal_rset_t rset
+@@ -339,6 +339,12 @@ void ggml_metal_device_rsets_rm (ggml_metal_device_t dev, ggml_metal_rset_t rset
  
  void ggml_metal_device_rsets_keep_alive(ggml_metal_device_t dev);
  
@@ -94,7 +94,7 @@ index e096d61..db9aaca 100644
  ggml_metal_event_t ggml_metal_device_event_init(ggml_metal_device_t dev);
  void ggml_metal_device_event_free(ggml_metal_device_t dev, ggml_metal_event_t ev);
  void ggml_metal_device_event_synchronize(ggml_metal_device_t dev, ggml_metal_event_t ev);
-@@ -359,6 +365,7 @@ typedef struct ggml_metal_buffer * ggml_metal_buffer_t;
+@@ -361,6 +367,7 @@ typedef struct ggml_metal_buffer * ggml_metal_buffer_t;
  
  ggml_metal_buffer_t ggml_metal_buffer_init(ggml_metal_device_t dev, size_t size, bool shared);
  ggml_metal_buffer_t ggml_metal_buffer_map (ggml_metal_device_t dev, void * ptr, size_t size, size_t max_tensor_size);
@@ -103,7 +103,7 @@ index e096d61..db9aaca 100644
  void   ggml_metal_buffer_free     (ggml_metal_buffer_t buf);
  void * ggml_metal_buffer_get_base (ggml_metal_buffer_t buf);
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index 56aea27..26e8d90 100644
+index 21df913..b736eec 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
 @@ -8,6 +8,8 @@
@@ -115,7 +115,7 @@ index 56aea27..26e8d90 100644
  #include <Metal/Metal.h>
  
  #include <stdatomic.h>
-@@ -939,6 +941,12 @@ struct ggml_metal_rsets {
+@@ -939,6 +941,12 @@ void ggml_metal_encoder_end_encoding(ggml_metal_encoder_t encoder) {
      atomic_bool d_stop;
      atomic_int  d_loop;
  
@@ -179,7 +179,7 @@ index 56aea27..26e8d90 100644
  struct ggml_metal_event {
      void * obj; // id<MTLSharedEvent>
  
-@@ -2102,6 +2138,9 @@ struct ggml_metal_buffer {
+@@ -2125,6 +2161,9 @@ static void ggml_metal_device_disable_tensor(ggml_metal_device_t dev) {
  
      // pointers to global device
      ggml_metal_device_t dev;
@@ -189,7 +189,7 @@ index 56aea27..26e8d90 100644
  };
  
  static void ggml_metal_log_allocated_size(id<MTLDevice> device, size_t size_aligned) {
-@@ -2360,6 +2399,37 @@ ggml_metal_buffer_t ggml_metal_buffer_map(ggml_metal_device_t dev, void * ptr, s
+@@ -2383,6 +2422,37 @@ ggml_metal_buffer_t ggml_metal_buffer_map(ggml_metal_device_t dev, void * ptr, s
      return res;
  }
  
@@ -227,7 +227,7 @@ index 56aea27..26e8d90 100644
  void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
      @autoreleasepool {
          ggml_metal_device_rsets_rm(buf->dev, buf->rset);
-@@ -2375,6 +2445,11 @@ void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
+@@ -2398,6 +2468,11 @@ void ggml_metal_buffer_free(ggml_metal_buffer_t buf) {
          vm_deallocate((vm_map_t)mach_task_self(), (vm_address_t)buf->all_data, buf->all_size);
      }
  
@@ -240,10 +240,10 @@ index 56aea27..26e8d90 100644
  }
  
 diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
-index a2d91a9..4f925ed 100644
+index 239100e..3493d79 100644
 --- a/ggml/src/ggml-metal/ggml-metal.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal.cpp
-@@ -822,6 +822,24 @@ static ggml_backend_buffer_t ggml_backend_metal_device_buffer_mapped(ggml_backen
+@@ -826,6 +826,24 @@ static ggml_backend_buffer_t ggml_backend_metal_device_buffer_mapped(ggml_backen
      return ggml_backend_buffer_init(ggml_backend_metal_buffer_type_mapped(props_dev->device), ggml_backend_metal_buffer_shared_i, res, size);
  }
  
@@ -268,7 +268,7 @@ index a2d91a9..4f925ed 100644
  static bool ggml_backend_metal_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
      ggml_metal_device_t ctx_dev = (ggml_metal_device_t)dev->context;
  
-@@ -1054,6 +1072,9 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const
+@@ -1058,6 +1076,9 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const
      if (strcmp(name, "ggml_backend_fusion_set_enabled") == 0) {
          return (void *)ggml_backend_metal_fusion_set_enabled;
      }
@@ -278,7 +278,7 @@ index a2d91a9..4f925ed 100644
  
      return NULL;
  
-@@ -1129,4 +1150,46 @@ ggml_backend_reg_t ggml_backend_metal_reg(void) {
+@@ -1133,4 +1154,46 @@ ggml_backend_reg_t ggml_backend_metal_reg(void) {
      return &reg;
  }
  

@@ -10,10 +10,10 @@ Subject: [PATCH] ggml-metal: fix null-pipeline crash for F16 src1 mul_mat
  create mode 100644 ggml/src/ggml-metal/ggml-metal-ops.cpp.rej
 
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-index 1e37fa0..70f1715 100644
+index 530d2dc..2efc9ed 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
 +++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
-@@ -2717,6 +2717,16 @@ static int ggml_metal_op_mul_mat_mv(ggml_metal_op_t ctx, int idx) {
+@@ -2727,6 +2727,16 @@ static int ggml_metal_op_mul_mat_mv(ggml_metal_op_t ctx, int idx) {
      return 1;
  }
  
@@ -30,7 +30,7 @@ index 1e37fa0..70f1715 100644
  int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
      ggml_tensor * op = ctx->node(idx);
  
-@@ -2834,6 +2844,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+@@ -2844,6 +2854,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
          };
  
          auto pipeline = ggml_metal_library_get_pipeline_mul_mv_ext(lib, op, nsg, nxpsg, r1ptg);
@@ -38,7 +38,7 @@ index 1e37fa0..70f1715 100644
  
          ggml_metal_kargs_mul_mv_ext args = {
              /*.ne00  =*/ ne00,
-@@ -2876,6 +2887,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+@@ -2886,6 +2897,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
          //}
  
          auto pipeline = ggml_metal_library_get_pipeline_mul_mm(lib, op);
@@ -46,7 +46,7 @@ index 1e37fa0..70f1715 100644
  
          ggml_metal_kargs_mul_mm args = {
              /*.ne00 =*/ ne00,
-@@ -3056,6 +3068,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
+@@ -3066,6 +3078,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
  
          {
              auto pipeline = ggml_metal_library_get_pipeline_mul_mm_id(lib, op);
@@ -54,7 +54,7 @@ index 1e37fa0..70f1715 100644
  
              ggml_metal_kargs_mul_mm_id args = {
                  /*.ne00  =*/ ne00,
-@@ -3095,6 +3108,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
+@@ -3105,6 +3118,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
          }
      } else {
          auto pipeline = ggml_metal_library_get_pipeline_mul_mv_id(lib, op);

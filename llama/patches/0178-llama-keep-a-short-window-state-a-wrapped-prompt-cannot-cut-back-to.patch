@@ -1,0 +1,277 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 20 Nov 2026 19:59:04 -0800
+Subject: [PATCH] llama: keep a short window state a wrapped prompt cannot cut
+ back to
+
+A prompt that still fits in the sliding window can be cut to any shorter length. A longer one has overwritten that, so it does not replace the short state.
+---
+ tools/server/server-context.cpp    | 19 +++++++----
+ tools/server/server-slot-sched.cpp |  6 ++--
+ tools/server/server-slot-sched.h   |  6 ++--
+ tools/server/server-warm-cover.h   | 53 ++++++++++++++++++++++--------
+ tools/server/server-warm-disk.h    | 43 +++++++++++++++++++-----
+ 5 files changed, 93 insertions(+), 34 deletions(-)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 1ffb886..14fcfe7 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2157,14 +2157,21 @@ private:
+                     SRV_WRN("prompt disk cache disabled: %s\n", e.what());
+                 }
+             }
+-            // PART removal can cut a full attention cache to any prefix. A
+-            // window or a recurrent state can return only to a mark.
+-            prompt_cache->rewinds = ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_PART && n_swa == 0;
++            // PART removal cuts a full attention cache to any prefix. A sliding
++            // window still does, until the state is longer than the window.
++            // Anything else returns only to a mark.
++            int32_t window = 0;
++            if (ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_PART) {
++                window = -1;
++            } else if (n_swa > 0) {
++                window = n_swa;
++            }
++            prompt_cache->rewind_window = window;
+             if (prompt_cache->warm) {
+-                prompt_cache->warm->set_rewinds(prompt_cache->rewinds);
++                prompt_cache->warm->set_rewind_window(window);
+             }
+-            if (!prompt_cache->rewinds) {
+-                SRV_INF("%s", "prompt cache keeps a shorter state when a longer one has no mark there\n");
++            if (window != 0) {
++                SRV_INF("%s", "prompt cache keeps a shorter state when a longer one cannot return to it\n");
+             }
+         } else {
+             SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
+diff --git a/tools/server/server-slot-sched.cpp b/tools/server/server-slot-sched.cpp
+index 40d174e..8f1e5aa 100644
+--- a/tools/server/server-slot-sched.cpp
++++ b/tools/server/server-slot-sched.cpp
+@@ -108,8 +108,8 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
+     }
+ 
+     // Drop a shorter prompt only when this one can restore every length it
+-    // could. A state that cannot rewind keeps its entry if there is no mark
+-    // at its end.
++    // could. A state that still fits in the window stays, and so does one
++    // whose end is not a mark of the longer prompt.
+     std::vector<int64_t> new_marks;
+     new_marks.reserve(prompt.checkpoints.size());
+     for (const auto & ck : prompt.checkpoints) {
+@@ -127,7 +127,7 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
+             old_marks.push_back(ck->n_tokens);
+         }
+         const llama_tokens & old_toks = it->prompt.tokens.get_tokens();
+-        if (llama_warm_covers(rewinds, old_toks.data(), old_toks.size(), old_marks.data(), old_marks.size(),
++        if (llama_warm_covers(rewind_window, old_toks.data(), old_toks.size(), old_marks.data(), old_marks.size(),
+                     new_toks.data(), new_toks.size(), new_marks.data(), new_marks.size())) {
+             SRV_TRC(" - removing obsolete cached prompt with length %zu\n", old_toks.size());
+             it = states.erase(it);
+diff --git a/tools/server/server-slot-sched.h b/tools/server/server-slot-sched.h
+index 4408075..226f9e4 100644
+--- a/tools/server/server-slot-sched.h
++++ b/tools/server/server-slot-sched.h
+@@ -96,9 +96,9 @@ struct server_prompt_cache {
+     // skips a restore that would take longer than running the tokens
+     llama_warm_cost cost;
+ 
+-    // A full attention cache can be cut to any shorter prefix. When this is
+-    // false, a shorter entry stays unless the new one has a mark there.
+-    bool rewinds = true;
++    // 0: any shorter prefix. -1: only a mark. A positive value is the sliding
++    // window, and a state no longer than it can still be cut back.
++    int32_t rewind_window = 0;
+ 
+     // in bytes, 0 = no limit
+     size_t limit_size = 0;
+diff --git a/tools/server/server-warm-cover.h b/tools/server/server-warm-cover.h
+index b0ff074..51933fc 100644
+--- a/tools/server/server-warm-cover.h
++++ b/tools/server/server-warm-cover.h
+@@ -1,8 +1,9 @@
+ #pragma once
+ 
+ // Whether a longer cached prompt makes a shorter one redundant.
+-// A cache that rewinds can return to any shorter length. A recurrent or
+-// sliding-window state can return only to a saved mark, or to its own end.
++// Window 0 rewinds to any shorter length. Window -1 returns only to a saved
++// mark or to its own end. A positive window is a sliding window: a state no
++// longer than it still rewinds, and a longer one has started to overwrite.
+ // LLAMA_WARM_COVER_TEST compiles the checks below.
+ 
+ #include <cstddef>
+@@ -31,11 +32,23 @@ inline int64_t llama_warm_reach(bool rewinds, int64_t end, const int64_t * marks
+     return best;
+ }
+ 
++// A state of `n_tokens` can be cut to any shorter length.
++inline bool llama_warm_in_place(int32_t window, size_t n_tokens) {
++    if (window < 0) {
++        return false;
++    }
++    if (window == 0) {
++        return true;
++    }
++    return n_tokens <= (size_t) window;
++}
++
+ // True when `neu` starts with `old` and can restore every length `old` can,
+-// including `old`'s end. An equal-length entry is not covered: the caller
+-// already skips storing a duplicate.
++// including `old`'s end. A short state that still rewinds is not covered by
++// a longer one that has wrapped: the short one is the only way back to the
++// lengths in between. An equal-length entry is not covered.
+ inline bool llama_warm_covers(
+-        bool rewinds,
++        int32_t window,
+         const int32_t * old_tokens, size_t old_n,
+         const int64_t * old_marks, size_t old_marks_n,
+         const int32_t * new_tokens, size_t new_n,
+@@ -48,8 +61,13 @@ inline bool llama_warm_covers(
+             return false;
+         }
+     }
++    const bool old_place = llama_warm_in_place(window, old_n);
++    const bool new_place = llama_warm_in_place(window, new_n);
++    if (old_place && !new_place) {
++        return false;
++    }
+     auto reachable = [&](int64_t m) {
+-        return llama_warm_reach(rewinds, (int64_t) new_n, new_marks, new_marks_n, m) == m;
++        return llama_warm_reach(new_place, (int64_t) new_n, new_marks, new_marks_n, m) == m;
+     };
+     if (!reachable((int64_t) old_n)) {
+         return false;
+@@ -71,32 +89,41 @@ int main() {
+     const int32_t old_t[] = { 1, 2, 3 };
+     const int32_t neu_t[] = { 1, 2, 3, 4, 5 };
+     const int32_t other[] = { 1, 9, 3, 4, 5 };
+-    if (!llama_warm_covers(true, old_t, 3, nullptr, 0, neu_t, 5, nullptr, 0)) {
++    if (!llama_warm_covers(0, old_t, 3, nullptr, 0, neu_t, 5, nullptr, 0)) {
+         return 1;
+     }
+-    if (llama_warm_covers(true, old_t, 3, nullptr, 0, other, 5, nullptr, 0)) {
++    if (llama_warm_covers(0, old_t, 3, nullptr, 0, other, 5, nullptr, 0)) {
+         return 1;
+     }
+-    if (llama_warm_covers(true, old_t, 3, nullptr, 0, old_t, 3, nullptr, 0)) {
++    if (llama_warm_covers(0, old_t, 3, nullptr, 0, old_t, 3, nullptr, 0)) {
+         return 1;
+     }
+     // No mark at token 3, so the shorter state is the only way back there.
+-    if (llama_warm_covers(false, old_t, 3, nullptr, 0, neu_t, 5, nullptr, 0)) {
++    if (llama_warm_covers(-1, old_t, 3, nullptr, 0, neu_t, 5, nullptr, 0)) {
+         return 1;
+     }
+     const int64_t at_end[] = { 3 };
+-    if (!llama_warm_covers(false, old_t, 3, nullptr, 0, neu_t, 5, at_end, 1)) {
++    if (!llama_warm_covers(-1, old_t, 3, nullptr, 0, neu_t, 5, at_end, 1)) {
++        return 1;
++    }
++    const int32_t wrapped[] = { 1, 2, 3, 4, 5, 6 };
++    // Three tokens still fit in a window of 4. Six have wrapped, so they
++    // cannot replace the shorter state.
++    if (llama_warm_covers(4, old_t, 3, nullptr, 0, wrapped, 6, nullptr, 0)) {
++        return 1;
++    }
++    if (!llama_warm_covers(8, old_t, 3, nullptr, 0, neu_t, 5, nullptr, 0)) {
+         return 1;
+     }
+     const int64_t old_marks[] = { 2 };
+     const int64_t grid[] = { 2, 4 };
+     const int32_t long_t[] = { 1, 2, 3, 4, 5, 6 };
+     // The new prompt reaches 2 and 4, not the old end at 3.
+-    if (llama_warm_covers(false, old_t, 3, old_marks, 1, long_t, 6, grid, 2)) {
++    if (llama_warm_covers(-1, old_t, 3, old_marks, 1, long_t, 6, grid, 2)) {
+         return 1;
+     }
+     const int64_t both[] = { 2, 3 };
+-    if (!llama_warm_covers(false, old_t, 3, old_marks, 1, long_t, 6, both, 2)) {
++    if (!llama_warm_covers(-1, old_t, 3, old_marks, 1, long_t, 6, both, 2)) {
+         return 1;
+     }
+     std::printf("warm cover ok\n");
+diff --git a/tools/server/server-warm-disk.h b/tools/server/server-warm-disk.h
+index d380437..9e3e93a 100644
+--- a/tools/server/server-warm-disk.h
++++ b/tools/server/server-warm-disk.h
+@@ -149,12 +149,10 @@ public:
+         return budget_;
+     }
+ 
+-    // A full attention cache can be cut back to any shorter length. A
+-    // recurrent or sliding-window cache cannot, so a shorter file stays
+-    // unless the new one has a mark at every length the shorter one can
+-    // restore. Set once, before the first store.
+-    void set_rewinds(bool v) {
+-        rewinds_ = v;
++    // 0 rewinds to any shorter length, -1 only to a mark, and a positive
++    // value is the sliding window. Set once, before the first store.
++    void set_rewind_window(int32_t window) {
++        rewind_window_ = window;
+     }
+ 
+     size_t count() const {
+@@ -607,7 +605,7 @@ private:
+         std::vector<std::filesystem::path> dead;
+         for (auto it = files_.begin(); it != files_.end(); ) {
+             const bool covered = llama_warm_covers(
+-                    rewinds_,
++                    rewind_window_,
+                     it->tokens.data(), it->tokens.size(), it->marks.data(), it->marks.size(),
+                     entry.tokens.data(), entry.tokens.size(), new_marks.data(), new_marks.size());
+             if (it->path == dst || covered) {
+@@ -656,7 +654,7 @@ private:
+     std::filesystem::path dir_;
+     uint64_t model_id_ = 0;
+     uint64_t budget_ = k_budget;
+-    bool rewinds_ = true;
++    int32_t rewind_window_ = 0;
+     mutable std::mutex mu_;
+     std::vector<file_meta> files_;
+     std::thread writer_;
+@@ -772,7 +770,7 @@ int main() {
+     {
+         std::filesystem::remove_all(dir);
+         llama_warm_disk disk(dir, 42, 100000);
+-        disk.set_rewinds(false);
++        disk.set_rewind_window(-1);
+         llama_warm_entry a;
+         a.tokens = { 1, 2, 3 };
+         a.main   = { 1 };
+@@ -795,6 +793,33 @@ int main() {
+         }
+     }
+ 
++    {
++        std::filesystem::remove_all(dir);
++        llama_warm_disk disk(dir, 42, 100000);
++        disk.set_rewind_window(4);
++        llama_warm_entry a;
++        a.tokens = { 1, 2, 3 };
++        a.main   = { 1 };
++        llama_warm_entry b = a;
++        b.tokens = { 1, 2, 3, 4, 5, 6 };
++        disk.store(a);
++        disk.flush();
++        disk.store(b);
++        disk.flush();
++        if (disk.count() != 2) {
++            return warm_fail("window keep count");
++        }
++        disk.set_rewind_window(8);
++        llama_warm_entry c = a;
++        c.tokens = { 1, 2, 3, 4, 5 };
++        disk.store(c);
++        disk.flush();
++        // a and c both fit in the window, so c replaces a. b has wrapped.
++        if (disk.count() != 2) {
++            return warm_fail("window drop count");
++        }
++    }
++
+     uint64_t one = 0;
+     {
+         std::filesystem::remove_all(dir);

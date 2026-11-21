@@ -27,6 +27,8 @@ add_library(${TARGET} STATIC
     server-mcp.h
     server-schema.cpp
     server-schema.h
+    server-slot-sched.cpp
+    server-slot-sched.h
     server-loop-guard.cpp
     server-loop-guard.h
     server-laya.cpp
@@ -40,6 +42,7 @@ endif()
 target_include_directories(${TARGET} PRIVATE ../mtmd)
 target_include_directories(${TARGET} PRIVATE ${PROJECT_SOURCE_DIR})
 target_link_libraries(${TARGET} PUBLIC llama-common mtmd ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(${TARGET} PRIVATE vendor::hash)
 
 # Clef joint head (zerollama L6) — sources live at repo llama/clef/, not in ggml-org tree.
 # Pass -DZEROLLAMA_CLEF_DIR=/path/to/llama/clef from build_llama_server.sh.

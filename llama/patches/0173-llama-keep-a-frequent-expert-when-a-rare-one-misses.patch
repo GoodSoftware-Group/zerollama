@@ -1,0 +1,236 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Fri, 20 Nov 2026 17:57:47 -0800
+Subject: [PATCH] llama: keep a frequent expert when a rare one misses
+
+The miss is copied into a one-batch slot instead of evicting an expert used at least as often. LLAMA_MOE_TRANSIT=0 keeps the old eviction.
+---
+ src/llama-moe-cache.cpp | 60 ++++++++++++++++++++++++++++++++++-------
+ src/llama-moe-transit.h | 45 +++++++++++++++++++++++++++++++
+ 2 files changed, 96 insertions(+), 9 deletions(-)
+ create mode 100644 src/llama-moe-transit.h
+
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+index 6d177b3..31546dc 100644
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -1,6 +1,7 @@
+ #include "llama-moe-cache.h"
+ #include "llama-flywheel.h"
+ #include "llama-moe-resident.h"
++#include "llama-moe-transit.h"
+ 
+ #include "llama-graph.h"
+ #include "llama-impl.h"
+@@ -15,6 +16,7 @@
+ #include <cmath>
+ #include <cstdio>
+ #include <cstdlib>
++#include <cstdint>
+ #include <cstring>
+ #include <stdexcept>
+ #include <unordered_map>
+@@ -49,6 +51,7 @@ struct moe_cache_lru {
+     int32_t n_filled = 0;         // slots that hold an expert
+ 
+     std::vector<float>   crf;      // [n_layer*n_expert]
++    std::vector<uint32_t> uses;    // [n_layer*n_expert] batches that selected the expert
+     std::vector<int64_t> last_use; // [n_layer*n_expert] layer clock at the last use, -1 if not used
+     std::vector<int64_t> clock;    // [n_layer] tokens seen by the layer (as added by plan() for each ubatch)
+ 
+@@ -79,6 +82,7 @@ struct moe_cache_lru {
+         tail[0] = n_slots - 1;
+         list_of.assign(n_slots, 0);
+         crf.assign((size_t) n_layer*n_expert, 0.0f);
++        uses.assign((size_t) n_layer*n_expert, 0);
+         last_use.assign((size_t) n_layer*n_expert, -1);
+         clock.assign(n_layer, 0);
+         seen.assign(n_expert, 0);
+@@ -190,8 +194,10 @@ struct moe_cache_lru {
+     // returns false if the ids select more distinct experts than there are slots
+     // rates != nullptr: misses run on the host or are copied, whichever finishes sooner.
+     // batch_clock counts this ubatch as one use, so a long prompt does not outweigh the tokens after it.
++    // n_transit one-batch slots follow the zero slots. A miss uses one instead of
++    // evicting an expert that has been selected at least as often.
+     template <typename F>
+-    bool plan(int32_t il, const int32_t * ids, size_t n_ids, int64_t n_tokens, int32_t n_used, int32_t n_zero, F && n_cpu,
++    bool plan(int32_t il, const int32_t * ids, size_t n_ids, int64_t n_tokens, int32_t n_used, int32_t n_zero, int32_t n_transit, F && n_cpu,
+             std::vector<fill> & fills, std::vector<fill> & cpu, size_t & n_hit,
+             const llama_flywheel_rates * rates, size_t slot_bytes, bool batch_clock) {
+         fills.clear();
+@@ -214,6 +220,13 @@ struct moe_cache_lru {
+             return false;
+         }
+ 
++        for (int32_t e : uniq) {
++            uint32_t & n = uses[(size_t) make_key(il, e)];
++            if (n < UINT32_MAX) {
++                n++;
++            }
++        }
++
+         int32_t * slots = slot_map[il];
+ 
+         // update the CRF of all selected experts and promote hits before choosing victims for misses
+@@ -307,10 +320,19 @@ struct moe_cache_lru {
+         // fill the misses in expert order: victim() takes unused slots, and slots filled by one plan(), in list order,
+         // so consecutive experts often get consecutive slots and one upload
+         std::sort(misses.begin(), misses.end());
++        int32_t transit_used = 0;
+         for (int32_t e : misses) {
+             const int32_t s = victim(il);
+-            if (key_of[s] >= 0) {
+-                slot_map[key_layer(key_of[s])][key_expert(key_of[s])] = empty;
++            const int32_t held = key_of[s];
++            const uint32_t nu = uses[(size_t) make_key(il, e)];
++            if (held >= 0 && transit_used < n_transit && !llama_moe_may_evict(uses[(size_t) held], nu)) {
++                const int32_t slot = llama_moe_transit_slot(n_slots, n_zero, transit_used++);
++                slots[e] = slot;
++                fills.push_back({ e, slot });
++                continue;
++            }
++            if (held >= 0) {
++                slot_map[key_layer(held)][key_expert(held)] = empty;
+             } else {
+                 n_filled++;
+             }
+@@ -379,6 +401,7 @@ struct llama_moe_cache::impl {
+         std::vector<ggml_tensor *> banks; // device storage of all slots, one per expert tensor
+         size_t host_bytes = 0;
+         int32_t n_slots = 0;
++        int32_t n_transit = 0; // one-batch slots after the zero slots
+         moe_cache_lru lru;
+     };
+ 
+@@ -492,11 +515,15 @@ struct llama_moe_cache::impl {
+         // with misses on the CPU, the n_zero slots after the cached ones stay zero: the device computes these misses as zero
+         // one extra slot at the end, CUDA MMQ can read past the last expert
+         n_zero = (cpu_share > 0.0f || flywheel) ? std::min<int32_t>(n_expert_used, 64) : 0;
++        bool transit_on = true;
++        if (const char * e = getenv("LLAMA_MOE_TRANSIT"); e != nullptr && e[0] == '0') {
++            transit_on = false;
++        }
+         auto alloc_size = [&](const group & g, int32_t n_slots) {
+             const size_t alignment = ggml_backend_buft_get_alignment(devices[g.id].buft);
+             size_t res = 0;
+             for (const ggml_tensor * t : g.ref) {
+-                res += GGML_PAD(t->nb[2]*(n_slots + n_zero + 1), alignment);
++                res += GGML_PAD(t->nb[2]*((size_t) n_slots + (size_t) n_zero + (size_t) g.n_transit + 1), alignment);
+             }
+             return res;
+         };
+@@ -547,12 +574,24 @@ struct llama_moe_cache::impl {
+             const int32_t n_expert  = g.ref[0]->ne[2];
+             const size_t  budget    = (size_t) ((double) size*d.split/split_sum*g.host_bytes/d.host_bytes);
+             const int32_t max_slots = g.layers.size()*n_expert;
+-            while (g.n_slots < max_slots && alloc_size(g, g.n_slots + 1) <= budget) {
+-                g.n_slots++;
++            auto fill_slots = [&]() {
++                g.n_slots = 0;
++                while (g.n_slots < max_slots && alloc_size(g, g.n_slots + 1) <= budget) {
++                    g.n_slots++;
++                }
++            };
++            g.n_transit = transit_on ? LLAMA_MOE_TRANSIT_SLOTS : 0;
++            fill_slots();
++            // A cache smaller than one token is not useful. Drop the one-batch
++            // slots and spend the budget on cached experts instead.
++            if (g.n_slots < n_expert_used && g.n_transit > 0) {
++                g.n_transit = 0;
++                fill_slots();
+             }
+             if (g.n_slots < n_expert_used) {
+                 LLAMA_LOG_WARN("%s: MoE cache budget is too small for %zu layers, they are not cached\n", __func__, g.layers.size());
+                 g.n_slots = 0;
++                g.n_transit = 0;
+                 continue;
+             }
+             g.lru.init(model.layers.size(), n_expert, g.n_slots);
+@@ -593,7 +632,7 @@ struct llama_moe_cache::impl {
+             }
+             ggml_context * ctx = devices[g.id].ctx.get();
+             for (const ggml_tensor * t : g.ref) {
+-                ggml_tensor * bank = ggml_new_tensor_3d(ctx, t->type, t->ne[0], t->ne[1], g.n_slots + n_zero + 1);
++                ggml_tensor * bank = ggml_new_tensor_3d(ctx, t->type, t->ne[0], t->ne[1], g.n_slots + n_zero + g.n_transit + 1);
+                 GGML_ASSERT(bank->nb[2] == t->nb[2]);
+                 ggml_format_name(bank, "moe_cache.%zu.%s", ig, t->name);
+                 g.banks.push_back(bank);
+@@ -604,7 +643,7 @@ struct llama_moe_cache::impl {
+                 l.experts = llama_moe_cache_layer_experts(model.layers[il]);
+                 for (size_t ip = 0; ip < l.experts.size(); ++ip) {
+                     ggml_tensor * bank   = g.banks[ip];
+-                    ggml_tensor * cached = ggml_view_3d(ctx, bank, bank->ne[0], bank->ne[1], g.n_slots + n_zero, bank->nb[1], bank->nb[2], 0);
++                    ggml_tensor * cached = ggml_view_3d(ctx, bank, bank->ne[0], bank->ne[1], g.n_slots + n_zero + g.n_transit, bank->nb[1], bank->nb[2], 0);
+                     ggml_format_name(cached, "moe_cache.%s", l.experts[ip]->name);
+                     bindings[l.experts[ip]] = { il, (int32_t) ip, cached };
+                 }
+@@ -683,6 +722,9 @@ struct llama_moe_cache::impl {
+                     LLAMA_LOG_INFO("%s: %2zu layers, %s: %5d slots (%.1f%%, %.1f tokens worth)\n", __func__,
+                         g.layers.size(), ggml_type_name(g.ref.back()->type), g.n_slots, 100.0*g.n_slots/(g.layers.size()*g.ref[0]->ne[2]),
+                         (double) g.n_slots/(g.layers.size()*n_expert_used));
++                    if (g.n_transit > 0) {
++                        LLAMA_LOG_INFO("%s: %d one-batch slots so a rare expert does not evict a frequent one\n", __func__, g.n_transit);
++                    }
+                 }
+             }
+         }
+@@ -1072,7 +1114,7 @@ struct llama_moe_cache::impl {
+         }
+         const llama_flywheel_rates * place = has_cpu && flywheel ? &rates : nullptr;
+         size_t n_hit = 0;
+-        if (!g.lru.plan(il, ids.data(), ids.size(), sel->src[0]->ne[1], n_used, n_zero, n_cpu, fills, cpu, n_hit, place, slot_bytes, flywheel)) {
++        if (!g.lru.plan(il, ids.data(), ids.size(), sel->src[0]->ne[1], n_used, n_zero, g.n_transit, n_cpu, fills, cpu, n_hit, place, slot_bytes, flywheel)) {
+             GGML_ABORT("the MoE cache is too small for the experts selected in layer %d", il);
+         }
+         if (has_cpu) {
+diff --git a/src/llama-moe-transit.h b/src/llama-moe-transit.h
+new file mode 100644
+index 0000000..1a542cf
+--- /dev/null
++++ b/src/llama-moe-transit.h
+@@ -0,0 +1,45 @@
++#pragma once
++
++// A miss may take a cache slot only from an expert used fewer times. One
++// used as often stays, and the miss is copied into a one-batch slot.
++
++#include <cstdint>
++
++// True when the expert already in the slot has been used strictly fewer
++// times than the one that missed. An empty slot is not a use count.
++inline bool llama_moe_may_evict(uint32_t victim_uses, uint32_t newcomer_uses) {
++    return victim_uses < newcomer_uses;
++}
++
++// Slot index of one-batch copy `transit_i`, after the cached slots and the
++// zero slots the host misses read.
++inline int32_t llama_moe_transit_slot(int32_t n_slots, int32_t n_zero, int32_t transit_i) {
++    return n_slots + n_zero + transit_i;
++}
++
++// One-batch slots reserved when the cache budget can spare them.
++inline constexpr int32_t LLAMA_MOE_TRANSIT_SLOTS = 128;
++
++#ifdef LLAMA_MOE_TRANSIT_TEST
++#include <cstdio>
++int main() {
++    if (!llama_moe_may_evict(0, 1) || !llama_moe_may_evict(4, 5)) {
++        std::fputs("a miss can replace an expert used less often\n", stderr);
++        return 1;
++    }
++    if (llama_moe_may_evict(1, 1) || llama_moe_may_evict(5, 4)) {
++        std::fputs("a miss does not replace an expert used as often\n", stderr);
++        return 1;
++    }
++    if (llama_moe_transit_slot(10, 2, 0) != 12 || llama_moe_transit_slot(10, 2, 3) != 15) {
++        std::fputs("one-batch slots follow the cache and the zero slots\n", stderr);
++        return 1;
++    }
++    if (LLAMA_MOE_TRANSIT_SLOTS != 128) {
++        std::fputs("128 one-batch slots\n", stderr);
++        return 1;
++    }
++    std::puts("transit ok");
++    return 0;
++}
++#endif

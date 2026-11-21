@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nobody <>
+Date: Thu, 19 Nov 2026 20:50:20 -0800
+Subject: [PATCH] fix Metal and dflash compile on b12557
+
+---
+ ggml/src/ggml-metal/ggml-metal-context.m | 3 ++-
+ ggml/src/ggml-metal/ggml-metal-ops.h     | 3 +++
+ include/llama.h                          | 6 ++++++
+ src/llama-kv-cache.cpp                   | 6 +++++-
+ src/llama-model.cpp                      | 2 +-
+ 5 files changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/ggml/src/ggml-metal/ggml-metal-context.m b/ggml/src/ggml-metal/ggml-metal-context.m
+index 57c2534..77f8697 100644
+--- a/ggml/src/ggml-metal/ggml-metal-context.m
++++ b/ggml/src/ggml-metal/ggml-metal-context.m
+@@ -142,7 +142,8 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
+         // Auto-disable concurrent dispatch on non-Apple GPUs (AMD/Intel).
+         // MTLDispatchTypeConcurrent has broken memory barriers on these GPUs
+         // (upstream #19527; concurrency alone fixed correctness on discrete Metal).
+-        const bool is_apple_gpu = props_dev->supports_gpu_family_apple7;
++        // gpu_family is the highest MTLGPUFamilyAppleN (0 on AMD/Intel).
++        const bool is_apple_gpu = props_dev->gpu_family >= 7;
+         res->use_concurrency = is_apple_gpu && (getenv("GGML_METAL_CONCURRENCY_DISABLE") == nil);
+ 
+         if (!is_apple_gpu && getenv("GGML_METAL_CONCURRENCY_DISABLE") == nil) {
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.h b/ggml/src/ggml-metal/ggml-metal-ops.h
+index 6743657..00dc16c 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.h
++++ b/ggml/src/ggml-metal/ggml-metal-ops.h
+@@ -47,6 +47,9 @@ size_t ggml_metal_op_flash_attn_ext_extra_kv_f16(const struct ggml_tensor * op);
+ size_t ggml_metal_op_flash_attn_ext_extra_idx(const struct ggml_tensor * op);
+ size_t ggml_metal_op_flash_attn_ext_extra_rows(const struct ggml_tensor * op);
+ 
++// Q sketch scratch for fused QJL+TBQ / QJL+Polar attention
++size_t ggml_metal_op_fused_attn_qjl_extra_q_sketch(const struct ggml_tensor * op);
++
+ size_t ggml_metal_op_argmax_extra(const struct ggml_tensor * op);
+ 
+ size_t ggml_metal_op_conv_2d_extra_tmp(const struct ggml_tensor * op);
+diff --git a/include/llama.h b/include/llama.h
+index c59953e..dd4e4c1 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -1142,6 +1142,12 @@ extern "C" {
+     // TODO: rename to avoid confusion with llama_get_embeddings()
+     LLAMA_API void llama_set_embeddings(struct llama_context * ctx, bool embeddings);
+ 
++    // Hidden state before the final output norm. Thin alias of embeddings_nextn
++    // (unmasked). Also declared in llama-ext.h.
++    LLAMA_API void llama_set_embeddings_pre_norm(struct llama_context * ctx, bool value);
++    LLAMA_API float * llama_get_embeddings_pre_norm(struct llama_context * ctx);
++    LLAMA_API float * llama_get_embeddings_pre_norm_ith(struct llama_context * ctx, int32_t i);
++
+     // Set whether to use causal attention or not
+     // If set to true, the model will only attend to the past tokens
+     LLAMA_API void llama_set_causal_attn(struct llama_context * ctx, bool causal_attn);
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 94c41f0..cf01d3d 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -454,9 +454,13 @@ bool llama_kv_cache::ensure_unique_tensors(const char * reason) {
+             pf.dst_k,
+             pf.dst_v,
+             old_layer.k_idx,
++            old_layer.k_scale,
++            old_layer.v_scale,
+             std::move(pf.k_stream),
+             std::move(pf.v_stream),
+             old_layer.k_idx_stream,
++            old_layer.k_rot,
++            old_layer.v_rot,
+         };
+     }
+     for (auto & nb : new_bufs) {
+@@ -2974,7 +2978,7 @@ void llama_kv_cache::set_input_relative_pos(ggml_tensor * dst, const llama_ubatc
+     const int64_t n_kv = dst->ne[0];
+     std::vector<int32_t> data(n_kv * ubatch->n_tokens);
+     for (uint32_t i = 0; i < ubatch->n_tokens; ++i) {
+-        const auto & cells = v_cells.at(seq_to_stream.at(ubatch->seq_id[i][0]));
++        const auto & cells = v_cells->at(seq_to_stream.at(ubatch->seq_id[i][0]));
+         for (int64_t j = 0; j < n_kv; ++j) {
+             const int64_t distance = cells.is_empty(j) ? -1 : int64_t(ubatch->pos[i]) - cells.pos_get(j);
+             data[i*n_kv + j] = distance >= 0 && distance < extent ? distance : extent;
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index b7ab2b6..2f6132e 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -4249,7 +4249,7 @@ int32_t llama_model_dflash_block_size(const struct llama_model * model) {
+     if (!model || model->arch != LLM_ARCH_DFLASH_DRAFT) {
+         return 0;
+     }
+-    return (int32_t) model->hparams.dflash_block_size;
++    return (int32_t) model->hparams.dflash_draft_block_size;
+ }
+ 
+ int32_t llama_model_dflash_n_target_layers(const struct llama_model * model) {

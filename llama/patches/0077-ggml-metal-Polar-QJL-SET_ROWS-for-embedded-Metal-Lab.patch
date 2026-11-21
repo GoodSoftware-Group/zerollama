@@ -200,10 +200,10 @@ index 3699eda..a637839 100644
 +template [[host_name("kernel_set_rows_f32_i32_qjl1_256")]] kernel void kernel_set_rows_qjl1_256_t<int>(
          constant ggml_metal_kargs_set_rows &, device const void *, device const void *, device void *, uint3, uint);
 diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
-index df176c9..f300942 100644
+index dd6e0eb..b1e8a55 100644
 --- a/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -2152,6 +2152,7 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -2175,6 +2175,7 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                      case GGML_TYPE_TBQ3_0:
                      case GGML_TYPE_TBQ4_0:
                      case GGML_TYPE_QJL1_256:

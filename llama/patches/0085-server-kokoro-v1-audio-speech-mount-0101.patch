@@ -7,12 +7,12 @@ Subject: [PATCH] server: kokoro /v1/audio/speech mount (0101)
  CMakeLists.txt              |  4 ++++
  tools/CMakeLists.txt        |  4 ++++
  tools/server/CMakeLists.txt |  7 +++++++
- tools/server/server.cpp     | 32 ++++++++++++++++++++++++++++++++
+ tools/server/server.cpp     | 31 +++++++++++++++++++++++++++++++
  tools/server/server.cpp.rej | 22 ++++++++++++++--------
- 5 files changed, 61 insertions(+), 8 deletions(-)
+ 5 files changed, 60 insertions(+), 8 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index b8b40e7..b95977c 100644
+index 7be920f..df9e6d2 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -133,6 +133,10 @@ option(LLAMA_BUILD_TESTS     "llama: build tests"
@@ -24,15 +24,15 @@ index b8b40e7..b95977c 100644
 +# WHY on the vendor pin: one llama-server binary for Q2_0 ternary + Kokoro (retire run/llama-server-tts).
 +option(LLAMA_BUILD_KOKORO "Build Kokoro TTS (tools/kokoro/) and mount /v1/audio/speech" ON)
  option(LLAMA_BUILD_APP       "llama: build the unified binary"                                                   ${LLAMA_STANDALONE})
- option(LLAMA_BUILD_UI        "llama: build the embedded Web UI for server"                                       OFF)
+ option(LLAMA_BUILD_UI        "llama: build Llama Chat, the embedded chat app, for server"                         OFF)
  option(LLAMA_USE_PREBUILT_UI "llama: use prebuilt UI from HF Bucket when available" ON)
 diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
-index 6a6592c..3861712 100644
+index 57d53df..7617a89 100644
 --- a/tools/CMakeLists.txt
 +++ b/tools/CMakeLists.txt
-@@ -24,6 +24,10 @@ else()
-     if (LLAMA_BUILD_SERVER)
-         add_subdirectory(ui)
+@@ -25,6 +25,10 @@ else()
+         # the chat app lives in ui/apps/chat, outside tools/
+         add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../ui/apps/chat ${CMAKE_BINARY_DIR}/ui/apps/chat)
          add_subdirectory(cli)
 +        if (LLAMA_BUILD_KOKORO)
 +            # Kokoro-82M StyleTTS-2 port (Eliza). Build before server so kokoro_lib exists to link.
@@ -42,10 +42,10 @@ index 6a6592c..3861712 100644
      endif()
      add_subdirectory(tokenize)
 diff --git a/tools/server/CMakeLists.txt b/tools/server/CMakeLists.txt
-index a377aed..cf2d583 100644
+index 25cf0ea..4ad482d 100644
 --- a/tools/server/CMakeLists.txt
 +++ b/tools/server/CMakeLists.txt
-@@ -75,3 +75,10 @@ install(TARGETS ${TARGET} RUNTIME)
+@@ -78,3 +78,10 @@ install(TARGETS ${TARGET} RUNTIME)
  
  target_link_libraries(${TARGET} PRIVATE llama-server-impl)
  target_compile_features(${TARGET} PRIVATE cxx_std_17)
@@ -57,29 +57,30 @@ index a377aed..cf2d583 100644
 +    target_compile_definitions(${TARGET} PRIVATE LLAMA_BUILD_KOKORO)
 +endif()
 diff --git a/tools/server/server.cpp b/tools/server/server.cpp
-index 8b1d426..95d9f45 100644
+index d149782..59c46dd 100644
 --- a/tools/server/server.cpp
 +++ b/tools/server/server.cpp
-@@ -13,11 +13,18 @@
- #include "llama.h"
+@@ -14,13 +14,19 @@
  #include "log.h"
  
+ #include <algorithm>
 +#ifdef LLAMA_BUILD_KOKORO
 +#include "kokoro-server-mount.h"
 +#endif
-+
  #include <atomic>
 +
  #include <clocale>
  #include <exception>
+ #include <mutex>
  #include <signal.h>
  #include <thread> // for std::thread::hardware_concurrency
 +#include <string>
+ #include <unordered_map>
 +#include <vector>
  
  #if defined(_WIN32)
  #include <windows.h>
-@@ -788,6 +795,31 @@ int llama_server(int argc, char ** argv) {
+@@ -814,6 +820,31 @@ int llama_server(int argc, char ** argv) {
      // touch it. lifecycle is symmetric, stop_gc() runs in clean_up() before backend free
      server_stream_session_manager_start();
  

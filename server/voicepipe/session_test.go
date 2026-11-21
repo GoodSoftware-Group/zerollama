@@ -10,6 +10,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -940,6 +941,198 @@ func TestSpeechRejectsTurnDetection(t *testing.T) {
 	msg, _ := ev["error"].(map[string]any)["message"].(string)
 	if ev["type"] != "error" || !strings.Contains(msg, "duplex") {
 		t.Fatal(ev)
+	}
+}
+
+func TestClearDropsUncommittedAudio(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	go Serve(context.Background(), server, nil, Engine{
+		Duplex:    true,
+		InputRate: 16000,
+		Hear: func(ctx context.Context, wav []byte, language string) (string, error) {
+			t.Error("Hear after clear")
+			return "", nil
+		},
+		Reply: func(ctx context.Context, instructions, user string, prior []Exchange) (string, error) {
+			t.Error("Reply after clear")
+			return "", nil
+		},
+		Speak: func(ctx context.Context, text, voice, language, emotion string) (Clip, error) {
+			return Clip{PCM: []byte{0, 0}}, nil
+		},
+	})
+	br := bufio.NewReader(client)
+	if ev := readJSON(t, br); ev["type"] != "session.created" {
+		t.Fatal(ev)
+	}
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(4000)})
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.clear"})
+	ev := readJSON(t, br)
+	if ev["type"] != "input_audio_buffer.cleared" {
+		t.Fatalf("want cleared, got %#v", ev)
+	}
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.commit"})
+	ev = readJSON(t, br)
+	msg, _ := ev["error"].(map[string]any)["message"].(string)
+	if ev["type"] != "error" || !strings.Contains(msg, "commit needs audio") {
+		t.Fatalf("want commit needs audio, got %#v", ev)
+	}
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.clear"})
+	ev = readJSON(t, br)
+	if ev["type"] != "input_audio_buffer.cleared" {
+		t.Fatalf("socket dead after commit error: %#v", ev)
+	}
+}
+
+func TestClearStopsOpenUtterance(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	var hearN int
+	var hearMu sync.Mutex
+	vad := Turn{Threshold: 0.02, SilenceMS: 200, PrefixMS: 0}
+	go Serve(context.Background(), server, nil, Engine{
+		Duplex:    true,
+		InputRate: 16000,
+		Turn:      &vad,
+		Hear: func(ctx context.Context, wav []byte, language string) (string, error) {
+			hearMu.Lock()
+			hearN++
+			hearMu.Unlock()
+			return "no", nil
+		},
+		Reply: func(ctx context.Context, instructions, user string, prior []Exchange) (string, error) {
+			return "no", nil
+		},
+		Speak: func(ctx context.Context, text, voice, language, emotion string) (Clip, error) {
+			return Clip{PCM: []byte{0, 0}}, nil
+		},
+	})
+	br := bufio.NewReader(client)
+	if ev := readJSON(t, br); ev["type"] != "session.created" {
+		t.Fatal(ev)
+	}
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(4000)})
+	started := false
+	for !started {
+		ev := readJSON(t, br)
+		switch ev["type"] {
+		case "input_audio_buffer.speech_started":
+			started = true
+		case "error":
+			t.Fatal(ev)
+		}
+	}
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.clear"})
+	stopped, cleared := false, false
+	for !stopped || !cleared {
+		ev := readJSON(t, br)
+		switch ev["type"] {
+		case "input_audio_buffer.speech_stopped":
+			stopped = true
+		case "input_audio_buffer.cleared":
+			cleared = true
+		case "error":
+			t.Fatal(ev)
+		}
+	}
+	if !stopped || !cleared {
+		t.Fatalf("stopped=%v cleared=%v", stopped, cleared)
+	}
+	// Idle timer was armed for a loud packet; clear must disarm it.
+	time.Sleep(300 * time.Millisecond)
+	hearMu.Lock()
+	n := hearN
+	hearMu.Unlock()
+	if n != 0 {
+		t.Fatalf("Hear ran %d times after clear", n)
+	}
+}
+
+func TestClearDropsBargeGuessDuringReply(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+	firstHeard := make(chan struct{})
+	blockReply := make(chan struct{})
+	var bargeDone atomic.Bool
+	vad := Turn{Threshold: 0.02, SilenceMS: 200, PrefixMS: 0}
+	go Serve(context.Background(), server, nil, Engine{
+		Duplex:    true,
+		InputRate: 16000,
+		Turn:      &vad,
+		Hear: func(ctx context.Context, wav []byte, language string) (string, error) {
+			select {
+			case <-firstHeard:
+			default:
+				close(firstHeard)
+				return "go", nil
+			}
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(300 * time.Millisecond):
+				bargeDone.Store(true)
+				return "barge", nil
+			}
+		},
+		Reply: func(ctx context.Context, instructions, user string, prior []Exchange) (string, error) {
+			if user == "go" {
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case <-blockReply:
+					return "One. Two.", nil
+				}
+			}
+			return "after", nil
+		},
+		Speak: func(ctx context.Context, text, voice, language, emotion string) (Clip, error) {
+			return Clip{PCM: []byte{1, 0, 1, 0}}, nil
+		},
+	})
+	br := bufio.NewReader(client)
+	if ev := readJSON(t, br); ev["type"] != "session.created" {
+		t.Fatal(ev)
+	}
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(4000)})
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(0, 3200)})
+	select {
+	case <-firstHeard:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Hear")
+	}
+	// Barge while Reply is blocked, quiet enough to start draft STT, then clear.
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(4000)})
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.append", "audio": b64pcm(0, 800)})
+	started := false
+	for !started {
+		ev := readJSON(t, br)
+		switch ev["type"] {
+		case "input_audio_buffer.speech_started":
+			started = true
+		case "error":
+			t.Fatal(ev)
+		}
+	}
+	time.Sleep(50 * time.Millisecond) // let draft speculate start Hear
+	sendJSON(t, client, map[string]any{"type": "input_audio_buffer.clear"})
+	cleared := false
+	for !cleared {
+		ev := readJSON(t, br)
+		switch ev["type"] {
+		case "input_audio_buffer.cleared":
+			cleared = true
+		case "error":
+			t.Fatal(ev)
+		}
+	}
+	time.Sleep(350 * time.Millisecond)
+	close(blockReply)
+	if bargeDone.Load() {
+		t.Fatal("barge draft Hear finished after clear")
 	}
 }
 

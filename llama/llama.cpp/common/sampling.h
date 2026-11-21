@@ -68,6 +68,9 @@ struct llama_sampler * common_sampler_get(const struct common_sampler * gsmpl);
 //
 llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_context * ctx, int idx, bool grammar_first = false);
 
+// sample from a logit row kept with the prompt, rather than a context batch index
+llama_token common_sampler_sample_logits(struct common_sampler * gsmpl, const float * logits, int32_t n_vocab, bool grammar_first = false);
+
 // generalized version of common_sampler_sample
 //
 // will cross-reference the sampled tokens with a batch of draft tokens and accept those that match

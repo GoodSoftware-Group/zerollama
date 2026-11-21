@@ -2775,6 +2775,7 @@ func NewCLI() *cobra.Command {
 		NewBlobsCommand(),
 		NewFleetCommand(),
 		NewStorageCommand(),
+		NewWeightsCommand(),
 		launch.LaunchCmd(checkServerHeartbeat, runInteractiveTUI),
 	)
 
