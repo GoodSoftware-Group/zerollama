@@ -1,0 +1,109 @@
+From f5ddaee164b68a8e1c0dae4c624d2557628b0296 Mon Sep 17 00:00:00 2001
+From: zerollama <zerollama@local>
+Date: Sat, 21 Nov 2026 16:19:35 -0800
+Subject: [PATCH] ggml-cuda: compile set_rows and FP8 MMQ on b12557
+
+The b12557 templates take a source type and an x_gate argument. The TBQ, QJL, and Polar set_rows calls and the FP8 tile loaders still used the old signatures. The server target also needs src/ on its include path to see llama-mark-grid.h.
+
+diff --git a/ggml/src/ggml-cuda/mmq-load-tiles.cuh b/ggml/src/ggml-cuda/mmq-load-tiles.cuh
+index c089c48ee..a7b3960a4 100644
+--- a/ggml/src/ggml-cuda/mmq-load-tiles.cuh
++++ b/ggml/src/ggml-cuda/mmq-load-tiles.cuh
+@@ -593,11 +593,12 @@ static __device__ __forceinline__ float fp8_e4m3_block_d_as_q8(const block_fp8_e
+ 
+ // Pack FP8 E4M3 blocks into Q8_0-shaped MMQ tiles (same layout as q8_0 load).
+ template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_fp8_e4m3(
+-        const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
++        const char * __restrict__ x, const char * __restrict__ x_gate, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
++    GGML_UNUSED(x_gate);
+     constexpr int warp_size   = ggml_cuda_get_physical_warp_size();
+-    constexpr int nwarps      = ggml_cuda_mmq_get_nthreads(type, J, fallback) / warp_size;
+-    constexpr int I           = ggml_cuda_mmq_get_I(type, J, fallback);
+-    constexpr int sram_stride = ggml_cuda_mmq_get_sram_stride(type, J, fallback);
++    constexpr int nwarps      = ggml_cuda_mmq_get_nthreads(type, J, fallback, GGML_PREC_Q8) / warp_size;
++    constexpr int I           = ggml_cuda_mmq_get_I(type, J, fallback, GGML_PREC_Q8);
++    constexpr int sram_stride = ggml_cuda_mmq_get_sram_stride(type, J, fallback, GGML_PREC_Q8);
+ 
+ #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+     int   * x_qs = (int   *)  x_tile;
+@@ -685,11 +686,12 @@ static __device__ __forceinline__ float fp8_e5m2_block_d_as_q8(const block_fp8_e
+ }
+ 
+ template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_fp8_e5m2(
+-        const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
++        const char * __restrict__ x, const char * __restrict__ x_gate, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
++    GGML_UNUSED(x_gate);
+     constexpr int warp_size   = ggml_cuda_get_physical_warp_size();
+-    constexpr int nwarps      = ggml_cuda_mmq_get_nthreads(type, J, fallback) / warp_size;
+-    constexpr int I           = ggml_cuda_mmq_get_I(type, J, fallback);
+-    constexpr int sram_stride = ggml_cuda_mmq_get_sram_stride(type, J, fallback);
++    constexpr int nwarps      = ggml_cuda_mmq_get_nthreads(type, J, fallback, GGML_PREC_Q8) / warp_size;
++    constexpr int I           = ggml_cuda_mmq_get_I(type, J, fallback, GGML_PREC_Q8);
++    constexpr int sram_stride = ggml_cuda_mmq_get_sram_stride(type, J, fallback, GGML_PREC_Q8);
+ 
+ #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+     int   * x_qs = (int   *)  x_tile;
+diff --git a/ggml/src/ggml-cuda/set-rows.cu b/ggml/src/ggml-cuda/set-rows.cu
+index 1517673bf..93f58125c 100644
+--- a/ggml/src/ggml-cuda/set-rows.cu
++++ b/ggml/src/ggml-cuda/set-rows.cu
+@@ -338,7 +338,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
+             stream
+         );
+     } else if (dst->type == GGML_TYPE_TBQ3_0) {
+-        set_rows_cuda_quant<idx_t, block_tbq3_0, QK_TBQ, quantize_f32_tbq3_0_block>(
++        set_rows_cuda_quant<src_t, idx_t, block_tbq3_0, QK_TBQ, quantize_f32_tbq3_0_block>(
+             src0_d, src1_d, (block_tbq3_0*)dst->data,
+             ne00, ne01, ne02, ne03,
+             ne10, ne11, ne12, ne13,
+@@ -348,7 +348,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
+             stream
+         );
+     } else if (dst->type == GGML_TYPE_TBQ4_0) {
+-        set_rows_cuda_quant<idx_t, block_tbq4_0, QK_TBQ, quantize_f32_tbq4_0_block>(
++        set_rows_cuda_quant<src_t, idx_t, block_tbq4_0, QK_TBQ, quantize_f32_tbq4_0_block>(
+             src0_d, src1_d, (block_tbq4_0*)dst->data,
+             ne00, ne01, ne02, ne03,
+             ne10, ne11, ne12, ne13,
+@@ -369,7 +369,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
+         );
+ #if defined(GGML_CUDA_QJL)
+     } else if (dst->type == GGML_TYPE_QJL1_256) {
+-        set_rows_cuda_quant<idx_t, block_qjl1_256, 128, quantize_f32_qjl1_256_block>(
++        set_rows_cuda_quant<src_t, idx_t, block_qjl1_256, 128, quantize_f32_qjl1_256_block>(
+             src0_d, src1_d, (block_qjl1_256*)dst->data,
+             ne00, ne01, ne02, ne03,
+             ne10, ne11, ne12, ne13,
+@@ -381,7 +381,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
+ #endif
+ #if defined(GGML_CUDA_POLARQUANT)
+     } else if (dst->type == GGML_TYPE_Q4_POLAR) {
+-        set_rows_cuda_quant<idx_t, block_q4_polar, QK_POLAR, quantize_f32_q4_polar_block>(
++        set_rows_cuda_quant<src_t, idx_t, block_q4_polar, QK_POLAR, quantize_f32_q4_polar_block>(
+             src0_d, src1_d, (block_q4_polar*)dst->data,
+             ne00, ne01, ne02, ne03,
+             ne10, ne11, ne12, ne13,
+diff --git a/tools/server/CMakeLists.txt b/tools/server/CMakeLists.txt
+index 5127b26a0..5203a5f02 100644
+--- a/tools/server/CMakeLists.txt
++++ b/tools/server/CMakeLists.txt
+@@ -41,6 +41,7 @@ endif()
+ 
+ target_include_directories(${TARGET} PRIVATE ../mtmd)
+ target_include_directories(${TARGET} PRIVATE ${PROJECT_SOURCE_DIR})
++target_include_directories(${TARGET} PRIVATE ${PROJECT_SOURCE_DIR}/src)
+ target_link_libraries(${TARGET} PUBLIC llama-common mtmd ${CMAKE_THREAD_LIBS_INIT})
+ target_link_libraries(${TARGET} PRIVATE vendor::hash)
+ 
+@@ -78,7 +79,7 @@ add_library(${TARGET}
+ set_target_properties(${TARGET} PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+ 
+ target_include_directories(${TARGET} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+-target_include_directories(${TARGET} PRIVATE ../mtmd ${PROJECT_SOURCE_DIR})
++target_include_directories(${TARGET} PRIVATE ../mtmd ${PROJECT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/src)
+ target_link_libraries(${TARGET} PUBLIC server-context llama-ui cpp-httplib ${CMAKE_THREAD_LIBS_INIT})
+ 
+ add_dependencies(${TARGET} llama-ui-assets)
+-- 
+2.55.0
+

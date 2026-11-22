@@ -2,7 +2,7 @@
 
 **Status (Nov 2026):** pin identity is **b12557** (`b94959a64d011915d77a5381c7d4846dcda99530`, 2026-11-19, `CUDA: implement support for duplicate expert IDs (#32505)`).
 `vendor/llama-cpp-b12557/` is a shallow checkout of that tag, deepened so the previous pin is an ancestor. The tag is also master HEAD. The pin stays on the release tag. Upstream mtmd Kokoro and tiny-voca are in the tag. `#30541` is upstream (it was patch **0162** on b12119).
-The live series is **186** format-patches on **b12557** (`llama/patches/` `0001`–`0186`, vendor checkout `a520b5b`; `LLAMA_CPP_VENDOR_HEAD` is still `6e18bf0`, the commit before **0162**). **0162–0186** are prompt reuse ([kinetic-prompt-reuse.md](kinetic-prompt-reuse.md)). The b12119 quilt **0001–0163** is archived in `llama/patches.obsolete-b12119/` and does not apply on this tag. The live series started as that quilt rebased commit-by-commit onto the tag, including the gemma4-assistant draft-stack load. **0162–0186** were added after that rebase.
+The live series is **187** format-patches on **b12557** (`llama/patches/` `0001`–`0187`, vendor checkout `a520b5b`; `LLAMA_CPP_VENDOR_HEAD` is still `6e18bf0`, the commit before **0162**). **0162–0186** are prompt reuse ([kinetic-prompt-reuse.md](kinetic-prompt-reuse.md)). The b12119 quilt **0001–0163** is archived in `llama/patches.obsolete-b12119/` and does not apply on this tag. The live series started as that quilt rebased commit-by-commit onto the tag, including the gemma4-assistant draft-stack load. **0162–0186** were added after that rebase.
 Rollback pin files: `LLAMA_CPP_*.prev` → **b12119**.
 
 | Field | Value |
@@ -11,7 +11,7 @@ Rollback pin files: `LLAMA_CPP_*.prev` → **b12119**.
 | **Previous (rollback)** | **b12119** (`6f1e6543704bc5b080c7a98e7b6f707b31f6ed51`) — `LLAMA_CPP_*.prev` |
 | **Ollama tip pin** | **b11351** (last matched upstream Ollama pin; zerollama is ahead) |
 | **Clef runtime floor** | **b11232+** — tip wire uses `common_batch` / `batch.view` |
-| **Patch series** | `llama/patches/` **186** files (`0001`–`0186`), formatted on **b12557**. Vendor checkout `a520b5b`. `LLAMA_CPP_VENDOR_HEAD` is still `6e18bf0` (pre-**0162**). b12119 quilt archived in `llama/patches.obsolete-b12119/` |
+| **Patch series** | `llama/patches/` **187** files (`0001`–`0187`), formatted on **b12557**. Vendor checkout `a520b5b`. `LLAMA_CPP_VENDOR_HEAD` is still `6e18bf0` (pre-**0162**). b12119 quilt archived in `llama/patches.obsolete-b12119/` |
 | **Pin truth** | [runtime/LLAMA_CPP_PIN.md](../../../runtime/LLAMA_CPP_PIN.md) · `LLAMA_CPP_VERSION` / `LLAMA_CPP_COMMIT` · `Makefile.sync` |
 | **CUDA toolkit (5080 CT)** | Prefer **CUDA 12.8** (`CUDA_HOME=/usr/local/cuda-12.8`) — CUDA 13.3 `libcudart` aborts in `cudaGetDeviceCount` on this host |
 
@@ -37,7 +37,7 @@ conflicts stay reviewable.
 | **5** | **b11351** | `631109b3…` | Match Ollama **v0.40.x** tip (`#18761`) | **Done (Oct 2026)** — tip `common_batch` + Clef; kept as `vendor/llama-cpp-b11351/` |
 | **6** | **b11870** | `74bca395…` | Prior zerollama tip | **Done** — previous series formatted here. Rollback via `LLAMA_CPP_*.prev` |
 | **7** | **b12119** | `6f1e6543…` | ggml-org release tag (2026-11-04) | **Done** — 163 patches on that pin; `llama-server` built (sm_120) and serving on CT 1564. **0162** cherry-picked `#30541`. Rollback via `LLAMA_CPP_*.prev` |
-| **8 (pin)** | **b12557** | `b94959a6…` | Latest ggml-org release tag (2026-11-19, `#32505`; also master HEAD) | **Done** — **186** format-patches (b12119 quilt rebased onto the tag, then **0162–0186** prompt reuse). Upstream mtmd Kokoro + tiny-voca. CT `llama-server` stays the b12119 binary until rebuilt |
+| **8 (pin)** | **b12557** | `b94959a6…` | Latest ggml-org release tag (2026-11-19, `#32505`; also master HEAD) | **Done** — **187** format-patches (b12119 quilt rebased onto the tag, then **0162–0186** prompt reuse, **0187** CUDA compile fix). Upstream mtmd Kokoro + tiny-voca. CT `llama-server` stays the b12119 binary until rebuilt |
 
 **Do not** jump 0 → 5 in one shot unless you have a clean worktree day and a
 rollback plan (`vendor/llama-cpp-b10615/` + `llama/patches/` backup).

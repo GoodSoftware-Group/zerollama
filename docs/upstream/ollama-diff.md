@@ -104,7 +104,7 @@ Client → Go :11434 → sched.go → ollamarunner (ggml Metal/CUDA subprocess) 
 | Python runtime | None | `runtime/` FastAPI sidecar/embed |
 | Training | None | `/api/train/*`, `training.py`, pyembed |
 | Remote cloud | ollama.com | **Eliza Cloud** default |
-| llama.cpp pin | **`b11351`** (Ollama tip) | **`b12557`** + **186** format-patches in `llama/patches/` (`0001`–`0186`; **0162–0186** prompt reuse) — [LLAMA_CPP_PIN.md](../../runtime/LLAMA_CPP_PIN.md); L6 ladder [llama-cpp-pin-ladder.md](../design/serving/llama-cpp-pin-ladder.md) |
+| llama.cpp pin | **`b11351`** (Ollama tip) | **`b12557`** + **187** format-patches in `llama/patches/` (`0001`–`0187`; **0162–0186** prompt reuse) — [LLAMA_CPP_PIN.md](../../runtime/LLAMA_CPP_PIN.md); L6 ladder [llama-cpp-pin-ladder.md](../design/serving/llama-cpp-pin-ladder.md) |
 | Ollama-specific llama fixes | `llama/compat/` + CMake `PATCH_COMMAND` | `llama/patches/` + compat/kv-ext/seq-copy |
 | GPU discovery | `discover/llama_server.go` probe | **Hybrid** — llama-server when Linux auto or `ZEROLLAMA_LLAMA_SERVER=1`; ggml `/info` bootstrap otherwise (**why:** Mac default stays ggml; upstream sched inputs on Linux) |
 | MLX MTP / speculation | Draft-cache token-pair trie, flush 256, host speculate + xgrammar | Pin `MLX_VERSION=a59cc231`; M15a live-session retained; xgrammar **0.2.7** + spec-under-grammar **ported** |
@@ -429,7 +429,7 @@ Path-filtered **+73** commits on sibling. Do **not** rebase. Prior **v0.32.15 �
 8. Path-filter **v0.32.12–v0.32.15**: Qwen 3.8 renderer, repeat_penalty 1.0, skipVerify, parse-error cancel — **done (Aug 2026)**. WebP (#17755) + metadata cache (#17752) — **done**.
 9. Path-filter **v0.32.15–v0.33.3** — **done (Sep 2026)** for CLI + MLX load/trie/errors + **#16471**. xgrammar **done** (see item 10).
 10. Path-filter **v0.33.3–v0.34.4-rc0** — **triaged (Sep 2026)**. **Done:** #18374 / #18319 / #18533 / ThinkingClose + format-after-think / **#16471** / **#17943** / **#18550** / **#18376** / **#18438** / MLX memory hygiene through `8d66f083` / **xgrammar core** + ThinkingClose structural tags / **#18473** thinking discovery. **Blocked:** `45a02807` (needs media.go). **Still open:** spec under grammar; `#17858` tags/capabilities unify; Pin-Sweep.
-11. llama.cpp pin is **b12557** (**186** format-patches, `0001`–`0186`; b12119 quilt archived; ahead of Ollama tip **b11351**) — [pin ladder](../design/serving/llama-cpp-pin-ladder.md). **0162–0186** are prompt reuse ([kinetic-prompt-reuse.md](../design/serving/kinetic-prompt-reuse.md)).
+11. llama.cpp pin is **b12557** (**187** format-patches, `0001`–`0187`; b12119 quilt archived; ahead of Ollama tip **b11351**) — [pin ladder](../design/serving/llama-cpp-pin-ladder.md). **0162–0186** are prompt reuse ([kinetic-prompt-reuse.md](../design/serving/kinetic-prompt-reuse.md)).
 12. Product-first ladders **`c1737589` → v0.40.1-rc0** — see Oct 2026 section below (L0–L6).
 
 ---
@@ -446,7 +446,7 @@ Path-filtered **+73** commits on sibling. Do **not** rebase. Prior **v0.32.15 �
 | **L3** | Mac MLX UX: pin `a59cc231`; idle residency; tokenizer; xgrammar 0.2.7 + spec-under-grammar; opinionated MLX-preferred for clear safetensors families | **Partial (Oct 2026)** — pin + client residency env + routing notes landed; **Mac dylib rebuild / Metal sign-off still required** on operator hosts; tokenizer rewrite needs Mac soak |
 | **L4** | Multimodal embed (embeddinggemma / gemma4embedding) + honest `/api/embed` errors | **Partial (Oct 2026)** — create + `/api/embed` map inputs + 413/400 wiring landed; **full MLX multimodal embed is Darwin-path**; Linux returns honest 501 without `EmbedWithMedia` |
 | **L5** | Thinking levels `#18473`; GGUF metadata `#17858`; Laya create ↔ convert | **Partial (Oct 2026)** — thinking on show + middleware; legacy `xhigh` kept (Qwen 3.8); GGUF metadata persist/load (tags list still inference cache); Laya create metadata aligned |
-| **L6** | llama.cpp pin debt toward **b11351** (enabler; parallel, not gate for L1–L2) | **Done (Nov 2026)** — live pin **b12557** + **186** format-patches (b12119 quilt archived; Oct close was **b11351** + 137 patches; **0162–0186** prompt reuse). Clef wire + Cloudflare Flash product `/v1/decisions` e2e ([ladder](../design/serving/llama-cpp-pin-ladder.md)) |
+| **L6** | llama.cpp pin debt toward **b11351** (enabler; parallel, not gate for L1–L2) | **Done (Nov 2026)** — live pin **b12557** + **187** format-patches (b12119 quilt archived; Oct close was **b11351** + 137 patches; **0162–0186** prompt reuse). Clef wire + Cloudflare Flash product `/v1/decisions` e2e ([ladder](../design/serving/llama-cpp-pin-ladder.md)) |
 
 ### Skip (not our product)
 

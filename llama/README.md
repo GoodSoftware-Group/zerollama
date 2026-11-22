@@ -86,7 +86,7 @@ For build prerequisites, platform notes, and backend selection, see the
 
 ### Compatibility patches
 
-**In-tree ggml (b12557):** patches live in `llama/patches/` (**186** format-patches, `0001`–`0186`; **0162–0186** are prompt reuse). Materialize with `make -f Makefile.sync clean apply-patches`, then `./scripts/vendor/sync_vendor_llama.sh`. **Why two steps:** `apply-patches` commits Ollama deltas into gitignored vendor; sync rsyncs into CGO trees without resetting vendor checkout. Do **not** edit synced trees directly — regenerate patches from vendor. **Why the C++ WHYs live in the design doc:** a comment edited only in `llama/llama.cpp` is wiped by that sync. See [kinetic-prompt-reuse.md](../docs/design/serving/kinetic-prompt-reuse.md).
+**In-tree ggml (b12557):** patches live in `llama/patches/` (**187** format-patches, `0001`–`0187`; **0162–0186** are prompt reuse, **0187** is the b12557 CUDA compile fix). Materialize with `make -f Makefile.sync clean apply-patches`, then `./scripts/vendor/sync_vendor_llama.sh`. **Why two steps:** `apply-patches` commits Ollama deltas into gitignored vendor; sync rsyncs into CGO trees without resetting vendor checkout. Do **not** edit synced trees directly — regenerate patches from vendor. **Why the C++ WHYs live in the design doc:** a comment edited only in `llama/llama.cpp` is wiped by that sync. See [kinetic-prompt-reuse.md](../docs/design/serving/kinetic-prompt-reuse.md).
 
 **llama-server (compat):** patches under `llama/compat/` are applied during CMake configure. If a patch
 insertion point moved, regenerate the patch against a fresh checkout of the new

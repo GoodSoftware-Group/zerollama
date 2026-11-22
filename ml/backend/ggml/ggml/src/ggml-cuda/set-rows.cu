@@ -338,7 +338,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_TBQ3_0) {
-        set_rows_cuda_quant<idx_t, block_tbq3_0, QK_TBQ, quantize_f32_tbq3_0_block>(
+        set_rows_cuda_quant<src_t, idx_t, block_tbq3_0, QK_TBQ, quantize_f32_tbq3_0_block>(
             src0_d, src1_d, (block_tbq3_0*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
@@ -348,7 +348,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_TBQ4_0) {
-        set_rows_cuda_quant<idx_t, block_tbq4_0, QK_TBQ, quantize_f32_tbq4_0_block>(
+        set_rows_cuda_quant<src_t, idx_t, block_tbq4_0, QK_TBQ, quantize_f32_tbq4_0_block>(
             src0_d, src1_d, (block_tbq4_0*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
@@ -369,7 +369,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
         );
 #if defined(GGML_CUDA_QJL)
     } else if (dst->type == GGML_TYPE_QJL1_256) {
-        set_rows_cuda_quant<idx_t, block_qjl1_256, 128, quantize_f32_qjl1_256_block>(
+        set_rows_cuda_quant<src_t, idx_t, block_qjl1_256, 128, quantize_f32_qjl1_256_block>(
             src0_d, src1_d, (block_qjl1_256*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
@@ -381,7 +381,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
 #endif
 #if defined(GGML_CUDA_POLARQUANT)
     } else if (dst->type == GGML_TYPE_Q4_POLAR) {
-        set_rows_cuda_quant<idx_t, block_q4_polar, QK_POLAR, quantize_f32_q4_polar_block>(
+        set_rows_cuda_quant<src_t, idx_t, block_q4_polar, QK_POLAR, quantize_f32_q4_polar_block>(
             src0_d, src1_d, (block_q4_polar*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,

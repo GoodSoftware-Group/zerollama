@@ -2,7 +2,7 @@
 
 > **Current pin:** **`b12557`** (`LLAMA_CPP_VERSION`, `LLAMA_CPP_COMMIT`, `Makefile.sync` `FETCH_HEAD`). **ggml-org/llama.cpp** @ `b94959a64d011915d77a5381c7d4846dcda99530` (tag **b12557**, 2026-11-19). Rollback is **`b12119`** in `LLAMA_CPP_*.prev`.
 
-Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus Ollama/zerollama patches. The June–November 2026 migration rebased from an old fork snapshot onto **`b9509`** → … → **`b12119`** → **`b12557`**. The live series is **186** format-patches in `llama/patches/` (`0001`–`0186`). The b12119 quilt **0001–0163** is in `llama/patches.obsolete-b12119/`. Canonical pin table: [runtime/LLAMA_CPP_PIN.md](../../../runtime/LLAMA_CPP_PIN.md).
+Zerollama’s **in-process ggml Metal runner** (`runner/ollamarunner`, `ml/backend/ggml`) is built from a **pinned llama.cpp tree** plus Ollama/zerollama patches. The June–November 2026 migration rebased from an old fork snapshot onto **`b9509`** → … → **`b12119`** → **`b12557`**. The live series is **187** format-patches in `llama/patches/` (`0001`–`0187`). The b12119 quilt **0001–0163** is in `llama/patches.obsolete-b12119/`. Canonical pin table: [runtime/LLAMA_CPP_PIN.md](../../../runtime/LLAMA_CPP_PIN.md).
 
 This document explains **what changed**, **why**, and **how to maintain** the vendored ggml/llama.cpp trees without drifting back to a stale fork snapshot.
 
@@ -50,7 +50,7 @@ zerollama serve
 | `LLAMA_CPP_*.prev` | Rollback pin **b12119** |
 | `Makefile.sync` | `FETCH_HEAD=b12557`, `WORKDIR=vendor/llama-cpp-b12557`, `UPSTREAM=ggml-org` |
 | `vendor/llama-cpp-b12557/` | Clone + patch commit (gitignored). Keep `vendor/llama-cpp-b12119` on a machine that rolls back |
-| `llama/patches/` | **186** format-patches on **b12557** (`0001`–`0186`). The b12119 quilt is `llama/patches.obsolete-b12119/`. Older absorbed ports stay in `llama/patches.obsolete-merged-86d86ed4/` and `llama/patches.absorbed-b10199/` (committed archives; not applied) |
+| `llama/patches/` | **187** format-patches on **b12557** (`0001`–`0187`). The b12119 quilt is `llama/patches.obsolete-b12119/`. Older absorbed ports stay in `llama/patches.obsolete-merged-86d86ed4/` and `llama/patches.absorbed-b10199/` (committed archives; not applied) |
 
 **Patch drift:** `./scripts/vendor/llama_patch_doctor.sh` · `./scripts/runtime/runtime_env_doctor.sh` (`llama_patches`) · `/health.llama_patches`
 

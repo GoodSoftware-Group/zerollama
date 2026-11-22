@@ -41,6 +41,7 @@ endif()
 
 target_include_directories(${TARGET} PRIVATE ../mtmd)
 target_include_directories(${TARGET} PRIVATE ${PROJECT_SOURCE_DIR})
+target_include_directories(${TARGET} PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(${TARGET} PUBLIC llama-common mtmd ${CMAKE_THREAD_LIBS_INIT})
 target_link_libraries(${TARGET} PRIVATE vendor::hash)
 
@@ -78,7 +79,7 @@ add_library(${TARGET}
 set_target_properties(${TARGET} PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
 target_include_directories(${TARGET} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(${TARGET} PRIVATE ../mtmd ${PROJECT_SOURCE_DIR})
+target_include_directories(${TARGET} PRIVATE ../mtmd ${PROJECT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(${TARGET} PUBLIC server-context llama-ui cpp-httplib ${CMAKE_THREAD_LIBS_INIT})
 
 add_dependencies(${TARGET} llama-ui-assets)
