@@ -3098,11 +3098,22 @@ int32_t common_speculative_n_max(const common_params_speculative * spec) {
                 n_max = std::max(n_max, (int32_t) 8);
                 break;
             case COMMON_SPECULATIVE_TYPE_SESSION:
-                n_max = std::max(n_max, (int32_t) 8);
+                n_max = std::max(n_max, (int32_t) common_speculative_impl_session::k_max_draft);
                 break;
             case COMMON_SPECULATIVE_TYPE_NONE:
             case COMMON_SPECULATIVE_TYPE_COUNT:
                 break;
+        }
+    }
+
+    // common_speculative_init appends SESSION for a single "none" unless
+    // LLAMA_RAD1 starts with 0. This runs first, while the server sizes
+    // n_outputs_max. A verify of k_max_draft tokens plus the target token
+    // has to fit, or output_reserve aborts the process.
+    if (spec->types.size() == 1 && spec->types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+        const char * env = std::getenv("LLAMA_RAD1");
+        if (env == nullptr || env[0] != '0') {
+            n_max = std::max(n_max, (int32_t) common_speculative_impl_session::k_max_draft);
         }
     }
 
@@ -3372,6 +3383,7 @@ common_speculative_output_limits common_speculative_get_output_limits(
 common_speculative * common_speculative_init(common_params_speculative & params, uint32_t n_seq) {
     // With no drafter chosen, guess from earlier text. An explicit type, including
     // "none", is left as the caller set it. LLAMA_RAD1=0 is the same as "none".
+    // common_speculative_n_max reserves k_max_draft rows for this same case.
     const bool only_none = params.types.size() == 1 && params.types[0] == COMMON_SPECULATIVE_TYPE_NONE;
     if (only_none) {
         const char * env = std::getenv("LLAMA_RAD1");
