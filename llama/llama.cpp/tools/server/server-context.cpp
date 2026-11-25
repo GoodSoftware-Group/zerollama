@@ -542,10 +542,17 @@ struct server_slot {
 
         if (settle_trusted > 0 && settle_trusted < prompt.n_tokens()) {
             const llama_tokens & all = prompt.tokens.get_tokens();
-            restore.tail.assign(all.begin() + settle_trusted, all.end());
-            mem.seq_rm(id, prompt.tokens.pos_next(settle_trusted), -1);
-            prompt.tokens.keep_first((size_t) settle_trusted);
-            restore.on = true;
+            const llama_pos cut = prompt.tokens.pos_next(settle_trusted);
+            // seq_pos_min is the sliding-window tail, not the first token.
+            // A cut at the resume mark deletes that tail. The next prompt then
+            // has n_past > 0 and pos_min == -1, and pre_decode aborts.
+            const llama_pos pos_min = ctx_tgt ? llama_memory_seq_pos_min(llama_get_memory(ctx_tgt), id) : -1;
+            if (pos_min >= 0 && pos_min < cut) {
+                restore.tail.assign(all.begin() + settle_trusted, all.end());
+                mem.seq_rm(id, cut, -1);
+                prompt.tokens.keep_first((size_t) settle_trusted);
+                restore.on = true;
+            }
         }
 
         const int64_t t_start = ggml_time_us();
@@ -4222,10 +4229,16 @@ private:
                             break;
                         }
                         // Trim to effective prefix (may be < pos_end when media-clamped).
+                        // seq_pos_min is the sliding-window tail. A cut at or
+                        // before that tail removes every position.
                         const llama_pos pos_max = llama_memory_seq_pos_max(mem, id_dst);
                         const llama_pos eff_end = (llama_pos) n_copy;
                         if (pos_max >= eff_end) {
-                            sc_mem.seq_rm(id_dst, eff_end, -1);
+                            if (pos_min >= eff_end) {
+                                sc_mem.seq_rm(id_dst, -1, -1);
+                            } else {
+                                sc_mem.seq_rm(id_dst, eff_end, -1);
+                            }
                         }
                     }
 
@@ -4546,7 +4559,16 @@ private:
         }
 
         batch.clear();
-        cur->mem.seq_rm(cur->id, cur->prompt.tokens.pos_next(from), -1);
+        // seq_pos_min is the sliding-window tail. Cutting at the resume mark
+        // deletes that tail, and the rewrite then attends to a hole.
+        const llama_pos cut = cur->prompt.tokens.pos_next(from);
+        const llama_pos pos_min = llama_memory_seq_pos_min(llama_get_memory(ctx_tgt), cur->id);
+        if (pos_min < 0 || pos_min >= cut) {
+            SLT_TRC(*cur, "skipping GPU resume at token %d, window starts at %d\n", from, pos_min);
+            cur->settle_cell = -1;
+            return false;
+        }
+        cur->mem.seq_rm(cur->id, cut, -1);
         for (int32_t i = 0; i < n; i++) {
             const llama_token tok = cur->prompt.tokens[(size_t) (from + i)];
             const llama_pos   pos = cur->prompt.tokens.pos_next(from + i);
@@ -5361,9 +5383,12 @@ private:
                             if (n_past > 0 && n_past <= slot.prompt.n_tokens()) {
                                 const auto pos_min = llama_memory_seq_pos_min(llama_get_memory(ctx_tgt), slot.id);
                                 if (pos_min == -1) {
-                                    SLT_ERR(slot, "n_past = %d, slot.prompt.tokens.size() = %d, seq_id = %d, pos_min = %d\n", n_past, (int) slot.prompt.tokens.size(), slot.id, pos_min);
-                                    GGML_ABORT("pos_min == -1, but n_past > 0 - should not happen: https://github.com/ggml-org/llama.cpp/pull/13833#discussion_r2116181237");
-                                }
+                                    // No cell remains for this sequence. Reusing n_past would
+                                    // read a cache that is already gone, so run the prompt again.
+                                    SLT_WRN(slot, "n_past = %d, slot.prompt.tokens.size() = %d, seq_id = %d, pos_min = %d; reprocessing the prompt\n", n_past, (int) slot.prompt.tokens.size(), slot.id, pos_min);
+                                    n_past   = 0;
+                                    pos_next = 0;
+                                } else {
 
                                 // when the prompt prefix does not match, print the tokens around the mismatch
                                 // this is useful for debugging prompt caching
@@ -5437,6 +5462,7 @@ private:
 
                                 pos_next = reuse.pos_next;
                                 n_past   = reuse.n_past;
+                                }
                             }
 
                             {

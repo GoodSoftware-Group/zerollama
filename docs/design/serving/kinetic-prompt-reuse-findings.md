@@ -48,6 +48,8 @@ Nothing in this series has a tok/s delta. The comparison that was available is t
 
 16. **The Python runtime launcher was left alone.** `runtime/runtime/worker/llama_server.py` already drops `cache_prompt` on `cache_reset`. It was not pointed at the new env vars. Two launchers with two policies is the current shape. Forcing every path onto llama-server was out of scope.
 
+17. **A sliding-window resume must not delete the only positions the server can see.** `seq_pos_min` on an iSWA cache is the start of the window, which after a reply sits in the tail. `prompt_save` used to cut the KV at the last full prompt batch. That cut removed the window, the token list still shared a prefix, and the next prompt aborted in `pre_decode` (`pos_min == -1, but n_past > 0`). The cut now runs only when a reported position is still before the mark. The idle rewrite and the radix sequence copy use that same rule. If a sequence has no positions left, the prompt is processed again instead of aborting the runner.
+
 ## Left on purpose
 
 Burst kernels, a flywheel EWMA on the wrong interval, a convoy sleep, a prefetch that needs a second stream, a branch mark that edits the CUDA GDN kernel, a settle piece smaller than one ubatch, and draft trees. DRY, layer split, fit, and shared cache were already llama.cpp. Receipts are a report. There is no patch **0187**.

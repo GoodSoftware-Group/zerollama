@@ -40,7 +40,7 @@ index 7f948e4..4954b66 100644
  
                      {
                          auto * mem = llama_get_memory(ctx_tgt);
-@@ -3542,10 +3540,7 @@ private:
+@@ -3542,10 +3540,13 @@ private:
                          const llama_pos pos_max = llama_memory_seq_pos_max(mem, id_dst);
                          const llama_pos eff_end = (llama_pos) n_copy;
                          if (pos_max >= eff_end) {
@@ -48,7 +48,13 @@ index 7f948e4..4954b66 100644
 -                            if (ctx_dft) {
 -                                common_context_seq_rm(ctx_dft, id_dst, eff_end, -1);
 -                            }
-+                            sc_mem.seq_rm(id_dst, eff_end, -1);
++                            // The window starts at or after the prefix. A cut
++                            // there removes every position the server can see.
++                            if (pos_min >= eff_end) {
++                                sc_mem.seq_rm(id_dst, -1, -1);
++                            } else {
++                                sc_mem.seq_rm(id_dst, eff_end, -1);
++                            }
                          }
                      }
  
