@@ -1,0 +1,17 @@
+{
+  "table": "the-long-table/1",
+  "name": "Odi",
+  "thanks": "I'm thankful for the open source local inference community and their building in public. I've tried to curate the best of the best into one product.",
+  "dish": {
+    "title": "Zerollama, Ollama fork, do just about everything a gpu can do",
+    "url": "https://github.com/goodSoftware-Group/zerollama",
+    "free_to_use": true
+  },
+  "picked_up": [
+    "https://github.com/ollama/ollama",
+    "https://github.com/ggml-org/llama.cpp",
+    "https://github.com/vllm-project/vllm",
+    "https://github.com/sgl-project/sglang",
+    "https://github.com/mudler/localai"
+  ]
+}
